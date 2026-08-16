@@ -32,10 +32,12 @@ const transitions: Record<RuntimeEventType, readonly [TaskState, TaskState] | un
   TaskPlanned: ["PLANNED", "ASSIGNED"],
   TaskAssigned: ["ASSIGNED", "RUNNING"],
   TaskStarted: ["RUNNING", "VALIDATING"],
+  ArtifactProduced: ["VALIDATING", "VALIDATING"],
   ValidationCompleted: ["VALIDATING", "REVIEW_PENDING"],
   ReviewCompleted: ["REVIEW_PENDING", "APPROVED"],
   ApprovalRequested: ["REVIEW_PENDING", "WAITING_APPROVAL"],
   ApprovalDecided: ["WAITING_APPROVAL", "APPROVED"],
+  ApprovalRejected: ["WAITING_APPROVAL", "FAILED"],
   ReworkRequested: ["VALIDATING", "REWORK"],
   ReworkExhausted: ["REWORK", "FAILED"],
   TaskCompleted: ["APPROVED", "COMPLETED"]

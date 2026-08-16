@@ -52,10 +52,12 @@ export const RuntimeEventTypeSchema = z.enum([
   "TaskPlanned",
   "TaskAssigned",
   "TaskStarted",
+  "ArtifactProduced",
   "ValidationCompleted",
   "ReviewCompleted",
   "ApprovalRequested",
   "ApprovalDecided",
+  "ApprovalRejected",
   "ReworkRequested",
   "ReworkExhausted",
   "TaskCompleted"

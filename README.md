@@ -48,6 +48,16 @@ pnpm demo
 
 `pnpm demo` writes a redacted result to `artifacts/run-result.json`. Generated evidence is intentionally ignored by Git.
 
+## Python parallel skeleton
+
+The original zero-dependency Python contract skeleton is preserved as a separately classified implementation under [`python/`](python/README.md). Run it from that directory:
+
+```bash
+cd python
+python3 main.py
+python3 tests/test_contracts.py
+```
+
 ## Safety boundary
 
 This is an MVP simulator, not a production payment or agent-execution system. It contains no customer data, credentials, production configuration, network-based tool access, or irreversible action. A real deployment must replace the in-memory adapters with governed infrastructure, enforce tenancy, retain audit records according to policy, and perform independent security review.

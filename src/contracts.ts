@@ -44,6 +44,7 @@ export const TaskEnvelopeSchema = z.object({
   priority: z.number().int().min(1).max(5).default(3),
   parent_task_id: z.string().min(1).optional()
 });
+export type TaskEnvelopeInput = z.input<typeof TaskEnvelopeSchema>;
 export type TaskEnvelope = z.infer<typeof TaskEnvelopeSchema>;
 
 export const RuntimeEventTypeSchema = z.enum([

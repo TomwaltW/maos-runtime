@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maos-runtime"
+version = "0.1.0"
+description = "MAOS —— 多 Agent 协作运行时（复赛演示实现，核心零依赖）"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+hiclaw = ["matrix-nio"]
+obs = ["opentelemetry-sdk"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["maos*", "hiclaw*"]
+
+[tool.pytest.ini_options]
+testpaths = ["maos/tests"]

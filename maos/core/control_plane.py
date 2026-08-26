@@ -11,17 +11,17 @@ from __future__ import annotations
 
 import logging
 
-from contracts import events as E
-from contracts.events import Envelope, Topic
-from contracts.states import (
+from maos.contracts import events as E
+from maos.contracts.events import Envelope, Topic
+from maos.contracts.states import (
     NEEDS_HUMAN_APPROVAL,
     PlanState,
     PLAN_TRANSITIONS,
     TaskState,
     assert_transition,
 )
-from core.eventbus import EventBus
-from core.store import Store
+from maos.core.eventbus import EventBus
+from maos.core.store import Store
 
 log = logging.getLogger("maos.cp")
 

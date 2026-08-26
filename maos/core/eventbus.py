@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from typing import Callable
 
-from contracts.events import Envelope, Topic
+from maos.contracts.events import Envelope, Topic
 
 log = logging.getLogger("maos.bus")
 

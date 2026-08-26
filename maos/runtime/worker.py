@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import logging
 
-from agents.base import AGENT_POOL, AgentOutput, PermissionDenied, TaskContext
-from contracts import events as E
-from contracts.events import Envelope, Topic
-from core.control_plane import ControlPlane
-from core.eventbus import EventBus
-from model.client import ModelClient
+from maos.agents.base import AGENT_POOL, AgentOutput, PermissionDenied, TaskContext
+from maos.contracts import events as E
+from maos.contracts.events import Envelope, Topic
+from maos.core.control_plane import ControlPlane
+from maos.core.eventbus import EventBus
+from maos.model.client import ModelClient
 
 log = logging.getLogger("maos.worker")
 

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 
-from agents.base import AgentIdentity, BaseAgent, TaskContext, AgentOutput
-from contracts.events import new_id
-from model.client import Tier
+from maos.agents.base import AgentIdentity, BaseAgent, TaskContext, AgentOutput
+from maos.contracts.events import new_id
+from maos.model.client import Tier
 
 SYSTEM = """你是 Manager Agent，负责把用户请求拆成可执行、可验证的任务计划。
 只输出 JSON，格式：

@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from model.client import ModelClient, Tier
+from maos.model.client import ModelClient, Tier
 
 
 @dataclass(frozen=True)

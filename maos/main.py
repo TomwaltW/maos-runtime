@@ -13,16 +13,16 @@ import json
 import logging
 import sys
 
-import agents.coding  # noqa: F401 —— import 即注册进 AGENT_POOL
-from agents.manager import ManagerAgent
-from contracts.events import new_id
-from contracts.states import PlanState, TaskState
-from core.control_plane import ControlPlane
-from core.eventbus import InMemoryEventBus
-from core.store import SqliteStore
-from model.client import ScriptedModelClient
-from runtime.gate import HumanApprovalQueue, ReviewerGate
-from runtime.worker import WorkerRuntime
+import maos.agents.coding  # noqa: F401 —— import 即注册进 AGENT_POOL
+from maos.agents.manager import ManagerAgent
+from maos.contracts.events import new_id
+from maos.contracts.states import PlanState, TaskState
+from maos.core.control_plane import ControlPlane
+from maos.core.eventbus import InMemoryEventBus
+from maos.core.store import SqliteStore
+from maos.model.client import ScriptedModelClient
+from maos.runtime.gate import HumanApprovalQueue, ReviewerGate
+from maos.runtime.worker import WorkerRuntime
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)-12s %(message)s")
 log = logging.getLogger("maos.main")
@@ -112,7 +112,7 @@ def scenario_rework() -> None:
             if "用户请求" in user:
                 return super().complete(system=system, user=user, tier=tier)
             calls["n"] += 1
-            from model.client import ModelResponse
+            from maos.model.client import ModelResponse
             return ModelResponse(text=BAD_PATCH if calls["n"] == 1 else GOOD_PATCH)
 
     store = SqliteStore(); store.init_schema()
@@ -162,8 +162,8 @@ def scenario_idempotency() -> None:
     task = cp.store.list_tasks(plan_id)[0]
     before = len(cp.store.list_event_log(plan_id))
 
-    from contracts import events as E
-    from contracts.events import Topic
+    from maos.contracts import events as E
+    from maos.contracts.events import Topic
     dup = E.task_result(plan_id=plan_id, task_id=task["task_id"], attempt=task["attempt"],
                         trace_id=task["trace_id"], status="ok",
                         artifacts=[{"kind": "patch_set", "content": json.loads(GOOD_PATCH)}])
@@ -177,9 +177,13 @@ def scenario_idempotency() -> None:
     assert after == before, "重复投递导致了额外的状态迁移，幂等失效"
 
 
-if __name__ == "__main__":
+def main() -> int:
     logging.getLogger("maos.bus").setLevel(logging.WARNING)
     for fn in (scenario_happy, scenario_rework, scenario_human_approval, scenario_idempotency):
         fn()
     print("\n全部场景通过：事件契约与状态机在真实链路上成立，可以进入并行分轨。")
-    sys.exit(0)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

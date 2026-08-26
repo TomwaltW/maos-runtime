@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import logging
 
-from contracts import events as E
-from contracts.events import Topic
-from contracts.states import Risk, TaskState
-from core.control_plane import ControlPlane
-from core.eventbus import EventBus
-from core.store import Store
+from maos.contracts import events as E
+from maos.contracts.events import Topic
+from maos.contracts.states import Risk, TaskState
+from maos.core.control_plane import ControlPlane
+from maos.core.eventbus import EventBus
+from maos.core.store import Store
 
 log = logging.getLogger("maos.gate")
 

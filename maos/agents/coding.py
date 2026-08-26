@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 
-from agents.base import AgentIdentity, AgentOutput, BaseAgent, TaskContext, register
-from model.client import Tier
+from maos.agents.base import AgentIdentity, AgentOutput, BaseAgent, TaskContext, register
+from maos.model.client import Tier
 
 PROTECTED_PATHS = ("/infra", "/.github", "tests/", "/secrets")
 

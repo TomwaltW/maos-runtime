@@ -20,6 +20,11 @@ python3 -m pytest maos/tests -q    # 全量测试（在仓库根目录执行）
 python3 run.py                     # 四场景端到端（Scripted 模式，无需任何 key）
 ```
 
+**开工自检（每天第一件事，一次工具调用）**：让 Claude 读一次 `scripts/guard_bash.py`。
+**被拦 = hook 正常**（报 `blocked: 该操作触碰受保护面`）；**读到内容 = 守卫没挂上，停下来查**，
+最常见原因是会话不是从仓库根目录启动的（项目级 hook 只在仓库根加载，见 docs/BACKLOG.md）。
+守卫静默失效不会报警，只能靠这一步主动探。
+
 ## 目录结构
 
 ```

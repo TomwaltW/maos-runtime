@@ -3,7 +3,7 @@
 维护者：编排总管会话（唯一可写本文件的会话；业务代码一律派单给子会话）。
 事实源优先级：`docs/parallel/contracts.md`（Task-0 产出后）> 本看板 > `REVIEW.md` > `docs/BACKLOG.md`。
 任务定义原始出处：`docs/superpowers/plans/parallel-build-plan.md`（gitignored 操作剧本，下称 plan）+ REVIEW.md 审计修正。
-最后更新：2026-08-27 17:35 · 收口会话（HEAD `0d0ccfe`）。本次动作：Task-0 转 MERGED、G2 过闸、保护面收口两条路径、§7 补记六个 commit。
+最后更新：2026-08-27 20:49 · §3 数字校正（HEAD `fe6cfff`）。本次动作：§3 三条结论性断言改为实测值（pytest 101、HEAD + 15 commits、origin 同步），过程记录一行未动。执行者非编排总管会话，人类当场授权。上一次实质动作见 17:35 收口（§7）。
 前任编排会话（从 `~` 启动、hook 未挂载）产出的 Task-0 派单 v1 只在其会话输出里、未存档即失联，作废；本会话重拟为 v2（§8）。
 
 状态机：`NOT_STARTED → DISPATCHED → DELIVERED → VERIFIED → MERGED`；`BLOCKED` = 需人类介入。
@@ -50,8 +50,8 @@
 ## 3. 环境探针（2026-08-27 编排会话实测）
 
 - `docker info` 早间 → exit=0 daemon 可达；**09:57 复测（maos-da）→ exit=1，`Cannot connect to the Docker daemon`，Docker Desktop 已不在运行。G3 回退 ❌**，派 Task-B 前由人类启动 Docker Desktop 后重测（client 29.6.1，context desktop-linux）。
-- `python3 -m pytest maos/tests -q`（仓库根）→ **100 passed**（Task-0 收口基线 `0d0ccfe`；09:57 的 83 已过时）。构成：test_contracts 9 + test_contracts_frozen 2 + test_guard_bash 72 + test_registry_autodiscovery 17。本次保护面收口另加 1 条守卫测试 → **101 passed**。plan §三「11 条测试全绿」的数字早已过时。
-- HEAD = `0d0ccfe`（REVIEW 审计基线 `f104161` + 14 commits；`76ea101` 之后的六个见 §7 补记）。branch `goai-restructure` 与 origin 同步。
+- `python3 -m pytest maos/tests -q`（仓库根）→ **101 passed**（2026-08-27 20:49 实测于 `fe6cfff`）。构成实测：test_contracts 9 + test_contracts_frozen 2 + test_guard_bash 73 + test_registry_autodiscovery 17 = 101。**此前此处的 101 系「100 存量 + 1 新增」推算、未实测**，且构成里 guard_bash 记 72（四项和为 100，与 101 对不上），今按实测改写。09:57 的 83、plan §三「11 条测试全绿」均已过时。
+- HEAD = `fe6cfff`（REVIEW 审计基线 `f104161` + 15 commits，`git rev-list --count f104161..fe6cfff` 实测；`76ea101` 之后的六个见 §7 补记）。branch `goai-restructure` 与 origin **已同步** —— 2026-08-27 20:49 `git fetch origin goai-restructure` 后 `origin/goai-restructure` = `fe6cfff`，与本地 HEAD 一致。
 - 三重守卫：deny 13 条 + PreToolUse hook（`scripts/guard_bash.py`）+ 指纹（`.contracts.lock` 已入库 `9d3fe4d`）= **3/3 生效**（`docs/BACKLOG.md:7` 实测记录）。
 - `maos/tools/sandbox.py` 桩已存在（`9d3fe4d`），两签名与 plan §二.14 逐字段一致，NotImplementedError 桩。
 - 前任编排会话曾从 `~` 启动（hook 未挂载，BACKLOG.md:8）。**现任编排会话（maos-da）从仓库根启动，09:55 实测 Read `scripts/guard_bash.py` 被拦 → hook 对编排会话生效**。「一切子会话必须从仓库根 / worktree 根启动 + 开工先探守卫」仍是派单硬要求。
@@ -166,6 +166,7 @@ REVIEW.md 全部「必须写进 contracts.md / 由 Task-0 定死」修正项的�
 | 2026-08-27 16:17 | Task-0 | commit `9190fde` `test(p0): 补 C-2 import 顺序回归闸与 C-1 私有模块把守，95->97` | 补记 |
 | 2026-08-27 17:00 | Task-0 | commit `0d0ccfe` `fix(p0): G2 收口四处缺口 —— compensation mode 锁死 reverse + 三条冻结闸` | 补记；**Task-0 → MERGED，G2 过闸**，pytest 100 passed。旧分支 `task/0-contracts` 已删、`.claude/worktrees/task-0` 已清 |
 | 2026-08-27 17:35 | — | 保护面收口 + 三份文档对齐 `0d0ccfe`：`docs/parallel/contracts.md`、`maos/artifacts.py` 进 `PROT_PATHS`+`READ_OK`（写拦读放行，新增一条把守测试）；CLAUDE.md 必须问四类第 1 条扩为同样四条路径；relock 补进 `knowledge` 表指纹（5→6）；REVIEW.md「状态标记」20 行下线，改为一行指向本看板 | pytest **101 passed**（100 存量 + 1 新增）。守卫盲区复验：`-c` 内联载荷 exit=2，已拦，非盲区 |
+| 2026-08-27 20:49 | — | §3 环境探针数字校正：pytest 由「100 存量 + 1 新增」推算值改为 **101 passed** 实测（构成 `test_guard_bash` 72→73，四项和 100→101 对齐）；HEAD `0d0ccfe` + 14 commits → `fe6cfff` + 15 commits（`git rev-list --count f104161..fe6cfff` 实测）；「与 origin 同步」补 fetch 实测背书；`:6` 更新戳同步 | **由非编排总管会话执行，人类当场授权**（本文件第 3 行的单写者规则）。`grep -n '0d0ccfe'` 复验：§3 内 0 处，全文剩 5 处（`:18` `:44` `:67` `:167` `:168`）均为过程记录，按「结论性断言改、过程记录留」口径原样保留 |
 
 ---
 

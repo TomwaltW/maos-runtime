@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import pathlib
 import subprocess
@@ -22,7 +23,7 @@ from maos.core.control_plane import ControlPlane
 from maos.core.eventbus import InMemoryEventBus
 from maos.core.store import SqliteStore
 from maos.flows.common import build
-from maos.model.client import ModelClient, ScriptedModelClient
+from maos.model.client import ModelClient, ScriptedModelClient, select_model_client
 from maos.runtime.gate import ReviewerGate
 from maos.runtime.worker import WorkerRuntime
 from maos.skills import builtin, registry
@@ -147,6 +148,10 @@ def test_agent_pool_does_not_depend_on_main_import_order():
 # --- C-4 build() 返回契约 ---------------------------------------------------
 def test_build_returns_frozen_six_tuple():
     result = build({})
+    assert type(result) is tuple, (
+        "返回形态冻结为 tuple，不许改成 dataclass / dict / NamedTuple（C-4）。"
+        "只断言 len==6 挡不住：dict 与 NamedTuple 同样满足 len==6"
+    )
     assert len(result) == 6, "build() 返回六元组，位序冻结（C-4）"
 
     store, bus, cp, model, worker, gate = result
@@ -165,6 +170,18 @@ def test_build_injects_given_model():
     injected = ScriptedModelClient({"x": "y"})
     _, _, _, model, _, _ = build({"ignored": "z"}, model=injected)
     assert model is injected, "传入 model 实例时必须原样注入，不得按 script 另造一个"
+
+
+def test_build_extra_params_are_keyword_only():
+    """matrix / model 必须是 keyword-only（C-3 形态约束）。
+
+    改成位置参数不会当场报错，只会让四处 `store, bus, cp, model, worker, gate = build(...)`
+    静默错位 —— 症状离原因很远，所以把它钉在断言里。
+    """
+    with pytest.raises(TypeError):
+        build({}, True)             # 想按位置传 matrix
+    with pytest.raises(TypeError):
+        build({}, True, None)       # 想按位置传 matrix + model
 
 
 # --- C-6 Task-0 期 matrix 恒回退 -------------------------------------------
@@ -241,6 +258,22 @@ def test_resolve_patch_ref_positive_and_negative():
     assert resolve_patch_ref(store, {**ref, "attempt": 2}) is None, "attempt 不匹配不该命中"
 
 
+def test_compensation_mode_is_locked_to_reverse():
+    """mode 恒为 reverse，别的值一律非法（C-5 字段约束）。
+
+    放行别的 mode 不会当场报错，而是让补偿走不到反向应用分支：
+    补偿静默不执行、日志一片正常，要到演示现场才发现文件根本没还原。
+    """
+    def content(mode):
+        return {"mode": mode,
+                "patch_ref": {"task_id": "t1", "kind": "patch_set", "attempt": 1}}
+
+    assert validate_artifact(KIND_COMPENSATION, content("reverse")) == []
+    for illegal in ("rollback", "forward", "revert", "REVERSE", ""):
+        errs = validate_artifact(KIND_COMPENSATION, content(illegal))
+        assert errs, f"mode={illegal!r} 必须被拒绝，本阶段不定义第二种补偿模式"
+
+
 # --- A-8 knowledge 新增表 ---------------------------------------------------
 def test_knowledge_insert_and_filter():
     store = SqliteStore()
@@ -257,3 +290,27 @@ def test_knowledge_insert_and_filter():
     assert [r["id"] for r in store.list_knowledge(keyword="时区")] == ["kn-2"]
     assert store.list_knowledge(tags=["nope"]) == []
     assert store.list_knowledge()[0]["tags"] == ["security", "patch"], "tags 应解回 list"
+
+
+# --- A-12 select_model_client 交接闸 -----------------------------------------
+def test_select_model_client_signature_is_frozen():
+    """`maos/model/client.py` 在 Task-0 之后移交 Task-A —— 这条是交接闸。
+
+    签名与「恒返确定性模型」的语义都冻结：Task-A 填真模型分支时，
+    force_scripted=True 必须仍然拿到 ScriptedModelClient，否则全部测试与场景 5
+    会在无 key 的机器上开始打真网络。改坏了这里没有第二处会变红。
+    """
+    params = inspect.signature(select_model_client).parameters
+    assert list(params) == ["script", "force_scripted"]
+    assert params["script"].default is None
+    assert params["force_scripted"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["force_scripted"].default is False
+
+    assert isinstance(select_model_client(), ScriptedModelClient)
+    assert isinstance(select_model_client(force_scripted=True), ScriptedModelClient)
+
+    client = select_model_client({"用户请求": "ok"}, force_scripted=True)
+    assert isinstance(client, ModelClient)
+    assert client.complete(system="s", user="用户请求", tier="medium").text == "ok", (
+        "script 必须真的灌进返回的客户端，而不是被丢掉"
+    )

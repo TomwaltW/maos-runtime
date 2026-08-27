@@ -26,7 +26,7 @@
 - **约定**：`maos/flows/common.py::build(script, *, matrix=False, model=None)`。`model=None` 时按 script 构造 `ScriptedModelClient(script)`；传入 model 实例则原样注入（场景 2 的 FlakyModel 由此进入）。`matrix=True` 时懒加载 `hiclaw.matrix_bus.MatrixEventBus` 包装 inner bus，ImportError 或连接失败 → 打警告回退 inner bus（Task-E 落地前恒回退）。
 - **形态约束**：`matrix` 与 `model` 均为 **keyword-only 且带默认值**，纯加法——现有三处 `store, bus, cp, model, worker, gate = build(...)` 位置解包一字不改仍成立。任何把这两个参数改成位置参数、或调整其顺序的改动，都会静默破坏既有解包。
 - **反例**：scenario_2 内联拼装 store/bus/cp/model/worker/gate 六件套绕过 build()（迁移前 `main.py:118-122` 即此形态，迁移时已消除；留第二条构造路径一定漂）。具体后果：日后往 `build()` 里加一行初始化（比如建 knowledge 表），场景 2 不会跟着变，于是只有场景 2 行为漂移，而症状离原因很远。
-- **验证**：迁移后 `maos/flows/scenario_2.py` 不再出现 `SqliteStore()` / `ControlPlane(` 等构造调用，只调 `build(..., model=...)`；`python3 run.py` 场景 2 结论不变（task DONE 且 attempt=2）。
+- **验证**：迁移后 `maos/flows/scenario_2.py` 不再出现 `SqliteStore()` / `ControlPlane(` 等构造调用，只调 `build(..., model=...)`；`python3 run.py` 场景 2 结论不变（task DONE 且 attempt=2）。形态约束由 `test_registry_autodiscovery.py::test_build_extra_params_are_keyword_only` 把守：断言 `build({}, True)` 与 `build({}, True, None)` 均抛 `TypeError`——谁把这两个参数改成位置参数，四处解包会静默错位，这条是唯一的直接闸。
 
 ### C-4 build() 返回契约（冻结）
 - **约定**：返回六元组，**位序与类型**（依据 `maos/flows/common.py:44-60`）：
@@ -40,7 +40,7 @@
   | 5 | gate | `maos.runtime.gate.ReviewerGate` | 同左 |
   第 1 位与第 3 位**按 ABC 写代码**，其余四位可按具体类型用。返回形态冻结为 tuple——不许改成 dataclass、dict 或 NamedTuple。解包写法冻结为 `store, bus, cp, model, worker, gate = build(...)`。
 - **反例**：只冻入参不冻返回值，C 与 D 各自按位置解包、一方擅自调换位序——运行到深处才炸，合并期最难排查的一类漂移。具体形态：有人觉得「gate 更常用」把它前移，于是 `gate` 位上坐着 `model`，第一个症状是 `AttributeError: 'ScriptedModelClient' object has no attribute 'review_pending'`，排查方向被引向 Gate 而不是 `build()`。**位置即契约。**
-- **验证**：`test_registry_autodiscovery.py::test_build_returns_frozen_six_tuple` 对 `build({})` 的返回逐位 `isinstance` 断言（含 `worker_id=="w1"` 与 store 已建表）。现有解包**四处**——`flows/scenario_1.py:15`、`scenario_2.py:24`、`scenario_3.py:12`、`scenario_4.py:16`（原 `main.py:95/135/156` 三处 + 场景 2 由内联拼装改经 build 后新增的一处）——语义不变。一次性核对：
+- **验证**：`test_registry_autodiscovery.py::test_build_returns_frozen_six_tuple` 对 `build({})` 的返回逐位 `isinstance` 断言（含 `worker_id=="w1"` 与 store 已建表），并先断言 `type(result) is tuple`——**只断言 `len(result)==6` 挡不住**，dict 与 NamedTuple 同样满足 `len==6`，形态退化要到别处解包时才炸。现有解包**四处**——`flows/scenario_1.py:15`、`scenario_2.py:24`、`scenario_3.py:12`、`scenario_4.py:16`（原 `main.py:95/135/156` 三处 + 场景 2 由内联拼装改经 build 后新增的一处）——语义不变。一次性核对：
   ```bash
   python3 -c "from maos.flows.common import build; t=build({}); print(len(t), [type(o).__name__ for o in t])"
   ```
@@ -119,7 +119,7 @@
 - **A-9 BaseAgent**（`maos/agents/base.py`）：`__init__(self, model, store=None)`；`self.skills = SkillInvoker(self.identity, store)`。默认参数保证现行 `cls(model)`（worker.py:34）与既有测试不改仍绿；worker 构造处改为 `cls(model, store=self.cp.store)`。CodingAgent.run() 改经 invoker 是 **Task-A** 的活，Task-0 不动。
 - **A-10 flows/common.py**：`build()`（C-3/C-4）；`run_until_settled(bus, gate, cp, plan_id, max_cycles=20)`；`dump(cp, plan_id, title)`；演示常量 `GOOD_PATCH/BAD_PATCH/PLAN_JSON` 原样迁自 main.py:73-90。
 - **A-11 入口分发**：`maos/main.py` 的 `main()` 改为分发器：`--scenario N`（缺省顺跑 1–4）、`--matrix`；scenario_5 占位=打印「未实现」并退出码 1。`run.py` 维持薄转发。`python3 run.py` 无参时四场景行为与迁移前一致。
-- **A-12 select_model_client**（`maos/model/client.py`）：`select_model_client(script=None, *, force_scripted=False) -> ModelClient`。Task-0 版**恒返** `ScriptedModelClient(script)`；签名与语义冻结：场景 5 与全部测试必须 `force_scripted=True`；真模型分支由 Task-A 填（env：`MAOS_LLM_BASE_URL/MAOS_LLM_API_KEY/MAOS_LLM_MODEL/MAOS_LLM_TIMEOUT`(默认 120s)；异常与日志禁止回显 key）。该文件自此**移交 Task-A**。
+- **A-12 select_model_client**（`maos/model/client.py`）：`select_model_client(script=None, *, force_scripted=False) -> ModelClient`。Task-0 版**恒返** `ScriptedModelClient(script)`；签名与语义冻结：场景 5 与全部测试必须 `force_scripted=True`；真模型分支由 Task-A 填（env：`MAOS_LLM_BASE_URL/MAOS_LLM_API_KEY/MAOS_LLM_MODEL/MAOS_LLM_TIMEOUT`(默认 120s)；异常与日志禁止回显 key）。该文件自此**移交 Task-A**。移交闸 = `test_registry_autodiscovery.py::test_select_model_client_signature_is_frozen`：用 `inspect.signature` 断言参数名与顺序恰为 `["script", "force_scripted"]`、`force_scripted` 为 keyword-only 且默认 `False`，并断言 `force_scripted=True` 仍返回 `ScriptedModelClient`、script 真的灌进了返回的客户端。Task-A 填真模型分支时若破坏其中任一条，这是**唯一**会变红的地方——否则无 key 的机器会在测试与场景 5 里开始打真网络。
 - **A-13 手册偏离备案**（归 Task-D 落实，Task-0 仅录入本条）：effect_risk=H 的补偿引用由 Control Plane 在 on_task_result 收到 patch_set 时自动附着——TaskAssignment payload 无 effect_risk 字段且 events.py 冻结，Agent 拿不到；机制等价且补偿本属控制面行为。
 
 ## 附录 B · 六个 Skill 的 IO 契约（含 invoker 白名单语义）

@@ -25,6 +25,10 @@ ALL_KINDS = (
 
 _PASS_FAIL = ("pass", "fail")
 
+# 补偿模式（C-5 冻结）：本阶段只有反向应用一种，不定义第二种。
+# 这是「零模型补偿」的落点 —— 逆补丁不由模型生成，只把正向补丁反着打一遍。
+MODE_REVERSE = "reverse"
+
 
 def _missing(content: dict, keys: tuple[str, ...]) -> list[str]:
     return [f"缺必填键 {k}" for k in keys if k not in content]
@@ -70,10 +74,15 @@ def _check_test_report(c: dict) -> list[str]:
 
 
 def _check_compensation(c: dict) -> list[str]:
-    """形状 = C-5 golden fixture。校验字段名与嵌套层级，不锁 mode 的取值域。"""
+    """形状 = C-5 golden fixture，mode 取值域一并锁死。
+
+    mode 恒为 "reverse"：放行别的值不会当场报错，而是让补偿走不到反向应用分支，
+    症状是「补偿静默不执行、日志一片正常」，要到演示现场才发现文件没还原。
+    """
     errs = _missing(c, ("mode", "patch_ref"))
-    if "mode" in c and not (isinstance(c["mode"], str) and c["mode"]):
-        errs.append("mode 必须是非空 str")
+    if "mode" in c and c["mode"] != MODE_REVERSE:
+        errs.append(f"mode 必须恒为 {MODE_REVERSE!r}，本阶段不定义第二种补偿模式"
+                    f"（实际: {c['mode']!r}）")
     ref = c.get("patch_ref")
     if not isinstance(ref, dict):
         errs.append("patch_ref 必须是 dict")

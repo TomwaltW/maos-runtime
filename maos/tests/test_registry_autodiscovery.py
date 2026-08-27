@@ -211,6 +211,10 @@ _PROBE_IDENTITY = AgentIdentity(
 
 
 def test_unregistered_skill_returns_soft_failure():
+    assert registry.get("probe.never-implemented") is None, (
+        "哨兵名被谁实现了 —— 这条闸就不再走「未注册」分支，下面几条断言变红时"
+        "原因会指向别处。换一个没人会实现的名字，别把断言改绿了事"
+    )
     inv = SkillInvoker(_PROBE_IDENTITY, None)
     res = inv.invoke("probe.never-implemented", {})   # 在白名单内，但没人实现
     assert res.status == "failed"
@@ -309,13 +313,21 @@ def test_knowledge_insert_and_filter():
 
 
 # --- A-12 select_model_client 交接闸 -----------------------------------------
-def test_select_model_client_signature_is_frozen():
+def test_select_model_client_signature_is_frozen(monkeypatch):
     """`maos/model/client.py` 在 Task-0 之后移交 Task-A —— 这条是交接闸。
 
     签名与「恒返确定性模型」的语义都冻结：Task-A 填真模型分支时，
     force_scripted=True 必须仍然拿到 ScriptedModelClient，否则全部测试与场景 5
     会在无 key 的机器上开始打真网络。改坏了这里没有第二处会变红。
+
+    先摘掉三个 ``MAOS_LLM_*``：真模型分支落地后，无参 ``select_model_client()``
+    在**配了 key 的机器**（演示机就是）会拿到真客户端，这条当场变红，而红的原因
+    与它要守的签名冻结毫无关系。摘的是环境不是语义 —— ``force_scripted=True``
+    那条断言原样不动，它守的才是「无论环境如何都要确定性输出」。
     """
+    for var in ("MAOS_LLM_BASE_URL", "MAOS_LLM_API_KEY", "MAOS_LLM_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+
     params = inspect.signature(select_model_client).parameters
     assert list(params) == ["script", "force_scripted"]
     assert params["script"].default is None

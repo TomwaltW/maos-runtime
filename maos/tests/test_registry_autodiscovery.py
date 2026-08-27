@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 import sys
 
 import pytest
@@ -30,6 +31,7 @@ from maos.skills.registry import SKILL_REGISTRY
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 BUILTIN_DIR = pathlib.Path(builtin.__file__).parent
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 PROBE_NAME = "probe_autodiscovery_tmp"          # 不能下划线开头，否则 discover 会跳过
 PROBE_SKILL = "probe.autodiscovery"
@@ -82,6 +84,31 @@ def test_discover_is_idempotent(probe_module):
     assert builtin.discover() == builtin.discover()
 
 
+def test_private_modules_are_skipped():
+    """下划线开头视为私有、不发现（C-1 补充约定）。
+
+    这条不是风格洁癖：上面那个 probe fixture 之所以敢往 builtin/ 里扔文件，
+    靠的就是「不叫下划线就会被发现、叫下划线就不会」这个二分。
+    约定只写在 PROBE_NAME 的行内注释里没有把守，改坏了要到别人投放 skill 时才发现。
+    """
+    path = BUILTIN_DIR / "_private_probe.py"
+    path.write_text("SHOULD_NOT_BE_DISCOVERED = True\n", encoding="utf-8")
+    try:
+        found = builtin.discover()
+
+        assert "_private_probe" not in found, f"下划线模块不该被发现：{found}"
+        assert "maos.skills.builtin._private_probe" not in sys.modules, (
+            "下划线模块连 import 都不该发生 —— 只把它挡在返回值外不够，"
+            "import 副作用（注册、建连接）已经跑完了"
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        sys.modules.pop("maos.skills.builtin._private_probe", None)
+        for stale in (BUILTIN_DIR / "__pycache__").glob("_private_probe*"):
+            stale.unlink(missing_ok=True)
+        builtin.discover()
+
+
 # --- C-2 AGENT_POOL 注册口径 -----------------------------------------------
 def test_agent_pool_is_exactly_coding():
     assert sorted(AGENT_POOL) == ["coding"], (
@@ -90,6 +117,31 @@ def test_agent_pool_is_exactly_coding():
     )
     assert AGENT_POOL["coding"] is CodingAgent
     assert ManagerAgent.identity.role not in AGENT_POOL
+
+
+def test_agent_pool_does_not_depend_on_main_import_order():
+    """不经 maos.main 也要拿到非空池 —— 删除 main.py:16 的直接回归闸（C-2）。
+
+    本进程里 maos.main 早被别的测试拉起来了，验不出这件事，所以必须开子进程。
+    谁把自动发现改回手工 import，主路径（python3 run.py）照样绿，
+    只有「不经 main.py 的入口」会漏注册 —— 这条就是那个入口的替身。
+    """
+    code = (
+        "import sys;"
+        "from maos.agents import AGENT_POOL;"
+        "assert AGENT_POOL, 'AGENT_POOL 为空：包级自动发现没生效';"
+        "assert 'maos.main' not in sys.modules, 'maos.main 被意外 import，本测试前提不成立';"
+        "print(sorted(AGENT_POOL))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert proc.returncode == 0, f"子进程失败：\n{proc.stderr}"
+    assert "coding" in proc.stdout, f"子进程未发现 coding：{proc.stdout!r}"
 
 
 # --- C-4 build() 返回契约 ---------------------------------------------------

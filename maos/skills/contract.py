@@ -36,13 +36,20 @@ class SkillContract:
 
 @dataclass
 class SkillResult:
-    """skill 调用的统一返回。invoker 负责组装，skill 自己只管返回 output。"""
+    """skill 调用的统一返回。invoker 负责组装，skill 自己只管返回 output。
+
+    invocation_id 是这次调用的唯一标识（invoker 生成 uuid4().hex），同时写进
+    event_log 的 SkillInvoked.detail —— 后续 Phase 的权威事实守卫靠它把一条
+    产物回溯到究竟是哪个 agent 的哪一次 skill 调用产生的（actor 溯源）。
+    调用方拿到的 SkillResult 与落库那行由它对上号，缺了就断链。
+    """
 
     status: str                                     # ok | failed
     output: Any = None
     error: str | None = None
     duration_ms: int = 0
     usage: dict | None = None
+    invocation_id: str = ""                         # uuid4().hex，由 invoker 生成
 
 
 @dataclass

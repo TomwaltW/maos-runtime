@@ -15,7 +15,7 @@ import sys
 import pytest
 
 from maos.agents import AGENT_POOL
-from maos.agents.base import PermissionDenied
+from maos.agents.base import AgentIdentity, PermissionDenied
 from maos.agents.coding import CodingAgent
 from maos.agents.manager import ManagerAgent
 from maos.artifacts import KIND_COMPENSATION, resolve_patch_ref, validate_artifact
@@ -199,13 +199,25 @@ def test_unlisted_skill_raises_permission_denied():
         inv.invoke("req.normalize", {})          # manager 的 skill，不在 coding 白名单
 
 
+# 专用探针 identity：白名单里那个名字**永远不会有人实现**，所以这条断言不会
+# 随某条轨落地真 skill 而变红。别改回 code.repo-patch / kb.retrieve —— 前者
+# 是 Task-A 的活、后者是 Task-D 的活，一落地这条就假红。
+_PROBE_IDENTITY = AgentIdentity(
+    agent_id="probe-unregistered",
+    role="probe",
+    duty="只为验证「白名单内 + 未注册」这条软兜底路径",
+    allowed_skills=frozenset({"probe.never-implemented"}),
+)
+
+
 def test_unregistered_skill_returns_soft_failure():
-    inv = SkillInvoker(CodingAgent.identity, None)
-    res = inv.invoke("code.repo-patch", {})      # 在白名单内，但还没人实现
+    inv = SkillInvoker(_PROBE_IDENTITY, None)
+    res = inv.invoke("probe.never-implemented", {})   # 在白名单内，但没人实现
     assert res.status == "failed"
-    assert res.error == "skill_not_found:code.repo-patch", (
+    assert res.error == "skill_not_found:probe.never-implemented", (
         "未注册的 skill 必须软兜底成 failed，不能抛 —— 跨轨按名互调要能先行"
     )
+    assert res.invocation_id, "早退路径也要带 invocation_id：失败调用同样要可溯源"
 
 
 def test_skill_invocation_writes_event_log_row():
@@ -213,7 +225,7 @@ def test_skill_invocation_writes_event_log_row():
     store.init_schema()
     inv = SkillInvoker(CodingAgent.identity, store)
 
-    inv.invoke("kb.retrieve", {"keyword": "x"}, extras={"plan_id": "plan-test"})
+    res = inv.invoke("kb.retrieve", {"keyword": "x"}, extras={"plan_id": "plan-test"})
 
     rows = store.list_event_log("plan-test")
     assert len(rows) == 1
@@ -222,9 +234,13 @@ def test_skill_invocation_writes_event_log_row():
     assert row["from_state"] == "" and row["to_state"] == ""
     assert set(row["detail"]) == {
         "skill", "version", "status", "duration_ms",
-        "input_digest", "output_hash", "usage",
+        "input_digest", "output_hash", "usage", "invocation_id",
     }
     assert row["detail"]["skill"] == "kb.retrieve"
+    assert row["detail"]["invocation_id"] == res.invocation_id != "", (
+        "落库那行与返回给调用方的 SkillResult 必须是同一个 invocation_id —— "
+        "对不上号，权威事实守卫就没法从产物回溯到具体哪次调用"
+    )
 
 
 # --- C-5 / A-7 补偿 golden fixture 与引用解析 -------------------------------

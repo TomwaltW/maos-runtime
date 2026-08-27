@@ -1,0 +1,29 @@
+"""场景 3：高风险审批 —— Gate 过了也停在 BLOCKED，等人工放行。"""
+
+from __future__ import annotations
+
+from maos.contracts.events import new_id
+from maos.contracts.states import PlanState
+from maos.flows.common import GOOD_PATCH, build, dump, run_until_settled
+from maos.runtime.gate import HumanApprovalQueue
+
+
+def run(*, matrix: bool = False) -> int:
+    store, bus, cp, model, worker, gate = build({"任务输入": GOOD_PATCH}, matrix=matrix)
+    plan_id = cp.create_plan(goal="高风险变更需人工放行", trace_id=new_id("trace"), tasks=[{
+        "role": "coding", "title": "变更生产环境配置",
+        "inputs": {"repo": "demo/app"}, "acceptance": ["build 通过"],
+        "risk_level": "M",     # Agent 执行（产出补丁）是 M 级，在其授权内
+        "effect_risk": "H",    # 但这个补丁合进生产是 H 级，必须人工放行
+    }])
+    cp.start_plan(plan_id)
+    run_until_settled(bus, gate, cp, plan_id)
+    hq = HumanApprovalQueue(store, cp)
+    pending = hq.pending(plan_id)
+    print(f"\n待人工审批: {[t['title'] for t in pending]}")
+    assert len(pending) == 1, "高风险任务应停在 BLOCKED"
+    hq.decide(pending[0]["task_id"], approved=True, operator="沈思锴", note="已核对")
+    bus.drain()
+    dump(cp, plan_id, "场景 3：高风险人工审批")
+    assert cp.store.get_plan(plan_id)["state"] == PlanState.DONE
+    return 0

@@ -68,6 +68,14 @@ class Store(ABC):
     @abstractmethod
     def finish_idempotency(self, key: str, outcome: dict) -> None: ...
 
+    # -- 知识库（Phase 4 新增表；既有五表不受影响） --------------------------
+    @abstractmethod
+    def insert_knowledge(self, row: dict) -> None: ...
+
+    @abstractmethod
+    def list_knowledge(self, *, tags: list[str] | None = None,
+                       keyword: str | None = None) -> list[dict]: ...
+
 
 class SqliteStore(Store):
     def __init__(self, path: str = ":memory:") -> None:
@@ -144,6 +152,17 @@ class SqliteStore(Store):
                     outcome         TEXT NOT NULL DEFAULT '{}',
                     created_at      TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS knowledge (
+                    id          TEXT PRIMARY KEY,
+                    plan_id     TEXT NOT NULL,
+                    kind        TEXT NOT NULL,
+                    title       TEXT NOT NULL,
+                    body        TEXT NOT NULL,
+                    tags        TEXT NOT NULL DEFAULT '[]',
+                    created_at  TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_plan ON knowledge(plan_id);
                 """
             )
             self._conn.commit()
@@ -305,3 +324,42 @@ class SqliteStore(Store):
                 (json.dumps(outcome, ensure_ascii=False), key),
             )
             self._conn.commit()
+
+    # -- 知识库 -------------------------------------------------------------
+    def insert_knowledge(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO knowledge (id, plan_id, kind, title, body, tags, created_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (
+                    row["id"], row["plan_id"], row["kind"], row["title"], row["body"],
+                    json.dumps(row.get("tags", []), ensure_ascii=False), _now(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_knowledge(self, *, tags: list[str] | None = None,
+                       keyword: str | None = None) -> list[dict]:
+        """keyword 走 SQL 的 LIKE（title 或 body）；tags 取交集，在 Python 侧过滤。
+
+        tags 存的是 JSON 数组，SQLite 这层没有数组类型可查 —— 换 PolarDB 时
+        这一段应改成真正的标签表 join，上层调用签名不变。
+        """
+        sql = "SELECT * FROM knowledge"
+        params: list[Any] = []
+        if keyword:
+            sql += " WHERE (title LIKE ? OR body LIKE ?)"
+            like = f"%{keyword}%"
+            params += [like, like]
+        sql += " ORDER BY created_at"
+        with self._lock:
+            rs = self._conn.execute(sql, params).fetchall()
+        out = []
+        for r in rs:
+            d = dict(r)
+            d["tags"] = json.loads(d["tags"])
+            out.append(d)
+        if tags:
+            want = set(tags)
+            out = [d for d in out if want & set(d["tags"])]
+        return out

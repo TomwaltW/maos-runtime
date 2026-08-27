@@ -59,3 +59,19 @@ class HigressModelClient(ModelClient):
 
     def complete(self, *, system: str, user: str, tier: str) -> ModelResponse:
         raise NotImplementedError("Track B：接入 Higress 时实现")
+
+
+def select_model_client(script: dict[str, str] | None = None, *,
+                        force_scripted: bool = False) -> ModelClient:
+    """选择模型客户端 —— 上层唯一的构造入口，签名与语义冻结（A-12）。
+
+    **Task-0 版恒返 ScriptedModelClient**：真模型分支由 Task-A 填，
+    读这四个环境变量（只读 env，禁止写进任何文件）：
+    ``MAOS_LLM_BASE_URL`` / ``MAOS_LLM_API_KEY`` / ``MAOS_LLM_MODEL`` /
+    ``MAOS_LLM_TIMEOUT``（默认 120s）。异常与日志里禁止回显 api key。
+
+    force_scripted=True 表示「无论环境如何都要确定性输出」——场景 5 与全部测试
+    必须显式传它。现在两条分支还没分叉，所以它暂时不改变行为；等 Task-A 填完
+    真模型分支，这些调用点一行都不用改就仍然走脚本模型。
+    """
+    return ScriptedModelClient(script)

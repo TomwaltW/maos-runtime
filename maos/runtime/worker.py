@@ -31,7 +31,7 @@ class WorkerRuntime:
         self.bus = bus
         self.cp = control_plane
         self.model = model
-        self.agents = {role: cls(model) for role, cls in AGENT_POOL.items()}
+        self.agents = {role: cls(model, store=self.cp.store) for role, cls in AGENT_POOL.items()}
         bus.subscribe(Topic.TASK_ASSIGNMENT, f"worker-{worker_id}", self.on_assignment)
         log.info("Worker %s 启动，可插拔 Agent: %s", worker_id, sorted(self.agents))
 

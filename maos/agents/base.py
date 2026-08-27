@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from maos.model.client import ModelClient, Tier
+from maos.skills.invoker import SkillInvoker
 
 
 @dataclass(frozen=True)
@@ -63,8 +64,11 @@ class PermissionDenied(Exception):
 class BaseAgent(ABC):
     identity: AgentIdentity
 
-    def __init__(self, model: ModelClient) -> None:
+    def __init__(self, model: ModelClient, store: Any = None) -> None:
         self.model = model
+        # skill 调用的唯一入口：白名单校验与 SkillInvoked 审计都在 invoker 里。
+        # store 缺省 None（此时只跳过落库），保证 cls(model) 的老写法不改仍可用。
+        self.skills = SkillInvoker(self.identity, store)
 
     @abstractmethod
     def run(self, ctx: TaskContext) -> AgentOutput: ...

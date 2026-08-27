@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(pytest:*)",
+      "Bash(python -m:*)",
+      "Bash(python3 -m:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(ls:*)",
+      "Bash(tree:*)"
+    ],
+    "deny": [
+      "Edit(/maos/contracts/**)",
+      "Write(/maos/contracts/**)",
+      "NotebookEdit(/maos/contracts/**)",
+      "Edit(/.contracts.lock)",
+      "Write(/.contracts.lock)",
+      "Edit(/scripts/guard_bash.py)",
+      "Write(/scripts/guard_bash.py)",
+      "Edit(/scripts/relock_contracts.py)",
+      "Write(/scripts/relock_contracts.py)",
+      "Edit(/.claude/settings.json)",
+      "Write(/.claude/settings.json)",
+      "Edit(/.claude/settings.local.json)",
+      "Write(/.claude/settings.local.json)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Grep|Glob|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/guard_bash.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

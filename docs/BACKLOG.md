@@ -7,4 +7,5 @@
 | 2026-08-26 | P0 | ~~.claude/settings.json 仍缺 deny 规则与 PreToolUse hook 挂载~~ | ~~铁律 1 宣称的三重机制当前实际只有指纹测试一重生效~~ | **resolved 2026-08-27**：deny 三条 + PreToolUse hook 均已挂载并实测生效（本会话 Read/Bash 一触碰 settings.json 即被拦）。顺带复核两条旧判断：`Edit(/maos/contracts/**)` 单斜杠是作用域根相对，规则一直生效（原判"匹配不上"有误）；allow 已含 `Bash(python3 -m:*)`，与本机无 `python` 不冲突 |
 | 2026-08-27 | P0 | 项目级 hook 仅在从仓库根启动时加载 | 从 `~` 或其它目录启动的会话守卫完全不生效（8-27 实测：家目录会话可自由改写 `guard_bash.py` 本身） | 候选解：`~/.claude/settings.json` 用户级 hook + 绝对路径；代价为全局每次工具调用多一次进程启动。复赛后评估，赛前不动 |
 | 2026-08-27 | P0 | MAOS_RELOCK 授权只有"整晚敞着"一种用法 | hook 是独立进程，内联 `MAOS_RELOCK=1 cmd` 和 Bash 内 export 都传不到；唯一生效方式是启动 claude 前 export，此后整个会话对**全部**受保护文件放行 | 改为从命令文本识别前缀做单条授权；风险高于常规改动，复赛后单独处理 |
+| 2026-08-27 | P0 | 契约指纹锁文件未纳入版本控制，仍是 untracked | 新建 worktree / 新 clone 带不过来，`test_contracts_frozen.py` 两条直接失败（"缺失 —— Phase 0 未正确初始化"）。8-27 实测：主检出 83 passed，同 commit 的新 worktree 2 failed / 81 passed。是 fail-closed 不是静默失效，但并行 track 一开局 pytest 就是红的，会掩盖真实回归 | 开并行 track 前必须定：纳入版本控制，还是每个 worktree 起手先跑一次重新生成 |
 | 2026-08-27 | P0 | 守卫对 .claude/settings.json 连只读访问也拦 | 任何会话都无法 Read/grep 该文件核对 deny 与 hook 是否正确（本次复核 b/c 两条时即被拦，只能靠 hook 报错反推它在生效） | 与上面两条一并在复赛后处理守卫时收敛：读放行、写照拦。赛前不动 |

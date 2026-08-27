@@ -2,12 +2,31 @@
 
 刻意做成注入式：Agent 不知道背后是通义、DeepSeek 还是 OpenAI，只知道 tier。
 tier 到具体模型的映射是治理决策，属于网关的职责，不属于 Agent。
+
+真模型分支只读环境变量（铁律 6：密钥不进任何文件、不进 evidence）：
+``MAOS_LLM_BASE_URL`` / ``MAOS_LLM_API_KEY`` / ``MAOS_LLM_MODEL`` /
+``MAOS_LLM_TIMEOUT``（默认 120s）。三个必填项缺任何一个都降级回 ScriptedModelClient，
+**不发起任何网络请求** —— 无 key 的机器上跑测试与场景必须是确定性的。
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+
+log = logging.getLogger("maos.model")
+
+ENV_BASE_URL = "MAOS_LLM_BASE_URL"
+ENV_API_KEY = "MAOS_LLM_API_KEY"
+ENV_MODEL = "MAOS_LLM_MODEL"
+ENV_TIMEOUT = "MAOS_LLM_TIMEOUT"
+
+DEFAULT_TIMEOUT = 120.0
 
 
 class Tier:
@@ -61,17 +80,122 @@ class HigressModelClient(ModelClient):
         raise NotImplementedError("Track B：接入 Higress 时实现")
 
 
+def _scrub(text: str, secret: str) -> str:
+    """抹掉可能混进异常文本的 api key（铁律 6：密钥不许出现在任何输出里）。"""
+    return text.replace(secret, "***") if secret else text
+
+
+class GatewayModelClient(ModelClient):
+    """OpenAI 兼容协议的真模型客户端（POST ``{base_url}/chat/completions``）。
+
+    只用标准库 urllib —— 这一层不值得为它引第三方依赖（改依赖要先问人）。
+    tier 不参与选模型：模型由 ``MAOS_LLM_MODEL`` 指定，tier 只作为路由 header 交给
+    网关，「tier -> 具体模型」是治理决策，属于网关，不属于 Agent（见模块 docstring）。
+
+    api key 存在单下划线属性里，且 ``__repr__`` 不含它：异常、日志、pytest 的
+    对象打印都不该把它带出去。所有出网异常都 ``from None`` 掐断链，
+    避免底层 traceback 把 Authorization 头顺出来。
+    """
+
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 timeout: float = DEFAULT_TIMEOUT) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+        self._api_key = api_key
+
+    def __repr__(self) -> str:
+        return f"GatewayModelClient(base_url={self.base_url!r}, model={self.model!r})"
+
+    def complete(self, *, system: str, user: str, tier: str) -> ModelResponse:
+        body = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "temperature": 0,       # 演示要可复现，不要采样随机性
+        }, ensure_ascii=False).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions", data=body, method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._api_key}",
+                "X-MAOS-Tier": tier,
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:200]
+            raise RuntimeError(
+                f"模型网关返回 HTTP {exc.code}：{_scrub(detail, self._api_key)}") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(
+                f"模型网关不可达：{_scrub(str(exc), self._api_key)}") from None
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"模型网关响应不是合法 JSON：{exc}") from None
+
+        try:
+            choice = data["choices"][0]
+            text = choice["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            raise RuntimeError("模型网关响应不符合 OpenAI 兼容协议：缺 choices[0].message.content") from None
+
+        usage = data.get("usage") or {}
+        return ModelResponse(
+            text=text or "",
+            tokens_in=int(usage.get("prompt_tokens") or 0),
+            tokens_out=int(usage.get("completion_tokens") or 0),
+            model=str(data.get("model") or self.model),
+            meta={"tier": tier, "finish_reason": choice.get("finish_reason", "")},
+        )
+
+
+def _timeout_from_env() -> float:
+    """读 MAOS_LLM_TIMEOUT；非数字或非正数一律回退默认值，不让配置笔误变成挂死。"""
+    raw = (os.environ.get(ENV_TIMEOUT) or "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("%s=%r 不是数字，回退默认 %.0fs", ENV_TIMEOUT, raw, DEFAULT_TIMEOUT)
+        return DEFAULT_TIMEOUT
+    if value <= 0:
+        log.warning("%s=%r 非正数，回退默认 %.0fs", ENV_TIMEOUT, raw, DEFAULT_TIMEOUT)
+        return DEFAULT_TIMEOUT
+    return value
+
+
 def select_model_client(script: dict[str, str] | None = None, *,
                         force_scripted: bool = False) -> ModelClient:
     """选择模型客户端 —— 上层唯一的构造入口，签名与语义冻结（A-12）。
 
-    **Task-0 版恒返 ScriptedModelClient**：真模型分支由 Task-A 填，
-    读这四个环境变量（只读 env，禁止写进任何文件）：
-    ``MAOS_LLM_BASE_URL`` / ``MAOS_LLM_API_KEY`` / ``MAOS_LLM_MODEL`` /
-    ``MAOS_LLM_TIMEOUT``（默认 120s）。异常与日志里禁止回显 api key。
+    force_scripted=True 恒返 ScriptedModelClient(script)，一行网络都不走 ——
+    场景 5 与全部测试必须显式传它，否则在配了 key 的机器上会开始打真网络。
 
-    force_scripted=True 表示「无论环境如何都要确定性输出」——场景 5 与全部测试
-    必须显式传它。现在两条分支还没分叉，所以它暂时不改变行为；等 Task-A 填完
-    真模型分支，这些调用点一行都不用改就仍然走脚本模型。
+    未强制时按环境变量决定：``MAOS_LLM_BASE_URL`` / ``MAOS_LLM_API_KEY`` /
+    ``MAOS_LLM_MODEL`` 三个都非空才构造 GatewayModelClient；缺任何一个都降级回
+    ScriptedModelClient 并只记录**缺失的变量名**（铁律 6：值绝不进日志）。
+    ``MAOS_LLM_TIMEOUT`` 可选，默认 120s。
     """
-    return ScriptedModelClient(script)
+    if force_scripted:
+        return ScriptedModelClient(script)
+
+    env = {
+        ENV_BASE_URL: (os.environ.get(ENV_BASE_URL) or "").strip(),
+        ENV_API_KEY: (os.environ.get(ENV_API_KEY) or "").strip(),
+        ENV_MODEL: (os.environ.get(ENV_MODEL) or "").strip(),
+    }
+    missing = [name for name, value in env.items() if not value]
+    if missing:
+        log.info("未配置 %s，降级为确定性 ScriptedModelClient（不发起任何网络请求）",
+                 "/".join(missing))
+        return ScriptedModelClient(script)
+
+    log.info("启用真模型：base_url=%s model=%s", env[ENV_BASE_URL], env[ENV_MODEL])
+    return GatewayModelClient(
+        base_url=env[ENV_BASE_URL], api_key=env[ENV_API_KEY],
+        model=env[ENV_MODEL], timeout=_timeout_from_env(),
+    )

@@ -211,10 +211,13 @@ _PROBE_IDENTITY = AgentIdentity(
 
 
 def test_unregistered_skill_returns_soft_failure():
+    # 哨兵必须始终查不到。哪天真有人实现了 probe.never-implemented，下面就变成一次
+    # **真调用**，而断言照样绿 —— 本测试从此静默失效，软兜底这条路再没人把守。
+    # 所以把「哨兵未注册」本身也钉成断言：失效要当场变红，不要等到出事。
     assert registry.get("probe.never-implemented") is None, (
-        "哨兵名被谁实现了 —— 这条闸就不再走「未注册」分支，下面几条断言变红时"
-        "原因会指向别处。换一个没人会实现的名字，别把断言改绿了事"
+        "probe.never-implemented 被注册了：它是永不实现的哨兵，请给那个 skill 改名"
     )
+
     inv = SkillInvoker(_PROBE_IDENTITY, None)
     res = inv.invoke("probe.never-implemented", {})   # 在白名单内，但没人实现
     assert res.status == "failed"
@@ -320,10 +323,10 @@ def test_select_model_client_signature_is_frozen(monkeypatch):
     force_scripted=True 必须仍然拿到 ScriptedModelClient，否则全部测试与场景 5
     会在无 key 的机器上开始打真网络。改坏了这里没有第二处会变红。
 
-    先摘掉三个 ``MAOS_LLM_*``：真模型分支落地后，无参 ``select_model_client()``
-    在**配了 key 的机器**（演示机就是）会拿到真客户端，这条当场变红，而红的原因
-    与它要守的签名冻结毫无关系。摘的是环境不是语义 —— ``force_scripted=True``
-    那条断言原样不动，它守的才是「无论环境如何都要确定性输出」。
+    先摘掉三个 MAOS_LLM_*：真模型分支落地后，**不带 force_scripted** 的那次调用
+    取决于环境变量，配齐 key 的机器（演示机就是）会拿到 GatewayModelClient，
+    下面的 isinstance 就红了 —— 红的原因与本测试要守的签名冻结毫无关系。
+    这里摘的是环境，不是语义：force_scripted=True 那条断言原样还在。
     """
     for var in ("MAOS_LLM_BASE_URL", "MAOS_LLM_API_KEY", "MAOS_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)

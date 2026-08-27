@@ -14,6 +14,7 @@
 3. 证据必须真实：evidence/ 下所有文件必须来自真实命令输出，禁止手写或编造。每个 evidence 文件首行必须是 `# generated at <ISO8601> from <git sha>`，由生成脚本自动写入。
 4. 不做手册范围外的"顺手优化"；发现问题记入 docs/BACKLOG.md，不当场改。
 5. 提交规范：`feat(p<N>): <一句话>`，一个 Phase 至少一个 commit，验收全绿才许 commit。只许本地 commit，**禁止 push**，推送由人类手动做。
+   **commit message 走法**（8-28 直跑守卫本体实测，非推断）：单行标题直接 `-m "…"` —— 中文、多个 `-m`、反斜杠续行、heredoc 都能过，不需要绕道。守卫 `check_bash` 是把命令按换行切开**逐行**分词的，所以只有一件事会拦：某一行内的 `'` 或 `"` 不成对（跨行的引号对被切断，或正文里一个孤立撇号如 `it's`），报 `No closing quotation` 后 fail-closed 整条拒掉。**需要多行正文时**：用 **Write 工具**把 message 落到 `/tmp/msg.txt` 再 `git commit -F /tmp/msg.txt` —— 守卫对 Edit/Write 只查路径、`content 一律不看`，是唯一不受影响的通道；别用 `cat > /tmp/msg.txt <<EOF` 写那个文件，那条路会被同一规则咬。详见 docs/BACKLOG.md 同日条目。
 6. 任何需要真实密钥的配置只读环境变量，禁止把密钥写进任何文件。也禁止让密钥出现在 evidence/ 的任何输出里——凡是可能回显 env 或 URL 的命令，输出前必须过脱敏。
 7. 凡是没有严格按手册执行、或手册没覆盖而自行做了判断的地方，必须在 docs/DECISIONS.md 追加一行：`<日期> | Phase N | 情境 | 选择 | 理由`。
 

@@ -14,14 +14,18 @@ import fnmatch, json, os, posixpath, re, shlex, sys
 PROT_PATHS = [
     "maos/contracts/events.py",
     "maos/contracts/states.py",
+    "docs/parallel/contracts.md",
+    "maos/artifacts.py",
     ".contracts.lock",
     "scripts/guard_bash.py",
     "scripts/relock_contracts.py",
     ".claude/settings.json",
     ".claude/settings.local.json",
 ]
-# 契约文件允许读，其余受保护路径连读都不许
-READ_OK = {"maos/contracts/events.py", "maos/contracts/states.py"}
+# 契约文件允许读，其余受保护路径连读都不许。
+# contracts.md 与 artifacts.py 同属契约面：五轨执行器要照着它们写代码，必须读得到。
+READ_OK = {"maos/contracts/events.py", "maos/contracts/states.py",
+           "docs/parallel/contracts.md", "maos/artifacts.py"}
 # 不会重名的 basename，覆盖 `cd scripts && python3 relock_contracts.py` 这类相对调用。
 # events.py / states.py 是通用名，故意不收，免得误伤别处的同名文件。
 BARE_MATCH = {"guard_bash.py", "relock_contracts.py", ".contracts.lock"}

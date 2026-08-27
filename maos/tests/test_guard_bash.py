@@ -131,6 +131,36 @@ def test_read_contract_allowed(path):
     assert proc.returncode == ALLOW, f"契约 Read 被误拦：{path}\n{proc.stderr!r}"
 
 
+# ------------------- 3.5 收口保护面：契约正文 + artifact 契约（写拦 / 读放行）
+
+def test_contract_docs_and_artifacts_are_write_blocked_read_allowed():
+    """2026-08-27 收口：docs/parallel/contracts.md 与 maos/artifacts.py 是五轨照抄的
+    事实源，必须冻结；但执行器要读它们写代码，所以进 READ_OK —— 写拦、读放行。
+    """
+    for path in ("docs/parallel/contracts.md", "maos/artifacts.py"):
+        for payload, why in (
+            ({"tool_name": "Write", "tool_input": {
+                "file_path": path, "content": "x"}}, "Write"),
+            ({"tool_name": "Edit", "tool_input": {
+                "file_path": path, "old_string": "a", "new_string": "b"}}, "Edit"),
+            (bash("sed -i '' 's/a/b/' %s" % path), "sed -i"),
+            (bash("printf x > %s" % path), "重定向覆写"),
+        ):
+            proc = run_guard(payload)
+            assert proc.returncode == BLOCK, (
+                "%s %s 没被拦住：stderr=%r" % (why, path, proc.stderr))
+
+        for payload, why in (
+            ({"tool_name": "Read", "tool_input": {"file_path": path}}, "Read"),
+            ({"tool_name": "Read", "tool_input": {
+                "file_path": str(ROOT / path)}}, "Read 绝对路径"),
+            (bash("cat %s" % path), "cat"),
+        ):
+            proc = run_guard(payload)
+            assert proc.returncode == ALLOW, (
+                "%s %s 被误拦：stderr=%r" % (why, path, proc.stderr))
+
+
 # ------------------------- 4. 自我保护 + 受保护面的写入 / 越权读取仍被拦
 
 PROTECTED_TOOLS = [

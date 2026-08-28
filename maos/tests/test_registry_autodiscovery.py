@@ -52,18 +52,59 @@ class ProbeSkill(Skill):
 
 
 @pytest.fixture
-def probe_module():
-    """往 builtin/ 投一个新 skill 文件；退出时连模块缓存和注册表一起清干净。"""
-    path = BUILTIN_DIR / f"{PROBE_NAME}.py"
+def builtin_probe_dir(tmp_path, monkeypatch):
+    """给 builtin 包临时挂一个额外的搜索目录 —— 探针文件投这里，不碰真源码树。
+
+    为什么不再直接往 maos/skills/builtin/ 写文件：pytest 被 Ctrl-C / OOM / CI 超时
+    杀掉时 finally 跑不到，残留的 probe_*.py 会被 builtin/__init__.py 末尾那句模块级
+    discover() 自动注册，下一次全量测试就在 :74 那条断言上假红 —— 而红的原因与本次
+    真实改动毫无关系，排查方向完全错。（实测复现过：残留一个文件 → 1 failed / 105 passed。）
+
+    包的 __path__ 是个 list，pkgutil.iter_modules 与子模块 import 都按它找模块，
+    所以追加一个 tmp_path 目录就够 discover() 扫到探针，且残留随 tmp_path 一起被回收。
+    """
+    probe_dir = tmp_path / "builtin_probe"
+    probe_dir.mkdir()
+    # 换成新 list 而不是原地 append：monkeypatch 退出时整体还原，
+    # 测试中途抛异常也不会把额外路径留在包对象上污染后续测试。
+    monkeypatch.setattr(builtin, "__path__", [*builtin.__path__, str(probe_dir)])
+
+    # 把 registry._discovered 复位成 False，让 :74 那条断言**每次**都真的走一遍
+    # get() 的自动发现分支，而不是靠「恰好跑在别的测试后面、标志已被置位」的运气
+    # （原来它绿不绿取决于测试执行顺序，这是隐性的）。
+    #
+    # 复位之后它仍然绿，靠的是 _discover_builtin() 用的是 `import maos.skills.builtin`
+    # 而 sys.modules 里已有缓存 —— 那次 import 是空操作，不重扫目录。
+    # 这层依赖是承重的，别当它是巧合：谁把 registry.py 里那句 import 改成
+    # builtin.discover()（该文件第 47-48 行明令禁止），这里就会扫到探针并注册，
+    # :74 当场变红。那正是要的效果 —— 这条断言同时也是那条禁令的守卫。
+    monkeypatch.setattr(registry, "_discovered", False)
+    return probe_dir
+
+
+@pytest.fixture
+def probe_module(builtin_probe_dir):
+    """往临时 builtin 搜索目录投一个新 skill 文件；退出时把注册表和模块缓存清干净。
+
+    不再需要删文件、清 __pycache__：两者都落在 tmp_path 里，由 pytest 负责回收。
+    仍然要手工清的是**进程内**状态 —— sys.modules 与 SKILL_REGISTRY 跨测试共享。
+    """
+    # 进入前先清一次，不只是退出时清。把探针挪进 tmp_path 解决了「我们自己制造残留」，
+    # 但解决不了「环境里本来就有残留」：真源码树里若躺着一个旧的 probe_*.py（旧分支
+    # 带进来的、或本次改动之前被 Ctrl-C 杀掉留下的），builtin/__init__.py 末尾那句
+    # 模块级 discover() 在 import 阶段就把它注册了 —— 于是 :74 拿到的是它，断言照样红，
+    # 而报错信息「投放后、discover 前不应已注册」会把人引向完全错误的方向。
+    # 测试对环境该是免疫的：起跑线自己划，不继承。
+    sys.modules.pop(f"maos.skills.builtin.{PROBE_NAME}", None)
+    SKILL_REGISTRY.pop(PROBE_SKILL, None)
+
+    path = builtin_probe_dir / f"{PROBE_NAME}.py"
     path.write_text(PROBE_SOURCE, encoding="utf-8")
     try:
         yield path
     finally:
-        path.unlink(missing_ok=True)
         sys.modules.pop(f"maos.skills.builtin.{PROBE_NAME}", None)
         SKILL_REGISTRY.pop(PROBE_SKILL, None)
-        for stale in (BUILTIN_DIR / "__pycache__").glob(f"{PROBE_NAME}*"):
-            stale.unlink(missing_ok=True)
 
 
 # --- C-1 builtin 动态发现 --------------------------------------------------
@@ -82,17 +123,32 @@ def test_builtin_discovers_new_skill_without_touching_init(probe_module):
 
 
 def test_discover_is_idempotent(probe_module):
-    assert builtin.discover() == builtin.discover()
+    """幂等不只是「两次返回的模块名列表相同」—— 注册表状态也必须一字不差。
+
+    只比返回值挡不住真正会出事的两种走样，而它们都是静默的：
+    两次调用之间把 SKILL_REGISTRY[PROBE_SKILL] 换成了另一个类对象（同名不同物，
+    已经持有旧引用的调用方行为开始漂移），或者多注册出一个版本（get() 默认取最高版，
+    于是悄悄改派到另一个实现）。这两种情况下原来那条断言照样绿。
+    """
+    first = builtin.discover()
+    snapshot = dict(SKILL_REGISTRY[PROBE_SKILL])
+
+    second = builtin.discover()
+
+    assert first == second, "两次 discover() 的模块名列表应一致"
+    assert dict(SKILL_REGISTRY[PROBE_SKILL]) == snapshot, (
+        "discover() 幂等：版本集合、以及每个版本对应的类对象，都必须原样不变"
+    )
 
 
-def test_private_modules_are_skipped():
+def test_private_modules_are_skipped(builtin_probe_dir):
     """下划线开头视为私有、不发现（C-1 补充约定）。
 
-    这条不是风格洁癖：上面那个 probe fixture 之所以敢往 builtin/ 里扔文件，
+    这条不是风格洁癖：上面那个 probe fixture 之所以敢往 builtin 搜索路径里扔文件，
     靠的就是「不叫下划线就会被发现、叫下划线就不会」这个二分。
     约定只写在 PROBE_NAME 的行内注释里没有把守，改坏了要到别人投放 skill 时才发现。
     """
-    path = BUILTIN_DIR / "_private_probe.py"
+    path = builtin_probe_dir / "_private_probe.py"
     path.write_text("SHOULD_NOT_BE_DISCOVERED = True\n", encoding="utf-8")
     try:
         found = builtin.discover()
@@ -103,11 +159,10 @@ def test_private_modules_are_skipped():
             "import 副作用（注册、建连接）已经跑完了"
         )
     finally:
-        path.unlink(missing_ok=True)
+        # 只清进程内状态。原来这里还要删文件、清 __pycache__、再补跑一次
+        # discover() 把真源码树的状态复原 —— 探针挪进 tmp_path 之后，
+        # 真源码树自始至终没被动过，那三步都不再需要。
         sys.modules.pop("maos.skills.builtin._private_probe", None)
-        for stale in (BUILTIN_DIR / "__pycache__").glob("_private_probe*"):
-            stale.unlink(missing_ok=True)
-        builtin.discover()
 
 
 # --- C-2 AGENT_POOL 注册口径 -----------------------------------------------
@@ -134,12 +189,26 @@ def test_agent_pool_does_not_depend_on_main_import_order():
         "assert 'maos.main' not in sys.modules, 'maos.main 被意外 import，本测试前提不成立';"
         "print(sorted(AGENT_POOL))"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # 没有 timeout= 时，配合 capture_output=True，子进程一挂就是**静默卡死**：
+        # 全量测试既没有输出、也不会超时、更拿不到 stderr，人只能看着它停在这里。
+        # 转成带诊断的失败，别让它裸抛一个不含上下文的 TimeoutExpired。
+        captured = []
+        for label, raw in (("stdout", exc.stdout), ("stderr", exc.stderr)):
+            text = raw.decode(errors="replace") if isinstance(raw, bytes) else (raw or "")
+            captured.append(f"{label}:\n{text}")
+        pytest.fail(
+            f"子进程 {exc.timeout}s 未退出，已被杀掉（包级自动发现可能死锁或卡在 import）。\n"
+            + "\n".join(captured)
+        )
 
     assert proc.returncode == 0, f"子进程失败：\n{proc.stderr}"
     assert "coding" in proc.stdout, f"子进程未发现 coding：{proc.stdout!r}"
@@ -211,10 +280,13 @@ _PROBE_IDENTITY = AgentIdentity(
 
 
 def test_unregistered_skill_returns_soft_failure():
+    # 哨兵必须始终查不到。哪天真有人实现了 probe.never-implemented，下面就变成一次
+    # **真调用**，而断言照样绿 —— 本测试从此静默失效，软兜底这条路再没人把守。
+    # 所以把「哨兵未注册」本身也钉成断言：失效要当场变红，不要等到出事。
     assert registry.get("probe.never-implemented") is None, (
-        "哨兵名被谁实现了 —— 这条闸就不再走「未注册」分支，下面几条断言变红时"
-        "原因会指向别处。换一个没人会实现的名字，别把断言改绿了事"
+        "probe.never-implemented 被注册了：它是永不实现的哨兵，请给那个 skill 改名"
     )
+
     inv = SkillInvoker(_PROBE_IDENTITY, None)
     res = inv.invoke("probe.never-implemented", {})   # 在白名单内，但没人实现
     assert res.status == "failed"
@@ -320,10 +392,10 @@ def test_select_model_client_signature_is_frozen(monkeypatch):
     force_scripted=True 必须仍然拿到 ScriptedModelClient，否则全部测试与场景 5
     会在无 key 的机器上开始打真网络。改坏了这里没有第二处会变红。
 
-    先摘掉三个 ``MAOS_LLM_*``：真模型分支落地后，无参 ``select_model_client()``
-    在**配了 key 的机器**（演示机就是）会拿到真客户端，这条当场变红，而红的原因
-    与它要守的签名冻结毫无关系。摘的是环境不是语义 —— ``force_scripted=True``
-    那条断言原样不动，它守的才是「无论环境如何都要确定性输出」。
+    先摘掉三个 MAOS_LLM_*：真模型分支落地后，**不带 force_scripted** 的那次调用
+    取决于环境变量，配齐 key 的机器（演示机就是）会拿到 GatewayModelClient，
+    下面的 isinstance 就红了 —— 红的原因与本测试要守的签名冻结毫无关系。
+    这里摘的是环境，不是语义：force_scripted=True 那条断言原样还在。
     """
     for var in ("MAOS_LLM_BASE_URL", "MAOS_LLM_API_KEY", "MAOS_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)

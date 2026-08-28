@@ -38,6 +38,7 @@
 | 2026-08-28 | P0 | 两次 commit 撞 `No closing quotation`，Task-A 报告推断为「shlex 解析器吃不下续行/heredoc」，并把「本仓库中文长 commit message 基本都得绕道写文件」交由主线决定是否定成规程；手册未覆盖守卫的解析边界 | 不采纳「一律 -F」。先直跑 `guard_bash.py` 本体（10 个用例）定出真边界，再在 common.md 铁律 5 下附**窄规程**：单行标题直接 `-m`，仅在需要多行正文时用 Write 工具落文件再 `git commit -F`。同时把 BACKLOG 新增条目的归因按实测改写，而非照抄报告原述 | 原推断不成立：反斜杠续行在分词前已被 `raw.replace` 折平，heredoc 正文只要引号成对即放行，中文与该错误完全无关。真实边界是 `check_bash` 把命令按换行切开后**逐行** `shlex`，任一行内 `'` 或 `"` 不成对即 fail-closed。「一律 -F」是按错误归因开的药：单行中文标题本就能过，为它每次多造一个临时文件是净亏，且会让后续六个 Phase 都付这笔成本。另补报告未覆盖的一条：`cat > msg.txt <<EOF` 写文件会被同一规则咬，改成写文件并不能绕开——唯一免疫通道是 Write 工具（守卫对 Edit/Write 只查路径，`content 一律不看`）。commit 前缀取 p0 而非人类拟的 p1：`p<N>` 是 Phase 号不是优先级，本条属守卫/全局约定面，与 3e7152b、fe6cfff、aef679a 同族 |
 | 2026-08-28 | P0 | 合并 track-a 的两处冲突取舍。①`docs/phases/common.md`：track-a 于 00:37:34 落 `d4c047a` 把 commit message 走法写进铁律 5 同一锚点，主干 00:41 落 `d2b320f` 写同一条；②`maos/tests/test_registry_autodiscovery.py`：主干 `1fb612a` 已吸收 track-a 的两处测试增量，track-a 另在 `4a29131` 自留一版。`git merge-tree` 预演确认只有这两处冲突 | 两处**都取主干版**。不要求 track-a revert，其分支历史原样保留，主干不改他轨。已跨会话告知 track-a 侧 | 同一条理由覆盖两处：track-a 那两版的正文都复述了主干已证伪的技术判断。①`d4c047a` 标题写「禁 heredoc」、正文称「heredoc / 跨行引号的 Bash 写法」一律不行，而直跑守卫本体实测引号成对的 heredoc 放行（track-a 侧 `4a29131` 本身即用 `git commit -F -` heredoc 提交成功，是一次真实反证样本）；②track-a 版注释称哨兵被实现会「断言照样绿、静默失效」，该说法在**当前**断言下不成立，但兜住它的不是 status 那条：哨兵若被实现且调用成功，`res.status == "failed"` 变红；若被实现且调用失败，status 照样过，真正变红的是 `res.error == "skill_not_found:probe.never-implemented"` 这条**精确等值**断言 —— 该字面量只在 `registry.get() is None` 的早退路径产生（已核 invoker.py:73），哨兵一旦实现该路径就不再走，error 不可能等于它。据此留一条前瞻警告：**若将来有人把这条放宽成 `"skill_not_found" in res.error` 或干脆删掉，d4c047a 注释描述的静默失效路径就会真的出现**，那时哨兵自检断言是唯一不依赖下游断言强度的把守。主干 1fb612a 的 commit body 与本行初稿都只写了 status 一条，同样不够精确；该 commit 已入库四条之前，不回改历史，精度以本行为准（本条由 track-a 侧独立核算断言链后指出，主干复核 invoker.py 确认成立）。②的冲突仅限注释与 docstring，断言与代码两边完全一致，取任一版都不影响测试行为，故按正确性取主干版。另附白名单审计（应 track-a 侧提醒，因该轨不止一个写入者）：三个 commit 中 `f2644ef`（6 文件）与 `4a29131`（3 文件）均在 `maos/**` 与 `docs/decisions/task-a.md` 之内，仅 `d4c047a` 越界改主干共有面 |
 | 2026-08-28 | P1 | `select_model_client` 全仓零生产调用点，Task-A 新增的真模型分支在任何运行路径上不可达（`flows/common.py:57` 在 `model=None` 时直构 `ScriptedModelClient`，演示机配齐 `MAOS_LLM_*` 也静默走 Scripted，且无任何测试会因此变红）。评审 report-A/B/C 三份独立得出该事实，且**三份给的修法一致是「`build()` 改调 `select_model_client`」** | 接线走**调用方注入**（`maos/flows/scenario_1.py` 传 `model=select_model_client(script)`），`build()` 零改动。不采纳三份报告的修法 | 依据 C-3 原文同一句里的「传入 model 实例则原样注入」—— 该注入口本就是为场景 2 的 FlakyModel 留的，真模型走同一个口子即可，于是 `build()`、C-3、本表 2026-08-27「build() 缺省模型的构造路径」一行都不用改；报告那条修法则要改 `build()` 缺省分支，直接撞 C-3 冻结面与该已拍板项，而**三份报告都没有引用这两处**。接线范围只取场景 1，依据 `ORCHESTRATION.md:88` 验收「有 key 场景 1 真模型通」与其验证命令 `--scenario 1`；场景 3/4 保持 `model=None` 即自动确定性，场景 5 是占位不构造 model，均不动；测试不 import 任何 scenario（只 import `build`），故 A-12「全部测试须 force_scripted」不受影响。实测：无 env 106 passed + 四场景退出码 0；配齐假 env 后场景 1 栈顶落 `client.py:134` GatewayModelClient 报网关不可达（接线前该路径永不可达）、key 明文 0 次，全量测试仍 106 passed。代码见 `db20e6d`（分支 `fix/wiring`，基线 `6f6c931`）。三份报告已在各自顶部加 CORRECTION 行指向本条（`review/` 被 `.git/info/exclude` 排除、未入库，故该改动不在任何 commit 内） |
+| 2026-08-28 | P1 | builtin 动态发现的触发点挂在 `maos/agents/coding.py` 的 `_ensure_builtin_skills()`，只在 `CodingAgent.run()` 里调用；任何不经过该 Agent 的调用方（测试、CLI、别的轨）直接 `registry.get()` 一律拿到 `None`，且这个 `None` 与「该 skill 真没实现」在返回值上不可区分。手册未覆盖发现触发点归谁 | 触发点下沉进 `maos/skills/registry.py` 的 `get()`：首次未命中时 `import maos.skills.builtin` 再重查一次，模块级 `_discovered` 标志保证无论成败只尝试一次；`coding.py` 的 `_ensure_builtin_skills()` 及其在 `run()` 里的调用点一并删除，不留第二个触发点。`registry.py` 不在 Task-A 白名单内，人类当场逐文件放行该一个文件 | 发现是注册表自己的事，不是某个 Agent 的事——挂在 Agent 上等于把「skill 取不取得到」绑在调用路径上，而 `get()` 的调用方并不知道自己需要先走一趟 CodingAgent。原注释所述的成环理由已过时且实测不存在：`registry.py` 全文仅一行外部 import（`from maos.skills.contract import Skill`），`builtin/` 下 `req_normalize.py` 与 `code_repo_patch.py` 只 import `maos.model.client` / `maos.skills.contract` / `maos.skills.registry`，均不碰 `maos.agents`，故连函数带注释一并删除而非留着改写。实现上刻意用 `import` 而非 `builtin.discover()`：前者走 `sys.modules` 缓存、包已装载时是空操作，后者每次重扫目录，会把 `test_builtin_discovers_new_skill_without_touching_init` 里「投放后、discover 前不应已注册」那条断言打红——该测试模块顶部已 `from maos.skills import builtin`，故本改动对它是空操作，实测仍绿。`_discovered` 先置位再 import：装载失败只吞一次并 `log.warning`（带 `exc_info`），不改抛，因为 `get()` 的「取不到返回 None」正是 invoker 软兜底成 `failed` 的依据，改抛会掀掉 A-5 那条路径。`names()` / `versions()` 未加同样兜底，按铁律 4 不顺手扩，在此记一笔备查 |
 
 ## 附：工具行为备忘（2026-08-27 录入，非判断记录）
 
@@ -45,3 +46,86 @@
 
 - Claude Code 的文件权限检查只认 `Edit(path)`；`Write(...)` / `NotebookEdit(...)` 形式会被解析后丢弃并在启动时告警。`Edit()` 一条即覆盖所有写文件工具，deny 段里成对写的 `Write()` 属冗余。
 - hook command 用 `$CLAUDE_PROJECT_DIR` 拼路径，会话必须从仓库根启动，否则守卫不挂载（本次上一轮从 `~` 启动即此原因）。
+
+## fix-1
+
+受保护路径判定 + 补丁集出参收敛（`maos/skills/builtin/code_repo_patch.py`、`maos/tests/test_contracts.py`）。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | fix-1 | 派单只说「路径规范化后按 `/` 分段匹配」，没定口径：大小写要不要归一、`./` 前缀怎么算、`tests` 是只挡仓库根还是任意层级 | 四项统一按**任意层级的分段相等**判定；规范化做四件事：反斜杠→斜杠、`posixpath.normpath` 折叠 `.`/`..`/重复斜杠、滤掉空段与残留 `..` 段（含前导斜杠）、`casefold` 归一大小写 | ①层级取任意层：本仓库测试就在 `maos/tests/`，`tests` 只挡仓库根等于这条规则对本仓库完全失效，而它挡的恰恰是「改测试让测试通过」；`secrets`/`.github`/`infra` 同理 —— `app/secrets/prod.env` 不会因为不在仓库根就不是密钥。②大小写归一：本机 APFS 默认大小写不敏感，`Secrets/prod.env` 与 `secrets/prod.env` 在磁盘上是同一个文件，按大小写敏感判定等于留一个一字之差的绕过口。③`./`、`..`、前导斜杠、反斜杠四种写法指向同一个文件，少归一哪一种哪一种就是绕过口 —— 其中前导斜杠最说不过去：声明里写的就是 `/infra`，模型照抄一遍反而放行。④分段**相等**而非前缀或子串：`infrastructure` 含 `infra`、`contests` 含 `tests`，误伤要从判定式上消掉，不是靠往清单里加例外 |
+| 2026-08-28 | fix-1 | 常量语义从「路径前缀」变成「目录名」，旧名 `PROTECTED_PATHS` 会继续误导 —— 这次 bug 的根因正是清单按前缀写（`"/infra"`、`"tests/"`）、判定式却当子串用 | 改名 `PROTECTED_PATHS` → `PROTECTED_SEGMENTS`，值去掉全部斜杠，并在清单注释里写明「存目录名不存前缀」 | 名字不改，下一个人还会按「路径」往里加条目（再写一个 `"/deploy"`），而分段匹配下带斜杠的条目永远匹配不上 —— 不报错、只静默放行，与本次三条漏拦是同一个失效形态，且同样能一直绿着。改名不属铁律 4 的「顺手优化」：语义是被本轮修法改掉的，名字必须跟着走。代价是 `docs/phases/phase-2.md:28` 的「沿用 PROTECTED_PATHS」成了悬空引用，已记 BACKLOG `## fix-1` |
+| 2026-08-28 | fix-1 | `contract.security_boundary` 原文写「补丁路径**白名单**」，实现一直是拒绝清单（黑名单）；派单要求把声明与实现对齐 | 改成「受保护路径判定：补丁路径规范化后按 `/` 分段，任一段命中 `PROTECTED_SEGMENTS`（infra / .github / secrets / tests，任意层级、大小写不敏感）立即抛 `ProtectedPathViolation`」；SYSTEM prompt 同步改成「禁止触碰任意层级下名为 infra、.github、secrets、tests 的目录」 | Agent 不读 skill 实现、只读 contract 决定要不要调和怎么兜底（`skills/contract.py` 抬头），把黑名单说成白名单，读契约的人会以为「没列进去的就不许改」，与真实行为正好相反。顺带把层级与大小写口径写进声明本身 —— 下次要改判定式，先得改这句话，声明与实现不容易再各漂各的 |
+| 2026-08-28 | fix-1 | 派单第 3 条要求把 `setdefault` 换成显式类型收敛，但没说合法取值要不要一起校验（`self_check: {"build": "fail"}` 要不要在 skill 侧拦下） | 只收敛**类型**，不碰取值：非 dict 的 `self_check` 置 `{}`、非 str 的 `summary` 置 `""`，合法 dict 原样透传；另加一条断言 `test_valid_self_check_passes_through_untouched` 把「不许判取值」钉死 | 判 build/lint 是不是 pass 是 ReviewerGate 的活（本文件抬头原就写明），skill 抢着判会让 Gate 永远见不到失败样本、场景 2 的返工链当场断掉。但类型必须收敛 —— 非 dict 传下去 Gate 会崩在 `.get` 上，那不叫「留给 Gate 判」，那叫让 Gate 没机会判。两者边界就在「类型 vs 取值」这一刀上，容易被后人当成同一件事一起放宽，故补断言 |
+## fix-2
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | fix-2 | 派单要求给 Gate 的自检判定补行为测试，但测试落点在多轨并行下不是自由选项：全仓 grep `ReviewerGate` / `review_pending`，测试侧只命中 `test_registry_autodiscovery.py:27` 的 import 与 `:157/:163` 的 `build()` 六元组断言，Gate 目前**零行为直测** | 新建 `maos/tests/test_gate.py`，不往 `test_contracts.py` 里加。五条用例走 `gate.review_pending()` 而不是直调静态方法 `_gate_acceptance()`；用一个只记不发的 `_RecordingBus` 收 `REVIEW_VERDICT`，再按 `f["gate"] == "acceptance"` 过滤 findings | `test_contracts.py` 是 fix-1 本轮要改的文件，测试写进去两轨就从并行退化成串行。走 `review_pending()` 是因为本轮 P0 要验的正是「异常会不会从这个入口逃出去」——`flows/common.py:70` 是裸调用，直调静态方法验不到这一层。不用 `InMemoryEventBus` 是不让 `ControlPlane` 的订阅在 drain 时跟着跑状态迁移：这里测的是判定，不是状态机。按 gate 名过滤是因为同一份 artifact 会同时触发 evidence 等别的闸，不过滤就会拿别的闸的 finding 冒充 acceptance 的结果 |
+| 2026-08-28 | fix-2 | `self_check` 不是 dict（`None` / 字符串）时 `check.get(k)` 抛 `AttributeError`。两条修法：抛一个明确的契约异常让上游修，或按「没自检」降级判 finding | 降级。`isinstance` 不过就当 `{}`，与「键缺失」走同一条路径，一律判 finding；同时把判据从「只认字面 `fail`」改成「非 `pass` 即 finding」。finding 的 message 文案对「缺失」与「fail」**不作区分**，沿用原串；severity 沿用 `major`，未提 blocker | Gate 的契约是产出 findings 供 Coding Agent 消费，不是抛异常：`review_pending()` 在 `flows/common.py:70` 是裸调用，`WorkerRuntime._invoke` 的 try 只包住 `agent.run`，异常逃出去整个 plan 驱动循环当场崩，连退化成一次 rework 都做不到。不依赖上游收敛形状是因为 `code_repo_patch.py:112-113` 用的是 `setdefault`（键在则原样保留），且**畸形值在真实链路上确实到得了 Gate**——`artifacts.py::validate_artifact` 生产路径零调用方（另记 BACKLOG）。文案不分叉：分叉要改既有那条 message 串，属铁律 4 的顺手优化，且判据已统一到「非 pass」，分类信息对返工提示价值有限。severity 不提是因为提了会改四场景流转，超出本轮范围。安全边界已实测而非推断：`python3 -m pytest maos/tests -q` → 111 passed、`python3 run.py` 退出码 0；另把旧实现 monkeypatch 回去跑同一份 `run.py`，归一化随机 task/plan id 后与新实现输出 **diff 为空**；同一负控下五条新用例中该红的三条（缺失静默放行、`None` 抛 `AttributeError`、字符串抛 `AttributeError`）全红，证明测试不是空跑 |
+## fix-4
+
+2026-08-28 | P1 | 测试卫生轨（`fix/test-hygiene`，基线 `ece725a`）。派单三条发现同在
+`maos/tests/test_registry_autodiscovery.py`，白名单为该文件 + `.gitignore`。
+
+**1）`builtin.__path__` 注入方案，与 `registry._discovered` 的交互（派单点名必须留痕的一条）**
+
+情境：`probe_module` fixture 往真源码树 `maos/skills/builtin/` 写探针文件，pytest 被
+Ctrl-C / OOM / 超时杀掉时 `finally` 跑不到，残留文件会被 `builtin/__init__.py` 末尾的
+模块级 `discover()` 在 import 阶段注册，下次全量测试在 `:74` 假红。**已实测复现：
+留一个 `probe_autodiscovery_tmp.py` → `1 failed, 105 passed`，报错正是 `:74`。**
+
+选择：fixture 改用 `tmp_path` 建临时目录，`monkeypatch.setattr(builtin, "__path__", [...原有, 临时目录])`
+注入包搜索路径；探针文件落在临时目录，随 `tmp_path` 回收。同时把
+`registry._discovered` 在 fixture 里 **复位成 `False`**（不是钉成 `True`）。
+
+理由：`__path__` 是 list，`pkgutil.iter_modules` 与子模块 import 都按它找模块，追加一个
+目录即足以让 `discover()` 扫到探针，而真源码树自始至终没被动过。`_discovered` 那半边是
+本轮最容易被下一个人踩坏的地方，分三层说清：
+
+- 复位成 `False` 之后，`:74` 的 `registry.get()` **每次**都真的走一遍 `_discover_builtin()`
+  分支。原来它绿不绿取决于测试执行顺序（跑在别的测试后面时标志已被置位，那条断言退化成
+  纯字典查找），这个隐性依赖现在被消掉了。
+- 复位后它仍然绿，靠的是 `_discover_builtin()` 用的是 `import maos.skills.builtin`，
+  而 `sys.modules` 里已有缓存 —— 那次 import 是**空操作，不重扫目录**。这层依赖是承重的。
+- 正因为承重，它同时也是守卫：谁把 `registry.py:53` 那句 `import` 改成 `builtin.discover()`
+  （该文件 47-48 行明令禁止），扫描就会命中临时目录里的探针并注册，`:74` 当场变红。
+  **此结论已实测坐实**（在进程内替换 `_discover_builtin` 模拟该改动）：现状返回 `None`，
+  改成 `discover()` 返回 `ProbeSkill` 类。所以不能把 `_discovered` 钉成 `True` —— 那样省事，
+  但会把这条守卫一起关掉。
+
+**2）fixture 增加「进入前也清一次」，超出派单三条发现的范围**
+
+情境：把探针挪进 `tmp_path` 只解决了「我们自己制造残留」，解决不了「环境里本来就有残留」。
+旧分支带进来的、或本次改动之前被杀掉留下的 `probe_*.py` 仍会在 import 阶段注册，`:74` 照样红。
+选择：`probe_module` 在 setup 阶段也 `pop` 一次 `sys.modules` 与 `SKILL_REGISTRY`。
+理由：验收第 3 条要求「确认残留不再让别的测试假红」，只做 `tmp_path` 达不到这一条，只能退到
+派单给的「或至少被 `.gitignore` 挡住」。加了这七行之后两条都达成 —— **实测：带残留跑全量
+106 passed，且 `git status` 不列出残留文件**。测试对环境该是免疫的，起跑线自己划、不继承。
+
+**3）`.gitignore` 写死两个确切文件名，未按派单用 `probe_*` 通配**
+
+情境：派单写的是把 `probe_*` / `_private_probe*` 加进 `.gitignore`。
+选择：只写 `maos/skills/builtin/probe_autodiscovery_tmp.py` 与
+`maos/skills/builtin/_private_probe.py` 两行确切路径。
+理由：`builtin/` 是「投放即注册」的目录（C-1），通配会把将来某个真叫 `probe_xxx` 的 skill
+一并吞掉，而那种错是**静默**的 —— 文件在磁盘上、测试也绿，只是永远进不了版本库，换台机器
+就凭空少一个 skill。这两个名字是测试历史上唯一写过的文件名，写死即足够兜底。
+（改动已按派单要求放在最后做，前面两项先各自跑绿。）
+
+**4）范围外发现，未修，记此备查**
+
+`subprocess.TimeoutExpired` 的 `.stdout` / `.stderr` 即使 `subprocess.run(text=True)`
+也回 **bytes**（实测 `b'partial output\n'`）—— 这是 CPython 行为，不是本仓库的 bug。
+新加的超时分支已按此写了 `isinstance(raw, bytes)` 解码兜底；若照直接 f-string 拼，
+失败信息里会出现 `b'...'` 这种没法读的东西。此处只记，不外扩。
+## fix-5
+
+模型网关加固（`maos/model/client.py`，分支 `fix/client-hardening`，基线 `ece725a`）。
+另起小节而非往上表插行：五轨并行都要追加本文件，尾部追加 git 能自动合。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | P1 | 派单给了两个修法二选一：自定义 `HTTPRedirectHandler` 拒绝跨主机重定向，或干脆一律不跟随 3xx。判据本身派单也没定死（「跨主机」是只比 hostname 还是比整个 origin） | 取前者，且判据收紧为**同 origin**：`scheme` + `hostname` + `port` 三者全等才放行，其余一律拒。实现为 `_SameOriginRedirectHandler` + `GatewayModelClient.__init__` 里自建 opener（`build_opener` 见到 `HTTPRedirectHandler` 子类实例就不装默认那个），跨 origin 抛独立的公开异常 `RedirectRefused`，`complete()` 里单独给一条错误口径 | 「一律不跟随」会误伤同 origin 的纯路径跳转（补斜杠、`/v1`→`/v1/`、路径规范化），那是网关的正常行为，接真 Higress 时大概率踩到，而这类跳转不换主机、key 不出本机，拒掉零安全收益纯兼容性损失。反过来只比 hostname 又不够：同主机 `https`→`http` 降级同样是把 Authorization 明文发上线，换端口则是发给同机上的另一个服务；三元组全等是唯一不必逐条论证的判据。本规则确实会拒掉「同主机 http→https 升级」这一个良性场景，但那不是回归——能收到那个 301 就说明**第一跳已经带着 Authorization 明文出去过**，key 在那一刻就已暴露，此时报错并要求把 `MAOS_LLM_BASE_URL` 直接配成 https 终点比默默跟随更正确。抛独立类型而不复用 `HTTPError`：复用会掉进现有那条「模型网关返回 HTTP 302：\<body\>」分支，用户看到的是重定向响应的空 body，看不出发生了什么；异常文本只放 origin（`_origin` 只取 scheme/host/port，userinfo 与 path 全丢），不夹带凭据。走实例自建 opener 而不是 `install_opener`：后者是进程级副作用，会波及同进程里任何别的 urllib 调用方 |
+| 2026-08-28 | P1 | `_safe_int` 撞上非法值（网关把 `prompt_tokens` 写成 `"n/a"`）是回退 0 还是抛 | 回退 0 并 `log.warning` 点出原值；`None` / `""` 静默回退，保持原 `or 0` 的语义 | 这两行在 `complete()` 那个 try 之外，抛出去就**逃出**统一 RuntimeError 兜底与脱敏、用户拿到裸 traceback——这正是本条要修的病，改成在这里抛等于换个地方犯同一个错。且 token 计数是计量不是结果：一次已经成功返回 content 的调用，不该因为 usage 字段脏了就整体失败。但不能静默吞——计数错会一路传导到成本统计，所以非法值必须 warning；而 `None`/`""` 是「网关没给 usage」的正常情况，给它报 warning 只会把真信号淹了 |
+| 2026-08-28 | P1 | 派单第 2 条写的是「非有限值走**同一条**回退分支并 `log.warning`」，读法有二：与 `value <= 0` 合并成一个 `if`，或另起一个 `if` 各自回退 | 另起 `if not math.isfinite(value)` 分支，用自己的告警文案，不动原 `value <= 0` 那条的文案 | 「同一条回退分支」按结果理解为「同样回退到 `DEFAULT_TIMEOUT`」，这点两种写法一致。合并会改掉现存那句「非正数」告警的文案，而 `inf`/`nan` 和「配了个 -1」是两类不同的配置笔误，报同一句话反而难排查。实测覆盖到的输入不止 `inf`/`nan`：`-inf`、`Infinity`、`1e400`（`float()` 直接溢出成 `inf`）四种都走这条分支，`45` 仍原样采用 |

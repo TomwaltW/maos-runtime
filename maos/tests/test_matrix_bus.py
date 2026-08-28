@@ -32,6 +32,7 @@ from maos.agents.testing import make_test_report, seed_scripted_report
 from maos.contracts import events as E
 from maos.contracts.events import Topic
 from maos.contracts.states import PlanState, TaskState
+from maos.core.control_plane import ENV_SANDBOX_WORKDIR
 from maos.core.eventbus import EventBus, InMemoryEventBus
 from maos.flows.common import GOOD_PATCH, build, run_until_settled
 from maos.runtime.gate import HumanApprovalQueue
@@ -359,8 +360,16 @@ def test_approver_can_approve_from_room():
     assert cp.store.get_plan(plan_id)["state"] == PlanState.DONE
 
 
-def test_approver_can_reject_from_room_with_reason():
-    """合法：/reject 带原因 -> FAILED，原因落进 event_log 的 detail。"""
+def test_approver_can_reject_from_room_with_reason(tmp_path, monkeypatch):
+    """合法：/reject 带原因 -> FAILED，原因落进 event_log 的 detail。
+
+    唯一一条会真走到补偿执行器的房间用例（驳回 -> 先回滚再落 FAILED），
+    所以必须显式钉住 `MAOS_SANDBOX_WORKDIR`：不设会硬失败（缺省取仓库根已废止），
+    而本条要验的是房间审批的三件事 —— 回执、终态、原因入 event_log，不是回滚本身。
+    指向一个空临时目录即可：补丁打不上会如实记 ok=False，驳回照常推进；
+    「打得上、还原得了」由 test_governance 的真实还原用例负责。
+    """
+    monkeypatch.setenv(ENV_SANDBOX_WORKDIR, str(tmp_path))
     store, bus, cp, hq, plan_id, task_id = _blocked_plan()
     bridge = RoomApprovalBridge(hq, _live_config())
 

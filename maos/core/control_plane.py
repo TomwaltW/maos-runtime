@@ -491,6 +491,16 @@ class ControlPlane:
         ``content.get("patch_ref", {})``。兜底的后果不是报错，是补偿**静默不执行** ——
         reject 之后文件没还原，而日志一片正常，直到演示现场才发现。
         解析统一走 ``artifacts.resolve_patch_ref``，本文件不自写一行 ref 解析。
+
+        **缺 workdir 同样硬失败**，同一个口径。原先缺省取 ``"."``：Task-B 合并前
+        ``sandbox_git_apply`` 恒抛 ``NotImplementedError``，取什么都无所谓；合并后它是
+        真实现，缺省值就成了「拿补丁对**本仓库工作区**跑 ``git apply -R``」。它至今
+        没出事只是因为补丁都恰好打不上 —— 而那正是最坏的失效形态：真打上了才会知道，
+        且日志上看是一次成功的补偿。要回滚哪里必须有人明说，猜一个是不允许的。
+
+        注意与「工具没跑成」的分界：env 没设 = 配置缺失，**连试都试不了**，抛；
+        env 设了但目录不可用 = 试过了、工具如实报错，走 ``ok=False`` 落进 event_log。
+        前者没有可记的事实，后者有 —— 混为一谈会让「没人配」和「回滚失败」看起来一样。
         """
         comps = [a for a in self.store.list_artifacts(task["task_id"])
                  if a["kind"] == KIND_COMPENSATION]
@@ -512,7 +522,12 @@ class ControlPlane:
                 f"[{task['task_id']}] 补偿引用 {ref} 取不回正向补丁集 —— "
                 f"引用在而被引用物不在，数据已不一致，拒绝静默跳过")
 
-        workdir = os.environ.get(ENV_SANDBOX_WORKDIR) or "."
+        workdir = os.environ.get(ENV_SANDBOX_WORKDIR) or ""
+        if not workdir:
+            raise ValueError(
+                f"[{task['task_id']}] 补偿要回滚，但没人说该回滚到哪个工作目录 —— "
+                f"请设 {ENV_SANDBOX_WORKDIR}。缺省取 '.'（仓库根）已废止：那会拿补丁"
+                f"对本仓库工作区跑 git apply -R，且补丁恰好打不上时看起来一切正常")
         try:
             result = sandbox_git_apply(patch_art["content"], workdir, reverse=True)
         except NotImplementedError:

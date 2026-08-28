@@ -390,9 +390,8 @@ def test_reject_runs_compensation_then_fails_task(tmp_path, monkeypatch):
     与上一条互补：上一条验「打得上、还原得了」，这条验「打不上也不许谎报成功」。
     workdir 指向一个空的临时目录（不是 git 仓库），补丁必然应用失败。
 
-    **必须显式钉住 workdir**：`_execute_compensation` 缺省取 `"."`，也就是**仓库根**
-    —— 不 monkeypatch 的话这条用例会拿真补丁对本仓库跑一次 `git apply -R`。
-    当前因补丁打不上而侥幸无害，但那是运气，不是设计（已记 BACKLOG ## merge-p2）。
+    **必须显式钉住 workdir**：缺 `MAOS_SANDBOX_WORKDIR` 现在是硬失败（见下一条用例），
+    不设的话这里会在 `human_decision` 里抛 ValueError，压根走不到断言。
     """
     monkeypatch.setenv(ENV_SANDBOX_WORKDIR, str(tmp_path / "empty-not-a-repo"))
     store, bus, cp = _build()
@@ -427,6 +426,31 @@ def test_reject_runs_compensation_then_fails_task(tmp_path, monkeypatch):
     # 顺序不能倒：补偿要在状态落 FAILED 之前跑（phase-4.md:20）
     types = [e["event_type"] for e in store.list_event_log(plan_id)]
     assert types.index("CompensationExecuted") < len(types) - 1
+
+
+def test_missing_workdir_env_raises_instead_of_guessing(monkeypatch):
+    """没人说回滚到哪，就硬失败 —— 与「缺 patch_ref」「引用取不回补丁」同一口径。
+
+    这条守的是一个**已经废止的兜底**：原先缺省取 `"."`，即仓库根。Task-B 合并前
+    `sandbox_git_apply` 恒抛 `NotImplementedError`，取什么都无所谓；合并后它是真实现，
+    那个缺省值就成了「拿补丁对本仓库工作区跑 `git apply -R`」。它一直没出事，只是因为
+    演示补丁都恰好打不上 —— 而「恰好打不上」正是最坏的失效形态：真打上了才会知道，
+    且事件里记的是一次成功的补偿。
+
+    谁把缺省值加回来（无论取 `"."`、`os.getcwd()` 还是临时目录），这条立刻红。
+    """
+    monkeypatch.delenv(ENV_SANDBOX_WORKDIR, raising=False)
+    store, bus, cp = _build()
+    plan_id, task_id = _make_task(cp, effect_risk="H")
+    _submit_patch(bus, cp, plan_id, task_id, 1)
+
+    with pytest.raises(ValueError, match=ENV_SANDBOX_WORKDIR):
+        cp._execute_compensation(store.get_task(task_id), operator="人类")
+
+    # 硬失败要拦在事件之前：落一条 ok=False 会让「没人配」和「回滚失败」看起来一样
+    assert not [e for e in store.list_event_log(plan_id)
+                if e["event_type"] == "CompensationExecuted"], \
+        "配置缺失不该留下 CompensationExecuted —— 那是「试过了但失败」才有的事实"
 
 
 # ======================================================================

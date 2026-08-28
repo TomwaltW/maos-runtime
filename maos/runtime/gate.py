@@ -49,6 +49,16 @@ CODE_ARTIFACT_KINDS = frozenset({KIND_PATCH_SET, KIND_TEST_REPORT})
 # 前者是用例根本没跑起来，后者是跑起来但断言没过，两者都不是「通过」。
 FAILING_CASE_STATUSES = frozenset({"failed", "error"})
 
+# 靶场自带的隔离探针（``scenarios/fixture-repo/tests/test_isolation_probe.py``）。
+# 它们验的是沙箱那几个 docker 参数与 env 白名单，**不由模型生成、也不归模型修**。
+# junit 的 classname 是模块路径点号形式，所以前缀长这样。
+ISOLATION_PROBE_PREFIX = "tests.test_isolation_probe::"
+
+# 探针挂掉时那一条 finding 的 id。用固定字面量而不是探针用例名：Coding Agent
+# 拿 findings 逐条修，把「沙箱断网没生效」当成待修用例喂给它，它只会去改一个
+# 它读不懂的文件。这里要传的信息是「环境坏了，别改代码」，不是「这条用例红了」。
+ISOLATION_FINDING_ID = "<sandbox-isolation>"
+
 # -- 第六道闸的冻结口径（F-1）------------------------------------------------
 # 写闸的一轨与产数的一轨照同一份，谁都不许另立口径：一边按业务表查、一边按
 # artifact content 判，两轨各自都绿，合并后闸恒 blocker 或恒 pass，而症状要到
@@ -145,7 +155,10 @@ class ReviewerGate:
             tool_error 与 failed 必须分开判：把「没跑成」当成「0 条失败」放行，
             是这条链路上最容易造出的假绿；
           · 有 failed / error 用例 = **major**，逐条转成结构化 finding（带 id 与 msg，
-            Coding Agent 能直接消费），不合成一句自然语言吐槽。
+            Coding Agent 能直接消费），不合成一句自然语言吐槽；
+          · 唯一的例外是**靶场自带的隔离探针**（id 前缀 ``ISOLATION_PROBE_PREFIX``）：
+            它们验的是沙箱本身，挂了是环境失效，判 **blocker** 照样挡闸，但压成
+            一条不带用例名的 finding —— 逐条喂回去只会让模型去改它读不懂的探针。
 
         **非代码类任务**（requirement / architecture / review_note 等）：继续用
         self_check，口径与改造前一字不变 —— 「非 pass 即 finding」：
@@ -178,7 +191,28 @@ class ReviewerGate:
         out: list[dict] = []
         failing = [c for c in report.get("cases") or []
                    if isinstance(c, dict) and c.get("status") in FAILING_CASE_STATUSES]
+
+        # 隔离探针与业务用例分开走：探针挂了是**沙箱环境失效**，比一条用例挂严重
+        # 得多，所以照样 blocker 挡闸；但它不进逐条 findings —— 那些 findings 会
+        # 原样喂回 Coding Agent 的返工提示词，让模型去改靶场自带的探针，既修不好
+        # 也把注意力从真正的失败上引开。
+        probes = [c for c in failing
+                  if str(c.get("id") or "").startswith(ISOLATION_PROBE_PREFIX)]
+        if probes:
+            # 探针用例名只进日志，不进 finding：审计要看得见，模型不该看见。
+            log.error("[%s] 沙箱隔离探针未通过: %s", task["task_id"],
+                      [c.get("id") for c in probes])
+            out.append({
+                "gate": "acceptance", "severity": "blocker", "path": None,
+                "id": ISOLATION_FINDING_ID, "msg": f"{len(probes)} 条隔离探针未通过",
+                "message": f"沙箱隔离探针有 {len(probes)} 条未通过（断网 / 宿主密钥 / "
+                           f"宿主 HOME 三类之一失效）—— 这是沙箱环境故障，不是补丁缺陷。"
+                           f"本轮测试结果不可信，不放行；请修沙箱，不要改代码或用例",
+            })
+
         for case in failing:
+            if case in probes:
+                continue
             case_id = str(case.get("id") or "<未命名用例>")
             msg = str(case.get("msg") or "")
             out.append({

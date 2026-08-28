@@ -21,7 +21,7 @@ from maos.agents.coding import CodingAgent
 from maos.agents.requirement import KIND_REQUIREMENT, RequirementAgent
 from maos.agents.reviewer import ReviewerAgent
 # TestingAgent 改名导入：裸名以 Test 开头会被 pytest 当成测试类去收集并告警
-from maos.agents.testing import SKILL_VERIFY, make_test_report
+from maos.agents.testing import SKILL_VERIFY, make_test_report, seed_scripted_report
 from maos.agents.testing import TestingAgent as _TestingAgent
 from maos.artifacts import (
     KIND_ARCH_CONTRACT,
@@ -30,10 +30,16 @@ from maos.artifacts import (
     KIND_TEST_REPORT,
     validate_artifact,
 )
+from maos.contracts.events import Topic
 from maos.contracts.states import PlanState, Risk, TaskState
-from maos.flows.common import GOOD_PATCH, build, run_until_settled
-from maos.model.client import ModelResponse, ScriptedModelClient
+from maos.core.control_plane import ControlPlane
+from maos.core.eventbus import EventBus
+from maos.core.store import SqliteStore
+from maos.flows.common import BAD_PATCH, GOOD_PATCH, build, run_until_settled
+from maos.model.client import ModelResponse, ScriptedModelClient, Tier
+from maos.runtime.gate import ISOLATION_FINDING_ID, ISOLATION_PROBE_PREFIX, ReviewerGate
 from maos.skills import registry
+from maos.tools.sandbox import prepare_sandbox_workdir
 
 AGENTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "agents"
 
@@ -226,41 +232,69 @@ def test_testing_agent_soft_falls_back_without_raising():
     assert validate_artifact(KIND_TEST_REPORT, content) == [], "软兜底报告的形状也必须合契约"
 
 
-def test_tool_error_report_yields_to_scripted_report():
-    """带 tool_error 的报告**不算真报告**，脚本化兜底必须够得着。
+def test_tool_error_report_is_handed_over_instead_of_a_scripted_stand_in():
+    """假绿路径已删：沙箱没跑成时**不许**从 inputs 里换一份能过闸的报告交出去。
 
-    这是 Task-B 合并当天场景 1/2 转红的那个缺口的回归守卫：test.verify 跑不成时
-    仍返回 status=ok，若按 status 判「拿到真报告了」，inputs 里预置的 scripted_report
-    就永远取不到 —— 报告带着 tool_error 进 Gate，被正确判成 blocker，演示链路全挂。
+    这条守的是本轨存在的理由。原先 `_report_from` 有一级 `scripted_report` 回落：
+    沙箱挂了就把预置报告当成本轮证据，于是演示当天 Docker 一挂，屏幕照样全绿
+    而没有人知道。现在唯一的出口是带 tool_error 的报告，Gate 判 blocker、当场变红。
 
-    判据必须是「报告自己带没带 tool_error」，不是 res.status。
+    inputs 里**故意仍然塞一份合法的脚本化报告**：它必须被无视。
     """
-    scripted = make_test_report(
+    stand_in = make_test_report(
         passed=2, failed=0, cases=[{"id": "t::a", "status": "passed", "msg": ""}],
         summary="脚本化回归：2 过 0 挂")
     agent = _TestingAgent(ScriptedModelClient({}))
     out = agent.run(_ctx(risk_level="M", inputs={
-        "workdir": "/tmp/definitely-not-a-workdir", "scripted_report": scripted}))
+        "workdir": "/tmp/definitely-not-a-workdir", "scripted_report": stand_in}))
 
     content = out.artifacts[0]["content"]
-    assert content["tool_error"] is None, \
-        "工具没跑成时应让位给 scripted_report，而不是把 tool_error 报告交出去"
-    assert content["passed"] == 2 and content["cases"], "让位后取的应是脚本化报告的内容"
+    assert content["tool_error"], \
+        "沙箱没跑成却交出了不带 tool_error 的报告 —— 假绿回落被加回来了"
+    assert content["passed"] == 0 and content["cases"] == [], \
+        f"没跑成的报告里出现了脚本化报告的内容：{content}"
 
 
-def test_testing_agent_uses_scripted_report_and_marks_target():
-    """Scripted 演示模式：无沙箱时报告从 inputs 来，并标明验的是谁的哪一次 attempt。"""
-    scripted = make_test_report(
-        passed=1, failed=1,
-        cases=[{"id": "t::a", "status": "failed", "msg": "boom"}],
-        summary="脚本化报告")
+def test_testing_agent_produces_a_real_report_and_marks_target(tmp_path, monkeypatch):
+    """真跑一遍靶场：报告是 pytest 的产物，并标明验的是谁的哪一次 attempt。
+
+    靶场打补丁前本来就红一条（B 埋的时区 bug），所以 `failed == 1` 同时证明了
+    两件事：报告真的来自这次执行，而不是谁预置的；`target_*` 两个字段也真的
+    落在了报告上 —— Gate 靠它们把报告认领到被验任务的验收闸上。
+    """
+    monkeypatch.setenv("MAOS_SANDBOX_FORCE_SUBPROCESS", "1")
+    workdir = prepare_sandbox_workdir(str(tmp_path / "repo"))
+
     out = _TestingAgent(ScriptedModelClient({})).run(_ctx(
         risk_level="M",
-        inputs={"scripted_report": scripted, "verify_target": "t-code", "verify_attempt": 2}))
+        inputs={"workdir": workdir, "verify_target": "t-code", "verify_attempt": 2}))
 
     content = out.artifacts[0]["content"]
-    assert content["failed"] == 1 and content["tool_error"] is None
+    assert content["tool_error"] is None, content["tool_error"]
+    assert content["failed"] == 1, f"靶场打补丁前该红一条，实得 {content}"
+    assert any(c["id"].endswith("test_expired_session") and c["status"] == "failed"
+               for c in content["cases"]), f"报告里没有靶场那条真失败：{content['cases']}"
     assert content["target_task_id"] == "t-code" and content["target_attempt"] == 2
+
+
+def test_scenarios_1_and_2_carry_no_scripted_report_anymore():
+    """宣称真跑的场景不许有脚本化报告 —— 判据不是「全仓不许有」。
+
+    场景 3（审批）/ 5（补偿）不跑测试，报告在那里是前置条件不是产物，
+    `seed_scripted_report()` 函数本体与它们的调用点都必须还在：删了函数，
+    `maos/obs/trace.py` 那套「预置件无来源事件」的 provenance 判据当场作废。
+    """
+    flows = AGENTS_DIR.parent / "flows"
+    for name in ("scenario_1.py", "scenario_2.py"):
+        source = (flows / name).read_text(encoding="utf-8")
+        assert "seed_scripted_report" not in source, f"{name} 又把预置报告加回来了"
+        assert "scripted_report" not in source, f"{name} 里出现了脚本化报告字段"
+
+    assert callable(seed_scripted_report), "seed_scripted_report 被删了"
+    for name in ("scenario_3.py", "scenario_5.py"):
+        source = (flows / name).read_text(encoding="utf-8")
+        assert "seed_scripted_report" in source, \
+            f"{name} 的前置报告被误删了 —— 它不跑测试，报告是前置条件不是产物"
 
 
 # ======================================================================
@@ -320,6 +354,171 @@ def test_all_agents_reply_ok_but_plan_still_fails_without_test_report():
                and a["content"]["self_check"] == {"build": "pass", "lint": "pass"}
                for a in cp.store.list_artifacts("t-code")), \
         "前提不成立：本测试要的正是'自检全 pass 却仍不算成功'"
+
+
+# ======================================================================
+# 隔离探针不进业务判据：挡闸要挡，但不喂给模型
+# ======================================================================
+class _RecordingBus(EventBus):
+    """只记不发 —— 这里要看的是 Gate 的判定，不是状态机跟着跑。"""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, object]] = []
+
+    def publish(self, topic, env) -> None:
+        self.published.append((topic, env))
+
+    def subscribe(self, topic, group, handler) -> None:
+        pass
+
+    def drain(self, max_rounds: int = 1000) -> int:
+        return 0
+
+
+def _gate_verdict(report: dict) -> dict:
+    """把一份 test_report 挂到 AWAITING_REVIEW 的代码任务上，跑 Gate，返回 verdict。"""
+    store = SqliteStore()
+    store.init_schema()
+    bus = _RecordingBus()
+    gate = ReviewerGate(store, bus, ControlPlane(store, bus))
+
+    store.insert_plan({"plan_id": "p1", "trace_id": "tr", "goal": "g",
+                       "state": PlanState.RUNNING})
+    store.insert_task({"task_id": "t1", "plan_id": "p1", "trace_id": "tr", "role": "coding",
+                       "title": "改点东西", "state": TaskState.AWAITING_REVIEW, "attempt": 1})
+    store.insert_artifact({"artifact_id": "a0", "task_id": "t1", "plan_id": "p1",
+                           "kind": KIND_TEST_REPORT, "version": 1, "content": report})
+
+    assert gate.review_pending("p1") == 1
+    topic, env = bus.published[-1]
+    assert topic == Topic.REVIEW_VERDICT
+    return env.payload
+
+
+def _report(cases: list[dict]) -> dict:
+    failed = sum(1 for c in cases if c["status"] in ("failed", "error"))
+    return make_test_report(passed=len(cases) - failed, failed=failed, cases=cases,
+                            summary="沙箱回归")
+
+
+_PROBE_CASE = {"id": f"{ISOLATION_PROBE_PREFIX}test_no_network",
+               "status": "failed", "msg": "socket 连上了 1.1.1.1"}
+_BIZ_CASE = {"id": "tests.test_session::test_expired_session",
+             "status": "failed", "msg": "没到 TTL 就被判过期了"}
+
+
+def test_isolation_probe_failure_still_blocks_the_gate():
+    """隔离失效比一条用例挂严重得多 —— 探针红了照样不许放行。"""
+    payload = _gate_verdict(_report([_PROBE_CASE]))
+
+    assert payload["verdict"] == "rework", "隔离探针挂了竟然放行了"
+    blockers = [f for f in payload["findings"] if f.get("severity") == "blocker"]
+    assert len(blockers) == 1 and blockers[0]["id"] == ISOLATION_FINDING_ID, \
+        f"探针失败没有压成一条 blocker：{payload['findings']}"
+
+
+def test_isolation_probe_cases_never_reach_the_coding_findings():
+    """探针的用例名不许出现在喂回 Coding 的 findings 里 —— 模型会去改它读不懂的东西。
+
+    findings 会被 `code_repo_patch._build_prompt` 原样 json.dumps 进返工提示词，
+    所以判据就按序列化后的整串来看：探针的用例 id 一个字都不许出现。
+    """
+    payload = _gate_verdict(_report([_PROBE_CASE, _BIZ_CASE]))
+    findings = payload["findings"]
+
+    assert _PROBE_CASE["id"] not in json.dumps(findings, ensure_ascii=False), \
+        f"探针用例名进了喂回 Coding 的 findings：{findings}"
+
+    majors = [f for f in findings if f.get("severity") == "major"]
+    assert [f["id"] for f in majors] == [_BIZ_CASE["id"]], \
+        f"业务用例的逐条 finding 被探针带偏了：{majors}"
+    assert _BIZ_CASE["msg"] in majors[0]["msg"], "业务失败的 msg 没有原样喂回"
+
+
+def test_all_green_report_passes_even_with_probes_present():
+    """探针只在**挂了**的时候特殊 —— 全绿报告里它们不该留下任何 finding。"""
+    payload = _gate_verdict(_report([
+        {"id": f"{ISOLATION_PROBE_PREFIX}test_no_host_secrets", "status": "passed", "msg": ""},
+        {"id": "tests.test_session::test_valid_session", "status": "passed", "msg": ""},
+    ]))
+    assert payload["verdict"] == "pass", payload["findings"]
+
+
+# ======================================================================
+# 回归钉子：这三处当初「改回去也不会红」
+# ======================================================================
+def test_gate_does_not_raise_on_non_dict_self_check():
+    """self_check 不是 dict 时 Gate 判 finding，**不抛** —— review_pending 是裸调用。
+
+    异常从这里逃出去，flows/common.py 的驱动循环当场崩，整个 plan 连退化成
+    一次 rework 都做不到。
+    """
+    store = SqliteStore()
+    store.init_schema()
+    bus = _RecordingBus()
+    gate = ReviewerGate(store, bus, ControlPlane(store, bus))
+    store.insert_plan({"plan_id": "p1", "trace_id": "tr", "goal": "g",
+                       "state": PlanState.RUNNING})
+    store.insert_task({"task_id": "t1", "plan_id": "p1", "trace_id": "tr",
+                       "role": "architecture", "title": "契约",
+                       "state": TaskState.AWAITING_REVIEW, "attempt": 1})
+    store.insert_artifact({"artifact_id": "a0", "task_id": "t1", "plan_id": "p1",
+                           "kind": KIND_ARCH_CONTRACT, "version": 1,
+                           "content": {"self_check": None, "summary": "契约"}})
+
+    try:
+        assert gate.review_pending("p1") == 1
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"self_check 为 null 时 Gate 抛了 {exc!r}，驱动循环会被掀掉")
+
+    payload = bus.published[-1][1].payload
+    assert any(f["gate"] == "acceptance" for f in payload["findings"]), \
+        "self_check 为 null 被当成自检通过放行了"
+
+
+def test_scenario_1_injects_the_selected_model_client_into_build(monkeypatch):
+    """场景 1 的真模型接线点：`model=select_model_client(script)` 必须进 build()。
+
+    这一处被改回 `build(script)` 也不会红任何存量用例 —— 无 key 时
+    select_model_client 本来就降级成 ScriptedModelClient，行为一模一样，
+    只有在有 key 的机器上才看得出「真模型根本没接上」。所以钉在这里。
+    """
+    from maos.flows import scenario_1
+
+    class _Stop(Exception):
+        pass
+
+    sentinel = ScriptedModelClient({})
+    seen: dict = {}
+    monkeypatch.setattr(scenario_1, "select_model_client", lambda script: sentinel)
+
+    def _fake_build(script, *, matrix=False, model=None):
+        seen["model"] = model
+        raise _Stop
+
+    monkeypatch.setattr(scenario_1, "build", _fake_build)
+    with pytest.raises(_Stop):
+        scenario_1.run()
+
+    assert seen["model"] is sentinel, \
+        "场景 1 没把 select_model_client 的结果注入 build()，真模型接线点断了"
+
+
+def test_scenario_2_flaky_model_dispatches_on_the_rework_marker():
+    """FlakyModel 按「返工」二字分派，不按调用序数。
+
+    按序数计数对新增的 model 调用不设防（requirement 与 reviewer 都会调模型），
+    改回去当天场景 2 会在一个看不出因果的地方失真，所以钉住。
+    """
+    from maos.flows.scenario_2 import FlakyModel
+
+    model = FlakyModel({})
+    rework = model.complete(system="", tier=Tier.MEDIUM,
+                            user="任务：修复\n\n这是第 2 次返工，必须逐条解决以下问题：[]")
+    first = model.complete(system="", tier=Tier.MEDIUM, user="任务：修复\n\n验收标准：[]")
+
+    assert rework.text == GOOD_PATCH, "带「返工」的提示词没拿到修好的补丁"
+    assert first.text == BAD_PATCH, "第一轮没拿到那份修不好的补丁"
 
 
 def test_identity_whitelist_still_bites():

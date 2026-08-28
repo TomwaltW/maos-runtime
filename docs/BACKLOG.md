@@ -174,3 +174,16 @@ B/C/E/D 四轨合并期发现、按铁律 4 不当场处理的账（目标分支
 |---|---|---|---|---|
 | 2026-08-28 | P3 | `maos/main.py:25` 的 `DEFAULT_SCENARIOS = (1, 2, 3, 4)`，行内注释写的是「场景 5 未实现，不进缺省序列」——**该注释已过时**：场景 5 早已落地（`--scenario 5` exit=0），场景 6 本轮由 R-2 落地（exit=0），两者都不在缺省序列里 | CLAUDE.md 与 README 里的验收命令 `python3 run.py` 号称「四场景端到端」，实测确实只跑 1-4：**退款域整条链路（含第六道闸的人工放行）不被缺省序列覆盖**。演示现场若只跑 `run.py`，评委看不到本轮最重要的两轨产出，且不会有任何报错提示他们漏了 | `main.py` 是禁改面（R-2 记「D-05 已落，重新冻结」），需人类解冻后改。修法一行：`DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6)`，并同步那条行内注释与 `run.py` docstring 的「四场景」措辞。**建议在演示前做掉** —— 这是三轨全绿之后唯一一处「跑了也看不见」的缺口。**✅ 已于 2026-08-28 收尾时解**：人类当场授权解冻，`DEFAULT_SCENARIOS=(1..6)` + 四处措辞同步，见 DECISIONS `## integrate-round-2` 第 4 条 |
 | 2026-08-28 | P3 | 场景 7（退款失败路径）未落地：`ALL_SCENARIOS` 已声明 7，但 `maos/flows/scenario_7.py` 不存在，`run.py --scenario 7` 直接 `ModuleNotFoundError` 退出码 1 | 与 R-2 记的「`payment.observe` 的 `needs_compensation=True` 没有消费方」是同一个缺口的两端：网关明确失败时本域会正确记观察、不推进状态、挂 `open_questions`，但**没有任何场景在跑这条路**。`--scenario 7` 是 argparse 的合法取值，任何人照着 `--help` 试一次就会撞见一个未捕获的 traceback | 场景 7 落地时一并解。在此之前若要避免那个 traceback，只能改 `ALL_SCENARIOS`（禁改面）或在 `_run_scenario` 里捕获 ImportError（同一文件），都要人类解冻 —— 故本轮不动。落地时注意 R-2 记的两点：`compensated` 的写入方要想清楚，失败路径同样要证明「终态是问出来的」 |
+
+## task-W7
+
+软件域封版（分支 `task/w7-software-seal`，基线 `01bc8d8`）。本轨把场景 1/2 的
+test_report 从预置常量换成真跑产物，`## merge-p2` 第 1 条要求的三件（现造 workdir、
+真 diff、删预置报告）与第 2 条（探针不进业务判据）一并落地。以下三条是本轨发现、
+按铁律 4 不当场改的账 —— 三条都落在本轨独占文件之外。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-28 | P4 | **真报告仍被审计链判成「预置件」**。`flows/common.py::patch_verifier` 直接 `store.insert_artifact` 落 test_report（与 `seed_scripted_report` 同一条路），绕开了 `on_task_result`，因此没有来源事件 | `maos/obs/trace.py` 照旧把它标成 `provenance="unknown"`，`scripts/verify.py` 第 6 项因此 warn「N 条外部判据来源未审计（**场景预置件，非实跑产出**）」——**这句措辞现在是错的**：场景 1/2 的报告确实是真跑 pytest 出来的，只是插入路径证不了。核验仍 5/5 PASS（warn 不判负），但评委读证据时会被这句话误导，把已经兑现的「外部权威判据」重新读成脚手架 | 两条修法都出本轨的面：①`trace.py` / `verify.py`（Ω 的面）把措辞从「预置件」改成「无来源事件」，并区分「场景预置」与「演示装配层现跑」；②给控制面一条「带来源的外部产物入库」路径，让现跑的报告也有 StateTransition 可挂。**建议 ①，成本一行措辞**；② 要动控制面，留 P5 可观测收口 |
+| 2026-08-28 | P4 | `maos/tools/sandbox.py::_docker_ready()` 用 `docker image inspect <IMAGE>` 探镜像。本轨实测该命令在 Docker Desktop **29.6.1** 上会**瞬时失败**：连试三次 exit=1（`No such image: maos-sandbox`），而同一时刻 `docker image ls maos-sandbox` 列得出、`docker run --rm maos-sandbox python -V` 跑得通；几分钟后 inspect 自行恢复 exit=0 | 命中那一刻沙箱**静默降级**成裸 subprocess，只留一条 `log.warning`，演示屏幕上看不出任何差别 —— `--network none` / `--read-only` / `--user 1000:1000` 全部失效，而 `test_no_network` 会从 passed 变成 skipped、报告仍然全绿。「容器隔离」这句话当场不成立而没有人知道，正是本轨要拆的那类假绿的孪生形态 | `maos/tools/sandbox.py` 是 Task-B 的面（本轨只 import）。修法建议：探测改成 `docker image inspect --type=image <IMAGE>:latest`（实测该形式全程 exit=0），或降级时把原因**打进 test_report 的 summary**，让它随证据一起落盘而不是只进日志。**演示前值得做掉**——现场撞上这一次就白演 |
+| 2026-08-28 | P4 | 补丁的应用与回归执行落在**演示装配层**（`flows/common.py::patch_verifier`），不在 Testing Agent 里 | 这是 DAG 成环逼出来的（理由见 DECISIONS `## task-W7` 第 1 条），不是设计首选。代价：Testing 节点在演示里跑的是「补丁已经打好之后的第二遍回归」，它自己那份报告不构成 coding 任务的验收证据 —— 谁只读 `agents/testing.py` 会以为那一节点就是证据来源 | 等控制面支持「同一 attempt 内先跑验证任务、再判被验任务」时收回 Testing Agent。在那之前**不要**为了好看把这段挪进 Agent —— 挪进去当天 coding 过闸拿不到报告，场景 1/2 直接红 |

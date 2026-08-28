@@ -78,12 +78,23 @@ class ReviewerGate:
 
     @staticmethod
     def _gate_acceptance(task, artifacts) -> list[dict]:
-        """MVP 版：只判"自检是否通过"。Track A 补完时接真实测试报告。"""
+        """MVP 版：只判"自检是否通过"。Track A 补完时接真实测试报告。
+
+        口径是"非 pass 即 finding"，不是"只认字面 fail"：
+          · self_check 缺失 = 没自检过，不是自检过了，必须判 finding；
+          · self_check 不是 dict（None / 字符串）一律按"缺失"处理，**不抛异常** ——
+            Gate 是独立判定面，不能假设上游已经把形状收敛好（skill 侧用的是
+            setdefault，键在则原样保留）；而 review_pending() 在
+            flows/common.py 的驱动循环里是裸调用，异常逃出去会把整个 plan 掀掉，
+            连退化成一次 rework 都做不到。
+        """
         out = []
         for a in artifacts:
-            check = a["content"].get("self_check", {})
+            check = a["content"].get("self_check")
+            if not isinstance(check, dict):
+                check = {}
             for k in ("build", "lint"):
-                if check.get(k) == "fail":
+                if check.get(k) != "pass":
                     out.append({"gate": "acceptance", "severity": "major", "path": None,
                                 "message": f"本地自检 {k} 未通过，需修复后重新提交"})
         return out

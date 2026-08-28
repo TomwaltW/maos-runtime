@@ -44,3 +44,10 @@
 
 - Claude Code 的文件权限检查只认 `Edit(path)`；`Write(...)` / `NotebookEdit(...)` 形式会被解析后丢弃并在启动时告警。`Edit()` 一条即覆盖所有写文件工具，deny 段里成对写的 `Write()` 属冗余。
 - hook command 用 `$CLAUDE_PROJECT_DIR` 拼路径，会话必须从仓库根启动，否则守卫不挂载（本次上一轮从 `~` 启动即此原因）。
+
+## fix-2
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | fix-2 | 派单要求给 Gate 的自检判定补行为测试，但测试落点在多轨并行下不是自由选项：全仓 grep `ReviewerGate` / `review_pending`，测试侧只命中 `test_registry_autodiscovery.py:27` 的 import 与 `:157/:163` 的 `build()` 六元组断言，Gate 目前**零行为直测** | 新建 `maos/tests/test_gate.py`，不往 `test_contracts.py` 里加。五条用例走 `gate.review_pending()` 而不是直调静态方法 `_gate_acceptance()`；用一个只记不发的 `_RecordingBus` 收 `REVIEW_VERDICT`，再按 `f["gate"] == "acceptance"` 过滤 findings | `test_contracts.py` 是 fix-1 本轮要改的文件，测试写进去两轨就从并行退化成串行。走 `review_pending()` 是因为本轮 P0 要验的正是「异常会不会从这个入口逃出去」——`flows/common.py:70` 是裸调用，直调静态方法验不到这一层。不用 `InMemoryEventBus` 是不让 `ControlPlane` 的订阅在 drain 时跟着跑状态迁移：这里测的是判定，不是状态机。按 gate 名过滤是因为同一份 artifact 会同时触发 evidence 等别的闸，不过滤就会拿别的闸的 finding 冒充 acceptance 的结果 |
+| 2026-08-28 | fix-2 | `self_check` 不是 dict（`None` / 字符串）时 `check.get(k)` 抛 `AttributeError`。两条修法：抛一个明确的契约异常让上游修，或按「没自检」降级判 finding | 降级。`isinstance` 不过就当 `{}`，与「键缺失」走同一条路径，一律判 finding；同时把判据从「只认字面 `fail`」改成「非 `pass` 即 finding」。finding 的 message 文案对「缺失」与「fail」**不作区分**，沿用原串；severity 沿用 `major`，未提 blocker | Gate 的契约是产出 findings 供 Coding Agent 消费，不是抛异常：`review_pending()` 在 `flows/common.py:70` 是裸调用，`WorkerRuntime._invoke` 的 try 只包住 `agent.run`，异常逃出去整个 plan 驱动循环当场崩，连退化成一次 rework 都做不到。不依赖上游收敛形状是因为 `code_repo_patch.py:112-113` 用的是 `setdefault`（键在则原样保留），且**畸形值在真实链路上确实到得了 Gate**——`artifacts.py::validate_artifact` 生产路径零调用方（另记 BACKLOG）。文案不分叉：分叉要改既有那条 message 串，属铁律 4 的顺手优化，且判据已统一到「非 pass」，分类信息对返工提示价值有限。severity 不提是因为提了会改四场景流转，超出本轮范围。安全边界已实测而非推断：`python3 -m pytest maos/tests -q` → 111 passed、`python3 run.py` 退出码 0；另把旧实现 monkeypatch 回去跑同一份 `run.py`，归一化随机 task/plan id 后与新实现输出 **diff 为空**；同一负控下五条新用例中该红的三条（缺失静默放行、`None` 抛 `AttributeError`、字符串抛 `AttributeError`）全红，证明测试不是空跑 |

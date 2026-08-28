@@ -310,9 +310,11 @@ Trace 导出 / 证据束 / `verify.py` / 部署（分支 `task/omega-evidence`�
 
 R-0 / R-2 / Ω 三轨整合（分支 `integrate/round-2`，基线 `93529b4`）。三轨代码面零重叠，
 合并期只有两类事需要判断：两份账本的追加冲突（机械合并，不记），
-以及**两轨各自全绿、合并才暴露**的两处测试接缝。以下两条即那两处。
+以及**各轨自测全绿、合并才暴露**的三处接缝。以下三条即那三处 ——
+前两条是检测口径的问题（断言写法过窄 / 过时），第三条是真缺陷（跨轨 id 不同一）。
 
 | 日期 | Phase | 情境 | 选择 | 理由 |
 |---|---|---|---|---|
 | 2026-08-28 | P3 | `test_refund_flow.py::test_kernel_does_not_know_the_refund_domain` 合并后变红，指认 `maos/runtime/gate.py` import 了退款域。**实为假阳性**：该测试按子串扫 `"domain.refund" in src`，而第六道闸的 docstring（`gate.py:16` 与 `:353`）里恰好写着「不许 import ``maos.domain.refund``」这句自我说明 | 把扫描从子串改为 **AST 认 import 语句**（`ast.Import` / `ast.ImportFrom` 判 `maos.domain` 前缀），**扫描范围一行未缩**：仍是 `runtime` / `core` / `contracts` 三个子包 + `rglob` 递归 | 取两轨各自的长处：R-0 写同类断言时已经踩过这个坑并在 `test_gate.py:569` 的注释里写明「认 import 语句，不认字面量」，但它的正则版只扫 `runtime`/`core` 顶层（`glob`）；R-2 这版扫得更广却认字面量。合并后正确的形态是 R-0 的精度 + R-2 的广度。改 AST 而不改正则，是因为该文件已 import `ast` 且别处就用这个手法，与既有风格一致。**没有削弱守卫**：真写一行 `from maos.domain import refund` 照样红 |
 | 2026-08-28 | P3 | `test_registry_autodiscovery.py::test_agent_pool_is_exactly_five_roles` 合并后变红 —— 断言写死 `sorted(AGENT_POOL) == 五个内核角色`，R-2 投放四个退款 Agent 后池子变成 9 个。R-0 本轮按派单只改名、未动断言语义，红是**预期内**的 | 按 R-2 BACKLOG `:148` 的建议改成**子集口径**：内核五角色一个不许少 + `ManagerAgent` 不在池中；函数一并改名 `test_agent_pool_contains_the_five_kernel_roles` | 「恰好五个」守的不是注册口径，是「没人加过业务域」这件事 —— 而注册表的整个设计就是「新增 Agent 只投文件」，每加一个域就要回来改一次的断言是设计的反面。改子集后它守住的仍是真正要守的两件：少了说明自动发现坏了，多出 ManagerAgent 说明有人「顺手」注册了不经 worker 分发的角色。改名是因为 `is_exactly` 与子集语义直接矛盾，留一个说谎的名字比第二次改名更坏 —— 代价是 BACKLOG `:69` / DECISIONS `:273` 两处指引里的旧名过时，两处都是历史账，不回改 |
+| 2026-08-28 | P3 | `verify.py` 第 3 项 authoritative-fact 合并后 FAIL：`payment_observation.actor_invocation_id` 不属于任何一次 `payment.observe` 调用。**不是假阳性** —— R-2 的 DECISIONS 第 2 条精确预告过：`SkillInvoker` 生成的 `invocation_id` 到不了 skill 里（`invoker.py:69` 只放进 `SkillResult` 与落库那行），skill 只能用调用方传的或本地生成的另一个 id | 按 R-2 BACKLOG `:151` 给的修法改 `maos/skills/invoker.py` **一行**：`extras={**extras, "invocation_id": invocation_id}`，让官方 id 进 `SkillContext.extras`；**故意覆盖**调用方传入的同名键。四个 skill 与 `_common.invocation_id_of()` 一行未动，兜底分支保留 | 这是三处接缝里唯一一处真缺陷，也是唯一一处两轨都修不了的：R-2 的边界不含 `invoker.py`（它明写「属主轨处理」），Ω 只写核验器不改被验对象，于是两轨各自全绿、合并才暴露。改而不是放过，是因为第 3 项守的正是「权威事实边界」—— 复赛材料里最核心的论证之一，它 FAIL 等于这条论证当场不成立。覆盖调用方的键是对的：官方 id 只有 invoker 生成的那一个，`extras_of` 里那个是 invoker 补齐前的兜底，两个都在时必须以事件里落了的那个为准。`invoker.py` 不在 `PROT_PATHS` 禁改面内，已核 |

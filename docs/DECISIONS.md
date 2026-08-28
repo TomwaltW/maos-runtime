@@ -174,6 +174,26 @@ Ctrl-C / OOM / 超时杀掉时 `finally` 跑不到，残留文件会被 `builtin
 | 2026-08-28 | P2 | `maos/tests/test_registry_autodiscovery.py:169` 的函数名 `test_agent_pool_is_exactly_coding` 在改成五角色口径后已名不副实 | **不改函数名**，只改派单点名的那条断言与断言消息 | 派单明写「只许改这一处」「该文件其余一行不动，不许 reformat」（`:257` 归 Task-E）。名字过时是可读性瑕疵，越界改动是合并风险，取后者更小。已记 BACKLOG，留合并期由持有该文件的人一并改 |
 | 2026-08-28 | P2 | Reviewer 挂在「Gate 之后、审批之前」，不是第五道闸 —— 那它怎么被调用 | 与 ManagerAgent 同理，由 flow 直接调用（`agents/reviewer.py::review_after_gate`），review_note 由该函数直接落库；但仍挂 `@register` 进 AGENT_POOL | 挂 `@register` 是派单要求的「五个 role」口径，也为将来把它排进 DAG 留口；不经 worker 队列是因为它的位置由流程决定、不由依赖决定。审查没做成时返回 `blocked` + `needs_human` 且**不产出空白意见书** —— 空白意见书会让下游以为「审过了、没问题」，比没有意见书危险 |
 
+## task-E
+
+Matrix 镜像总线与房间审批（`hiclaw/matrix_bus.py`，分支 `task/e-matrix`，基线 `59196ba`）。
+另起小节而非往上表插行：四轨并行都要追加本文件，尾部追加 git 能自动合。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | P2 | C-6 的字段表只给 `log_only` 写了默认值 `False`，其余五个字段有没有默认值没规定 | 六个字段全给默认值（空串 / 空 frozenset） | `from_env()` 缺 env 时要返回一个「什么都没有且 log_only=True」的对象，没有默认值就得在构造处把五个空串一个个写出来，多五处能写错的地方。而「字段可空」本身就是降级模式的定义。反过来给必填项去掉默认值也拦不住任何事 —— 真正的把关在 `from_env()` 的 missing 检查里，不在 dataclass 签名上 |
+| 2026-08-28 | P2 | 「镜像失败不得影响 inner」要能被断言，就必须能塞一个必炸的通道进去；但 C-6 冻结的构造形态是两参 `MatrixEventBus(inner_bus, config)` | 加 keyword-only 的 `channel=None` 注入口 | keyword-only 参数不改变两参调用形态，C-6 原样成立。没有注入口，这条断言就只能靠读代码相信 try/except 写对了 —— 而把 `self.inner.publish` 顺手挪进 try 是个看起来完全无害的改动，正是要防的那一类。测试里 `_ExplodingChannel` 记 `calls` 也是同一个道理：哪天 publish 干脆不调镜像了，inner 行为当然还是对的，但这条测试就变成空转了 |
+| 2026-08-28 | P2 | 镜像通道连续失败时怎么办 —— 派单只写了「镜像失败不影响 inner」，没写失败多少次以后收手 | 连续 3 次（`MAX_MIRROR_FAILURES`）后永久降级 log-only，`_channel` 置空 | 房间挂一整场时每条事件都报一次 warning，控制台会被刷成告警墙，把真正的业务日志淹掉 —— 而镜像失败这件事第一次就已经报过了。这不是新规则，是 C-6「连接失败自动降级」的延伸：一个一直发不出去的通道就是连接失败，只是发现得晚一点 |
+| 2026-08-28 | P2 | 装饰器只实现三方法，还是把 inner 的其它属性也转发 | 加 `__getattr__` 转发给 inner | `test_contracts.py:225` 直接断言 `bus.dead_letters`。少转发一个属性，就多一处**只在 `--matrix` 下才炸**的 AttributeError，而那种错的症状（某个场景一加 `--matrix` 就崩）离原因很远。`__getattr__` 只在常规查找失败后才触发，遮不住本类自己的三方法；对 `inner` / `config` 两个名字显式抛 AttributeError，防 `__init__` 跑完前的递归 |
+| 2026-08-28 | P2 | 镜像内容要不要脱敏 —— 派单与 C-6 都没提 | 加 `redact()`：按**键名**匹配，把 token / secret / password / api_key / authorization / credential 的值换成 `***` | 镜像是**出网**动作，Envelope 一旦进了房间就收不回来；而 `payload` 是自由 dict，契约不拦任何人往里塞一个 key。铁律 6 管的是「密钥不许出现在 evidence/ 的输出里」，房间比 evidence/ 更外面。只按键名不扫值：扫值会把 `GOOD_PATCH` 里「修复 token 校验缺失」这种正常摘要一起打码，房间就没法看了。`idempotency_key` 不会误伤 —— 正则要的是 `api_key` 那个前缀，光一个 `key` 不算，已钉成断言 |
+| 2026-08-28 | P2 | 审批三类行为（合法 / 非法 / 越权）的判定顺序，派单列了三类但没定序 | 先认命令词 → 再查名单 → 最后校参数 | 名单外的人打了个缺 task_id 的 `/approve`，那也是一次越权审批尝试，必须留证；先校参数会把它降级成一句用法提示，`event_log` 里什么都不剩 —— 而「系统拒绝了一次越权审批」正是要给评委看的那条证据。反过来第一步必须是「认命令词」而不是「查名单」：否则房间里任何一句闲聊都会招来一条「无审批权限」，机器人变成噪声源 |
+| 2026-08-28 | P2 | 越权记录挂到哪个 plan —— `event_log.plan_id` 是 NOT NULL，而越权命令里的 task_id 可能根本不存在 | task_id 查得到就取它的 plan_id / trace_id；查不到则以 `plan_id=""` 照样落一条 | 记下来比归类整齐重要。挂不上 plan 的那条不会出现在 `snapshot()` 里，但它在表里、审计查得到；为了「归类干净」丢掉一条越权证据是本末倒置。event_type 用新的 `ApprovalDenied`，不复用 `StateTransition` —— 越权尝试没有发生任何状态迁移，混进去会污染 `dump()` 打的迁移轨迹 |
+| 2026-08-28 | P2 | 降级时改 `config.log_only`：就地改还是造新对象 | `dataclasses.replace()` 造新对象 | 就地改会改到**调用方手里那个** config —— `flows/common.py` 传进来的是 `MatrixBusConfig.from_env()` 的返回值，当前没人复用它，但这是个随时会被踩的隐式副作用。`replace()` 对 `field(repr=False)` 同样生效，token 不会因为换了个对象就漏进 repr，已单独钉成断言 |
+| 2026-08-28 | P2 | `subscribe` / `drain` 镜像什么 —— 派单要求三方法都「先委托再镜像」，但没说镜像内容 | subscribe 镜像一行订阅声明；drain **只在 processed > 0 时**才说话 | 驱动循环每轮都 drain，绝大多数返回 0，全镜像等于往房间里刷空行，人类就翻不到那条要审批的高风险任务了。subscribe 只在 build 时发生五六次，镜像它反而有用：房间里能看到这套运行时是怎么接起来的 |
+| 2026-08-28 | P2 | 改 `test_build_matrix_falls_back_to_inner_bus` 时，要不要连同上方 `# --- C-6 Task-0 期 matrix 恒回退 ---` 分节注释一起改 | 只改函数体，注释原样不动；函数名也不改 | 派单写死「该文件其余一行不动」。该注释现已过时（不再「恒回退」），但它是共享文件上的一行、在本轨白名单外，已记入 BACKLOG 交合并期（Ω）改。函数名保持不变是因为「`build(matrix=True)` 不中断」这个语义没变，改名会让另外三轨对它的引用全部失准。新增的两个 import 放在函数内，不动顶部 import 块 —— 顺带的好处是本文件其余几十条断言不会因为 hiclaw 缺席而在 collection 阶段集体失败 |
+| 2026-08-28 | P2 | matrix-nio 只提供 async 客户端，而 EventBus 三方法是 C-6 逐字冻结的同步签名 | `_NioChannel` 自起守护线程跑私有事件循环，`send` 用 `run_coroutine_threadsafe` 同步等结果 | 签名不能改（C-6 冻结），也不能每次 `asyncio.run`：`AsyncClient` 要跨调用保持会话状态，每次新建循环等于每次重登。房间消息用 `m.notice` 而不是 `m.text` —— 机器人消息不该触发人类的推送提醒，也避免和别的 bot 互相接龙。鉴权直接赋 `access_token`、不走 password login：演示机上不该出现口令 |
+| 2026-08-28 | P2 | `.env.example` 投放被权限层 deny 规则拦下（报 `File is covered by a Read deny rule`），而 C-8 要求该文件入库、`.gitignore:18` 的放行已实测生效 | 本轨**不投放**该文件，把内容与安装命令交给人类执行 | deny 规则是人类配的安全控制，用 Bash 绕过去正是铁律 1 里「封 Bash 侧路」要防的那个动作 —— 即便这个文件一个真值都没有，绕过本身就把「谁有权决定」这件事偷换了。而且 `.claude/settings.json` 同时被守卫挡住无法读取（BACKLOG 2026-08-27 已记该限制），规则本体核对不了，就更不该自行判断「这条规则不该管我」。C-8 的另外两条验证命令已单独跑过并通过 |
+
 ## merge-p2
 
 B/C/E/D 四轨合并期的判断（目标分支 `goai-restructure`，合并前基线 `f83c374`）。

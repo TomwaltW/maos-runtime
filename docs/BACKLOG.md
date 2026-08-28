@@ -69,6 +69,18 @@
 | 2026-08-28 | P2 | `maos/tests/test_registry_autodiscovery.py:169` 的函数名 `test_agent_pool_is_exactly_coding` 与它现在断言的五角色口径已不符 | 纯可读性：名字说「恰好只有 coding」，断言查的是五个 role。照名字找测试的人会以为它没被更新 | 派单限定本轨只许改 `:170` 那一条断言、其余一行不动（`:257` 归 Task-E），故不顺手改名。合并期由持有该文件的人改成 `test_agent_pool_is_exactly_five_roles` 之类 |
 | 2026-08-28 | P2 | `review_after_gate()` 直接调 `store.insert_artifact` 落 review_note，绕过 `control_plane.on_task_result` 那条入库路径 | Reviewer 不经 worker 队列（它的位置由流程决定），所以没有 TaskResult 可走。代价是这条产出既不过幂等闸门、也不写 StateTransition，审计上看不到它是谁在哪一步产的 —— 与 fix-2 记的「artifact 入库不校验任何形状」是同一处地基问题的两个侧面 | 与 fix-2 那条一并定：要么给 Control Plane 开一个「非任务产物入库」的正式入口（带审计行），要么承认 review_note 是流程附属物、不进审计链。Phase 5 做可观测时必须有结论，否则 Trace 里会凭空多出一份没有来源的产物 |
 
+## task-E
+
+落 Matrix 镜像总线时发现、按铁律 4 与派单边界不当场处理的五条。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-28 | P2 | `.env.example` 未投放 —— 权限层 deny 规则把它连同真 `.env` 一起拦了（Write 报 `File is covered by a Read deny rule`） | C-8 要求该文件入库，`.gitignore:18` 的 `!.env.example` 放行也已实测生效（`git check-ignore .env.example` 无输出、exit=1），唯独文件本体写不进去。演示前没人补上的话，新克隆者拿不到任何环境变量清单，`--matrix` 与真模型两条路都得靠翻源码才知道该配什么 | 人类执行一条 `cp` 即可，内容已备好（见本轨回执）。同时建议把 deny 规则从 `.env*` 收窄成「`.env` 与 `.env.*` 但排除 `.example` 结尾」—— 现在这个形态与 C-8 直接冲突，而冲突只在有人真去投放模板时才暴露 |
+| 2026-08-28 | P2 | `_NioChannel` 这条真房间路径未经任何实测 | 本机 matrix-nio 未安装（`import nio` -> ModuleNotFoundError），该类构造即 ImportError，测试与 CI 恒走降级分支。三处只能照 matrix-nio 文档写、无法验证：①判加密房用的是「`room_get_state_event` 返回不是 `RoomGetStateEventError` 即已加密，`M_NOT_FOUND` 才是未加密」；②`sync_forever` 与私有事件循环的配合；③直接赋 `access_token` 是否足以鉴权 | Phase 4 接真房间时逐条实测。注意这三条错了的症状都是「降级」而不是「崩」，所以不会拖垮演示 —— 但也意味着**它们不会自己暴露**，必须主动去验，否则会一直以为「接上就能镜像」 |
+| 2026-08-28 | P2 | 状态迁移（StateTransition）没有镜像进房间 | `phase-3.md:12` 要求「在 Control Plane 外挂一个 event_log 轮询器（或在 `_transit` 后回调），把每条 StateTransition 也发进房间」，而本轨派单第 2 步只覆盖了 EventBus 三方法的镜像，没有这一项。结果是房间里能看到事件流（TaskAssignment / TaskResult / ReviewVerdict / Rework），却看不到 `RUNNING → AWAITING_REVIEW` 这类迁移轨迹 —— 而 phase-3.md 举的那个摘要例子正是后者 | Phase 4 补。两种挂法都不用改 `control_plane.py` 的迁移逻辑本身：轮询 `list_event_log(plan_id)` 取增量，或给 ControlPlane 加一个可选回调。优先前者，它一行生产代码都不动 |
+| 2026-08-28 | P2 | `maos/tests/test_registry_autodiscovery.py:256` 的分节注释 `# --- C-6 Task-0 期 matrix 恒回退 ---` 已过时 | 本轨落地后该函数验的是「降级模式下行为等价」，不再是「恒回退」。注释就在被改函数的正上方，读代码的人先看到它，会得到与断言相反的印象 | 派单写死「该文件其余一行不动」，故不当场改。合并期（Ω）改成 `# --- C-6 matrix 降级等价 ---` 即可，一行的事 |
+| 2026-08-28 | P2 | 房间监听没有接进任何运行路径 | `run.py --matrix` 当前只装了镜像，没有起监听循环，所以「在 Element 里发 `/approve`」这条链路是不通的 —— `RoomApprovalBridge` 有完整单测但没有生产调用方，`_NioChannel.listen()` 同理。派单第 3 步只要求实现审批命令本身，接线（谁在什么时候起监听、场景 3 怎么等人类回话）没有归属 | Phase 4 与真房间联通一并做。注意它会逼出一个当前没定的东西：场景 3 现在是同步跑完就退出，接了房间审批就得阻塞等人 —— 是给 `--matrix` 加一个超时等待，还是把场景 3 拆成两段，得先定下来再动手 |
+
 ## merge-p2
 
 B/C/E/D 四轨合并期发现、按铁律 4 不当场处理的账（目标分支 `goai-restructure`，合并前基线 `f83c374`）。

@@ -1,10 +1,10 @@
-"""退款域的六个内置 Skill。
+"""退款域的内置 Skill（R-2 落六个，W-6 为失败路径补第七个 refund.compensate）。
 
 `builtin/__init__.py::discover()` 用 `pkgutil.iter_modules` 扫上一层，会把本包当成
 一个模块 import 进去（`iter_modules` 同时枚举模块与子包）—— 于是本文件被执行，
-下面六行 import 触发 `@register_skill`，六个 skill 就进注册表了。
-**投放即注册这条口径没有被破坏**：往 `builtin/` 放的是这个包，不是六个散文件，
-而 `builtin/__init__.py` 一个字都不用改。
+下面几行 import 触发 `@register_skill`，它们就进注册表了。
+**投放即注册这条口径没有被破坏**：往 `builtin/` 放的是这个包，不是一堆散文件，
+而 `builtin/__init__.py` 一个字都不用改 —— W-6 往包里加第七个 skill 时同样没动它。
 
 这里必须写显式清单（与 `builtin/__init__.py` 的「不维护清单」相反）：本包是单轨
 独占的，不存在多轨同改一处的合并冲突；而再套一层 pkgutil 只会让「哪些是 skill、
@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from . import compensate  # noqa: F401 —— refund.compensate（W-6：失败路径的域内补偿）
 from . import finance  # noqa: F401 —— import 即注册（finance.settle）
 from . import intake  # noqa: F401 —— refund.intake
 from . import notify  # noqa: F401 —— notify.customer
@@ -30,4 +31,5 @@ REFUND_SKILLS = (
     "payment.execute",
     "payment.observe",
     "notify.customer",
+    "refund.compensate",
 )

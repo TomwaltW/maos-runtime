@@ -1,0 +1,147 @@
+{
+  "_note": "对照组 R3（租户维度）之 R3A。与 R3B 唯一的差别是 tenant_id：同商品、同渠道、同诉求、同天数，结论相反只可能来自租户各自的 AS-001 窗口参数。下单时刻 2026-05-10 早于政策 v2 的生效时刻 2026-06-01，因此 v2 不会通过 effective_from 过滤 —— 版本这个变量在本组被摁住了。",
+  "_provenance": "政策规则与历史案例为按行业惯例构造的合成数据；支付回执与错误码取自支付宝开放平台 alipay.trade.refund 官方错误码表（出处见 maos/tools/gateway_codes.py 的 SOURCES / SRC_REFUND_API 常量）。不得作为真实企业数据引用。",
+  "_expected": {
+    "dimension": "tenant",
+    "pair_id": "R3",
+    "case_id": "RC-R3A",
+    "peer": "case_r3b.json",
+    "pinned_policy_version": 1,
+    "paid_at": "2026-05-10T09:00:00+00:00",
+    "requested_at": "2026-05-30T09:00:00+00:00",
+    "elapsed_days": 20,
+    "matched_rule": "AS-001@v1",
+    "no_reason_days": 30,
+    "decision": "approve",
+    "why": "AS-001@v1 窗口 30 天，第 20 天申请，20 ≤ 30",
+    "note": "对照点：同一条规则编号 AS-001 在两个租户下参数不同，跨租户复用历史结论必错 —— 这是阶段一必须按 tenant_id 硬过滤的实证。"
+  },
+  "tenant": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "name": "华东精密制造（租户 A）",
+      "region": "cn-hangzhou"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "name": "华北机电集团（租户 B）",
+      "region": "cn-beijing"
+    }
+  ],
+  "channel": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "channel_id": "ch-online",
+      "kind": "marketplace",
+      "name": "官方自营旗舰店"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "channel_id": "ch-dealer",
+      "kind": "dealer",
+      "name": "区域经销商"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "channel_id": "ch-online",
+      "kind": "marketplace",
+      "name": "官方自营旗舰店"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "channel_id": "ch-dealer",
+      "kind": "dealer",
+      "name": "区域经销商"
+    }
+  ],
+  "order_snapshot": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "order_id": "ORD-R3A-001",
+      "version": 1,
+      "sku": "SKU-BRG-6205",
+      "amount_paid": 1280.0,
+      "paid_at": "2026-05-10T09:00:00+00:00",
+      "channel_id": "ch-online",
+      "policy_version_at_order": 1,
+      "payload_json": "{}",
+      "read_at": "2026-08-28T00:00:00+00:00"
+    }
+  ],
+  "product_snapshot": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "sku": "SKU-BRG-6205",
+      "version": 1,
+      "name": "深沟球轴承 6205",
+      "category": "bearing",
+      "warranty_months": 12,
+      "payload_json": "{}"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "sku": "SKU-BRG-6205",
+      "version": 1,
+      "name": "深沟球轴承 6205",
+      "category": "bearing",
+      "warranty_months": 12,
+      "payload_json": "{}"
+    }
+  ],
+  "policy_rule": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-001",
+      "version": 1,
+      "title": "无理由退货期（30 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 30, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-001",
+      "version": 2,
+      "title": "无理由退货期（收紧至 7 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"changed_from_v1\": \"no_reason_days 30 -> 7\", \"deduct_fee\": \"0\", \"no_reason_days\": 7, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-001",
+      "version": 1,
+      "title": "无理由退货期（7 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 7, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-001",
+      "version": 2,
+      "title": "无理由退货期（放宽至 15 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"changed_from_v1\": \"no_reason_days 7 -> 15\", \"deduct_fee\": \"0\", \"no_reason_days\": 15, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    }
+  ],
+  "case": {
+    "tenant_id": "tnt-mfg-a",
+    "case_id": "RC-R3A",
+    "channel_id": "ch-online",
+    "order_id": "ORD-R3A-001",
+    "order_version": 1,
+    "sku": "SKU-BRG-6205",
+    "reason_code": "no_reason_return",
+    "amount_claimed": 1280.0
+  }
+}

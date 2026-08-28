@@ -1,0 +1,264 @@
+{
+  "_note": "AS-001..AS-004 四条 × 租户 A/B × v1/v2 两版本 = 16 行 policy_rule。列名逐字对齐 maos/domain/refund/schema.sql 的 policy_rule 表。body 是紧凑 JSON 字符串：policy.match::rule_params() 用 json.loads 读它，读不动就返回空 dict，finance.settle 随即落到「全额退不扣费」的缺省 —— 写成自然语言条款时金额会静默算错，所以这里一律 JSON。顺带带上被引用的 tenant / channel / product_snapshot，让本文件可以单独灌库。",
+  "_provenance": "政策规则与历史案例为按行业惯例构造的合成数据；支付回执与错误码取自支付宝开放平台 alipay.trade.refund 官方错误码表（出处见 maos/tools/gateway_codes.py 的 SOURCES / SRC_REFUND_API 常量）。不得作为真实企业数据引用。",
+  "_effective_from": {
+    "v1": "2025-01-01T00:00:00+00:00",
+    "v2": "2026-06-01T00:00:00+00:00",
+    "why_differ": "附 B 要求两版 effective_from 不同，供版本对照使用",
+    "why_effective_to_null": "policy_rules_at_order 的过滤条件是 effective_to IS NULL OR effective_to > paid_at；给 v1 设截止时间会让锁定 v1 的老订单一条规则都命中不上，版本对照退化成「无规则可用」"
+  },
+  "tenant": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "name": "华东精密制造（租户 A）",
+      "region": "cn-hangzhou"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "name": "华北机电集团（租户 B）",
+      "region": "cn-beijing"
+    }
+  ],
+  "channel": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "channel_id": "ch-online",
+      "kind": "marketplace",
+      "name": "官方自营旗舰店"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "channel_id": "ch-dealer",
+      "kind": "dealer",
+      "name": "区域经销商"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "channel_id": "ch-online",
+      "kind": "marketplace",
+      "name": "官方自营旗舰店"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "channel_id": "ch-dealer",
+      "kind": "dealer",
+      "name": "区域经销商"
+    }
+  ],
+  "product_snapshot": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "sku": "SKU-BRG-6205",
+      "version": 1,
+      "name": "深沟球轴承 6205",
+      "category": "bearing",
+      "warranty_months": 12,
+      "payload_json": "{}"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "sku": "SKU-BRG-6205",
+      "version": 1,
+      "name": "深沟球轴承 6205",
+      "category": "bearing",
+      "warranty_months": 12,
+      "payload_json": "{}"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "sku": "SKU-SRV-A2",
+      "version": 1,
+      "name": "伺服电机 A2",
+      "category": "drive",
+      "warranty_months": 24,
+      "payload_json": "{}"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "sku": "SKU-SRV-A2",
+      "version": 1,
+      "name": "伺服电机 A2",
+      "category": "drive",
+      "warranty_months": 24,
+      "payload_json": "{}"
+    }
+  ],
+  "policy_rule": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-001",
+      "version": 1,
+      "title": "无理由退货期（30 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 30, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-001",
+      "version": 2,
+      "title": "无理由退货期（收紧至 7 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"changed_from_v1\": \"no_reason_days 30 -> 7\", \"deduct_fee\": \"0\", \"no_reason_days\": 7, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-002",
+      "version": 1,
+      "title": "质保期内质量问题全额退",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-002",
+      "version": 2,
+      "title": "质保期内质量问题全额退（增质检前置）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"changed_from_v1\": \"新增 require_inspection 前置\", \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"require_inspection\": true, \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-003",
+      "version": 1,
+      "title": "人为损坏免责（需图片举证）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"artificial_damage\"]}, \"deduct_fee\": \"0\", \"effect\": \"exclude\", \"evidence_source\": \"customer_evidence\", \"min_evidence_count\": 1, \"refund_ratio\": \"0\", \"requires_evidence_kinds\": [\"image\"], \"rule_kind\": \"artificial_damage_exclusion\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-003",
+      "version": 2,
+      "title": "人为损坏免责（举证收紧：图片或视频 ≥2）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"artificial_damage\"]}, \"changed_from_v1\": \"min_evidence_count 1 -> 2，kinds 增加 video\", \"deduct_fee\": \"0\", \"effect\": \"exclude\", \"evidence_source\": \"customer_evidence\", \"min_evidence_count\": 2, \"refund_ratio\": \"0\", \"requires_evidence_kinds\": [\"image\", \"video\"], \"rule_kind\": \"artificial_damage_exclusion\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-004",
+      "version": 1,
+      "title": "经销渠道差异（增渠道商核销，区域经理审批）",
+      "body": "{\"approver_role\": \"region_manager\", \"channel_kind\": \"dealer\", \"deduct_fee\": \"0\", \"extra_tasks\": [{\"owner_role\": \"refund_channel\", \"task_key\": \"dealer_writeoff\", \"title\": \"渠道商核销\"}], \"refund_ratio\": \"1\", \"rule_kind\": \"channel_variance\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "ch-dealer",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-004",
+      "version": 2,
+      "title": "经销渠道差异（核销 + 双人审批）",
+      "body": "{\"approver_role\": \"region_manager\", \"changed_from_v1\": \"新增 dual_approval\", \"channel_kind\": \"dealer\", \"deduct_fee\": \"0\", \"dual_approval\": true, \"extra_tasks\": [{\"owner_role\": \"refund_channel\", \"task_key\": \"dealer_writeoff\", \"title\": \"渠道商核销\"}], \"refund_ratio\": \"1\", \"rule_kind\": \"channel_variance\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "ch-dealer",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-001",
+      "version": 1,
+      "title": "无理由退货期（7 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 7, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-001",
+      "version": 2,
+      "title": "无理由退货期（放宽至 15 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"changed_from_v1\": \"no_reason_days 7 -> 15\", \"deduct_fee\": \"0\", \"no_reason_days\": 15, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-002",
+      "version": 1,
+      "title": "质保期内质量问题全额退",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-002",
+      "version": 2,
+      "title": "质保期内质量问题按折旧退（0.9）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"changed_from_v1\": \"refund_ratio 1 -> 0.9（引入折旧）\", \"deduct_fee\": \"0\", \"refund_ratio\": \"0.9\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-003",
+      "version": 1,
+      "title": "人为损坏免责（需图片举证）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"artificial_damage\"]}, \"deduct_fee\": \"0\", \"effect\": \"exclude\", \"evidence_source\": \"customer_evidence\", \"min_evidence_count\": 1, \"refund_ratio\": \"0\", \"requires_evidence_kinds\": [\"image\"], \"rule_kind\": \"artificial_damage_exclusion\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-003",
+      "version": 2,
+      "title": "人为损坏免责（需图片举证 + 第三方报告）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"artificial_damage\"]}, \"changed_from_v1\": \"新增 third_party_report_required\", \"deduct_fee\": \"0\", \"effect\": \"exclude\", \"evidence_source\": \"customer_evidence\", \"min_evidence_count\": 1, \"refund_ratio\": \"0\", \"requires_evidence_kinds\": [\"image\"], \"rule_kind\": \"artificial_damage_exclusion\", \"third_party_report_required\": true}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-004",
+      "version": 1,
+      "title": "经销渠道差异（增渠道商核销，区域经理审批）",
+      "body": "{\"approver_role\": \"region_manager\", \"channel_kind\": \"dealer\", \"deduct_fee\": \"0\", \"extra_tasks\": [{\"owner_role\": \"refund_channel\", \"task_key\": \"dealer_writeoff\", \"title\": \"渠道商核销\"}], \"refund_ratio\": \"1\", \"rule_kind\": \"channel_variance\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "ch-dealer",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-b",
+      "rule_no": "AS-004",
+      "version": 2,
+      "title": "经销渠道差异（核销限 T+3）",
+      "body": "{\"approver_role\": \"region_manager\", \"changed_from_v1\": \"核销任务增加 sla_days=3\", \"channel_kind\": \"dealer\", \"deduct_fee\": \"0\", \"extra_tasks\": [{\"owner_role\": \"refund_channel\", \"sla_days\": 3, \"task_key\": \"dealer_writeoff\", \"title\": \"渠道商核销\"}], \"refund_ratio\": \"1\", \"rule_kind\": \"channel_variance\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "ch-dealer",
+      "sku_scope": "*"
+    }
+  ]
+}

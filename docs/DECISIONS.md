@@ -44,3 +44,14 @@
 
 - Claude Code 的文件权限检查只认 `Edit(path)`；`Write(...)` / `NotebookEdit(...)` 形式会被解析后丢弃并在启动时告警。`Edit()` 一条即覆盖所有写文件工具，deny 段里成对写的 `Write()` 属冗余。
 - hook command 用 `$CLAUDE_PROJECT_DIR` 拼路径，会话必须从仓库根启动，否则守卫不挂载（本次上一轮从 `~` 启动即此原因）。
+
+## fix-1
+
+受保护路径判定 + 补丁集出参收敛（`maos/skills/builtin/code_repo_patch.py`、`maos/tests/test_contracts.py`）。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | fix-1 | 派单只说「路径规范化后按 `/` 分段匹配」，没定口径：大小写要不要归一、`./` 前缀怎么算、`tests` 是只挡仓库根还是任意层级 | 四项统一按**任意层级的分段相等**判定；规范化做四件事：反斜杠→斜杠、`posixpath.normpath` 折叠 `.`/`..`/重复斜杠、滤掉空段与残留 `..` 段（含前导斜杠）、`casefold` 归一大小写 | ①层级取任意层：本仓库测试就在 `maos/tests/`，`tests` 只挡仓库根等于这条规则对本仓库完全失效，而它挡的恰恰是「改测试让测试通过」；`secrets`/`.github`/`infra` 同理 —— `app/secrets/prod.env` 不会因为不在仓库根就不是密钥。②大小写归一：本机 APFS 默认大小写不敏感，`Secrets/prod.env` 与 `secrets/prod.env` 在磁盘上是同一个文件，按大小写敏感判定等于留一个一字之差的绕过口。③`./`、`..`、前导斜杠、反斜杠四种写法指向同一个文件，少归一哪一种哪一种就是绕过口 —— 其中前导斜杠最说不过去：声明里写的就是 `/infra`，模型照抄一遍反而放行。④分段**相等**而非前缀或子串：`infrastructure` 含 `infra`、`contests` 含 `tests`，误伤要从判定式上消掉，不是靠往清单里加例外 |
+| 2026-08-28 | fix-1 | 常量语义从「路径前缀」变成「目录名」，旧名 `PROTECTED_PATHS` 会继续误导 —— 这次 bug 的根因正是清单按前缀写（`"/infra"`、`"tests/"`）、判定式却当子串用 | 改名 `PROTECTED_PATHS` → `PROTECTED_SEGMENTS`，值去掉全部斜杠，并在清单注释里写明「存目录名不存前缀」 | 名字不改，下一个人还会按「路径」往里加条目（再写一个 `"/deploy"`），而分段匹配下带斜杠的条目永远匹配不上 —— 不报错、只静默放行，与本次三条漏拦是同一个失效形态，且同样能一直绿着。改名不属铁律 4 的「顺手优化」：语义是被本轮修法改掉的，名字必须跟着走。代价是 `docs/phases/phase-2.md:28` 的「沿用 PROTECTED_PATHS」成了悬空引用，已记 BACKLOG `## fix-1` |
+| 2026-08-28 | fix-1 | `contract.security_boundary` 原文写「补丁路径**白名单**」，实现一直是拒绝清单（黑名单）；派单要求把声明与实现对齐 | 改成「受保护路径判定：补丁路径规范化后按 `/` 分段，任一段命中 `PROTECTED_SEGMENTS`（infra / .github / secrets / tests，任意层级、大小写不敏感）立即抛 `ProtectedPathViolation`」；SYSTEM prompt 同步改成「禁止触碰任意层级下名为 infra、.github、secrets、tests 的目录」 | Agent 不读 skill 实现、只读 contract 决定要不要调和怎么兜底（`skills/contract.py` 抬头），把黑名单说成白名单，读契约的人会以为「没列进去的就不许改」，与真实行为正好相反。顺带把层级与大小写口径写进声明本身 —— 下次要改判定式，先得改这句话，声明与实现不容易再各漂各的 |
+| 2026-08-28 | fix-1 | 派单第 3 条要求把 `setdefault` 换成显式类型收敛，但没说合法取值要不要一起校验（`self_check: {"build": "fail"}` 要不要在 skill 侧拦下） | 只收敛**类型**，不碰取值：非 dict 的 `self_check` 置 `{}`、非 str 的 `summary` 置 `""`，合法 dict 原样透传；另加一条断言 `test_valid_self_check_passes_through_untouched` 把「不许判取值」钉死 | 判 build/lint 是不是 pass 是 ReviewerGate 的活（本文件抬头原就写明），skill 抢着判会让 Gate 永远见不到失败样本、场景 2 的返工链当场断掉。但类型必须收敛 —— 非 dict 传下去 Gate 会崩在 `.get` 上，那不叫「留给 Gate 判」，那叫让 Gate 没机会判。两者边界就在「类型 vs 取值」这一刀上，容易被后人当成同一件事一起放宽，故补断言 |

@@ -167,8 +167,12 @@ def test_private_modules_are_skipped(builtin_probe_dir):
 
 # --- C-2 AGENT_POOL 注册口径 -----------------------------------------------
 def test_agent_pool_is_exactly_coding():
-    assert sorted(AGENT_POOL) == ["coding"], (
-        "AGENT_POOL 口径变了。ManagerAgent 刻意不挂 @register（它不经 worker 分发），"
+    assert sorted(AGENT_POOL) == [
+        "architecture", "coding", "requirement", "reviewer", "testing"
+    ], (
+        "AGENT_POOL 口径变了。Phase 2 起是五个角色：coding 加本轮补齐的 "
+        "requirement / architecture / testing / reviewer。"
+        "ManagerAgent 刻意不挂 @register（它不经 worker 分发），"
         "不要'顺手'注册它；新增 Agent 请只投文件。"
     )
     assert AGENT_POOL["coding"] is CodingAgent

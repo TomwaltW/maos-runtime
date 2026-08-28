@@ -1,0 +1,259 @@
+# generated at 2026-08-28T10:39:59.857942+00:00 from d79d815b1936888fa316c6eef1513fbd18780f60
+{
+  "scenario": "R5",
+  "exit_code": 0,
+  "wall_ms": 240,
+  "plan_count": 3,
+  "plans": [
+    {
+      "plan_id": "plan_dab317f97d0c",
+      "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
+      "state": "DONE",
+      "trace_id": "trace_0ce08eb79f73",
+      "tasks": [
+        {
+          "task_id": "task-hist-intake",
+          "role": "refund_intake",
+          "title": "受理多源退款诉求并聚合证据",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-hist-policy",
+          "role": "refund_policy",
+          "title": "按下单锁定的政策版本裁定退款资格",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-hist-finance",
+          "role": "refund_finance",
+          "title": "核算退款金额并写财务分录",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-hist-payment",
+          "role": "refund_payment",
+          "title": "发起退款并观察网关终态",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-hist-notify",
+          "role": "refund_intake",
+          "title": "通知客户退款结果",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 52,
+        "event_count": 38,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 21,
+          "SkillInvoked": 8,
+          "RefundBizStatusChanged": 4,
+          "ToolInvoked": 3
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 8,
+        "tool_invocations": 3
+      },
+      "business_outcome": {
+        "status": "succeeded",
+        "basis": "external_evidence",
+        "plan_state": "DONE",
+        "external_evidence": [
+          {
+            "kind": "payment_observation",
+            "case_id": "case-r5-hist",
+            "tenant_id": "tnt-mfg-001",
+            "request_id": "gw_836b0ff5ebe44680",
+            "gateway_code": "10000",
+            "observed_state": "settled",
+            "actor_invocation_id": "aab4e2841dbd4ad598630319d32c8cf5",
+            "provenance": "payment_observation"
+          }
+        ],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    },
+    {
+      "plan_id": "plan_822e11174dbb",
+      "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
+      "state": "FAILED",
+      "trace_id": "trace_1ea6dad01967",
+      "tasks": [
+        {
+          "task_id": "task-nokb-intake",
+          "role": "refund_intake",
+          "title": "受理多源退款诉求并聚合证据",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-nokb-policy",
+          "role": "refund_policy",
+          "title": "按下单锁定的政策版本裁定退款资格",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-nokb-payment",
+          "role": "refund_payment",
+          "title": "发起退款并观察网关终态",
+          "state": "FAILED",
+          "attempt": 3,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-nokb-notify",
+          "role": "refund_intake",
+          "title": "通知客户退款结果",
+          "state": "PENDING",
+          "attempt": 0,
+          "risk_level": "L",
+          "effect_risk": "L"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 36,
+        "event_count": 25,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 17,
+          "SkillInvoked": 6
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 6,
+        "tool_invocations": 0
+      },
+      "business_outcome": {
+        "status": "failed",
+        "basis": "plan_failed",
+        "plan_state": "FAILED",
+        "external_evidence": [],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    },
+    {
+      "plan_id": "plan_f181f446c84b",
+      "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
+      "state": "DONE",
+      "trace_id": "trace_74585f789c16",
+      "tasks": [
+        {
+          "task_id": "task-kb-intake",
+          "role": "refund_intake",
+          "title": "受理多源退款诉求并聚合证据",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-kb-policy",
+          "role": "refund_policy",
+          "title": "按下单锁定的政策版本裁定退款资格",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task_08c0e9536d0d",
+          "role": "refund_finance",
+          "title": "核算退款金额并写财务分录",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-kb-payment",
+          "role": "refund_payment",
+          "title": "发起退款并观察网关终态",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-kb-notify",
+          "role": "refund_intake",
+          "title": "通知客户退款结果",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 80,
+        "event_count": 38,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 21,
+          "SkillInvoked": 8,
+          "RefundBizStatusChanged": 4,
+          "ToolInvoked": 3
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 8,
+        "tool_invocations": 3
+      },
+      "business_outcome": {
+        "status": "succeeded",
+        "basis": "external_evidence",
+        "plan_state": "DONE",
+        "external_evidence": [
+          {
+            "kind": "payment_observation",
+            "case_id": "case-r5-kb",
+            "tenant_id": "tnt-mfg-001",
+            "request_id": "gw_9582ab8415884192",
+            "gateway_code": "10000",
+            "observed_state": "settled",
+            "actor_invocation_id": "31c0d960aca7442ab2a2cec37a1750ca",
+            "provenance": "payment_observation"
+          }
+        ],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    }
+  ],
+  "totals": {
+    "event_count": 101,
+    "rework_count": 0,
+    "replan_count": 0
+  }
+}

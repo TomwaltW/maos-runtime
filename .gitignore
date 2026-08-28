@@ -17,3 +17,13 @@ artifacts/*.json
 # .env.* 会把示例文件一起吞掉，这两行放行模板本体（模板里只准有占位符，不准有真 key）
 !.env.example
 !deploy/.env.example
+
+# 测试探针的兜底。正常路径已经不会再往源码树写文件了 —— fixture 改用 tmp_path
+# 注入 builtin.__path__，探针落在临时目录里。这两行挡的是别的来路：旧分支切过来
+# 带进的残留、以及在本次改动之前被 Ctrl-C 杀掉留下的文件，免得它们污染 git status。
+#
+# 只写死这两个确切文件名，不写 probe_* 通配：builtin/ 是「投放即注册」的目录，
+# 通配会把将来某个真叫 probe_xxx 的 skill 一起吞掉，而那种错是静默的 ——
+# 文件在磁盘上、测试也绿，只是永远进不了版本库，换台机器就凭空少一个 skill。
+maos/skills/builtin/probe_autodiscovery_tmp.py
+maos/skills/builtin/_private_probe.py

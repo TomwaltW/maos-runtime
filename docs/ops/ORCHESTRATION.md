@@ -3,7 +3,7 @@
 维护者：编排总管会话（唯一可写本文件的会话；业务代码一律派单给子会话）。
 事实源优先级：`docs/parallel/contracts.md`（Task-0 产出后）> 本看板 > `REVIEW.md` > `docs/BACKLOG.md`。
 任务定义原始出处：`docs/superpowers/plans/parallel-build-plan.md`（gitignored 操作剧本，下称 plan）+ REVIEW.md 审计修正。
-最后更新：2026-08-27 20:49 · §3 数字校正（HEAD `fe6cfff`）。本次动作：§3 三条结论性断言改为实测值（pytest 101、HEAD + 15 commits、origin 同步），过程记录一行未动。执行者非编排总管会话，人类当场授权。上一次实质动作见 17:35 收口（§7）。
+最后更新：2026-08-28 · **P2 四轨派单（Task-B/C/E/D 同时 DISPATCHED）**。本次动作：§0 状态刷新（Task-A 补记 MERGED）、§1 增 D-04（跨轨阶段性断言归属裁决）、§2 G3 复测过闸、§3 探针刷到 `59196ba`、§7 补三行、§8 增 P2 派单存档指针。执行者为编排总管会话（从 `~` 启动，**hook 未挂载**，见 §3 末条）。上一次实质动作见 2026-08-27 20:49（§7）。
 前任编排会话（从 `~` 启动、hook 未挂载）产出的 Task-0 派单 v1 只在其会话输出里、未存档即失联，作废；本会话重拟为 v2（§8）。
 
 状态机：`NOT_STARTED → DISPATCHED → DELIVERED → VERIFIED → MERGED`；`BLOCKED` = 需人类介入。
@@ -16,12 +16,12 @@
 | 轨 | 状态 | 一句话 |
 |---|---|---|
 | Task-0 | **MERGED** | 2026-08-27 17:00 收口于 `0d0ccfe`，在主检出直接落地（未开分支）。冻结契约落 `docs/parallel/contracts.md`（八条 + 附录 A/B/C/D），pytest 100 passed。旧执行线 `task/0-contracts`@`5c70140` **已作废**：其正文增量已由 `e08cd49` 逐条并入本文件，分支已删、`.claude/worktrees/task-0` 已清。G2 过闸，五轨可开 |
-| Task-B | NOT_STARTED | 等 G2（Task-0 MERGED）；⚠️ G3 已回退（09:57 复测 daemon 不可达），派 B 前需重启 Docker 并复测 |
-| Task-A | NOT_STARTED | 等 G2 |
-| Task-C | NOT_STARTED | 等 G2 |
-| Task-E | NOT_STARTED | 等 G2 |
-| Task-D | NOT_STARTED | 等 G2 |
-| Task-Ω | NOT_STARTED | 等 A–E 全部 MERGED（串行收口） |
+| Task-A | **MERGED** | 2026-08-28 05:12 `f9bcd50` 并入主干、`59196ba` 记取舍。skill 层 + 真模型分支 + 两个 builtin skill + coding 经 invoker，另含五轨 fix 合流。**A 先于 B 落地**（派 B 时 B 尚未开工），不影响 D-03 余下顺序 |
+| Task-B | **DISPATCHED** | 2026-08-28 派单存档 `review/dispatch-B.md`；worktree `.worktrees/task-b` @ `task/b-sandbox`。G3 已复测过闸 |
+| Task-C | **DISPATCHED** | 2026-08-28 派单存档 `review/dispatch-C.md`；worktree `.worktrees/task-c` @ `task/c-agents` |
+| Task-E | **DISPATCHED** | 2026-08-28 派单存档 `review/dispatch-E.md`；worktree `.worktrees/task-e` @ `task/e-matrix` |
+| Task-D | **DISPATCHED** | 2026-08-28 派单存档 `review/dispatch-D.md`；worktree `.worktrees/task-d` @ `task/d-governance` |
+| Task-Ω | NOT_STARTED | 等 B/C/E/D 全部 MERGED（串行收口） |
 
 ---
 
@@ -31,7 +31,8 @@
 |---|---|---|
 | D-01 | AGENT_POOL 注册口径 | `agents/__init__.py` 用 pkgutil 自动发现，Task-0 一次改完并冻结；同时删除 `main.py:16` 的手动注册行。理由：`worker.py:34` 在构造时读 `AGENT_POOL.items()`，注册必须早于 `build()`，包级 import 是唯一保证时机的位置；与 `skills/builtin/` 同一套 pkgutil 模式，一个概念不要两种写法。已否决：各 scenario 顶部 import（重复且易漂移）。 |
 | D-02 | build() 签名 | 冻结为 `build(script, *, matrix=False, model=None)`；`model=None` 时按 script 构造 `ScriptedModelClient`。返回值六元组 `(store, bus, cp, model, worker, gate)` 顺序一并冻结（REVIEW High-2 的规格缺失由此补齐）。纯加法，不破坏现有三处六元组解包。已否决：scenario_2 内联拼装（留第二条构造路径必漂）。 |
-| D-03 | 合并顺序 | **Task-0 → B → A → C → E → D → Ω**。B 先落地 sandbox 真实现，同时解掉 C（干跑闸）与 D（真实还原）的越界依赖。注意此顺序覆盖 plan §五的旧顺序（0→A→B→C→E→D→Ω），以 D-03 为准。 |
+| D-03 | 合并顺序 | **Task-0 → B → A → C → E → D → Ω**。B 先落地 sandbox 真实现，同时解掉 C（干跑闸）与 D（真实还原）的越界依赖。注意此顺序覆盖 plan §五的旧顺序（0→A→B→C→E→D→Ω），以 D-03 为准。**A 已于 08-28 先行 MERGED**（派 B 时 B 未开工），余下顺序不变：B → C → E → D → Ω。 |
+| D-04 | 跨轨「阶段性断言」归属 | `maos/tests/test_registry_autodiscovery.py` 原则上四轨都不碰，但其中两条断言是写死在 Task-0 那个时点的，各轨落地后必红：`:170` `sorted(AGENT_POOL) == ["coding"]` 归 **Task-C**；`:257` `test_build_matrix_falls_back_to_inner_bus` 归 **Task-E**。裁决：点名开两个口子，**只许改被点名的那一处**，其余一行不动、不许 reformat；两处相距 87 行，C 先 E 后合并 git 可自动解。已否决：①由编排预先改 —— 改法取决于落地形态，改早了是瞎猜；②让它红着合并 —— 红测试进主干等于放弃回归闸。 |
 
 ---
 
@@ -42,18 +43,21 @@
 | G0 | REVIEW.md 顶部状态标记已刷新（五条已完成项标 ✅） | ✅ 2026-08-27；**2026-08-27 17:35 该段已整块下线**（Task-0 已 MERGED，不再维护第三层过时快照），REVIEW.md 顶部改为一行指向本看板 |
 | G1 | D-01 / D-02 已注入本看板冻结决策表 | ✅ 2026-08-27（§1） |
 | G2 | Task-0 已 MERGED，且 contracts.md 存在、条目齐全（七条 + C-8 gitignore = 八条，见 §5） → 未过不许开任何 worktree | ✅ **2026-08-27 17:00 过闸**（Task-0 MERGED @ `0d0ccfe`；`docs/parallel/contracts.md` 八条齐全 + 附录 A/B/C/D；pytest 100 绿） |
-| G3 | `docker info` 已执行、结果已写进环境探针 → 未过不许派 Task-B | ❌ 回退（09:57 复测 exit=1 daemon 不可达，见 §3；早间 ✅ 已失效。派 B 前由人类启动 Docker Desktop 后重测） |
+| G3 | `docker info` 已执行、结果已写进环境探针 → 未过不许派 Task-B | ✅ **2026-08-28 复测过闸**（`docker info` exit=0，Docker Desktop 在跑；`docker image ls maos-sandbox` 无该镜像，归 Task-B 第 1 步 build）。08-27 09:57 的 ❌ 回退由此解除 |
 | G4 | 合并严格按 D-03 顺序；前一轨未 VERIFIED 不许合下一轨 | 持续执行中 |
 
 ---
 
 ## 3. 环境探针（2026-08-27 编排会话实测）
 
-- `docker info` 早间 → exit=0 daemon 可达；**09:57 复测（maos-da）→ exit=1，`Cannot connect to the Docker daemon`，Docker Desktop 已不在运行。G3 回退 ❌**，派 Task-B 前由人类启动 Docker Desktop 后重测（client 29.6.1，context desktop-linux）。
-- `python3 -m pytest maos/tests -q`（仓库根）→ **101 passed**（2026-08-27 20:49 实测于 `fe6cfff`）。构成实测：test_contracts 9 + test_contracts_frozen 2 + test_guard_bash 73 + test_registry_autodiscovery 17 = 101。**此前此处的 101 系「100 存量 + 1 新增」推算、未实测**，且构成里 guard_bash 记 72（四项和为 100，与 101 对不上），今按实测改写。09:57 的 83、plan §三「11 条测试全绿」均已过时。
-- HEAD = `fe6cfff`（REVIEW 审计基线 `f104161` + 15 commits，`git rev-list --count f104161..fe6cfff` 实测；`76ea101` 之后的六个见 §7 补记）。branch `goai-restructure` 与 origin **已同步** —— 2026-08-27 20:49 `git fetch origin goai-restructure` 后 `origin/goai-restructure` = `fe6cfff`，与本地 HEAD 一致。
+- `docker info` → **2026-08-28 编排会话复测 exit=0**，daemon 可达，**G3 过闸**；`docker image ls maos-sandbox` → 无该镜像（归 Task-B 第 1 步 build）。历史：08-27 早间 exit=0、09:57 复测 exit=1（`Cannot connect to the Docker daemon`）致 G3 回退 ❌，该回退今已解除。
+- `python3 -m pytest maos/tests -q`（仓库根）→ **134 passed**（2026-08-28 编排会话实测于 `59196ba`）；同基线 `python3 run.py` → exit=0；`git diff --stat maos/contracts/` 为空（冻结契约未被动过）。以下为历史值，保留不删：
+  - **101 passed**（2026-08-27 20:49 实测于 `fe6cfff`）。构成实测：test_contracts 9 + test_contracts_frozen 2 + test_guard_bash 73 + test_registry_autodiscovery 17 = 101。**此前此处的 101 系「100 存量 + 1 新增」推算、未实测**，且构成里 guard_bash 记 72（四项和为 100，与 101 对不上），今按实测改写。09:57 的 83、plan §三「11 条测试全绿」均已过时。
+- HEAD = `59196ba`（2026-08-28 实测）。branch `goai-restructure` **本地领先 origin 24 个提交**（`git status -sb` → `ahead 24`）—— track-a 与五轨 fix 的合并全部只在本地，**未 push**。
+  - 历史：2026-08-27 20:49 时 HEAD = `fe6cfff`（REVIEW 审计基线 `f104161` + 15 commits；`76ea101` 之后的六个见 §7 补记），与 origin 同步。
 - 三重守卫：deny 13 条 + PreToolUse hook（`scripts/guard_bash.py`）+ 指纹（`.contracts.lock` 已入库 `9d3fe4d`）= **3/3 生效**（`docs/BACKLOG.md:7` 实测记录）。
 - `maos/tools/sandbox.py` 桩已存在（`9d3fe4d`），两签名与 plan §二.14 逐字段一致，NotImplementedError 桩。
+- ⚠️ **本轮（2026-08-28）编排会话同样从 `~` 启动，hook 未挂载** —— 与前任同一形态（BACKLOG.md:8）。故本轮编排只写 `review/` 派单与本看板，**未碰任何业务代码**；派单文件当场存档，不重蹈前任「派单只在会话输出里、未存档即失联」的覆辙。
 - 前任编排会话曾从 `~` 启动（hook 未挂载，BACKLOG.md:8）。**现任编排会话（maos-da）从仓库根启动，09:55 实测 Read `scripts/guard_bash.py` 被拦 → hook 对编排会话生效**。「一切子会话必须从仓库根 / worktree 根启动 + 开工先探守卫」仍是派单硬要求。
 - ✅ **`.claude/settings.json` 已入库**（`3a36f37`，2026-08-27 13:08）→ §六.3 收口完成，新开的 worktree 里 deny + hook 两重守卫随仓库分发，不再只剩指纹一重。`settings.local.json` 属本机私有，仍不入库。
 - **保护面已收口（2026-08-27 17:35）**：`docs/parallel/contracts.md` 与 `maos/artifacts.py` 加进 `scripts/guard_bash.py` 的 `PROT_PATHS`，同时进 `READ_OK` —— **写拦、读放行**（执行器要照着契约写代码）。这推翻了 §7 里 14:08 那条「contracts.md 不在守卫面」的记录，人类终端 fallback 那套 cp 手法不再需要。`CLAUDE.md`「必须问的四类」第 1 条已同步扩为同样四条路径。把守测试：`maos/tests/test_guard_bash.py::test_contract_docs_and_artifacts_are_write_blocked_read_allowed`。
@@ -167,12 +171,32 @@ REVIEW.md 全部「必须写进 contracts.md / 由 Task-0 定死」修正项的�
 | 2026-08-27 17:00 | Task-0 | commit `0d0ccfe` `fix(p0): G2 收口四处缺口 —— compensation mode 锁死 reverse + 三条冻结闸` | 补记；**Task-0 → MERGED，G2 过闸**，pytest 100 passed。旧分支 `task/0-contracts` 已删、`.claude/worktrees/task-0` 已清 |
 | 2026-08-27 17:35 | — | 保护面收口 + 三份文档对齐 `0d0ccfe`：`docs/parallel/contracts.md`、`maos/artifacts.py` 进 `PROT_PATHS`+`READ_OK`（写拦读放行，新增一条把守测试）；CLAUDE.md 必须问四类第 1 条扩为同样四条路径；relock 补进 `knowledge` 表指纹（5→6）；REVIEW.md「状态标记」20 行下线，改为一行指向本看板 | pytest **101 passed**（100 存量 + 1 新增）。守卫盲区复验：`-c` 内联载荷 exit=2，已拦，非盲区 |
 | 2026-08-27 20:49 | — | §3 环境探针数字校正：pytest 由「100 存量 + 1 新增」推算值改为 **101 passed** 实测（构成 `test_guard_bash` 72→73，四项和 100→101 对齐）；HEAD `0d0ccfe` + 14 commits → `fe6cfff` + 15 commits（`git rev-list --count f104161..fe6cfff` 实测）；「与 origin 同步」补 fetch 实测背书；`:6` 更新戳同步 | **由非编排总管会话执行，人类当场授权**（本文件第 3 行的单写者规则）。`grep -n '0d0ccfe'` 复验：§3 内 0 处，全文剩 5 处（`:18` `:44` `:67` `:167` `:168`）均为过程记录，按「结论性断言改、过程记录留」口径原样保留 |
+| 2026-08-28 05:12 | Task-A | commit `f9bcd50` `merge(p1): track-a 并入主干 —— skill 层 + 五轨 fix 全量合流` + `59196ba` `docs(p1): DECISIONS 记取舍` → **Task-A MERGED**；合并后实测 pytest **134 passed**、`run.py` 四场景 exit=0、`maos/contracts/**` 与 `.contracts.lock` 零改动 | 补记。同会话另做收尾：删 6 个空转 worktree、`review-brief.md` 从 `docs/` 归位 `review/`，主工作树已干净。执行者非编排总管会话 |
+| 2026-08-28 | — | 编排接手（本会话，从 `~` 启动、hook 未挂载）：复跑探针 pytest **134** / `run.py` exit=0 / `docker info` **exit=0（G3 过闸）** / `contracts/` 零改动；核出两条阶段性断言将被 C、E 落地打红 → 立 **D-04** 裁决 | 四项探针均为本会话当场实测，非转述 |
+| 2026-08-28 | B/C/E/D | **四轨同时派单，转 DISPATCHED**：建 4 个 worktree（`.worktrees/task-b\|c\|e\|d`，均基线 `59196ba`），派单存档 `review/dispatch-common-p2.md` + `dispatch-{B,C,E,D}.md`，粘贴版 `paste-{B,C,E,D}.md`（见 §8） | 顺带清理：`.worktrees/task-b` 原挂 `track-b`@`fe6cfff`，实测 `git merge-base --is-ancestor track-b goai-restructure` 成立、工作区无未入库产物，确认无遗留工作后移除重建。`review/` 由 `.git/info/exclude` 排除、不入库 → 新 worktree 里看不到派单文件，**靠粘贴交付**，与上一轮五轨同一手法 |
 
 ---
 
 ## 8. 派单存档
 
 > 本段是派单**原文存档**，内含的「83 基线」「contracts.md 在仓库根」等数字与口径属当时快照，**不再更新**；现状一律看 §0 / §2 / §3。
+
+### P2 四轨派单（2026-08-28 · Task-B / C / E / D，四轨同时开工）
+
+正文不内联在此 —— 存于 `review/`（该目录由 `.git/info/exclude` 排除，**不入库**，故新建的 worktree 里看不到，靠粘贴交付）：
+
+| 文件 | 内容 |
+|---|---|
+| `review/dispatch-common-p2.md` | 四轨共用抬头：基线 `59196ba` / 134 passed / `docker info` exit=0、事实源优先级、边界七条、docs 尾部追加规则、守卫两条、**D-04 裁决表**、回执格式 |
+| `review/dispatch-B.md` | 容器沙箱 2 ToolPort + 演示靶场 + `test.verify` |
+| `review/dispatch-C.md` | 四 Agent + Gate 判据改读真实测试报告 + 补偿干跑闸 + 场景 1/2 新 DAG |
+| `review/dispatch-E.md` | Matrix 镜像总线 + 房间审批 + `.env.example` |
+| `review/dispatch-D.md` | 聚合/知识 skill + 补偿执行器 + 确定性 replan + 场景 5 |
+| `review/paste-{B,C,E,D}.md` | 共用抬头 + 各轨正文的**粘贴版**（开子会话时整份贴进去） |
+
+- 合并顺序：D-03 去掉已 MERGED 的 A → **B → C → E → D → Ω**。
+- 文件所有权互斥性已核（contracts.md 附录 D 速查表）：sandbox.py→B；gate.py + scenario_1/2→C；hiclaw/** + 根 .env.example→E；control_plane.py + plan_finalizer + scenario_5→D。四轨独占清单无交集。
+- 唯二的共享面：①`docs/DECISIONS.md` / `docs/BACKLOG.md` —— 强制尾部另起 `## task-<X>` 小节，纯追加，git 自动解；②`maos/tests/test_registry_autodiscovery.py` 的两条阶段性断言 —— 按 D-04 点名开口，C 改 `:170`、E 改 `:257`，相距 87 行。
 
 ### Task-0 派单 v2.1（2026-08-27 · 等 T-01 拍板 + 确认；v2 作废）
 

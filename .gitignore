@@ -27,3 +27,21 @@ artifacts/*.json
 # 文件在磁盘上、测试也绿，只是永远进不了版本库，换台机器就凭空少一个 skill。
 maos/skills/builtin/probe_autodiscovery_tmp.py
 maos/skills/builtin/_private_probe.py
+
+# ---------------------------------------------------------------- 证据与运行产物
+#
+# evidence/ 本身**入库**：它就是交付物（scripts/make_evidence.py 的产出，
+# 每个文件首行带 ISO8601 + git sha 的出处）。所以这里没有 evidence/ 这一行。
+#
+# 库文件不入库。evidence/scenario-<N>/maos.db 每次生成都是新的，
+# 二进制、几十 KB 起、且完全可由 make_evidence.py 重建 —— 提交它只会让
+# 每次重跑都产生一坨没法 review 的 diff。评委的流程是
+# `make_evidence.py` 再 `verify.py`，库在第一步就有了。
+*.db
+*.sqlite
+*.sqlite3
+
+# 沙箱临时工作目录。缺省落在系统临时目录（tempfile.mkdtemp(prefix="maos-sb-")），
+# 但 MAOS_SANDBOX_WORKDIR 指到仓库里时会在这儿冒出来，挡一道。
+maos-sb-*/
+.tmp-scenario-*/

@@ -1,0 +1,51 @@
+# generated at 2026-08-28T08:33:04.698221+00:00 from c539564900ebbcade7a62bedcbf556190234db3a
+
+====================================================================
+场景 1：正常闭环（需求 -> 架构 -> 编码 -> 测试）
+====================================================================
+Plan: DONE  |  修复 demo/app 的 token 校验缺失
+  · 归一化目标并给出验收标准                         DONE             attempt=1 risk=L
+  · 产出架构契约                               DONE             attempt=1 risk=L
+  · 修复 demo/app 的 token 校验缺失             DONE             attempt=1 risk=L
+  · 沙箱回归验证                               DONE             attempt=1 risk=M
+  状态迁移轨迹:
+    s1-req  PENDING          -> DISPATCHED       [dispatch]
+    s1-req  DISPATCHED       -> RUNNING          [claim]
+    s1-req  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    s1-req  AWAITING_REVIEW  -> DONE             [gate_pass]
+    s1-arch  PENDING          -> DISPATCHED       [dispatch]
+    s1-arch  DISPATCHED       -> RUNNING          [claim]
+    s1-arch  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    s1-arch  AWAITING_REVIEW  -> DONE             [gate_pass]
+    s1-code  PENDING          -> DISPATCHED       [dispatch]
+    s1-code  DISPATCHED       -> RUNNING          [claim]
+    s1-code  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    s1-code  AWAITING_REVIEW  -> DONE             [gate_pass]
+    s1-test  PENDING          -> DISPATCHED       [dispatch]
+    s1-test  DISPATCHED       -> RUNNING          [claim]
+    s1-test  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    s1-test  AWAITING_REVIEW  -> DONE             [gate_pass]
+  Reviewer 语义审查: status=ok 结论=契约与补丁名实相符，回归全过，可放行
+INFO  maos.model   未配置 MAOS_LLM_BASE_URL/MAOS_LLM_API_KEY/MAOS_LLM_MODEL，降级为确定性 ScriptedModelClient（不发起任何网络请求）
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['architecture', 'coding', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_c0aa43bc7b09，共 4 个任务
+INFO  maos.cp      [s1-req] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [s1-req] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [s1-req] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [s1-req] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass'} -> pass
+INFO  maos.cp      [s1-req] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [s1-arch] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [s1-arch] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [s1-arch] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [s1-arch] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass'} -> pass
+INFO  maos.cp      [s1-arch] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [s1-code] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [s1-code] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [s1-code] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [s1-code] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass'} -> pass
+INFO  maos.cp      [s1-code] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [s1-test] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [s1-test] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [s1-test] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [s1-test] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass'} -> pass
+INFO  maos.cp      [s1-test] AWAITING_REVIEW -> DONE (gate_pass)

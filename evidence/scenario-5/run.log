@@ -1,0 +1,39 @@
+# generated at 2026-08-28T08:33:05.198785+00:00 from c539564900ebbcade7a62bedcbf556190234db3a
+场景 5：治理路径演示，无模型确定性复现
+多源信号聚合：聚合 8 条 findings -> 3 个 issue（合并重复 5 条）；blocker 1 / major 2 / minor 0
+
+====================================================================
+场景 5：治理路径（重规划）闭环
+====================================================================
+Plan: DONE  |  修复：支付回调未校验签名
+  · 支付回调接入（方案乙）                          DONE             attempt=2 risk=L
+  状态迁移轨迹:
+    task-s5-payment-001  PENDING          -> DISPATCHED       [dispatch]
+    task-s5-payment-001  DISPATCHED       -> RUNNING          [claim]
+    task-s5-payment-001  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s5-payment-001  AWAITING_REVIEW  -> REWORK           [gate_rework]
+    task-s5-payment-001  REWORK           -> PENDING          [requeue]
+    task-s5-payment-001  PENDING          -> DISPATCHED       [dispatch]
+    task-s5-payment-001  DISPATCHED       -> RUNNING          [claim]
+    task-s5-payment-001  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s5-payment-001  AWAITING_REVIEW  -> DONE             [gate_pass]
+  重规划次数: 1（上限 MAOS_MAX_REPLAN，默认 2，超限转人工不自旋）
+  知识沉淀: 3 条
+    [case] 修复：支付回调未校验签名 —— DONE
+    [rule] security 闸是本轮最常被卡的一道（2 次）
+    [rule] 治理动作留痕：重规划 1 次、补偿 0 次
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['architecture', 'coding', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_5f85222dc1d9，共 1 个任务
+INFO  maos.cp      [task-s5-payment-001] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s5-payment-001] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s5-payment-001] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s5-payment-001] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'fail', 'evidence': 'pass', 'compensation': 'pass'} -> rework
+INFO  maos.cp      [task-s5-payment-001] 单轮 blocker=2，触发重规划
+INFO  maos.cp      [task-s5-payment-001] AWAITING_REVIEW -> REWORK (gate_rework)
+INFO  maos.cp      [task-s5-payment-001] REWORK -> PENDING (requeue)
+INFO  maos.cp      [task-s5-payment-001] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s5-payment-001] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s5-payment-001] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s5-payment-001] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass'} -> pass
+INFO  maos.cp      [task-s5-payment-001] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.finalizer [plan_5f85222dc1d9] 复盘完成，沉淀 3 条

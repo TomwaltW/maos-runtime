@@ -23,16 +23,6 @@ SKILL_KB = "kb.retrieve"
 SECURITY_ERROR_PREFIX = "ProtectedPathViolation"
 
 
-def _ensure_builtin_skills() -> None:
-    """延迟触发 builtin 动态发现（C-1）。
-
-    刻意不放模块顶部：builtin 包会 import 全部内置 skill，其中任何一个若
-    import 了 maos.agents.*，模块级触发就会成环（agents -> builtin -> agents）。
-    在 run() 里触发时各模块都已装载完毕，成不了环；import 有缓存，重复调用近乎免费。
-    """
-    import maos.skills.builtin  # noqa: F401 —— import 即注册
-
-
 @register
 class CodingAgent(BaseAgent):
     identity = AgentIdentity(
@@ -51,7 +41,6 @@ class CodingAgent(BaseAgent):
         self.check_risk(ctx.risk_level)
         self.check_tool("git-mcp")
         self.check_write("artifact")
-        _ensure_builtin_skills()
 
         extras = {
             "model": self.model,                     # invoker 不持有 model，从这里取（A-3）

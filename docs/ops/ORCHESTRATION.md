@@ -4,6 +4,7 @@
 事实源优先级：`docs/parallel/contracts.md`（Task-0 产出后）> 本看板 > `REVIEW.md` > `docs/BACKLOG.md`。
 任务定义原始出处：`docs/superpowers/plans/parallel-build-plan.md`（gitignored 操作剧本，下称 plan）+ REVIEW.md 审计修正。
 最后更新：2026-08-28 · **R-1 / R-3 合入主干（`f63de8b`），R 轮三个 worktree 重建到该 sha**。本次动作：§0 状态刷新（B/C/E/D 补记 MERGED、R 轮五行新增）、§2 增 G5（R 轮开工闸，已过）、§3 探针刷到 `f63de8b`（301 passed）、§4 增 R 轮任务卡、§7 补两行、§8 增 R 轮派单存档指针；另刷 `review/paste-{R0,R2,omega}.md` 与 `dispatch-common-p3.md` 抬头里写死的旧基线 `90251b3`→`f63de8b`。执行者为**非编排总管会话**（从 `~` 启动、hook 未挂载），**人类当场授权**——沿用 2026-08-27 20:49 那次的口径（本文件第 3 行的单写者规则）。合并方案由编排总管会话提出并试合验证，本会话按人类指派执行并逐项复跑。上一次实质动作见 §7 「2026-08-28 B/C/E/D 四轨派单」行。
+**2026-08-28 16:30 增补**（同为非编排总管会话执行、人类当场授权「你代刷吧」）：核实 R-2 / Ω **早已开工**、R-0 是「只拿到一行下一步」的半轨已收口于 `cc0495b`（318 passed）→ §0 三行 `NOT_STARTED` 全部作废并改写；§3 补三个 worktree 当前实况；§4 三张 R 轮卡改写（R-0 卡记全派单三处修订）；§7 补一行；§8 存档例外由一条扩为两条。同批修订 `review/dispatch-R0.md`（94→155 行）与 `paste-R0.md`。**代码零改动。**
 前任编排会话（从 `~` 启动、hook 未挂载）产出的 Task-0 派单 v1 只在其会话输出里、未存档即失联，作废；本会话重拟为 v2（§8）。
 
 状态机：`NOT_STARTED → DISPATCHED → DELIVERED → VERIFIED → MERGED`；`BLOCKED` = 需人类介入。
@@ -21,11 +22,11 @@
 | Task-C | **MERGED** | 2026-08-28 14:43 `b2319df` 并入主干（分支 `task/c-agents`） |
 | Task-E | **MERGED** | 2026-08-28 14:54 `cf8c7ca` 并入主干（分支 `task/e-matrix`）。接缝修复 `8778081`（E×C：房间审批 fixture 补预置验收报告） |
 | Task-D | **MERGED** | 2026-08-28 14:57 `fe4c77c` 并入主干（分支 `task/d-governance`）。接缝修复 `1900c0d`（D×C / D×B）、`90251b3`（补偿 workdir 缺省改必填，与 C-5 同口径）。四轨收口于 `90251b3`，pytest 257 passed |
-| R-0 | **NOT_STARTED**（派单已备，未粘） | 软件域封版：演示链路真连沙箱 + Gate 收口。`review/dispatch-R0.md` / 粘贴版 `paste-R0.md`；worktree `.worktrees/task-r0` @ `task/r0-seal` @ `f63de8b`。**合并顺位第 1**（R-0 → R-2 → Ω） |
+| R-0 | **DISPATCHED（部分）** | 软件域封版。**步骤 3/4 已交付并提交 `cc0495b`**（第六道闸 `_gate_finance` + 注册表两条存量账；实测 **318 passed** / `run.py` exit=0 / 工作树干净），但那个会话只拿到一行「下一步」、**没拿到派单**，步骤 1/2/5（真 workdir、真补丁、删脚手架）一件没做 → 已收口提交并停，**按修订版 `paste-R0.md` 重粘一次**。worktree `.worktrees/task-r0` @ `task/r0-seal` @ **`cc0495b`**。**合并顺位第 1** |
 | R-1 | **MERGED** | 2026-08-28 `c5965d4` 并入主干（分支 `task/r1-refund-core` @ `946befd`，三点 diff **10 files / +1081**）。退款域地基：14 张业务表 + settled guard + D-05 场景编号扩至 1..7。合并后实测 **271 passed**、`run.py` exit=0 |
-| R-2 | **NOT_STARTED**（派单已备，未粘） | 退款域 6 Skill + 4 Agent + 场景 6。`review/dispatch-R2.md` / `paste-R2.md`；worktree `.worktrees/task-r2` @ `task/r2-refund-skills` @ `f63de8b`。其派单开篇「R-1 的地基已在主干」的前提**现已成立**（`maos/domain/refund/{__init__,guard,objects}.py` + `schema.sql` 在库，已在该 worktree 内实测）。**合并顺位第 2** |
+| R-2 | **DISPATCHED** | 退款域 6 Skill + 4 Agent + 场景 6。已开工：worktree `.worktrees/task-r2` @ `task/r2-refund-skills` @ `f63de8b`，0 commit，已有未入库产出 `maos/skills/builtin/refund/`、`maos/agents/refund/`。⚠️ **粘的是 16:12 刷新前的旧版 `paste-R2.md`**（抬头写 `90251b3` / 257 passed），该会话已自证基线实为 `f63de8b` / **301 passed** 并自行纠正（`git merge` 报 Already up to date），**无需重粘**。**合并顺位第 2** |
 | R-3 | **MERGED** | 2026-08-28 `f63de8b` 并入主干（分支 `task/r3-gateway` @ `3a2e473`，三点 diff **5 files / +1208**）。支付网关 + 错误码表。合并后实测 **301 passed**、`run.py` exit=0 |
-| Task-Ω | **NOT_STARTED**（派单已备，未粘） | Trace + Evidence Bundle + `verify.py` 七项核验 + compose 部署。`review/dispatch-omega.md` / `paste-omega.md`；worktree `.worktrees/task-omega` @ `task/omega-evidence` @ `f63de8b`。**合并顺位第 3（末位收口）** |
+| Task-Ω | **DISPATCHED** | Trace + Evidence Bundle + `verify.py` 七项 + compose。已开工：worktree `.worktrees/task-omega` @ `task/omega-evidence` @ `f63de8b`，0 commit，已有未入库产出 `maos/obs/trace.py`、`scripts/{make_evidence,verify}.py`、`maos/tests/test_trace_evidence.py`、`deploy/docker-compose.yml`、`evidence/scenario-1..5/` + `INDEX.json`。⚠️ 同 R-2，粘的是刷新前旧版，已自行纠正到 `f63de8b`。**合并顺位第 3（末位收口）** |
 
 ---
 
@@ -55,7 +56,8 @@
 
 ## 3. 环境探针（2026-08-27 编排会话实测）
 
-- **2026-08-28 R-1/R-3 合并后实测（本次动作，主干 `f63de8b`）**：`python3 -m pytest maos/tests -q` → **301 passed**（合 R-1 后 271、再叠 R-3 后 301，两步各自实测）；`python3 run.py` → exit=0；`docker image ls maos-sandbox` → `maos-sandbox:latest` 247MB **在**；`git status -sb` → `ahead 19`，**仍未 push**；`git diff --stat 90251b3 f63de8b -- maos/contracts/ .contracts.lock maos/artifacts.py docs/parallel/contracts.md` → **空**（冻结面零改动）。三个 R 轮 worktree 均 `f63de8b`、`git status --porcelain` 均空；在 `.worktrees/task-r2` 内复跑同样 **301 passed / exit=0**。回滚锚点：合并前主干 `90251b3`，已打 tag `pre-r1r3-merge`。⚠️ **口径说明**：三个 worktree 钉在 `f63de8b`（= R-3 的合并提交，也是本轮的**代码基线**），而主干 HEAD 会因本次看板更新等纯文档提交继续前移 —— 二者不追平是**有意的**：文档提交不影响任何一轨执行，每刷一次文档就平移一次 worktree 只会制造无穷回归。派单抬头里写的基线 `f63de8b` 指的就是代码基线，与主干 HEAD 不必逐字相等。
+- **2026-08-28 16:30 三个 R 轮 worktree 实况（本次动作，当场实测）**：`task-r0` 已前移到 **`cc0495b`**（R-0 半轨交付，`pytest` **318 passed** / `run.py` exit=0 / `git status --porcelain` 空，均在该 worktree 内实跑）；`task-r2` 仍 `f63de8b`、0 commit，未入库产出 `maos/skills/builtin/refund/` + `maos/agents/refund/`；`task-omega` 仍 `f63de8b`、0 commit，未入库产出 `maos/obs/trace.py`、`scripts/{make_evidence,verify}.py`、`maos/tests/test_trace_evidence.py`、`deploy/docker-compose.yml`、`evidence/scenario-1..5/`+`INDEX.json`。**下一条（G5 过闸那条）里「三者 HEAD 均为 `f63de8b`」是 08-28 过闸当时的快照，对 `task-r0` 已不再成立**，按「结论性断言改、过程记录留」口径原样保留。
+- **2026-08-28 R-1/R-3 合并后实测（主干 `f63de8b`）**：`python3 -m pytest maos/tests -q` → **301 passed**（合 R-1 后 271、再叠 R-3 后 301，两步各自实测）；`python3 run.py` → exit=0；`docker image ls maos-sandbox` → `maos-sandbox:latest` 247MB **在**；`git status -sb` → `ahead 19`，**仍未 push**；`git diff --stat 90251b3 f63de8b -- maos/contracts/ .contracts.lock maos/artifacts.py docs/parallel/contracts.md` → **空**（冻结面零改动）。三个 R 轮 worktree 均 `f63de8b`、`git status --porcelain` 均空；在 `.worktrees/task-r2` 内复跑同样 **301 passed / exit=0**。回滚锚点：合并前主干 `90251b3`，已打 tag `pre-r1r3-merge`。⚠️ **口径说明**：三个 worktree 钉在 `f63de8b`（= R-3 的合并提交，也是本轮的**代码基线**），而主干 HEAD 会因本次看板更新等纯文档提交继续前移 —— 二者不追平是**有意的**：文档提交不影响任何一轨执行，每刷一次文档就平移一次 worktree 只会制造无穷回归。派单抬头里写的基线 `f63de8b` 指的就是代码基线，与主干 HEAD 不必逐字相等。
 - `docker info` → **2026-08-28 编排会话复测 exit=0**，daemon 可达，**G3 过闸**；`docker image ls maos-sandbox` → 无该镜像（归 Task-B 第 1 步 build）。历史：08-27 早间 exit=0、09:57 复测 exit=1（`Cannot connect to the Docker daemon`）致 G3 回退 ❌，该回退今已解除。
 - `python3 -m pytest maos/tests -q`（仓库根）→ **134 passed**（2026-08-28 编排会话实测于 `59196ba`）；同基线 `python3 run.py` → exit=0；`git diff --stat maos/contracts/` 为空（冻结契约未被动过）。以下为历史值，保留不删：
   - **101 passed**（2026-08-27 20:49 实测于 `fe6cfff`）。构成实测：test_contracts 9 + test_contracts_frozen 2 + test_guard_bash 73 + test_registry_autodiscovery 17 = 101。**此前此处的 101 系「100 存量 + 1 新增」推算、未实测**，且构成里 guard_bash 记 72（四项和为 100，与 101 对不上），今按实测改写。09:57 的 83、plan §三「11 条测试全绿」均已过时。
@@ -141,17 +143,26 @@
 - 合并后 **301 passed**、`run.py` exit=0；冲突面同 R-1（仅两份 docs 尾部）
 
 #### R-0 · 软件域封版：演示链路真连沙箱 + Gate 收口
-- 状态：**NOT_STARTED**（派单已备、未粘）｜ worktree `.worktrees/task-r0` @ `task/r0-seal` @ `f63de8b` ｜ **合并顺位第 1**
-- 派单：`review/dispatch-R0.md`（粘贴版 `review/paste-R0.md`）
+- 状态：**DISPATCHED（部分）**｜ worktree `.worktrees/task-r0` @ `task/r0-seal` @ **`cc0495b`** ｜ **合并顺位第 1**
+- 派单：`review/dispatch-R0.md`（粘贴版 `review/paste-R0.md`）—— **2026-08-28 16:30 已修订，见下**
+- **已交付的半轨（`cc0495b`，5 files / +320）**：步骤 3 第六道闸 `_gate_finance`（复核合 F-1，`runtime/` 无 `domain` import）+ 步骤 4 注册表改名与过时注释；含 `test_gate.py` +205 行与两份 docs 的 `## task-R0` 小节。该会话**只拿到一行「下一步」、没拿到派单**，故步骤 1/2/5 一件没做。已让它收口提交并停，工作树干净
+- **派单三处修订**（原版按字面执行会走死）：
+  1. 「删 `seed_scripted_report` 及其**三处**调用点、全仓 grep 零残留」**是错的** —— 实测 **5 处调用跨 4 个场景 + 1 个测试**（`scenario_1:98`、`scenario_2:133/135`、`scenario_3:30`、`scenario_5:127`、`test_matrix_bus.py:340`），后三处不在 R-0 独占文件里，而 R-2 / Ω 派单都禁改 `flows/` → **本轮无人拥有**。照原版执行必违反边界第 1 条或卡死在验收 grep 上
+  2. 改为按判据划线：**宣称「真跑」的场景（1/2）不许有脚本化报告；不跑测试的场景（3 审批 / 5 补偿）报告是前置条件，可预置** —— 依据是 `scenario_3.py:11-13` 自述。故 **删** `testing.py::_report_from` 的 `scripted_report` 回落（假绿路径：沙箱挂了换假报告交出去，演示当天 Docker 一挂屏幕照样全绿而我们不知道），**留** `seed_scripted_report()` 函数本体（Ω 的 `trace.py` 正为「预置件无来源事件」写绕行判据，删了它那套当场作废）
+  3. 新增 `4bis 不许回退`：R-0 要重写的三个文件正压着 `fix-2` / `fix-3` 的成果，而这三处当初都是「改回去也不会红」的缺口 → 钉死 `gate.py` 的 `self_check` 非 dict 不抛、`scenario_1.py:88-89` 的 `model=select_model_client(script)` 注入、`scenario_2.py:100-114` 的 `FlakyModel` 按「返工」二字分派，各补一条回归断言
+- **重粘时的自检期望值**（编排侧已在该 worktree 内当场实测）：`git log --oneline -1` → `cc0495b`；`pytest` → **318 passed**；`run.py` → exit=0；`git status --porcelain` → 空。派单顶部已加「基线覆盖」一节写死这四条
 - 它要收的账见 BACKLOG `## merge-p2` 第一条：场景 1/2 的 `workdir` 硬编码 `/tmp/maos-sandbox` 而全仓无人准备、`GOOD_PATCH` 是打不上的假 diff（靶场文件叫 `auth/session.py`）、隔离探针混进 `test.verify` 报告 —— **三件必须同批做，拆开做场景就红**
 
 #### R-2 · 退款域 6 Skill + 4 Agent + 场景 6
-- 状态：**NOT_STARTED**（派单已备、未粘）｜ worktree `.worktrees/task-r2` @ `task/r2-refund-skills` @ `f63de8b` ｜ **合并顺位第 2**
+- 状态：**DISPATCHED**（已开工，0 commit）｜ worktree `.worktrees/task-r2` @ `task/r2-refund-skills` @ `f63de8b` ｜ **合并顺位第 2**
+- 已有未入库产出：`maos/skills/builtin/refund/`、`maos/agents/refund/`。粘的是 16:12 刷新前旧版（抬头 `90251b3`/257），该会话已自证实为 `f63de8b`/301 并自行纠正 → **不重粘**
 - 派单：`review/dispatch-R2.md`（粘贴版 `review/paste-R2.md`）；其开篇「R-1 的地基已在主干」的前提**已于本次合并成立**（见 §0）
 - 开工前须知（BACKLOG `## task-R1` 第 5 条）：`schema.sql` 由 `ensure_schema()` 一次性 `executescript`、全是 `CREATE TABLE IF NOT EXISTS`，**没有迁移路径** —— 加表可以，**改列静默无效**。本轮要动这 14 张表的列就直接改 `schema.sql` 并重建库（演示期都是 `:memory:`，无历史数据）
 
 #### R-Ω · Trace + Evidence Bundle + verify.py + 部署
-- 状态：**NOT_STARTED**（派单已备、未粘）｜ worktree `.worktrees/task-omega` @ `task/omega-evidence` @ `f63de8b` ｜ **合并顺位第 3（末位收口）**
+- 状态：**DISPATCHED**（已开工，0 commit）｜ worktree `.worktrees/task-omega` @ `task/omega-evidence` @ `f63de8b` ｜ **合并顺位第 3（末位收口）**
+- 已有未入库产出：`maos/obs/trace.py`、`scripts/{make_evidence,verify}.py`、`maos/tests/test_trace_evidence.py`、`deploy/docker-compose.yml`、`evidence/scenario-1..5/` + `INDEX.json`。同 R-2，粘的是刷新前旧版，已自行纠正 → **不重粘**
+- ⚠️ 与 R-0 的接缝：`trace.py` 的 provenance 判据是为「预置 test_report 没有来源事件」写的。R-0 将删掉**场景 1/2** 的预置、保留 `seed_scripted_report()` 供场景 3/5 用 → 该判据**继续成立**，但场景 1/2 的证据束会从「预置件」变成真产物，合并期需复跑 `verify.py` 复核
 - 派单：`review/dispatch-omega.md`（粘贴版 `review/paste-omega.md`）
 - 注意上方「Task-Ω」那张卡是 **P2 轮口径**（依赖写的是「A–E 全部 MERGED」），本轮以本卡与派单原文为准
 
@@ -212,6 +223,7 @@ REVIEW.md 全部「必须写进 contracts.md / 由 Task-0 定死」修正项的�
 | 2026-08-28 | B/C/E/D | **四轨同时派单，转 DISPATCHED**：建 4 个 worktree（`.worktrees/task-b\|c\|e\|d`，均基线 `59196ba`），派单存档 `review/dispatch-common-p2.md` + `dispatch-{B,C,E,D}.md`，粘贴版 `paste-{B,C,E,D}.md`（见 §8） | 顺带清理：`.worktrees/task-b` 原挂 `track-b`@`fe6cfff`，实测 `git merge-base --is-ancestor track-b goai-restructure` 成立、工作区无未入库产物，确认无遗留工作后移除重建。`review/` 由 `.git/info/exclude` 排除、不入库 → 新 worktree 里看不到派单文件，**靠粘贴交付**，与上一轮五轨同一手法 |
 | 2026-08-28 15:52–15:58 | R-1 / R-3 | 编排总管会话完成**试合验证**：R-1 合上主干 → 271 passed / exit=0，再叠 R-3 → 301 passed / exit=0，两次均只有 `docs/BACKLOG.md` + `docs/DECISIONS.md` 尾部冲突、**代码零冲突**；并核出 R-1 单跑的红继承自其基线 `b2319df`。随后写出 R-0 / R-2 / Ω 三份派单，提出「合入主干 + 重建三个 worktree + 刷看板」方案等人类拍板 | 探针 worktree 用后已清理。派单文件当场落盘 `review/`，未重蹈「只在会话输出里」的覆辙 |
 | 2026-08-28 | R-1 / R-3 | **合入主干**：`c5965d4`（R-1 → 271 passed）、`f63de8b`（R-3 → 301 passed），`run.py` 两次均 exit=0；冲突按「两侧都留、HEAD 在前」解，两份 docs 的 `## task-R1` / `## task-R3` 小节完整保留。三个 R 轮 worktree 用 `git reset --hard f63de8b` **平移**（三分支各 0 commit、工作区干净，故不删目录重建 —— 删目录会踩掉可能已开在里面的窗口）；`review/paste-{R0,R2,omega}.md` + `dispatch-common-p3.md` 抬头基线 `90251b3`→`f63de8b`、257→301；本文件 §0/§2(G5)/§3/§4/§7/§8 刷新 | 由**非编排总管会话**执行、人类当场授权（同 08-27 20:49 口径）。合并前打 tag **`pre-r1r3-merge`@`90251b3`** 作回滚锚点。三项验收（301 passed / exit=0 / docker 镜像 247MB 在）与 `task-r2` worktree 内的复跑均为本会话当场实测，非转述；冻结面 `maos/contracts/`+`.contracts.lock`+`artifacts.py`+`contracts.md` 实测零改动 |
+| 2026-08-28 16:30 | R-0 / R-2 / Ω | **三轨状态核实 + R-0 派单修订**。核实：R-2、Ω 两个会话**早已开工**（各自 worktree 内已有未入库产出），看板此前三行 `NOT_STARTED` 全错；两者粘的都是 16:12 刷新前的旧版抬头（`90251b3`/257），均已自证并自行纠正到 `f63de8b`/301，**不重粘**。R-0 则是**只拿到一行「下一步」就开工**的半轨：做完步骤 3/4 后已收口提交 `cc0495b`（`pytest` **318 passed**、`run.py` exit=0、工作树干净），步骤 1/2/5 未做，**待按修订版重粘**。修订 `review/dispatch-R0.md`（94→155 行）并重拼 `paste-R0.md`：①删脚手架范围写错（原「三处调用点/全仓零残留」实为 **5 处跨 4 场景 + 1 测试**，其中 `scenario_3/5`、`test_matrix_bus` 本轮**无人拥有**，照原版必违反边界第 1 条）②改按判据划线：删 `testing.py::_report_from` 的 `scripted_report` 假绿回落、**留** `seed_scripted_report()` 本体 ③新增 `4bis 不许回退`（`fix-2`@`353a8a2`、`fix-3`@`db20e6d` **早已在主干**、无需「并进来」，风险是重写时静默改回，三处各钉一条回归断言） | **由非编排总管会话执行、人类当场授权**（「你代刷吧」，沿用 08-27 20:49 口径）。三轨 worktree 状态、`cc0495b` 的 318 passed / exit=0、`fix-2`/`fix-3` 的 `merge-base --is-ancestor` 归属、5 处 `seed_scripted_report` 调用点行号，**均为本会话当场实测/实读源码，非转述**。代码零改动，只动 `review/**` 与本文件 |
 
 ---
 
@@ -232,7 +244,9 @@ REVIEW.md 全部「必须写进 contracts.md / 由 Task-0 定死」修正项的�
 | `review/paste-{R0,R2,omega}.md` | 共用抬头 + 各轨正文的**粘贴版**（开子会话时整份贴进去） |
 
 - 合并顺位：**R-0 → R-2 → Ω**；R-1 / R-3 已先行 MERGED（见 §0、§4）。
-- ⚠️ 与本段开头「存档不更新」的口径有一处**有意的例外**：这四份抬头里的基线数字已于 2026-08-28 由 `90251b3` / 257 passed 刷成 `f63de8b` / 301 passed。理由是它们**尚未粘出去**，粘的那一刻必须是对的；已粘出去的 P2 存档一概不动。
+- ⚠️ 与本段开头「存档不更新」的口径有**两处有意的例外**，理由同一条：**未粘出去的派单，粘的那一刻必须是对的**；已粘出去的 P2 存档一概不动。
+  1. 2026-08-28 16:12 四份抬头的基线由 `90251b3` / 257 passed 刷成 `f63de8b` / 301 passed。**未完全生效** —— R-2 / Ω 在刷新前就已粘出旧版（两者均已自行纠正，见 §0）。
+  2. 2026-08-28 16:30 `dispatch-R0.md` 正文修订（94→155 行）+ `paste-R0.md` 重拼：加「基线覆盖」（R-0 的基线是 `cc0495b` / **318 passed**，不是 `f63de8b` / 301）、订正删脚手架范围、加 `4bis 不许回退`。详见 §4 的 R-0 卡与 §7 16:30 行。
 
 ### P2 四轨派单（2026-08-28 · Task-B / C / E / D，四轨同时开工）
 

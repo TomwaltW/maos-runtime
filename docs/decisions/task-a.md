@@ -35,6 +35,8 @@
 
 2026-08-27 | A-5 | `kb.retrieve` 怎么接 | `CodingAgent.run()` 里真调一次，成功才把结果塞进 `inputs["knowledge"]` | 现在恒未注册 → invoker 软兜底 failed，不抛不阻塞；Task-D 合并当天这里零改动自动升级。
 
+2026-08-28 | A-5 附注（上条结论不变，只补边界） | 评审 report-B 就上条提出 P2：称 `coding.py` 的 kb 前置调用会吃掉场景 2 `FlakyModel` 的第 1 次计数，「Task-D 注册当天」`scenario_2.py` 的 `attempt == 2` 断言必失败，与上条「零改动自动升级」矛盾 | **不废止上条，其结论在本文件侧原样成立**；只补一条上条未覆盖的边界：该「零改动」覆盖的是 `CodingAgent.run()` 自身，不覆盖下游对 **model 调用序数** 的假设 | 报告把 `coding.py:69` 当作上条的反例，但它恰恰是上条的**实现** —— `kb.retrieve` 注册后本文件确实一行不用改，「零改动自动升级」在 coding.py 侧未被证伪。真正受影响的是另一个文件（`scenario_2.py`）里按调用序数计数的测试替身。该耦合的通道确实存在（已核 `coding.py:57` 的 `extras` 带了 `"model": self.model`，`skills/contract.py:59` 亦写明 skill 的 model 从 extras 取），但**是否真发作取决于 Task-D 尚未实现的 `kb_retrieve.py`**：若是纯 store 检索则根本不调 model，不发作。故报告原述的「必失败」是无条件断言，事实是条件性的，本条按条件式记录，不照抄。该耦合已在 `db20e6d` 消除：`FlakyModel` 改为按 prompt 是否含「返工」分派（判据是 `code_repo_patch._build_prompt` 仅在 `attempt > 1 且有 findings` 时写入该词），与 Task-D 怎么实现 `kb_retrieve.py` 无关。接线口径见 `docs/DECISIONS.md` 2026-08-28 P1 新增行。
+
 2026-08-27 | A-5 | 派单 §5 写「detail 七字段」，主线 commit 0510b44 给 SkillInvoked.detail 加了第八个字段 invocation_id | 跟主线走八字段，改本轨断言，不回滚 invocation_id | 那是主线为「权威事实守卫做 actor 溯源」加的增量（events.py 一行没碰），属口径差不是契约破坏；本轨 test_skills.py 的字段集与函数名同步改成八字段。
 
 2026-08-27 | 把守闸 | 人类授权本轨改 `maos/tests/test_registry_autodiscovery.py` 两处（方案 A） | 见下 | 授权只覆盖这一个文件、这两处。

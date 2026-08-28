@@ -1,6 +1,6 @@
 """Reviewer Gate —— 质量门禁。
 
-五道闸按顺序跑，任何一道不过就出 rework，findings 必须结构化
+六道闸按顺序跑，任何一道不过就出 rework，findings 必须结构化
 （Coding Agent 要能直接消费，不能是一段自然语言吐槽）。
 
 刻意做成规则驱动而不是模型驱动：Gate 的判定必须可复现、可解释、可审计。
@@ -10,11 +10,18 @@ Phase 2 起判据换了地基（见 ``_gate_acceptance``）：**代码类任务�
 Agent 自述的 self_check，而是一份跑出来的 test_report**。这一条就是对
 「所有 Agent 都回复完成 ≠ 业务成功」的正面回答 —— 一个把 build/lint 全写成
 pass 的补丁集，在没有测试报告时照样过不了闸。
+
+Phase 3 加第六道闸 ``_gate_finance``（判据见跨轨冻结契约 F-1）。它顺带是「运行时
+领域无关」这句话的试金石：退款域漏掉财务复核要能在这里被拦下，而 Gate 本身
+**不许 import** ``maos.domain.refund``（铁律 9 推论）—— 判据只落在 ``task["inputs"]``
+与 artifact 的 ``content`` 这两个数据形状上，不落在业务模块上。做不到这一点，
+「换域只换 Skill/ToolPort/业务对象」当场作废。
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
 from maos.artifacts import (
     KIND_COMPENSATION,
@@ -42,9 +49,35 @@ CODE_ARTIFACT_KINDS = frozenset({KIND_PATCH_SET, KIND_TEST_REPORT})
 # 前者是用例根本没跑起来，后者是跑起来但断言没过，两者都不是「通过」。
 FAILING_CASE_STATUSES = frozenset({"failed", "error"})
 
+# -- 第六道闸的冻结口径（F-1）------------------------------------------------
+# 写闸的一轨与产数的一轨照同一份，谁都不许另立口径：一边按业务表查、一边按
+# artifact content 判，两轨各自都绿，合并后闸恒 blocker 或恒 pass，而症状要到
+# 跑退款场景才暴露。
+FINANCE_BIZ_TYPE = "refund"
+FINANCE_THRESHOLD_ENV = "MAOS_FINANCE_THRESHOLD"
+DEFAULT_FINANCE_THRESHOLD = 5000.0
+
+
+def _finance_threshold() -> float:
+    """每次判定现读 env，不在 import 时固化 —— 否则改阈值得重启进程。
+
+    读不出数就回落默认值并告警，不抛：Gate 的异常会掀掉整个 plan（见
+    ``_dry_run_reverse`` 的同款理由）。回落方向是**收严**（默认 5000 通常低于
+    误配的那个大数），宁可多拦一次，也不因为配置写错而漏掉财务复核。
+    """
+    raw = os.environ.get(FINANCE_THRESHOLD_ENV)
+    if raw is None or not str(raw).strip():
+        return DEFAULT_FINANCE_THRESHOLD
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        log.warning("%s=%r 解析不出数值，回落默认阈值 %s",
+                    FINANCE_THRESHOLD_ENV, raw, DEFAULT_FINANCE_THRESHOLD)
+        return DEFAULT_FINANCE_THRESHOLD
+
 
 class ReviewerGate:
-    """轮询 AWAITING_REVIEW 的任务，跑五道闸，发 ReviewVerdict。"""
+    """轮询 AWAITING_REVIEW 的任务，跑六道闸，发 ReviewVerdict。"""
 
     def __init__(self, store: Store, bus: EventBus, cp: ControlPlane) -> None:
         self.store = store
@@ -72,6 +105,7 @@ class ReviewerGate:
             ("security", self._gate_security),
             ("evidence", self._gate_evidence),
             ("compensation", self._gate_compensation),
+            ("finance", self._gate_finance),
         ):
             fs = check(task, artifacts)
             results[name] = "fail" if fs else "pass"
@@ -86,7 +120,7 @@ class ReviewerGate:
             gate_results=results,
         ))
 
-    # -- 五道闸 -----------------------------------------------------------
+    # -- 六道闸 -----------------------------------------------------------
     @staticmethod
     def _gate_schema(task, artifacts) -> list[dict]:
         if not artifacts:
@@ -303,6 +337,60 @@ class ReviewerGate:
             "hunk": err.get("hunk"),
             "message": f"补偿干跑不过（stage={err.get('stage')}）: "
                        f"{err.get('message') or '沙箱未给出结构化错误'}",
+        }]
+
+    @staticmethod
+    def _gate_finance(task, artifacts) -> list[dict]:
+        """财务复核闸（F-1 冻结判据）：退款金额超阈值，就必须有财务核算的凭据。
+
+        · **触发**：``inputs["biz_type"] == "refund"`` 且
+          ``float(inputs["amount_claimed"] or 0)`` 大于阈值（``MAOS_FINANCE_THRESHOLD``，
+          默认 5000）。金额缺失 / 为 None 按 0 算 —— 这是 F-1 的字面口径，不改。
+        · **判据**：同 attempt 的 artifacts 里，任一份 ``content["finance_entry"]``
+          是**非空 dict** 即 pass；否则 blocker。
+
+        三条硬规矩：
+          · **不许 import ``maos.domain.refund``**（铁律 9 推论）。闸只读
+            ``task["inputs"]`` 与 artifact 的 ``content``：判据落在数据形状上，
+            换域时这道闸一行都不用改。手册正文里「Gate 会查 finance_entry 表」
+            那句与本条冲突，按事实源优先级取 F-1（详见 DECISIONS ``## task-R0``）；
+          · **金额解析不出数 = 触发，不是放过**。``float("六千")`` 会抛，吞掉当 0
+            处理的话，一笔字段脏掉的高额退款就悄悄绕过了财务复核 —— 与把
+            tool_error 读成「0 条失败」是同一类假绿；
+          · **空 dict 不算凭据**。``finance_entry = {}`` 是「跑过了但什么都没算出来」，
+            放行它等于把判据降级成「键在不在」。
+
+        这道闸也是「RAG 有无」对照实验的判定面：没检索到历史案例 → 计划里漏排
+        财务复核 → 在这里被拦下。闸判错，对照实验就没有对照。
+        """
+        inputs = task.get("inputs") or {}
+        if not isinstance(inputs, dict) or inputs.get("biz_type") != FINANCE_BIZ_TYPE:
+            return []
+
+        threshold = _finance_threshold()
+        raw_amount = inputs.get("amount_claimed")
+        try:
+            amount = float(raw_amount or 0)
+        except (TypeError, ValueError):
+            amount = None                      # 解析不出 = 自证不了它在阈值之下
+        if amount is not None and amount <= threshold:
+            return []
+
+        for a in artifacts:
+            content = a.get("content")
+            if not isinstance(content, dict):
+                continue
+            entry = content.get("finance_entry")
+            if isinstance(entry, dict) and entry:
+                return []
+
+        why = (f"退款金额 {amount} 超过财务复核阈值 {threshold}" if amount is not None
+               else f"退款金额 amount_claimed={raw_amount!r} 解析不出数值，"
+                    f"自证不了它在财务复核阈值 {threshold} 之下")
+        return [{
+            "gate": "finance", "severity": "blocker", "path": None,
+            "message": f"{why}，而本轮产出里没有任何一份 artifact 带非空 finance_entry"
+                       f" —— 缺少财务核算凭据，不放行",
         }]
 
 

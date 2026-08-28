@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 
 import pytest
 
@@ -37,7 +38,11 @@ from maos.contracts.states import PlanState, Risk, TaskState
 from maos.core.control_plane import ControlPlane
 from maos.core.eventbus import EventBus
 from maos.core.store import SqliteStore
-from maos.runtime.gate import ReviewerGate
+from maos.runtime.gate import (
+    DEFAULT_FINANCE_THRESHOLD,
+    FINANCE_THRESHOLD_ENV,
+    ReviewerGate,
+)
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
@@ -374,3 +379,201 @@ def test_compensation_gate_is_silent_for_low_risk():
     # 只断这道闸的结果：golden fixture 的 content 没有 summary，evidence 闸会另判一条
     # minor，那是 evidence 的活，不该被算到干跑闸头上。
     assert payload["gate_results"]["compensation"] == "pass"
+
+
+# ======================================================================
+# 财务复核闸（第六道闸）—— 判据是跨轨冻结契约 F-1，两轨照同一份
+# ======================================================================
+# 写闸的一轨与产数的一轨只要有一处口径分叉，症状就是「两轨各自都绿、合并后闸恒
+# blocker 或恒 pass」，而且要到跑退款场景才暴露。所以 F-1 的每一条都在下面有一条
+# 断言把守：触发面（biz_type + 阈值）、判据（非空 dict）、以及闸不许认识退款域。
+
+# 产数那一轨用什么 kind 挂 finance_entry，F-1 没有规定（它只说"任一 artifact"）。
+# 这里刻意用一个闸侧不认识的 kind：判定跟着数据形状走，不跟着 kind 走 ——
+# 哪天产数侧改了 kind 名，这道闸不该跟着红。
+FINANCE_CARRIER_KIND = "refund_settlement"
+
+REFUND_OVER = {"biz_type": "refund", "amount_claimed": 9000}
+
+
+@pytest.fixture
+def default_threshold(monkeypatch):
+    """把阈值 env 摘干净再断默认值。
+
+    本机若外挂了 MAOS_FINANCE_THRESHOLD，"默认 5000" 那几条会假红/假绿，
+    而假绿是更坏的一种：闸看起来在守，其实守的是别人的阈值。
+    """
+    monkeypatch.delenv(FINANCE_THRESHOLD_ENV, raising=False)
+    return DEFAULT_FINANCE_THRESHOLD
+
+
+def _finance_entry_artifact(entry) -> dict:
+    # 带 summary 是为了让 evidence 闸别在这几条测试里另判一条 minor，
+    # 那会把 verdict 搅成 rework，掩盖财务闸自己的判定。
+    return {"kind": FINANCE_CARRIER_KIND,
+            "content": {"finance_entry": entry, "summary": "财务核算"}}
+
+
+def _finance_payload(inputs, extra_artifacts=None) -> dict:
+    """跑一遍 Gate。底料是一份全绿的补丁 + 报告，让前五道闸都不出声。"""
+    base = [
+        {"kind": KIND_PATCH_SET, "content": _patch_content({"build": "pass", "lint": "pass"})},
+        {"kind": KIND_TEST_REPORT, "content": _bare_report(
+            passed=1, cases=[{"id": "t::a", "status": "passed", "msg": ""}])},
+    ]
+    return _run_gate(base + list(extra_artifacts or []),
+                     task_over={"inputs": inputs})
+
+
+def test_finance_gate_is_silent_for_non_refund_task(default_threshold):
+    """场景 1-5 的形状：inputs 里没有 biz_type -> 这道闸恒不触发。
+
+    金额字段故意给一个远超阈值的数：不是 refund 就不该看金额，
+    否则任何带 amount 字样的普通任务都会被误伤。
+    """
+    payload = _finance_payload({"workdir": "/tmp/probe", "amount_claimed": 999999})
+    assert _findings(payload, "finance") == [], "非退款任务被财务闸拦下了"
+    assert payload["gate_results"]["finance"] == "pass"
+    assert payload["verdict"] == "pass", "加了第六道闸之后，原本该过的任务过不去了"
+
+
+def test_scenario_flows_1_to_5_never_set_biz_type():
+    """把"场景 1-5 恒不触发"钉在源码上，而不是只钉在造出来的 dict 上。
+
+    上一条测的是"没有 biz_type 就不触发"，这一条测"场景 1-5 确实没有 biz_type"。
+    两条合起来才是完整的回归闸：少了后者，哪天有人给存量场景塞了退款输入，
+    前者依然绿，而演示当场从 DONE 变 BLOCKED。
+    只点名 1-5：退款场景（6/7）本来就该带 biz_type，不该被这条误伤。
+    """
+    flows = pathlib.Path(__file__).resolve().parents[1] / "flows"
+    for n in range(1, 6):
+        src = (flows / f"scenario_{n}.py").read_text(encoding="utf-8")
+        assert "biz_type" not in src, \
+            f"scenario_{n}.py 出现了 biz_type —— 存量场景会开始触发财务复核闸"
+
+
+def test_finance_gate_blocks_refund_over_threshold_without_entry(default_threshold):
+    """退款 + 超阈值 + 没有财务凭据 -> blocker。这道闸的正例。"""
+    payload = _finance_payload(REFUND_OVER)
+    fs = _findings(payload, "finance")
+    assert fs and all(f["severity"] == "blocker" for f in fs), \
+        f"漏掉财务复核的高额退款竟然被放行，findings={fs}"
+    assert "finance_entry" in fs[0]["message"], "finding 没说清缺的是什么，模型修不了"
+    assert payload["verdict"] == "rework"
+
+
+def test_finance_gate_passes_with_non_empty_entry(default_threshold):
+    """同 attempt 里有一份带非空 finance_entry 的 artifact -> pass。"""
+    payload = _finance_payload(
+        REFUND_OVER,
+        [_finance_entry_artifact({"amount_approved": 9000, "rule_refs": ["R-3"]})],
+    )
+    assert _findings(payload, "finance") == [], "有财务凭据却被判了 finding"
+    assert payload["verdict"] == "pass"
+
+
+@pytest.mark.parametrize("entry,label", [
+    ({}, "空 dict"),
+    (None, "null"),
+    ("已核算", "字符串"),
+    ([{"amount_approved": 9000}], "列表"),
+])
+def test_finance_gate_rejects_non_dict_or_empty_entry(entry, label, default_threshold):
+    """"键在" 不等于 "算过了"。
+
+    空 dict 是"跑过了但什么都没算出来"，字符串是模型直接吐了一句自述 ——
+    放行任何一种，判据就从"有没有财务凭据"降级成"有没有这个键"，
+    而后者是产数侧一行 setdefault 就能满足的，闸等于空转。
+    """
+    payload = _finance_payload(REFUND_OVER, [_finance_entry_artifact(entry)])
+    fs = _findings(payload, "finance")
+    assert fs and all(f["severity"] == "blocker" for f in fs), \
+        f"finance_entry 是{label}竟然被当成财务凭据放行"
+
+
+def test_finance_gate_is_silent_at_exactly_threshold(default_threshold):
+    """判据是"大于阈值"，不是"大于等于"。等于阈值的那一笔不触发。
+
+    钉住边界是因为 5000 这个数会被两轨各写一次（闸一次、产数一次），
+    差一个等号就是"两轨各自都绿、合起来判反"。
+    """
+    payload = _finance_payload({"biz_type": "refund",
+                                "amount_claimed": default_threshold})
+    assert _findings(payload, "finance") == [], "金额恰好等于阈值不该触发财务复核闸"
+
+
+def test_finance_gate_reads_threshold_from_env(monkeypatch):
+    """阈值现读 env，不在 import 时固化 —— 否则改阈值得重启进程。"""
+    inputs = {"biz_type": "refund", "amount_claimed": 200}
+
+    monkeypatch.delenv(FINANCE_THRESHOLD_ENV, raising=False)
+    assert _findings(_finance_payload(inputs), "finance") == [], \
+        "200 元在默认阈值 5000 之下，不该触发"
+
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, "100")
+    assert _findings(_finance_payload(inputs), "finance"), \
+        "env 把阈值压到 100 之后，200 元仍然没触发 —— 阈值被固化了"
+
+
+def test_finance_gate_bad_env_threshold_falls_back_and_does_not_raise(monkeypatch):
+    """阈值写错（"五千"）-> 回落默认值并继续判，不抛、也不放开闸。
+
+    回落方向必须是收严：宁可多拦一次，也不能因为配置写错就漏掉财务复核。
+    Gate 抛异常的代价另有一层 —— review_pending() 在 flows/common.py 是裸调用，
+    异常逃出去整个 plan 当场崩。
+    """
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, "五千")
+    assert _findings(_finance_payload(REFUND_OVER), "finance"), \
+        "阈值配错之后闸被放开了"
+    assert _findings(_finance_payload({"biz_type": "refund", "amount_claimed": 100}),
+                     "finance") == [], "回落的阈值不是默认值 5000"
+
+
+def test_finance_gate_unparseable_amount_is_not_silently_passed(default_threshold):
+    """金额解析不出数 -> 按触发处理，不按 0 放过。
+
+    float("六千") 会抛；吞掉当 0，一笔字段脏掉的高额退款就悄悄绕过了财务复核。
+    这与把 tool_error 读成"0 条失败"是同一类假绿：出问题的那条恰恰最该拦。
+    """
+    fs = _findings(_finance_payload({"biz_type": "refund", "amount_claimed": "六千"}),
+                   "finance")
+    assert fs and all(f["severity"] == "blocker" for f in fs), \
+        "金额解析不出数值竟然被当成 0 元放过了"
+    assert "六千" in fs[0]["message"], "finding 得指出是哪个值解析不了"
+
+
+@pytest.mark.parametrize("inputs,label", [
+    (None, "inputs 为 null"),
+    ("refund", "inputs 是字符串"),
+    ({"biz_type": "refund", "amount_claimed": {"n": 9000}}, "金额是 dict"),
+    ({"biz_type": None, "amount_claimed": 9000}, "biz_type 为 null"),
+])
+def test_finance_gate_does_not_raise_on_odd_inputs(inputs, label, default_threshold):
+    """形状怪的 inputs 一律不许抛 —— Gate 是独立判定面，不能假设上游收敛过形状。"""
+    try:
+        payload = _finance_payload(inputs)
+    except Exception as exc:  # noqa: BLE001 —— 这里要的就是"任何异常都不许有"
+        pytest.fail(f"{label} 时 Gate 抛了 {exc!r}；review_pending() 是裸调用，"
+                    f"异常逃出即整个 plan 崩")
+    assert "finance" in payload["gate_results"], "第六道闸没有出现在 gate_results 里"
+
+
+def test_runtime_and_core_do_not_import_refund_domain():
+    """铁律 9 推论：运行时内核不许 import 业务域，财务闸也不例外。
+
+    这道闸是最容易破这条规矩的地方 —— 手册正文写的是"Gate 会查 finance_entry 表"，
+    照着写就得 import maos.domain.refund。一旦 import，"换域只换
+    Skill/ToolPort/业务对象"这句话当场作废，而那是复赛材料里最核心的一句。
+    所以判据落在 artifact 的 content 上，并把这条钉成断言。
+    """
+    # 认 import 语句，不认字面量：闸的 docstring 里就写着"不许 import
+    # maos.domain.refund"，按子串扫会把这句注释本身判成违例。
+    imports_domain = re.compile(r"^\s*(?:from|import)\s+maos\.domain", re.MULTILINE)
+    pkg = pathlib.Path(__file__).resolve().parents[1]
+    offenders = [
+        f"{p.parent.name}/{p.name}"
+        for d in ("runtime", "core")
+        for p in sorted((pkg / d).glob("*.py"))
+        if imports_domain.search(p.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], f"运行时内核 import 了业务域：{offenders}"

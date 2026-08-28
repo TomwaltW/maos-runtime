@@ -44,3 +44,14 @@
 
 - Claude Code 的文件权限检查只认 `Edit(path)`；`Write(...)` / `NotebookEdit(...)` 形式会被解析后丢弃并在启动时告警。`Edit()` 一条即覆盖所有写文件工具，deny 段里成对写的 `Write()` 属冗余。
 - hook command 用 `$CLAUDE_PROJECT_DIR` 拼路径，会话必须从仓库根启动，否则守卫不挂载（本次上一轮从 `~` 启动即此原因）。
+
+## fix-5
+
+模型网关加固（`maos/model/client.py`，分支 `fix/client-hardening`，基线 `ece725a`）。
+另起小节而非往上表插行：五轨并行都要追加本文件，尾部追加 git 能自动合。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | P1 | 派单给了两个修法二选一：自定义 `HTTPRedirectHandler` 拒绝跨主机重定向，或干脆一律不跟随 3xx。判据本身派单也没定死（「跨主机」是只比 hostname 还是比整个 origin） | 取前者，且判据收紧为**同 origin**：`scheme` + `hostname` + `port` 三者全等才放行，其余一律拒。实现为 `_SameOriginRedirectHandler` + `GatewayModelClient.__init__` 里自建 opener（`build_opener` 见到 `HTTPRedirectHandler` 子类实例就不装默认那个），跨 origin 抛独立的公开异常 `RedirectRefused`，`complete()` 里单独给一条错误口径 | 「一律不跟随」会误伤同 origin 的纯路径跳转（补斜杠、`/v1`→`/v1/`、路径规范化），那是网关的正常行为，接真 Higress 时大概率踩到，而这类跳转不换主机、key 不出本机，拒掉零安全收益纯兼容性损失。反过来只比 hostname 又不够：同主机 `https`→`http` 降级同样是把 Authorization 明文发上线，换端口则是发给同机上的另一个服务；三元组全等是唯一不必逐条论证的判据。本规则确实会拒掉「同主机 http→https 升级」这一个良性场景，但那不是回归——能收到那个 301 就说明**第一跳已经带着 Authorization 明文出去过**，key 在那一刻就已暴露，此时报错并要求把 `MAOS_LLM_BASE_URL` 直接配成 https 终点比默默跟随更正确。抛独立类型而不复用 `HTTPError`：复用会掉进现有那条「模型网关返回 HTTP 302：\<body\>」分支，用户看到的是重定向响应的空 body，看不出发生了什么；异常文本只放 origin（`_origin` 只取 scheme/host/port，userinfo 与 path 全丢），不夹带凭据。走实例自建 opener 而不是 `install_opener`：后者是进程级副作用，会波及同进程里任何别的 urllib 调用方 |
+| 2026-08-28 | P1 | `_safe_int` 撞上非法值（网关把 `prompt_tokens` 写成 `"n/a"`）是回退 0 还是抛 | 回退 0 并 `log.warning` 点出原值；`None` / `""` 静默回退，保持原 `or 0` 的语义 | 这两行在 `complete()` 那个 try 之外，抛出去就**逃出**统一 RuntimeError 兜底与脱敏、用户拿到裸 traceback——这正是本条要修的病，改成在这里抛等于换个地方犯同一个错。且 token 计数是计量不是结果：一次已经成功返回 content 的调用，不该因为 usage 字段脏了就整体失败。但不能静默吞——计数错会一路传导到成本统计，所以非法值必须 warning；而 `None`/`""` 是「网关没给 usage」的正常情况，给它报 warning 只会把真信号淹了 |
+| 2026-08-28 | P1 | 派单第 2 条写的是「非有限值走**同一条**回退分支并 `log.warning`」，读法有二：与 `value <= 0` 合并成一个 `if`，或另起一个 `if` 各自回退 | 另起 `if not math.isfinite(value)` 分支，用自己的告警文案，不动原 `value <= 0` 那条的文案 | 「同一条回退分支」按结果理解为「同样回退到 `DEFAULT_TIMEOUT`」，这点两种写法一致。合并会改掉现存那句「非正数」告警的文案，而 `inf`/`nan` 和「配了个 -1」是两类不同的配置笔误，报同一句话反而难排查。实测覆盖到的输入不止 `inf`/`nan`：`-inf`、`Infinity`、`1e400`（`float()` 直接溢出成 `inf`）四种都走这条分支，`45` 仍原样采用 |

@@ -28,6 +28,7 @@ from hiclaw.matrix_bus import (ACTION_APPROVE, ENV_APPROVERS, ENV_HOMESERVER, EN
                                MatrixBusConfig, MatrixEventBus, RoomApprovalBridge,
                                looks_like_command, parse_approval_command, redact,
                                render_mirror)
+from maos.agents.testing import make_test_report, seed_scripted_report
 from maos.contracts import events as E
 from maos.contracts.events import Topic
 from maos.contracts.states import PlanState, TaskState
@@ -312,6 +313,17 @@ def test_looks_like_command(text, expected):
 # --------------------------------------------------------------------------
 # 6. 房间审批：合法 / 非法 / 越权三类各有明确行为
 # --------------------------------------------------------------------------
+# 与 scenario_3.py 的 PASS_REPORT 同一份东西：高风险任务要走到 BLOCKED，
+# 先得过得了验收闸，而 Task-C 起代码类任务的验收证据是一份 test_report ——
+# 补丁自己的 self_check 全 pass 也不作数。Task-C 合并前这里不预置也能到 BLOCKED
+# （旧判据回落 self_check），合并后不预置就一路 REWORK 到 FAILED，
+# 十条房间审批用例会齐刷刷挂在「前置条件没成立」上，而真正的原因在验收闸。
+BLOCKED_FIXTURE_REPORT = make_test_report(
+    passed=1, failed=0, cases=[{"id": "tests/test_config.py::test_prod_cfg",
+                                "status": "passed", "msg": ""}],
+    summary="高风险变更回归：1 过 0 挂")
+
+
 def _blocked_plan():
     """跑到「高风险任务停在 BLOCKED」那一刻，与场景 3 同一条路径。"""
     store, bus, cp, _model, _worker, gate = build({"任务输入": GOOD_PATCH})
@@ -320,6 +332,12 @@ def _blocked_plan():
         "inputs": {"repo": "demo/app"}, "acceptance": ["build 通过"],
         "risk_level": "M", "effect_risk": "H",
     }])
+    # 预置验收证据，照抄 scenario_3.py 的写法（DAG 里没有 testing 节点，
+    # 报告不可能由谁跑出来 —— 本用例要验的是房间审批，不是测试链路）。
+    for task in cp.store.list_tasks(plan_id):
+        if task["role"] == "coding":
+            seed_scripted_report(store, plan_id=plan_id, task_id=task["task_id"],
+                                 attempt=1, report=BLOCKED_FIXTURE_REPORT)
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)
     hq = HumanApprovalQueue(store, cp)

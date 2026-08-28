@@ -1,0 +1,49 @@
+{
+  "_note": "场景 R1（整数 6）的种子数据。政策故意造了两版：订单锁在 v1，policy_rule 里已经有 v2，用来验 policy.match 取的是下单当时那一版而不是最新版。",
+  "tenant": [
+    {"tenant_id": "acme",  "name": "ACME 精密制造", "region": "cn-hangzhou"},
+    {"tenant_id": "rival", "name": "另一家租户",     "region": "cn-shanghai"}
+  ],
+  "channel": [
+    {"tenant_id": "acme", "channel_id": "online",  "kind": "marketplace", "name": "官方旗舰店"},
+    {"tenant_id": "acme", "channel_id": "offline", "kind": "dealer",      "name": "线下经销"}
+  ],
+  "order_snapshot": [
+    {"tenant_id": "acme", "order_id": "ORD-1001", "version": 1, "sku": "SKU-9",
+     "amount_paid": 3200.0, "paid_at": "2026-03-01T00:00:00+00:00", "channel_id": "online",
+     "policy_version_at_order": 1, "payload_json": "{}", "read_at": "2026-08-28T00:00:00+00:00"}
+  ],
+  "product_snapshot": [
+    {"tenant_id": "acme", "sku": "SKU-9", "version": 1, "name": "伺服电机 A2",
+     "category": "drive", "warranty_months": 24, "payload_json": "{}"}
+  ],
+  "policy_rule": [
+    {"tenant_id": "acme", "rule_no": "R-01", "version": 1, "title": "七天无理由（下单时版本）",
+     "body": "签收后 7 日内可无理由退款。", "effective_from": "2024-01-01T00:00:00+00:00",
+     "effective_to": null, "channel_scope": "*", "sku_scope": "*"},
+
+    {"tenant_id": "acme", "rule_no": "R-01", "version": 2, "title": "七天无理由（改版，订单之后才发布）",
+     "body": "签收后 15 日内可无理由退款。", "effective_from": "2024-01-01T00:00:00+00:00",
+     "effective_to": null, "channel_scope": "*", "sku_scope": "*"},
+
+    {"tenant_id": "acme", "rule_no": "R-02", "version": 2, "title": "质量问题全额退（v2 才有）",
+     "body": "确认质量问题的全额退款。", "effective_from": "2024-01-01T00:00:00+00:00",
+     "effective_to": null, "channel_scope": "*", "sku_scope": "*"},
+
+    {"tenant_id": "acme", "rule_no": "R-03", "version": 1, "title": "线下渠道专用",
+     "body": "仅线下经销渠道适用。", "effective_from": "2024-01-01T00:00:00+00:00",
+     "effective_to": null, "channel_scope": "offline", "sku_scope": "*"},
+
+    {"tenant_id": "acme", "rule_no": "R-04", "version": 1, "title": "已过期的旧促销政策",
+     "body": "2025 年前下单适用。", "effective_from": "2024-01-01T00:00:00+00:00",
+     "effective_to": "2025-01-01T00:00:00+00:00", "channel_scope": "*", "sku_scope": "*"},
+
+    {"tenant_id": "rival", "rule_no": "R-01", "version": 1, "title": "别家租户的同号规则",
+     "body": "不许被 acme 读到。", "effective_from": "2024-01-01T00:00:00+00:00",
+     "effective_to": null, "channel_scope": "*", "sku_scope": "*"}
+  ],
+  "case": {
+    "tenant_id": "acme", "case_id": "RC-1", "channel_id": "online", "order_id": "ORD-1001",
+    "order_version": 1, "sku": "SKU-9", "reason_code": "quality", "amount_claimed": 3200.0
+  }
+}

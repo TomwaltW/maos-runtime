@@ -81,6 +81,17 @@
 | 2026-08-28 | P2 | `maos/tests/test_registry_autodiscovery.py:256` 的分节注释 `# --- C-6 Task-0 期 matrix 恒回退 ---` 已过时 | 本轨落地后该函数验的是「降级模式下行为等价」，不再是「恒回退」。注释就在被改函数的正上方，读代码的人先看到它，会得到与断言相反的印象 | 派单写死「该文件其余一行不动」，故不当场改。合并期（Ω）改成 `# --- C-6 matrix 降级等价 ---` 即可，一行的事 |
 | 2026-08-28 | P2 | 房间监听没有接进任何运行路径 | `run.py --matrix` 当前只装了镜像，没有起监听循环，所以「在 Element 里发 `/approve`」这条链路是不通的 —— `RoomApprovalBridge` 有完整单测但没有生产调用方，`_NioChannel.listen()` 同理。派单第 3 步只要求实现审批命令本身，接线（谁在什么时候起监听、场景 3 怎么等人类回话）没有归属 | Phase 4 与真房间联通一并做。注意它会逼出一个当前没定的东西：场景 3 现在是同步跑完就退出，接了房间审批就得阻塞等人 —— 是给 `--matrix` 加一个超时等待，还是把场景 3 拆成两段，得先定下来再动手 |
 
+## task-D
+
+落地聚合 / 知识 / 补偿 / Replan 时看到、按铁律 4 与派单边界不当场动的四条。前两条是**合并期核对项**，不是可选项。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-28 | P2 | **【合并期必查】** C 轨的第五道闸 `_gate_compensation` 必须在**全量** `store.list_artifacts(task_id)` 里按 `kind == "compensation"` 找补偿引用，**不能**在 `_review` 已按 `version == task["attempt"]` 过滤后的 `artifacts` 列表里找 | 本轨把 compensation 的 `version` 定为 **0**（理由见 DECISIONS `## task-D` 第 2 行：不这么做，四道产物闸会误伤 compensation，场景 3 当场从 pass 变 rework 直到 FAILED）。代价是：若 C 的第五道闸沿用 `_review` 里那个已过滤的 `artifacts` 局部变量，它**永远找不到** compensation → effect_risk=H 的任务恒判 blocker → 场景 3 挂。两轨各自都绿，只在合并后炸 | **D 合并当天第一件事**（合并顺序 B→C→E→**D**，C 已在库）。核对 `gate.py` 第五道闸的取数来源；若确为过滤后列表，二选一：闸改成从全量 artifacts 取（一行），或与 C 一起重定 compensation 的 version 口径。改哪边都要重跑 `python3 run.py` 场景 3 + `pytest -k governance` |
+| 2026-08-28 | P2 | ReviewerGate 的四道闸把**所有** kind 的 artifact 都当 patch_set 判 | `_gate_acceptance` 对任何没有 `self_check` 的 artifact 判 2 条 major，`_gate_evidence` 对任何没有 `summary` 的判 1 条 minor。踩到的不只是 compensation：Task-B 的 `test_report`（C-7 schema，同样没有这两个字段）合并后会踩同一个坑，而且它的 version **就是** attempt，躲不过过滤 | 归 Task-C（`gate.py` 所有者）。建议四道产物闸统一加一句 `if a["kind"] != KIND_PATCH_SET: continue`。本轨不当场改：`gate.py` 在白名单外，且 compensation 这一侧已用 version=0 绕开，不构成现存故障 |
+| 2026-08-28 | P2 | `scenarios/inputs/` 的多源信号未接线到场景 1 | `phase-4.md:12` 要求「`run.py --scenario 1` 的入口从手写 goal 改为先过 aggregate」，但 `flows/scenario_1.py` 归 Task-C（附录 D）。本轨改接在场景 5（已记 DECISIONS），所以场景 1 的 goal 仍是手写的 | 合并后由 C 或 Ω 决定要不要把场景 1 也改成聚合入口。接线代码现成：`scenario_5._intake_goal()` 可原样搬，`load_signal_findings()` 已按包位置定位、不依赖 cwd |
+| 2026-08-28 | P2 | 补偿的沙箱工作目录口径待与 Task-B 对齐 | 本轨读 `MAOS_SANDBOX_WORKDIR`（缺省 `"."`）传给 `sandbox_git_apply`。B 的真实沙箱大概率有自己的 workdir 来源（容器内路径 / 每次 run 的临时目录），两边对不上时补偿会去错的目录打反向补丁 —— 而 `git apply -R` 在错目录下多半报「补丁不适用」，看起来像补丁坏了，不像路径错了 | D 合并当天连同上面第一条一起验：`MAOS_SANDBOX_WORKDIR` 指向 B 的沙箱工作目录，跑通 C-7 的合并期验收「reject → 文件真实还原」。在那之前 `_execute_compensation` 捕获 `NotImplementedError` 并如实记 `ok=False, stage="sandbox_unavailable"`，不伪装成成功 |
+
 ## merge-p2
 
 B/C/E/D 四轨合并期发现、按铁律 4 不当场处理的账（目标分支 `goai-restructure`，合并前基线 `f83c374`）。

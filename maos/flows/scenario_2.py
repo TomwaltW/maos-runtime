@@ -6,9 +6,13 @@
 有一条挂掉的用例，逐条转成结构化 finding 喂回，第二轮据此修好。
 
 叙事上的因果链：架构契约漏了「会话过期按 UTC 判定」这一条（第一轮注入的不完整
-契约）-> 补丁照契约写，用了本地时区 -> test_expired_token 真挂 -> findings 回灌 ->
-第二轮补齐。并行期沙箱未就位，报告由场景预置（Scripted 演示模式，见
-agents/testing.py）；Task-B 合并后换成真跑的产物，本文件与 Gate 都不用改。
+契约）-> 补丁照契约写，用了本地时区 -> test_expired_session 真挂 -> findings 回灌 ->
+第二轮补齐。
+
+**这条链上的每一环都是真的**：两份补丁都真打在靶场的 ``auth/session.py`` 上
+（``common.py`` 现造，见那里的模块注释），两轮的报告都是真跑 ``pytest`` 出来的。
+第一轮的失败不是写死的常量，是 ``BAD_PATCH`` 保留了那个时区 bug 之后，
+``tests/test_session.py::test_expired_session`` 真的没过。
 """
 
 from __future__ import annotations
@@ -17,43 +21,22 @@ import json
 
 from maos.agents.manager import ManagerAgent
 from maos.agents.reviewer import ReviewerAgent, review_after_gate
-from maos.agents.testing import make_test_report, seed_scripted_report
 from maos.contracts.events import new_id
 from maos.contracts.states import PlanState, TaskState
-from maos.flows.common import GOOD_PATCH, build, dump, run_until_settled
+from maos.flows.common import (
+    BAD_PATCH,
+    GOOD_PATCH,
+    build,
+    dump,
+    patch_verifier,
+    run_until_settled,
+    sandbox_workdir,
+)
 from maos.model.client import ModelResponse, ScriptedModelClient
 
 GOAL = "修复 demo/app 的会话过期判定"
 
 T_REQ, T_ARCH, T_CODE, T_TEST = "s2-req", "s2-arch", "s2-code", "s2-test"
-
-# 第一轮：一条用例真的挂了。severity 会被验收闸判成 major，逐条带 id / msg 喂回。
-FAIL_REPORT = make_test_report(
-    passed=1, failed=1, errors=0, duration=0.38,
-    cases=[
-        {"id": "tests/test_session.py::test_valid_token", "status": "passed", "msg": ""},
-        {"id": "tests/test_session.py::test_expired_token", "status": "failed",
-         "msg": "AssertionError: 会话在本地时区下提前过期；契约未声明按 UTC 判定"},
-    ],
-    summary="沙箱回归：1 过 1 挂 0 错",
-)
-
-PASS_REPORT = make_test_report(
-    passed=2, failed=0, errors=0, duration=0.40,
-    cases=[
-        {"id": "tests/test_session.py::test_valid_token", "status": "passed", "msg": ""},
-        {"id": "tests/test_session.py::test_expired_token", "status": "passed", "msg": ""},
-    ],
-    summary="沙箱回归：2 过 0 挂 0 错",
-)
-
-# 第一轮补丁：**自检全 pass、变更说明齐全**，旧口径下这份补丁是「合格」的。
-INCOMPLETE_PATCH = json.dumps({
-    "files": [{"path": "src/session.py",
-               "diff": "@@ -20,3 +20,4 @@\n+    return now() < expires_at"}],
-    "summary": "按契约补上过期判定",
-    "self_check": {"build": "pass", "lint": "pass"},
-}, ensure_ascii=False)
 
 # 第一轮注入的不完整架构契约：四个必填键齐全（过得了契约校验），
 # 但 api 里没有「按 UTC 判定」这一条 —— 补丁照它写就会踩本地时区。
@@ -67,6 +50,7 @@ INCOMPLETE_CONTRACT = {
     "self_check": {"build": "pass", "lint": "pass"},
 }
 
+# testing 节点的 workdir 按 run 现造后注入，见 _with_workdir()。
 PLAN_DAG = json.dumps({"tasks": [
     {"task_id": T_REQ, "role": "requirement", "title": "归一化目标并给出验收标准",
      "inputs": {"goal": GOAL, "repo": "demo/app"},
@@ -80,8 +64,7 @@ PLAN_DAG = json.dumps({"tasks": [
      "acceptance": ["会话过期判定使用 UTC", "有变更说明"],
      "depends_on": [T_ARCH], "risk_level": "L"},
     {"task_id": T_TEST, "role": "testing", "title": "沙箱回归验证",
-     "inputs": {"workdir": "/tmp/maos-sandbox", "verify_target": T_CODE,
-                "scripted_report": PASS_REPORT},
+     "inputs": {"verify_target": T_CODE},
      "acceptance": ["全部用例通过"], "depends_on": [T_CODE], "risk_level": "M"},
 ]}, ensure_ascii=False)
 
@@ -111,7 +94,15 @@ class FlakyModel(ScriptedModelClient):
     def complete(self, *, system, user, tier):
         if any(kw in user for kw in self.script):
             return super().complete(system=system, user=user, tier=tier)
-        return ModelResponse(text=GOOD_PATCH if "返工" in user else INCOMPLETE_PATCH)
+        return ModelResponse(text=GOOD_PATCH if "返工" in user else BAD_PATCH)
+
+
+def _with_workdir(tasks: list[dict], workdir: str) -> list[dict]:
+    """把本次 run 现造的沙箱工作目录注入 testing 节点（同场景 1）。"""
+    for task in tasks:
+        if task.get("role") == "testing":
+            task.setdefault("inputs", {})["workdir"] = workdir
+    return tasks
 
 
 def run(*, matrix: bool = False) -> int:
@@ -121,36 +112,33 @@ def run(*, matrix: bool = False) -> int:
         "用户请求": PLAN_DAG,
         "原始目标": NORMALIZED,
     }
-    store, bus, cp, model, worker, gate = build(script, matrix=matrix, model=FlakyModel(script))
+    with sandbox_workdir() as workdir:
+        store, bus, cp, model, worker, gate = build(
+            script, matrix=matrix, model=FlakyModel(script))
 
-    mgr = ManagerAgent(model)
-    plan_id = cp.create_plan(goal=GOAL, trace_id=new_id("trace"), tasks=mgr.plan(GOAL))
+        mgr = ManagerAgent(model)
+        plan_id = cp.create_plan(goal=GOAL, trace_id=new_id("trace"),
+                                 tasks=_with_workdir(mgr.plan(GOAL), workdir))
 
-    # 两轮的证据各预置一份：第一轮挂、第二轮全过。
-    for task in cp.store.list_tasks(plan_id):
-        if task["role"] != "coding":
-            continue
-        seed_scripted_report(store, plan_id=plan_id, task_id=task["task_id"],
-                             attempt=1, report=FAIL_REPORT)
-        seed_scripted_report(store, plan_id=plan_id, task_id=task["task_id"],
-                             attempt=2, report=PASS_REPORT)
+        cp.start_plan(plan_id)
+        # 两轮的证据各真跑一次：每次 attempt 都先把靶场还原成基线，再打本轮的补丁。
+        # 第一轮 BAD_PATCH 留着时区 bug -> 用例真挂；第二轮 GOOD_PATCH 修好 -> 真绿。
+        run_until_settled(bus, gate, cp, plan_id,
+                          before_review=patch_verifier(store, workdir))
 
-    cp.start_plan(plan_id)
-    run_until_settled(bus, gate, cp, plan_id)
+        tasks = cp.store.list_tasks(plan_id)
+        note = review_after_gate(ReviewerAgent(model, store=store), cp, plan_id,
+                                 host_task=tasks[-1])
 
-    tasks = cp.store.list_tasks(plan_id)
-    note = review_after_gate(ReviewerAgent(model, store=store), cp, plan_id,
-                             host_task=tasks[-1])
+        dump(cp, plan_id, "场景 2：返工闭环（第 1 轮用例真挂，findings 喂回后第 2 轮修好）")
+        code_task = next(t for t in tasks if t["role"] == "coding")
+        print(f"  第 1 轮喂回的 findings: "
+              f"{json.dumps(code_task['findings'], ensure_ascii=False)[:200]}")
+        print(f"  Reviewer 语义审查: status={note.status}")
 
-    dump(cp, plan_id, "场景 2：返工闭环（第 1 轮用例真挂，findings 喂回后第 2 轮修好）")
-    code_task = next(t for t in tasks if t["role"] == "coding")
-    print(f"  第 1 轮喂回的 findings: "
-          f"{json.dumps(code_task['findings'], ensure_ascii=False)[:200]}")
-    print(f"  Reviewer 语义审查: status={note.status}")
-
-    assert code_task["state"] == TaskState.DONE and code_task["attempt"] == 2, (
-        f"coding 任务应在第 2 轮修好，实际 state={code_task['state']} "
-        f"attempt={code_task['attempt']}"
-    )
-    assert cp.store.get_plan(plan_id)["state"] == PlanState.DONE
+        assert code_task["state"] == TaskState.DONE and code_task["attempt"] == 2, (
+            f"coding 任务应在第 2 轮修好，实际 state={code_task['state']} "
+            f"attempt={code_task['attempt']}"
+        )
+        assert cp.store.get_plan(plan_id)["state"] == PlanState.DONE
     return 0

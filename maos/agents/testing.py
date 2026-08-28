@@ -12,17 +12,20 @@
     ``test.verify`` 按自己的契约**不抛**，返回 ok 并把原因写进报告的 tool_error。
 
 两者都是「没有证据」，都不是故障。中间这一步别看走眼：**第二种同样 status=ok**，
-把它当成真报告收下，脚本化兜底就永远够不着（Task-B 合并当天场景 1/2 即因此转红，
-详见 ``_report_from``）。
+把它当成真报告收下，「没跑成」就会被当成「0 条失败」交给 Gate（详见 ``_report_from``）。
 
     tool_error 与 failed 是两回事 —— 前者是工具根本没跑成，后者是用例真的挂了。
     Gate 对这两种的判定不一样，所以这里绝不能把「没跑成」压成「0 条失败」。
 
-``scripted_report`` 是 Scripted 演示模式的报告源，与 ``ScriptedModelClient``
-同构：没有备好沙箱 workdir 的机器上，补丁是脚本化的（common.py 的 GOOD_PATCH），
-报告也只能是脚本化的，否则四场景一条都跑不起来。等演示链路真接上沙箱
-（BACKLOG ## task-C「演示链路仍未真连沙箱」一条），报告不再带 tool_error，
-这条分支自然让位给真报告 —— 不必删，它是降级路径。
+**没有脚本化回落**。这里曾有一条 ``scripted_report`` 分支：沙箱没跑成就从
+``ctx.inputs`` 取一份预置报告交出去。那是一条假绿路径 —— 演示当天 Docker 一挂，
+屏幕照样全绿而没有人知道。删掉之后，「跑不成」的唯一出口是带 tool_error 的报告，
+Gate 判 blocker，屏幕当场变红。这正是本模块存在的意义：证据要么是跑出来的，
+要么就没有，不许有第三种。
+
+``seed_scripted_report()`` 是另一回事，仍然保留：场景 3（审批）/ 5（补偿）
+**不跑测试**，报告在那里是前置条件而不是产物（见 ``scenario_3.py`` 的自述）。
+判据是「宣称真跑的场景不许有脚本化报告」，不是「全仓不许有」。
 """
 
 from __future__ import annotations
@@ -116,7 +119,7 @@ class TestingAgent(BaseAgent):
             "acceptance": ctx.acceptance,
         }, extras=extras)
 
-        report = self._report_from(res, ctx)
+        report = self._report_from(res)
         report["target_task_id"] = target_task_id
         report["target_attempt"] = target_attempt
 
@@ -132,8 +135,8 @@ class TestingAgent(BaseAgent):
         )
 
     # ------------------------------------------------------------------
-    def _report_from(self, res, ctx: TaskContext) -> dict:
-        """真报告 > 脚本化报告 > tool_error 报告。三级都不抛。
+    def _report_from(self, res) -> dict:
+        """真报告，否则一份带 tool_error 的空报告。两条都不抛。
 
         不抛是硬要求：``test.verify`` 未注册在并行期是常态（A-5），
         抛出去会让整条链路挂在一个「被调方还没合并」上。
@@ -142,19 +145,16 @@ class TestingAgent(BaseAgent):
         这两者不等价：``test.verify`` 按自己的契约「跑不成也不抛、原样返回报告」
         （见 skills/builtin/test_verify.py 的模块注释），所以沙箱没起来时它照样
         返回 ok，只把原因写进 tool_error。只看 status 就会把这种「根本没跑成」
-        当作真报告收下，脚本化兜底从此**够不着** —— Task-B 合并当天场景 1/2 正是
-        这样红的：workdir 无人准备 -> tool_error -> Gate 判 blocker，而 inputs 里
-        预置的 PASS_REPORT 一直没人取。tool_error 与 failed 要分开判这条铁律，
-        在这里的形态就是「带 tool_error 的报告不算证据」。
+        当作真报告收下 —— 那就是把「工具没跑成」读成「0 条失败」，Gate 从此判不出
+        blocker。tool_error 与 failed 要分开判这条铁律，在这里的形态就是
+        「带 tool_error 的报告不算证据，但它必须原样交出去」。
+
+        交出去而不是换一份能过闸的：没有证据就该被 Gate 拦下，这是本 Phase 的题眼。
         """
         tool_error = res.output.get("tool_error") if isinstance(res.output, dict) else None
 
         if res.status == "ok" and isinstance(res.output, dict) and not tool_error:
             return self._normalize(res.output)
-
-        scripted = ctx.inputs.get("scripted_report")
-        if isinstance(scripted, dict):
-            return self._normalize(scripted)
 
         # 两种「没跑成」的原因在这里合流：skill 压根没注册（res.error），
         # 和 skill 跑了但工具炸了（report 的 tool_error）。后者更具体，优先。
@@ -177,15 +177,19 @@ class TestingAgent(BaseAgent):
 
 def seed_scripted_report(store, *, plan_id: str, task_id: str, attempt: int,
                          report: dict) -> None:
-    """Scripted 演示模式：把一份脚本化测试报告挂到被验任务的那一次 attempt 上。
+    """把一份**前置条件**性质的测试报告挂到某任务的那一次 attempt 上。
 
-    这是 ``scripted_report`` 的同胞。那条走 Testing Agent 的软兜底；这条给
-    **产出补丁的那个任务**用 —— DAG 里 testing 依赖 coding，coding 过闸时
-    testing 还没跑，报告不可能已经存在，所以演示期由场景预置。
+    只给**不跑测试的场景**用：场景 3 演审批闸、场景 5 演补偿与重规划，它们的
+    DAG 里没有 testing 节点，报告不可能由谁跑出来，是前置条件而不是产物
+    （见 ``scenario_3.py:11-13`` 的自述）。
 
-    与 common.py 的 GOOD_PATCH / BAD_PATCH 同性质：无沙箱的机器上补丁是脚本化的，
-    报告也只能是脚本化的。Task-B 的沙箱合并后这里换成 Testing Agent 真跑的产物，
-    Gate 一行不改 —— 判据读的始终是 test_report，不关心谁产的。
+    **软件域两个场景（1 / 2）不许再走这条路**：它们宣称「外部权威判据 = 真实
+    pytest 结果」，报告必须是跑出来的 —— 接线见 ``flows/common.py::patch_verifier``。
+    判据是「宣称真跑的场景不许有脚本化报告」，不是「全仓不许有」。
+
+    这里直接 ``insert_artifact``、不经 ``on_task_result``，所以预置件**没有来源
+    事件** —— ``maos/obs/trace.py`` 据此把它标成 ``provenance="unknown"`` 并计进
+    ``summary.unsourced_artifacts``。那是有意的：审计链有洞就要让洞看得见。
     """
     from maos.contracts.events import new_id      # 局部 import：演示脚手架不进模块级依赖
 

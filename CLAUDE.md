@@ -72,7 +72,7 @@
 
 ```bash
 python3 -m pytest maos/tests -q    # 全量测试（在仓库根目录执行）
-python3 run.py                     # 四场景端到端（Scripted 模式，无需任何 key）
+python3 run.py                     # 场景 1-6 端到端（Scripted 模式，无需任何 key）
 ```
 
 **开工自检（每天第一件事，一次工具调用）**：让 Claude 读一次 `scripts/guard_bash.py`。

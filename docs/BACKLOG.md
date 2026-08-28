@@ -68,3 +68,12 @@
 | 2026-08-28 | P2 | `maos/artifacts.py` 没有 `requirement` 这个 kind，也没有它的 checker | 本轨的 Requirement Agent 产出 `kind="requirement"` 的 artifact，走 `validate_artifact` 会得到「未知 artifact kind」。当前无实害（该函数在生产入库路径上零调用方，见 fix-2 那条），但「跨轨共用的唯一一份口径」里缺了一个真实在用的 kind，两者已经分叉 | 与 fix-2 记的那条一并处理：`artifacts.py` 是冻结面，加 kind 属跨轨决策，合并期统一定 —— 要么补 `KIND_REQUIREMENT` + checker，要么明确宣布 requirement 产物不进形状校验 |
 | 2026-08-28 | P2 | `maos/tests/test_registry_autodiscovery.py:169` 的函数名 `test_agent_pool_is_exactly_coding` 与它现在断言的五角色口径已不符 | 纯可读性：名字说「恰好只有 coding」，断言查的是五个 role。照名字找测试的人会以为它没被更新 | 派单限定本轨只许改 `:170` 那一条断言、其余一行不动（`:257` 归 Task-E），故不顺手改名。合并期由持有该文件的人改成 `test_agent_pool_is_exactly_five_roles` 之类 |
 | 2026-08-28 | P2 | `review_after_gate()` 直接调 `store.insert_artifact` 落 review_note，绕过 `control_plane.on_task_result` 那条入库路径 | Reviewer 不经 worker 队列（它的位置由流程决定），所以没有 TaskResult 可走。代价是这条产出既不过幂等闸门、也不写 StateTransition，审计上看不到它是谁在哪一步产的 —— 与 fix-2 记的「artifact 入库不校验任何形状」是同一处地基问题的两个侧面 | 与 fix-2 那条一并定：要么给 Control Plane 开一个「非任务产物入库」的正式入口（带审计行），要么承认 review_note 是流程附属物、不进审计链。Phase 5 做可观测时必须有结论，否则 Trace 里会凭空多出一份没有来源的产物 |
+
+## merge-p2
+
+B/C/E/D 四轨合并期发现、按铁律 4 不当场处理的账（目标分支 `goai-restructure`，合并前基线 `f83c374`）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-28 | P2 | **演示链路仍未真连沙箱**。B 的靶场与两个 ToolPort 都在，但场景 1/2 的 `workdir` 是硬编码字符串 `/tmp/maos-sandbox`，**全仓没有任何一处准备它** —— `prepare_sandbox_workdir()` 的调用方只有 B 自己的 `test_sandbox_isolation.py`。且 `common.py::GOOD_PATCH` 是一条指向 `src/auth.py` 的假 diff，而靶场里的文件叫 `auth/session.py`，它打不上去也修不了那个时区 bug | C 的 DECISIONS 原计划「B 合并后删掉 `seed_scripted_report`，让真报告经 `target_task_id` 进闸，Gate 一行不改」**现在还做不到**：真造 workdir 后靶场本来就有一条计划内的挂（`test_expired_session`，B 埋的时区 bug），而修它的补丁不存在，于是 Gate 会从「tool_error 挡闸」变成「真挂一条挡闸」，一样到不了 DONE。实测：`prepare_sandbox_workdir` + `sandbox_pytest_run` 得 `passed=3 failed=1`，`tool_error=None` | 下一轮（R 轮）一并做，要三件同时到位才有意义：①场景按 run 现造 workdir（`prepare_sandbox_workdir()`，跑完清理）；②`GOOD_PATCH` 换成能打在 `auth/session.py` 上的**真 diff**（B 的 `test_sandbox_isolation.py` 已有「改好文件→`git diff`→还原」的现成造法，照抄即可）；③届时才删 `seed_scripted_report` 与各场景的 PASS_REPORT/FAIL_REPORT。三件缺一件场景就红，所以不许拆开做 |
+| 2026-08-28 | P2 | 靶场的三条隔离探针会计入 `test.verify` 的报告（`test_no_network` 在降级路径下 skipped，另两条 passed） | B 的 BACKLOG 已记过「探针混进业务报告」这条，归 Gate 判据。合并后实测确认症状属实：真跑一次报告是 5 条 case，其中 3 条是探针。当前因演示链路还没真连沙箱而未暴露 | 与上一条同批做 —— 演示链路真连沙箱的那一刻，探针就会出现在 Gate 的 findings 里。按 B 的建议用 `id` 前缀 `tests.test_isolation_probe::` 过滤 |

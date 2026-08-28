@@ -4,18 +4,25 @@
 写的 ``self_check``；在它之后，证据是一份跑出来的报告。Gate 的判据随之从
 「Agent 说自检过了」改成「报告里有没有挂掉的用例」（见 runtime/gate.py）。
 
-并行期（Task-B 的沙箱尚未合并）``test.verify`` 恒未注册，``SkillInvoker`` 按
-A-5 软兜底返回 ``failed / skill_not_found:test.verify`` —— **这是预期行为，不是
-故障**，本文件不为此另起一个临时 test.verify 顶上（那会在 B 合并当天变成两份
-实现互相覆盖）。软兜底时报告走 ``tool_error`` 分支：
+``test.verify`` 拿不到真报告有两种形态，本文件对两者一视同仁：
+
+  * skill 未注册 —— 并行期被调方尚未合并时的常态，``SkillInvoker`` 按 A-5
+    软兜底返回 ``failed / skill_not_found:test.verify``；
+  * skill 注册了但工具没跑成 —— 沙箱起不来、workdir 不存在之类。此时
+    ``test.verify`` 按自己的契约**不抛**，返回 ok 并把原因写进报告的 tool_error。
+
+两者都是「没有证据」，都不是故障。中间这一步别看走眼：**第二种同样 status=ok**，
+把它当成真报告收下，脚本化兜底就永远够不着（Task-B 合并当天场景 1/2 即因此转红，
+详见 ``_report_from``）。
 
     tool_error 与 failed 是两回事 —— 前者是工具根本没跑成，后者是用例真的挂了。
     Gate 对这两种的判定不一样，所以这里绝不能把「没跑成」压成「0 条失败」。
 
 ``scripted_report`` 是 Scripted 演示模式的报告源，与 ``ScriptedModelClient``
-同构：无沙箱的机器上，补丁是脚本化的（common.py 的 GOOD_PATCH），报告也该是
-脚本化的，否则四场景在并行期一条都跑不起来。它只在 ``test.verify`` 拿不到
-真报告时才生效 —— B 合并后 skill 一注册，这条分支自动失效。
+同构：没有备好沙箱 workdir 的机器上，补丁是脚本化的（common.py 的 GOOD_PATCH），
+报告也只能是脚本化的，否则四场景一条都跑不起来。等演示链路真接上沙箱
+（BACKLOG ## task-C「演示链路仍未真连沙箱」一条），报告不再带 tool_error，
+这条分支自然让位给真报告 —— 不必删，它是降级路径。
 """
 
 from __future__ import annotations
@@ -130,16 +137,29 @@ class TestingAgent(BaseAgent):
 
         不抛是硬要求：``test.verify`` 未注册在并行期是常态（A-5），
         抛出去会让整条链路挂在一个「被调方还没合并」上。
+
+        「真报告」的判据是**报告自己没带 tool_error**，而不是 ``res.status == "ok"``。
+        这两者不等价：``test.verify`` 按自己的契约「跑不成也不抛、原样返回报告」
+        （见 skills/builtin/test_verify.py 的模块注释），所以沙箱没起来时它照样
+        返回 ok，只把原因写进 tool_error。只看 status 就会把这种「根本没跑成」
+        当作真报告收下，脚本化兜底从此**够不着** —— Task-B 合并当天场景 1/2 正是
+        这样红的：workdir 无人准备 -> tool_error -> Gate 判 blocker，而 inputs 里
+        预置的 PASS_REPORT 一直没人取。tool_error 与 failed 要分开判这条铁律，
+        在这里的形态就是「带 tool_error 的报告不算证据」。
         """
-        if res.status == "ok" and isinstance(res.output, dict):
+        tool_error = res.output.get("tool_error") if isinstance(res.output, dict) else None
+
+        if res.status == "ok" and isinstance(res.output, dict) and not tool_error:
             return self._normalize(res.output)
 
         scripted = ctx.inputs.get("scripted_report")
         if isinstance(scripted, dict):
             return self._normalize(scripted)
 
+        # 两种「没跑成」的原因在这里合流：skill 压根没注册（res.error），
+        # 和 skill 跑了但工具炸了（report 的 tool_error）。后者更具体，优先。
         return make_test_report(
-            tool_error=res.error or f"{SKILL_VERIFY} 未产出测试报告")
+            tool_error=tool_error or res.error or f"{SKILL_VERIFY} 未产出测试报告")
 
     @staticmethod
     def _normalize(raw: dict) -> dict:

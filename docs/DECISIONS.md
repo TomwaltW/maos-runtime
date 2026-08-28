@@ -173,3 +173,14 @@ Ctrl-C / OOM / 超时杀掉时 `finally` 跑不到，残留文件会被 `builtin
 | 2026-08-28 | P2 | requirement 产物的 artifact kind 用什么 | 用字面量 `"requirement"`，**不往 `maos/artifacts.py` 的 `ALL_KINDS` 里加** | `artifacts.py` 是冻结契约面（CLAUDE.md 决策上限第 1 条），单轨往里加 kind 会和 D/E 撞。Gate 对非代码类产物只按 self_check 判、不查 kind 白名单，所以字面量是安全的；缺 checker 的口子已记 BACKLOG |
 | 2026-08-28 | P2 | `maos/tests/test_registry_autodiscovery.py:169` 的函数名 `test_agent_pool_is_exactly_coding` 在改成五角色口径后已名不副实 | **不改函数名**，只改派单点名的那条断言与断言消息 | 派单明写「只许改这一处」「该文件其余一行不动，不许 reformat」（`:257` 归 Task-E）。名字过时是可读性瑕疵，越界改动是合并风险，取后者更小。已记 BACKLOG，留合并期由持有该文件的人一并改 |
 | 2026-08-28 | P2 | Reviewer 挂在「Gate 之后、审批之前」，不是第五道闸 —— 那它怎么被调用 | 与 ManagerAgent 同理，由 flow 直接调用（`agents/reviewer.py::review_after_gate`），review_note 由该函数直接落库；但仍挂 `@register` 进 AGENT_POOL | 挂 `@register` 是派单要求的「五个 role」口径，也为将来把它排进 DAG 留口；不经 worker 队列是因为它的位置由流程决定、不由依赖决定。审查没做成时返回 `blocked` + `needs_human` 且**不产出空白意见书** —— 空白意见书会让下游以为「审过了、没问题」，比没有意见书危险 |
+
+## merge-p2
+
+B/C/E/D 四轨合并期的判断（目标分支 `goai-restructure`，合并前基线 `f83c374`）。
+另起小节而非往各轨小节里插行：这些不是某一轨的账，是接缝上的账。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | P2 | 合 C 后场景 1/2 转红。成因是 B×C 接缝：`TestingAgent._report_from` 用 `res.status == "ok"` 判「拿到真报告了」，而 `test.verify` 按自己的契约「跑不成也不抛、原样返回报告」，workdir 不存在时**照样返回 ok**，只把原因写进 `tool_error`。于是第一级命中，`scripted_report` 兜底永远够不着，报告带 tool_error 进 Gate 被正确判 blocker | **改判据不改任何一方的契约**：`_report_from` 的「真报告」判据从 `res.status == "ok"` 收严为「status ok **且报告自己不带 tool_error**」。B 的 skill、C 的 Gate 判据、契约面全部一行不动 | 三方各自都没做错 —— B「不抛、原样返回」是对的，C「优先真报告」是对的，Gate「tool_error 判 blocker」更是本轮要守的那条铁律。错的只是 C 那一处的**判据取值**：C 在自己的 worktree 里没有 B 的 skill，只可能测到 `status != "ok"` 那条路径，于是把「status ok」当成了「有真报告」的同义词。C 自己的模块注释写的是「只在 `test.verify` 拿不到真报告时才生效」—— 带 tool_error 的报告正是「拿不到真报告」，所以这是把实现对齐到它本来的意图，不是新增判断。已补回归守卫 `test_tool_error_report_yields_to_scripted_report` |
+| 2026-08-28 | P2 | C 的 DECISIONS 原计划「B 合并后删掉 `seed_scripted_report` 与各场景 PASS_REPORT，让真报告进闸」。合并当天是否照做 | **不删，保留为降级路径**，并把「演示链路真连沙箱」整件事记 BACKLOG `## merge-p2` 留给 R 轮 | 照做当天就红：真造 workdir 之后靶场本来就有一条计划内的挂（B 埋的时区 bug），而能修它的补丁不存在 —— `common.py::GOOD_PATCH` 是指向 `src/auth.py` 的假 diff，靶场里的文件叫 `auth/session.py`。实测 `prepare_sandbox_workdir` + `sandbox_pytest_run` 得 `passed=3 failed=1`，删了兜底只会把「tool_error 挡闸」换成「真挂一条挡闸」，场景照样到不了 DONE。要绿必须同时补真 diff，那是 R 轮的活（铁律 4：合并期不做范围外的修）。保留兜底的代价是演示报告仍是脚本化的 —— 这一条 C 的 BACKLOG 已经记在案，不是本次新增的债 |
+| 2026-08-28 | P2 | `test_agents_gate.py` 里 C 埋的哨兵 `test_test_verify_is_still_unregistered_in_parallel_phase`，B 合并当天必红。改还是留 | **改向**：更名为 `test_test_verify_is_registered_after_task_b`，断言反过来守「skill 必须在册」 | 哨兵的 docstring 逐字写着「Task-B 合并当天这条会红，提醒下面两个软兜底断言换成真调用」—— 它本就是 C 留给合并人的活，改它属于完成合并、不属于铁律 4 说的「顺手优化」。留着不改则是让主干长期带一条恒红。改向而非删除：反向断言仍有守卫价值（谁摘了这个 skill 或改了名，下面两条就退回并行期路径，测不到真调用而不自知） |

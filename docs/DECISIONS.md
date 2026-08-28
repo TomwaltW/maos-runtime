@@ -305,3 +305,14 @@ Trace 导出 / 证据束 / `verify.py` / 部署（分支 `task/omega-evidence`�
 | 2026-08-28 | P3 | 证据出处里的 `-dirty` 标记怎么判 | `git status --porcelain --untracked-files=no` —— 只看被跟踪文件的改动 | `evidence/` 本身就是这个脚本正在生成的未跟踪产物。把未跟踪算进「脏」，每一次生成都会自称 dirty，这个标记于是恒为真、再也指示不了任何东西 —— 而它要指示的是「跑这批证据的代码与 HEAD 不一致」|
 | 2026-08-28 | P3 | `ALL_SCENARIOS` 已声明 6/7，但 `flows/scenario_6.py`、`scenario_7.py` 尚未落地（R-2 在做） | **跳过并显式点名**：不生成目录、不写占位数据，在 stdout 和 `evidence/INDEX.json` 的 `missing_scenarios` 里都留名；另给 `--strict-scenarios` 把它变成硬错误 | 硬失败会让本轨在 R-2 合并前完全跑不出证据，而缺的这两场恰恰不是本轨能补的。缺目录 + 点名既不是占位假数据（铁律 3 守住了），也不会让人误以为跑全了。`--strict-scenarios` 留给收口时用：那时 6/7 该在了，缺就是真出问题 |
 | 2026-08-28 | P3 | compose 里 pgvector 要不要随缺省 `up` 一起起 | 挂在 `profiles: ["pg"]` 下，缺省不起 | postgres 是常驻进程而 maos 跑完场景就退出，两者一起起会让 `docker compose up` 永不返回 —— 验收命令看起来像卡住了。而本轮 MAOS 仍走 SQLite，向量库起来也只是空跑。服务定义照样写全，P5 接线时只是去掉 profile |
+
+## integrate-round-2
+
+R-0 / R-2 / Ω 三轨整合（分支 `integrate/round-2`，基线 `93529b4`）。三轨代码面零重叠，
+合并期只有两类事需要判断：两份账本的追加冲突（机械合并，不记），
+以及**两轨各自全绿、合并才暴露**的两处测试接缝。以下两条即那两处。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-28 | P3 | `test_refund_flow.py::test_kernel_does_not_know_the_refund_domain` 合并后变红，指认 `maos/runtime/gate.py` import 了退款域。**实为假阳性**：该测试按子串扫 `"domain.refund" in src`，而第六道闸的 docstring（`gate.py:16` 与 `:353`）里恰好写着「不许 import ``maos.domain.refund``」这句自我说明 | 把扫描从子串改为 **AST 认 import 语句**（`ast.Import` / `ast.ImportFrom` 判 `maos.domain` 前缀），**扫描范围一行未缩**：仍是 `runtime` / `core` / `contracts` 三个子包 + `rglob` 递归 | 取两轨各自的长处：R-0 写同类断言时已经踩过这个坑并在 `test_gate.py:569` 的注释里写明「认 import 语句，不认字面量」，但它的正则版只扫 `runtime`/`core` 顶层（`glob`）；R-2 这版扫得更广却认字面量。合并后正确的形态是 R-0 的精度 + R-2 的广度。改 AST 而不改正则，是因为该文件已 import `ast` 且别处就用这个手法，与既有风格一致。**没有削弱守卫**：真写一行 `from maos.domain import refund` 照样红 |
+| 2026-08-28 | P3 | `test_registry_autodiscovery.py::test_agent_pool_is_exactly_five_roles` 合并后变红 —— 断言写死 `sorted(AGENT_POOL) == 五个内核角色`，R-2 投放四个退款 Agent 后池子变成 9 个。R-0 本轮按派单只改名、未动断言语义，红是**预期内**的 | 按 R-2 BACKLOG `:148` 的建议改成**子集口径**：内核五角色一个不许少 + `ManagerAgent` 不在池中；函数一并改名 `test_agent_pool_contains_the_five_kernel_roles` | 「恰好五个」守的不是注册口径，是「没人加过业务域」这件事 —— 而注册表的整个设计就是「新增 Agent 只投文件」，每加一个域就要回来改一次的断言是设计的反面。改子集后它守住的仍是真正要守的两件：少了说明自动发现坏了，多出 ManagerAgent 说明有人「顺手」注册了不经 worker 分发的角色。改名是因为 `is_exactly` 与子集语义直接矛盾，留一个说谎的名字比第二次改名更坏 —— 代价是 BACKLOG `:69` / DECISIONS `:273` 两处指引里的旧名过时，两处都是历史账，不回改 |

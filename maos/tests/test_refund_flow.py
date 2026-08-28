@@ -457,12 +457,25 @@ def test_kernel_does_not_know_the_refund_domain():
     一旦内核 import 了具体业务域，「换域只换 Skill / ToolPort / 业务对象」当场作废 ——
     而那是复赛材料里最核心的一句。这条断言就是那句话的守门人。
     """
+    # 认 import 语句，不认字面量。原来这里按子串扫，而第六道闸的 docstring 里
+    # 恰好写着"不许 import ``maos.domain.refund``"这句自我说明 —— 合并 R-0 之后
+    # 那句注释把闸自己判成了违例。R-0 写同类断言时已经踩过一次（见
+    # test_gate.py::test_runtime_and_core_do_not_import_refund_domain 的注释），
+    # 这里改走 AST，扫描范围仍保留三个子包 + 递归。
     offenders = []
     for sub in ("runtime", "core", "contracts"):
         for path in sorted((MAOS_PKG / sub).rglob("*.py")):
-            src = path.read_text(encoding="utf-8")
-            if "domain.refund" in src or "domain import refund" in src:
-                offenders.append(str(path.relative_to(REPO_ROOT)))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    hit = any(a.name.startswith("maos.domain") for a in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    hit = bool(node.module and node.module.startswith("maos.domain"))
+                else:
+                    continue
+                if hit:
+                    offenders.append(str(path.relative_to(REPO_ROOT)))
+                    break
     assert not offenders, f"内核 import 了退款域：{offenders}"
 
 

@@ -166,14 +166,22 @@ def test_private_modules_are_skipped(builtin_probe_dir):
 
 
 # --- C-2 AGENT_POOL 注册口径 -----------------------------------------------
-def test_agent_pool_is_exactly_five_roles():
-    assert sorted(AGENT_POOL) == [
-        "architecture", "coding", "requirement", "reviewer", "testing"
-    ], (
-        "AGENT_POOL 口径变了。Phase 2 起是五个角色：coding 加本轮补齐的 "
+def test_agent_pool_contains_the_five_kernel_roles():
+    """五个内核角色必须在池中，ManagerAgent 必须不在。业务域角色不在本条管辖内。
+
+    原来这里断的是「恰好五个」。那个口径在退款域投放四个 Agent 之后当场变红 ——
+    而投放是对的：注册表的整个设计就是「新增 Agent 只投文件」，一个每加一个业务域
+    就要回来改一次的断言，守的不是口径，是「没人加过域」这件事。改成子集之后，
+    这条守住的仍是它真正要守的两件：内核五角色一个都不许少（少了说明自动发现坏了），
+    ManagerAgent 一个都不许多（它不经 worker 分发，混进池里会被错误地当成可派发角色）。
+    """
+    kernel_roles = {"architecture", "coding", "requirement", "reviewer", "testing"}
+    missing = kernel_roles - set(AGENT_POOL)
+    assert not missing, (
+        f"内核角色从 AGENT_POOL 里少了：{sorted(missing)}。"
+        "Phase 2 起是五个角色：coding 加本轮补齐的 "
         "requirement / architecture / testing / reviewer。"
-        "ManagerAgent 刻意不挂 @register（它不经 worker 分发），"
-        "不要'顺手'注册它；新增 Agent 请只投文件。"
+        "少了通常意味着自动发现坏了，而不是谁故意删的。"
     )
     assert AGENT_POOL["coding"] is CodingAgent
     assert ManagerAgent.identity.role not in AGENT_POOL

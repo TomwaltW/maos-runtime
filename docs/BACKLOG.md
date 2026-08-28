@@ -165,3 +165,12 @@ B/C/E/D 四轨合并期发现、按铁律 4 不当场处理的账（目标分支
 | 2026-08-28 | P3 | `*.db` 不入库（派单要求），而 `verify.py` 需要库才能重放校验 | 克隆仓库的人**不能直接跑 `verify.py`**，必须先 `make_evidence.py` 重建库。`verify.py` 在库缺失时会明确报「缺数据库，先跑 make_evidence.py」并以非零退出（有测试守着），不会伪装成全过。但这确实让「一条命令验真伪」变成了两条 | README 里把两条命令一起写在最显眼处（本轨未改 README —— 不在独占文件里）。若希望评委真正一条命令搞定，可考虑让 `verify.py` 在库缺失时自动调 `make_evidence.py`，但那会让「核验」与「生成」耦合，不推荐 |
 | 2026-08-28 | P3 | `maos/flows/common.py::build()` 的 `SqliteStore()` 路径写死为 `:memory:`，没有任何配置口 | 任何需要持久化的用途（证据、调试、换 PG 后端）都只能靠外部替换类来实现 —— 本轨的 `make_evidence.py` 就是这么做的。这条注入路径**没有测试守着**：`build()` 里那行改个写法（比如改成局部 import 或直接 `SqliteStore(":memory:")`），证据生成会静默失效。本轨已加一道兜底 —— 子进程退出码为 0 却没落库时硬失败并说明「注入点可能已失效」 | `build()` 加一个 `store=` 注入口最干净（与已有的 `model=` 注入口同形），但 `build()` 签名是 C-3/C-4 冻结契约，属跨轨决策。**P5 换 PG 后端时必然要面对**，建议那时一并定 |
 | 2026-08-28 | P3 | `invoke_tool` 的 `params_digest` 把工具实例算进 digest（`## task-R3` 第 1 条留给「Ω 收口或 P5 可观测时一并定」的那条） | 本轨看过：`trace.py` 只是把 event_log 里已有的 `params_digest` 原样搬进 span，不参与它的计算，所以 Trace 侧不受影响；`verify.py` 第 1 项只校验它是 64 位十六进制、不重算。**问题仍在**（第三个 `GatewayPort` 实现若不写 `__repr__`，同参数每次 digest 不同，审计对不上账且无症状），只是不在本轨的可改面内（`maos/tools/port.py` 是冻结面） | 维持 R-3 的建议：候选修法二选一（工具按名字取实例 / 在 `ToolPort` 层面禁止 params 放对象），都要动冻结面，属跨轨决策。**P5 可观测收口时定** |
+
+## integrate-round-2
+
+三轨合并后的整体验收发现两条，均**不在本轮可改面内**，按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-28 | P3 | `maos/main.py:25` 的 `DEFAULT_SCENARIOS = (1, 2, 3, 4)`，行内注释写的是「场景 5 未实现，不进缺省序列」——**该注释已过时**：场景 5 早已落地（`--scenario 5` exit=0），场景 6 本轮由 R-2 落地（exit=0），两者都不在缺省序列里 | CLAUDE.md 与 README 里的验收命令 `python3 run.py` 号称「四场景端到端」，实测确实只跑 1-4：**退款域整条链路（含第六道闸的人工放行）不被缺省序列覆盖**。演示现场若只跑 `run.py`，评委看不到本轮最重要的两轨产出，且不会有任何报错提示他们漏了 | `main.py` 是禁改面（R-2 记「D-05 已落，重新冻结」），需人类解冻后改。修法一行：`DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6)`，并同步那条行内注释与 `run.py` docstring 的「四场景」措辞。**建议在演示前做掉** —— 这是三轨全绿之后唯一一处「跑了也看不见」的缺口 |
+| 2026-08-28 | P3 | 场景 7（退款失败路径）未落地：`ALL_SCENARIOS` 已声明 7，但 `maos/flows/scenario_7.py` 不存在，`run.py --scenario 7` 直接 `ModuleNotFoundError` 退出码 1 | 与 R-2 记的「`payment.observe` 的 `needs_compensation=True` 没有消费方」是同一个缺口的两端：网关明确失败时本域会正确记观察、不推进状态、挂 `open_questions`，但**没有任何场景在跑这条路**。`--scenario 7` 是 argparse 的合法取值，任何人照着 `--help` 试一次就会撞见一个未捕获的 traceback | 场景 7 落地时一并解。在此之前若要避免那个 traceback，只能改 `ALL_SCENARIOS`（禁改面）或在 `_run_scenario` 里捕获 ImportError（同一文件），都要人类解冻 —— 故本轮不动。落地时注意 R-2 记的两点：`compensated` 的写入方要想清楚，失败路径同样要证明「终态是问出来的」 |

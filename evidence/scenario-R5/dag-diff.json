@@ -1,0 +1,90 @@
+# generated at 2026-08-28T10:39:59.859291+00:00 from d79d815b1936888fa316c6eef1513fbd18780f60
+{
+  "experiment": "R5 · RAG 有无对照",
+  "variable": "MAOS_KB_ENABLED=0 / 1，两段的计划脚本逐字节相同",
+  "history_case": {
+    "case_id": "case-r5-hist",
+    "plan_id": "plan_dab317f97d0c",
+    "biz_status": "settled",
+    "acked_notifications": 1,
+    "promoted_doc": {
+      "doc_id": "kb-r5-history-0001",
+      "kind": "history_case",
+      "outcome": "success",
+      "source_case_id": "case-r5-hist"
+    }
+  },
+  "without_kb": {
+    "plan_id": "plan_822e11174dbb",
+    "plan_state": "FAILED",
+    "tasks": [
+      "受理多源退款诉求并聚合证据",
+      "按下单锁定的政策版本裁定退款资格",
+      "发起退款并观察网关终态",
+      "通知客户退款结果"
+    ],
+    "task_keys": [
+      "refund_intake.intake",
+      "refund_policy.refund_policy",
+      "refund_payment.refund_payment",
+      "refund_intake.notify"
+    ],
+    "gate_result": "pass",
+    "finance_gate": "not_triggered",
+    "rework_count": 0,
+    "kb_retrieved_events": 0,
+    "human_approval_stops": [],
+    "biz_status": "submitted",
+    "failed_tasks": [
+      {
+        "title": "发起退款并观察网关终态",
+        "error": "LookupError: case=case-r5-nokb 没有 finance_entry，金额未经核算，不许发起付款"
+      }
+    ],
+    "finance_entries": 0,
+    "settled": false,
+    "plan_done": false
+  },
+  "with_kb": {
+    "plan_id": "plan_f181f446c84b",
+    "plan_state": "DONE",
+    "tasks": [
+      "受理多源退款诉求并聚合证据",
+      "按下单锁定的政策版本裁定退款资格",
+      "核算退款金额并写财务分录",
+      "发起退款并观察网关终态",
+      "通知客户退款结果"
+    ],
+    "task_keys": [
+      "refund_intake.intake",
+      "refund_policy.refund_policy",
+      "refund_finance.refund_finance",
+      "refund_payment.refund_payment",
+      "refund_intake.notify"
+    ],
+    "gate_result": "pass",
+    "finance_gate": "pass",
+    "rework_count": 0,
+    "kb_retrieved_events": 1,
+    "human_approval_stops": [
+      "核算退款金额并写财务分录"
+    ],
+    "biz_status": "settled",
+    "failed_tasks": [],
+    "finance_entries": 1,
+    "settled": true,
+    "plan_done": true
+  },
+  "delta_tasks": [
+    "refund_finance.refund_finance"
+  ],
+  "triggering_docs": [
+    {
+      "doc_id": "kb-r5-history-0001",
+      "score": 0.719031,
+      "title": "轴承锈蚀全额退款：财务核算不可省",
+      "kind": "history_case"
+    }
+  ],
+  "conclusion": "关掉检索：计划漏排 ['refund_finance.refund_finance']，Plan 收在 FAILED（第六道闸 not_triggered，业务状态 submitted）；打开检索：命中历史案例补上 ['refund_finance.refund_finance'] 并接成付款的前置，Plan 收在 DONE（第六道闸 pass，业务状态 settled）。"
+}

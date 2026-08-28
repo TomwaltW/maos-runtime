@@ -1,0 +1,16 @@
+# generated at 2026-08-28T10:39:59.852379+00:00 from d79d815b1936888fa316c6eef1513fbd18780f60
+场景 R5：RAG 有无对照实验，无 key 确定性复现
+
+[1/3] 准备段：跑一条完整成功的退款 case，收口后按晋升规则沉淀知识
+  Plan DONE，业务状态 settled，客户 ack 1 条
+  晋升：kb-r5-history-0001 kind=history_case outcome=success source_case_id=case-r5-hist
+
+[2/3] without_kb：MAOS_KB_ENABLED=0，计划漏排财务核算
+  4 个任务，KbRetrieved 0 条，第六道闸 not_triggered，Plan FAILED，业务状态 submitted
+  拦点：发起退款并观察网关终态 -> LookupError: case=case-r5-nokb 没有 finance_entry，金额未经核算，不许发起付款
+
+[3/3] with_kb：MAOS_KB_ENABLED=1，同一份计划脚本
+  5 个任务，KbRetrieved 1 条，第六道闸 pass，Plan DONE，业务状态 settled
+  人工审批停点：['核算退款金额并写财务分录']
+
+差异：delta_tasks=['refund_finance.refund_finance']，触发文档=[('kb-r5-history-0001', 0.719031)]

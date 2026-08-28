@@ -1,4 +1,4 @@
-# generated at 2026-08-28T10:40:05.122755+00:00 from d79d815b1936888fa316c6eef1513fbd18780f60
+# generated at 2026-08-28T10:49:03.311219+00:00 from fa57c97def5a20f1b171bfc412a5d6a3e2f82b0b
 
 ====================================================================
 场景 1：正常闭环（需求 -> 架构 -> 编码 -> 测试）
@@ -25,10 +25,16 @@ Plan: DONE  |  修复 demo/app 的 token 校验缺失
     s1-test  DISPATCHED       -> RUNNING          [claim]
     s1-test  RUNNING          -> AWAITING_REVIEW  [submit_result]
     s1-test  AWAITING_REVIEW  -> DONE             [gate_pass]
+  沙箱回归（真跑）: 测试报告：5 过 / 0 挂 / 0 错  duration=0.323s
+    · tests.test_isolation_probe::test_no_network      passed
+    · tests.test_isolation_probe::test_no_host_secrets passed
+    · tests.test_isolation_probe::test_no_home_access  passed
+    · tests.test_session::test_valid_session           passed
+    · tests.test_session::test_expired_session         passed
   Reviewer 语义审查: status=ok 结论=契约与补丁名实相符，回归全过，可放行
 INFO  maos.model   未配置 MAOS_LLM_BASE_URL/MAOS_LLM_API_KEY/MAOS_LLM_MODEL，降级为确定性 ScriptedModelClient（不发起任何网络请求）
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['architecture', 'coding', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'requirement', 'reviewer', 'testing']
-INFO  maos.cp      创建计划 plan_9acc88cdd07e，共 4 个任务
+INFO  maos.cp      创建计划 plan_e664ba10e506，共 4 个任务
 INFO  maos.cp      [s1-req] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [s1-req] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [s1-req] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -42,6 +48,7 @@ INFO  maos.cp      [s1-arch] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [s1-code] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [s1-code] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [s1-code] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.flows   [s1-code] attempt=1 沙箱回归：测试报告：5 过 / 0 挂 / 0 错
 INFO  maos.gate    [s1-code] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
 INFO  maos.cp      [s1-code] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [s1-test] PENDING -> DISPATCHED (dispatch)

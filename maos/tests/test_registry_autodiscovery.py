@@ -166,7 +166,7 @@ def test_private_modules_are_skipped(builtin_probe_dir):
 
 
 # --- C-2 AGENT_POOL 注册口径 -----------------------------------------------
-def test_agent_pool_is_exactly_coding():
+def test_agent_pool_is_exactly_five_roles():
     assert sorted(AGENT_POOL) == [
         "architecture", "coding", "requirement", "reviewer", "testing"
     ], (
@@ -257,7 +257,7 @@ def test_build_extra_params_are_keyword_only():
         build({}, True, None)       # 想按位置传 matrix + model
 
 
-# --- C-6 Task-0 期 matrix 恒回退 -------------------------------------------
+# --- C-6 matrix 缺 env 时降级等价（不是「恒回退成 inner 对象」）----------------
 def test_build_matrix_falls_back_to_inner_bus():
     """无 env 时 build(matrix=True) 必须降级 log-only，且三方法行为与 inner 完全一致。
 

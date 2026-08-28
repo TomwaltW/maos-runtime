@@ -20,6 +20,7 @@ import json
 
 from maos.agents.base import AgentIdentity
 from maos.agents.manager import ManagerAgent
+from maos.agents.testing import make_test_report, seed_scripted_report
 from maos.contracts.events import new_id
 from maos.contracts.states import PlanState
 from maos.flows.common import build, dump, run_until_settled
@@ -100,6 +101,32 @@ SCRIPT = {
     "方案甲": BLOCKER_PATCH,    # 首版的 Coding 产出
 }
 
+# 两版方案共用的回归报告。本场景的 DAG 只有一个 coding 节点、没有 testing 节点，
+# 报告不可能由谁跑出来，所以照 scenario_1/3 的做法由场景预置。
+#
+# 不预置会打破本场景的核心不变量：Task-C 起代码类任务缺 test_report 即 acceptance
+# blocker，于是方案甲变成 **3** 条 blocker（安全 2 + 验收 1）而不是设计好的 2 条，
+# 上面「恰好压在 REPLAN_BLOCKER_THRESHOLD 上」那句话失真；方案乙则被这条唯一的
+# blocker 一路挡到 FAILED，治理路径根本收敛不到 DONE。
+PASS_REPORT = make_test_report(
+    passed=2, failed=0, duration=0.31,
+    cases=[
+        {"id": "tests/test_callback.py::test_signature_verified", "status": "passed", "msg": ""},
+        {"id": "tests/test_callback.py::test_secret_from_env", "status": "passed", "msg": ""},
+    ],
+    summary="支付回调回归：2 过 0 挂",
+)
+
+
+def _seed_report(store, plan_id: str, attempt: int) -> None:
+    """给 TASK_ID 的第 ``attempt`` 次 attempt 预置回归报告。
+
+    Gate 按 ``version == task["attempt"]`` 取本轮产物，所以每一版方案都要单独预置：
+    一次性塞一份是喂不到第二轮的。
+    """
+    seed_scripted_report(store, plan_id=plan_id, task_id=TASK_ID,
+                         attempt=attempt, report=PASS_REPORT)
+
 
 def _intake_goal(store) -> tuple[str, dict]:
     """多源信号 -> issue.aggregate -> 本次 Plan 的目标（零模型，可复现）。
@@ -134,13 +161,20 @@ def run(*, matrix: bool = False) -> int:
         控制面不认识 ManagerAgent，只认这个回调（control_plane.set_replanner）——
         模型调用留在场景层，控制面那边一行模型代码都没有。
         """
-        return mgr.plan(
+        specs = mgr.plan(
             f"重新规划：原目标「{goal}」的首版方案被判定不可行，"
             f"累计 {len(findings)} 条问题，请给出替代方案")
+        # 下一轮的报告在这里预置：本回调跑在 _apply_replan 与 start_plan 之前，
+        # 此刻 attempt 还是旧值，派发时才 +1（control_plane.py:169）。
+        for task in open_tasks:
+            if task["role"] == "coding":
+                _seed_report(store, task["plan_id"], task["attempt"] + 1)
+        return specs
 
     cp.set_replanner(replanner)
 
     plan_id = cp.create_plan(goal=goal, trace_id=new_id("trace"), tasks=mgr.plan(goal))
+    _seed_report(store, plan_id, 1)          # 方案甲这一轮
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)
 

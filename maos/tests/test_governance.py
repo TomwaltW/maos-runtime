@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 
 import pytest
 
@@ -27,6 +28,7 @@ from maos.contracts.events import Topic
 from maos.contracts.states import PlanState, TaskState
 from maos.core.control_plane import (
     COMPENSATION_VERSION,
+    ENV_SANDBOX_WORKDIR,
     FROZEN_BY_REPLAN,
     ControlPlane,
 )
@@ -37,6 +39,7 @@ from maos.skills.contract import SkillContext
 from maos.skills.invoker import SkillInvoker
 from maos.agents.base import AgentIdentity
 from maos.runtime.plan_finalizer import PlanFinalizer
+from maos.tools.sandbox import prepare_sandbox_workdir, sandbox_git_apply
 
 GOLDEN = pathlib.Path(__file__).parent / "fixtures" / "compensation_golden.json"
 
@@ -316,14 +319,82 @@ def test_no_compensation_artifact_returns_none_and_does_not_raise():
     assert cp._execute_compensation(store.get_task(task_id), operator="人类") is None
 
 
-def test_reject_runs_compensation_then_fails_task():
-    """驳回 -> 先补偿再落 FAILED。并行开发期沙箱未就位，事件必须如实记 ok=False。
+def _real_patch(workdir: str) -> tuple[dict, str, pathlib.Path]:
+    """在 workdir 里现造一份**真能打上去**的补丁，返回 (patch_set, 原文, 目标文件)。
 
-    C-7 把 Task-D 的验收拆两段写死：并行期只验「补偿事件与 patch_ref 正确生成」
-    （golden fixture + 本桩的 NotImplementedError）；「文件真实还原」归合并期。
-    这里刻意**不**去给 sandbox.py 填临时实现、也不另起同名本地桩 —— 那会让
-    干跑闸形同虚设，补偿失败的用例反而通过。
+    照抄 test_sandbox_isolation.py 的造法（改文件 -> git diff -> 还原），不写死 diff：
+    写死要连 @@ 行号和上下文一起写死，靶场改一个字这里就跟着挂，
+    而症状是「补丁应用失败」，排查方向会被引向沙箱而不是这行常量。
     """
+    target = pathlib.Path(workdir) / "auth" / "session.py"
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original + "\n\n# 补偿验收用的追加行\n", encoding="utf-8")
+    diff = subprocess.run(["git", "-C", workdir, "diff"],
+                          capture_output=True, text=True, timeout=60).stdout
+    subprocess.run(["git", "-C", workdir, "checkout", "--", "."],
+                   capture_output=True, timeout=60)
+    assert diff.strip(), "git diff 没产出补丁，靶场副本可能没建成 git 仓库"
+    return ({"files": [{"path": "auth/session.py", "diff": diff}],
+             "summary": "补偿验收：给 session.py 追加一行",
+             "self_check": {"build": "pass", "lint": "pass"}},
+            original, target)
+
+
+def _reject_after_patch(bus, cp, plan_id, task_id, patch):
+    """交补丁 -> gate pass -> BLOCKED -> 人工驳回。返回 CompensationExecuted 的 detail。"""
+    _submit_patch(bus, cp, plan_id, task_id, 1, content=patch)
+    bus.publish(Topic.REVIEW_VERDICT, E.review_verdict(
+        plan_id=plan_id, task_id=task_id, attempt=1, trace_id="trace-t",
+        verdict="pass", findings=[], gate_results={}))
+    bus.drain()
+    assert cp.store.get_task(task_id)["state"] == TaskState.BLOCKED
+    cp.human_decision(task_id, approved=False, operator="沈思锴", note="不合规")
+    executed = [e for e in cp.store.list_event_log(plan_id)
+                if e["event_type"] == "CompensationExecuted"]
+    assert len(executed) == 1
+    return executed[0]["detail"]
+
+
+def test_reject_really_restores_the_file_in_sandbox(tmp_path, monkeypatch):
+    """驳回 -> 补偿反向应用 -> **文件真实还原**。C-7 划归合并期的那一段验收。
+
+    Task-B 合并前这条不可能存在：`sandbox_git_apply` 那时是 `NotImplementedError`
+    桩，只验得了「补偿事件与 patch_ref 正确生成」。两轨合到一起，才第一次能问出
+    「文件到底还原了没有」—— 而这正是 C-5 反例「补偿静默不执行、日志一片正常」
+    唯一测得到的地方：事件里 ok=True 而磁盘上没还原，只有比对文件内容才看得出来。
+    """
+    workdir = prepare_sandbox_workdir(str(tmp_path / "repo"))
+    monkeypatch.setenv(ENV_SANDBOX_WORKDIR, workdir)
+    patch, original, target = _real_patch(workdir)
+
+    # 先正向打上去 —— 没打上就谈不上还原，这一步同时钉住补丁本身是有效的
+    forward = sandbox_git_apply(patch, workdir)
+    assert forward["ok"], f"正向应用就失败了，补丁没造对: {forward.get('error')}"
+    assert target.read_text(encoding="utf-8") != original, "正向应用后文件内容应当变了"
+
+    store, bus, cp = _build()
+    plan_id, task_id = _make_task(cp, effect_risk="H")
+    detail = _reject_after_patch(bus, cp, plan_id, task_id, patch)
+
+    assert detail["ok"] is True, f"补偿没跑成: {detail.get('error')}"
+    assert detail["mode"] == "reverse"
+    assert detail["workdir"] == workdir
+    assert target.read_text(encoding="utf-8") == original, \
+        "事件说补偿成功，但文件没还原 —— 这就是 C-5 反例说的静默不执行"
+    assert store.get_task(task_id)["state"] == TaskState.FAILED
+
+
+def test_reject_runs_compensation_then_fails_task(tmp_path, monkeypatch):
+    """驳回 -> 先补偿再落 FAILED；补丁打不上时事件必须如实记 ok=False。
+
+    与上一条互补：上一条验「打得上、还原得了」，这条验「打不上也不许谎报成功」。
+    workdir 指向一个空的临时目录（不是 git 仓库），补丁必然应用失败。
+
+    **必须显式钉住 workdir**：`_execute_compensation` 缺省取 `"."`，也就是**仓库根**
+    —— 不 monkeypatch 的话这条用例会拿真补丁对本仓库跑一次 `git apply -R`。
+    当前因补丁打不上而侥幸无害，但那是运气，不是设计（已记 BACKLOG ## merge-p2）。
+    """
+    monkeypatch.setenv(ENV_SANDBOX_WORKDIR, str(tmp_path / "empty-not-a-repo"))
     store, bus, cp = _build()
     plan_id, task_id = _make_task(cp, effect_risk="H")
     _submit_patch(bus, cp, plan_id, task_id, 1)
@@ -343,7 +414,12 @@ def test_reject_runs_compensation_then_fails_task():
     assert detail["mode"] == "reverse"
     assert detail["patch_ref"]["task_id"] == task_id and detail["patch_ref"]["attempt"] == 1
     assert detail["ok"] is False
-    assert detail["error"]["stage"] == "sandbox_unavailable"
+    # 不再钉 stage == "sandbox_unavailable"：那是 Task-B 合并前 `NotImplementedError`
+    # 桩的产物，B 落地后真实现走的是结构化 error。钉「有 stage 且四个字段齐全」而不是
+    # 钉某个具体取值 —— Gate 要把 path / hunk 逐条转 findings，字段齐全才是它依赖的东西。
+    assert set(detail["error"]) == {"stage", "path", "hunk", "message"}
+    assert detail["error"]["stage"] in {"prepare", "validate", "path_check",
+                                        "conftest_guard", "path_escape", "apply"}
     assert detail["files"] == 1
 
     assert store.get_task(task_id)["state"] == TaskState.FAILED

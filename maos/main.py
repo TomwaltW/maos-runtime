@@ -21,7 +21,7 @@ import sys
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)-12s %(message)s")
 log = logging.getLogger("maos.main")
 
-ALL_SCENARIOS = (1, 2, 3, 4, 5)
+ALL_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)   # D-05：退款域用整数 6=顺利路径 / 7=失败路径
 DEFAULT_SCENARIOS = (1, 2, 3, 4)      # 场景 5 未实现，不进缺省序列
 
 

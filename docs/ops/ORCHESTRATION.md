@@ -5,6 +5,7 @@
 任务定义原始出处：`docs/superpowers/plans/parallel-build-plan.md`（gitignored 操作剧本，下称 plan）+ REVIEW.md 审计修正。
 最后更新：2026-08-28 · **R-1 / R-3 合入主干（`f63de8b`），R 轮三个 worktree 重建到该 sha**。本次动作：§0 状态刷新（B/C/E/D 补记 MERGED、R 轮五行新增）、§2 增 G5（R 轮开工闸，已过）、§3 探针刷到 `f63de8b`（301 passed）、§4 增 R 轮任务卡、§7 补两行、§8 增 R 轮派单存档指针；另刷 `review/paste-{R0,R2,omega}.md` 与 `dispatch-common-p3.md` 抬头里写死的旧基线 `90251b3`→`f63de8b`。执行者为**非编排总管会话**（从 `~` 启动、hook 未挂载），**人类当场授权**——沿用 2026-08-27 20:49 那次的口径（本文件第 3 行的单写者规则）。合并方案由编排总管会话提出并试合验证，本会话按人类指派执行并逐项复跑。上一次实质动作见 §7 「2026-08-28 B/C/E/D 四轨派单」行。
 **2026-08-28 16:30 增补**（同为非编排总管会话执行、人类当场授权「你代刷吧」）：核实 R-2 / Ω **早已开工**、R-0 是「只拿到一行下一步」的半轨已收口于 `cc0495b`（318 passed）→ §0 三行 `NOT_STARTED` 全部作废并改写；§3 补三个 worktree 当前实况；§4 三张 R 轮卡改写（R-0 卡记全派单三处修订）；§7 补一行；§8 存档例外由一条扩为两条。同批修订 `review/dispatch-R0.md`（94→155 行）与 `paste-R0.md`。**代码零改动。**
+**2026-08-28 18:52 增补**（同为非编排总管会话执行、人类当场授权）：补 **W 轮**与**整合轮 3** —— §0 增 W-1…W-7 七行、§4 增「W 轮任务卡」一段（七张卡）、§7 增整合轮 3 一行。整合本身由**另一并行会话**执行（18:39–18:49，五轨并入 `fd3f7cc`），本会话只做**记录 + 当场复核**：五个尖端的 `merge-base --is-ancestor`、主干 **455 passed** / `run.py` exit=0、冻结面对 `01bc8d8` 零改动，均为本会话实跑，非转述。**代码零改动，只动本文件。**
 前任编排会话（从 `~` 启动、hook 未挂载）产出的 Task-0 派单 v1 只在其会话输出里、未存档即失联，作废；本会话重拟为 v2（§8）。
 
 状态机：`NOT_STARTED → DISPATCHED → DELIVERED → VERIFIED → MERGED`；`BLOCKED` = 需人类介入。
@@ -27,6 +28,13 @@
 | R-2 | **MERGED** | 2026-08-28 17:0x 经 `integrate/round-2` 并入主干（分支 `task/r2-refund-skills` @ `bc7ce36`，三点 diff **18 files / +2533**）。退款域 6 Skill + 4 Agent + 场景 6，内核零改动。合并期接缝修复见下方整合轮 2 三条。⚠️ worktree 与分支**暂未清理** —— 17:06 复核时该目录仍有活跃会话（16:58 有记录） |
 | R-3 | **MERGED** | 2026-08-28 `f63de8b` 并入主干（分支 `task/r3-gateway` @ `3a2e473`，三点 diff **5 files / +1208**）。支付网关 + 错误码表。合并后实测 **301 passed**、`run.py` exit=0。**worktree 与分支已于 2026-08-28 16:35 清理**（`git worktree remove` + `git branch -d`；删前实测工作区干净、`git rev-list --count HEAD..<该轨 HEAD>` = 0、无会话从该目录起过） |
 | Task-Ω | **MERGED** | 2026-08-28 17:0x 经 `integrate/round-2` 并入主干（分支 `task/omega-evidence` @ `9a7579b`，三点 diff **39 files / +6022**）。Trace + 证据束 + `verify.py` 七项 + compose。证据已按最终主线重跑，出处 `sha=9e5fd52`，**verify 5/5 PASS + 2 SKIP、exit=0**。⚠️ worktree 与分支**暂未清理**，同 R-2（16:58 仍有活跃会话） |
+| W-1 | **MERGED** | 2026-08-28 18:39 经 `integrate/round-3` 并入主干（分支 `task/w1-refund-corpus` @ `15f79e8`，1 commit，三点 diff **10 files / +1667**）。退款域政策语料 + 三组对照数据集（`scenarios/refund/{policy,history,cases}`），**零代码**。合并期**无冲突**（五轨里唯一一次干净合入）。⚠️ worktree 与分支未清 —— 会话仍开着 |
+| W-2 | **MERGED** | 2026-08-28 18:40 `cd21681`（分支 `task/w2-storeport` @ `683fa24`，三点 diff **7 files / +782**）。StorePort 抽象 + sqlite/pg 适配器，补 P1 第 7 步欠账。⚠️ worktree 与分支未清（会话仍开着） |
+| W-3 | **MERGED** | 2026-08-28 18:47 `fa57c97`（分支 `task/w3-kb-rag` @ `e3c5a68`，2 commits，三点 diff **54 files / +6652 −963**）。两阶段检索 + 三条护栏 + RAG 有无对照实验（R5，砍序表**永不砍项**）+ 证据束全量重跑（新增 `scenario-R5`、补齐 `scenario-7`）→ `verify.py` 由 5/5 PASS + 2 SKIP 转 **7/7 PASS**。⚠️ worktree 与分支未清（会话仍开着） |
+| W-4 | **NOT_STARTED** | worktree `.worktrees/task-w4` @ `task/w4-matrix-room`，0 commit、工作区干净、`~/.claude/projects/` 下**无对应会话目录**（从没开工）。现停在 `ec63983`，**落后主干 2 个提交**。派单 `review/paste-W4.md` 已备好未粘 —— 阻塞点是**需人类先注册 Synapse 账号** |
+| W-5 | **NOT_STARTED** | 同 W-4：`.worktrees/task-w5` @ `task/w5-docs` @ `ec63983`，0 commit、干净、无会话目录。派单 `review/paste-W5.md`（文档生成器 + 材料骨架，Phase 7）已备好未粘，**无外部阻塞** |
+| W-6 | **MERGED** | 2026-08-28 18:40 `e710262`（分支 `task/w6-refund-failure` @ `5bbbbb8`，三点 diff **6 files / +1049 −4**）。场景 7 退款失败路径：轮询超时 → 主管驳回 → 域内补偿收口，全程未进 settled。**worktree 与分支已于 18:46 清理**（`git worktree remove` + `git branch -d`；本会话复核：目录不存在、`task/w6-*` 分支不存在、尖端已是主干祖先） |
+| W-7 | **MERGED** | 2026-08-28 18:41 `ec63983`（分支 `task/w7-software-seal` @ `0ee10d3`，三点 diff **8 files / +629 −171**）。软件域封版：真 workdir、真补丁、删 `testing.py` 的假绿回落、隔离探针不进业务判据 —— **R-0 欠的步骤 1/2/5 由此补齐**（见上方 R-0 行「已转由 W-7 承接」）。⚠️ worktree 与分支未清（会话仍开着） |
 
 ---
 
@@ -166,6 +174,50 @@
 - 派单：`review/dispatch-omega.md`（粘贴版 `review/paste-omega.md`）
 - 注意上方「Task-Ω」那张卡是 **P2 轮口径**（依赖写的是「A–E 全部 MERGED」），本轮以本卡与派单原文为准
 
+### W 轮任务卡（P4 / P5 · 2026-08-28）
+
+> 七轨的 scope / 独占文件清单 / 验收命令**原文在 `review/paste-W{1..7}.md`**（该目录由 `.git/info/exclude` 排除、不入库，靠粘贴交付）。此处只记状态与指针，**不复制正文**。W 轮**没有 `dispatch-W*.md`**，粘贴版即原文。
+> 派单节奏（本会话实读文件 mtime 与各 worktree 会话首条消息）：七份派单 **17:38** 落盘；W-1 / W-2 / W-3 / W-7 四轨 **17:54–17:55** 粘贴开工；W-6 亦已交付；**W-4 / W-5 从未粘贴**。
+> 共同基线 **`01bc8d8`**（五个已合轨的 `git merge-base` 实测均为它）。⚠️ §7 上一行（17:05–17:07）写的平移目标是 `01824f2` —— 那是**当时快照**，其后 worktree 又随看板提交 `01bc8d8` 前移一格，以本行为准。
+
+#### W-1 · 退款域政策语料与三组对照数据集
+- 状态：**MERGED**（18:39 `823dc54`）｜ 分支 `task/w1-refund-corpus` @ `15f79e8`（1 commit；三点 diff 10 files / +1667）
+- 落地面：新建 `scenarios/refund/README.md` + `policy/policy_rules.json` + `history/history_cases.json` + `cases/case_{r3a,r3b,r4a,r4b,r6}.json`；两本账追加 `## task-W1`
+- **本轨零代码**，合并期零冲突。BACKLOG `## task-W1` 记了三条不当场处理的账，均在其可改面之外
+
+#### W-2 · StorePort 抽象与 sqlite 适配器（补 P1 第 7 步欠账）
+- 状态：**MERGED**（18:40 `cd21681`）｜ 分支 `task/w2-storeport` @ `683fa24`（三点 diff 7 files / +782）
+- 落地面：新建 `maos/store/{__init__,port,sqlite_store,pg_store}.py`、`maos/tests/test_store_port.py`
+- 冲突面：仅两本账尾部，**代码零冲突**
+- ⚠️ BACKLOG `## task-W2` 六条账里的**前两条是 SQLite FTS5 自身行为、都不报错** —— 其原话是「W-3 的检索器不知道就会踩」。W-3 已在其后合入，**是否踩到未核**
+
+#### W-3 · KB/RAG 层：两阶段检索 + 三条护栏 + R5 对照实验（永不砍项）
+- 状态：**MERGED**（18:47 `fa57c97`；其后 `fd3f7cc` 按 `fa57c97` 重跑证据束）｜ 分支 `task/w3-kb-rag` @ `e3c5a68`（2 commits；三点 diff 54 files / +6652 −963）
+- 落地面：新建 `maos/kb/{__init__,retriever,guardrails,experiment}.py` + `kb/schema.sql`、`maos/skills/builtin/kb_retrieve.py`、`maos/tests/test_kb_retriever.py`；改 `maos/agents/manager.py`；`evidence/` 八个场景目录全量重写（新增 `scenario-R5`、补齐 `scenario-7`）
+- **兑现点**：`verify.py` 第 5 项（KbRetrieved 的 doc_id 可查）与第 7 项（history_case 可追溯）由 SKIP 转 PASS → **7/7 PASS**（本会话在 `.worktrees/integrate` 内同 sha 复跑 exit=0）
+- ⚠️ BACKLOG `## task-W3` 首条：`flows/scenario_6.py:228` 仍用 `ManagerAgent(model)` 老写法、`SkillInvoker.store is None` → **规划期检索在场景 6 恒返回空**，`MAOS_KB_ENABLED` 开关对它没有任何影响。**本轮无人认领**
+
+#### W-4 · Matrix 真房间联通 + 审批监听 + 状态迁移镜像
+- 状态：**NOT_STARTED**（0 commit、工作区干净、无会话目录）｜ worktree `.worktrees/task-w4` @ `task/w4-matrix-room` @ `ec63983`（**落后主干 2 格**）
+- 派单：`review/paste-W4.md`（已备好，**未粘**）。**阻塞点：需人类先注册 Synapse 账号** —— 派单里写明「卡在这一步就停下来问，不要自己瞎试」
+- 重粘前须刷抬头基线（现写死 `01bc8d8` / 383 passed）并把 worktree 平移到当时的主干
+
+#### W-5 · 文档生成器 + 材料骨架（Phase 7）
+- 状态：**NOT_STARTED**，同 W-4（`.worktrees/task-w5` @ `task/w5-docs` @ `ec63983`，0 commit、干净、无会话目录）
+- 派单：`review/paste-W5.md`（已备好，**未粘**）。无外部阻塞，抬头基线同样待刷
+
+#### W-6 · 场景 7 退款失败路径（Demo 分镜主线 · 永不砍项）
+- 状态：**MERGED**（18:40 `e710262`）｜ 分支 `task/w6-refund-failure` @ `5bbbbb8`（三点 diff 6 files / +1049 −4）｜ **worktree 与分支已于 18:46 清理**
+- 落地面：新建 `maos/flows/scenario_7.py`、`maos/tests/test_refund_failure.py`；改 `maos/skills/builtin/refund/{__init__,compensate}.py`
+- ⚠️ **演示缺口（本会话当场实读源码）**：`maos/main.py:26` 的 `ALL_SCENARIOS` 已含 7，但 `:29` 的 `DEFAULT_SCENARIOS` 仍是 `(1,2,3,4,5,6)` —— **`python3 run.py` 无参跑不到场景 7**，而场景 7 正是 Demo 分镜主线。`main.py` 是冻结面、W-6 派单明写「一个字不许动」，所以这一格只能由编排侧解冻来补；与 17:05 那次 `(1,2,3,4)`→`(1..6)` **同一形态**
+- ⚠️ BACKLOG `## task-W6` 首条：手册 R2 的「网关可重试错误码 → replan 换渠道 → 达上限 → needs_human」这一段**没有落地**，要改 `ControlPlane._should_replan`（在其边界外）
+
+#### W-7 · 软件域封版：真 workdir + 真补丁 + 删假绿路径（本轮最高优先级）
+- 状态：**MERGED**（18:41 `ec63983`）｜ 分支 `task/w7-software-seal` @ `0ee10d3`（三点 diff 8 files / +629 −171）
+- 落地面：改 `maos/flows/{common,scenario_1,scenario_2}.py`、`maos/agents/testing.py`、`maos/runtime/gate.py`、`maos/tests/test_agents_gate.py`
+- **它了结的是 R-0 的欠账**：R-0 派单步骤 1/2/5（现造真 workdir、真打得上的 `GOOD_PATCH`、删 `testing.py::_report_from` 的 `scripted_report` 假绿回落）到本轨才落地，`## merge-p2` 第 1、2 条一并收口
+- ⚠️ **待核**：合并后在 `fd3f7cc` 上跑 `verify.py`，business-outcome 项对 **scenario-1 / scenario-2 各仍报一条 warn**「1 条外部判据来源未审计（场景预置件，非实跑产出）」（同类 warn 也出现在 scenario-3/5，那两个是**允许**预置的）。该项整体 PASS、不影响 7/7，但与「软件域已封版、判据来自真跑」的说法有出入，**本会话未追到底**
+
 冻结备注：`flows/scenario_3.py` / `scenario_4.py` 在 Task-0 之后冻结，无人再碰（REVIEW Medium-3 的归属澄清）。
 
 ---
@@ -227,6 +279,7 @@ REVIEW.md 全部「必须写进 contracts.md / 由 Task-0 定死」修正项的�
 | 2026-08-28 16:35 | R-1 / R-3 | **收尾清理**：`.worktrees/task-r1`@`946befd`、`.worktrees/task-r3`@`3a2e473` 两个已合并 worktree 移除，分支 `task/r1-refund-core`、`task/r3-gateway` 用 `git branch -d`（安全删，未合并会拒）删除。删前三项复核：两者 `git status --porcelain` 均空、`git rev-list --count HEAD..<各自 HEAD>` 均为 0（无独有提交）、`~/.claude/projects/` 下无对应 worktree 项目目录（没有会话开在里面）。回滚锚点 tag `pre-r1r3-merge`@`90251b3` **保留不删** | 由非编排总管会话执行，人类当场指派（「你先清掉，我已经派单了」）。`.worktrees/` 剩 `integrate`/`review-ab`/`review-c`/`review-registry`/`task-r0`/`task-r2`/`task-omega` 七个 |
 | 2026-08-28 16:45–17:05 | R-0 / R-2 / Ω | **三轨整合（`integrate/round-2`，基线 `93529b4`）**。合并顺位 R-0→R-2→Ω，代码面**零重叠**，两份账本追加冲突按「两侧都留、先到者在前」解。整合暴露**三处接缝**（各轨自测全绿、合并才现）：①R-2 的 `test_kernel_does_not_know_the_refund_domain` 按子串扫 `"domain.refund"`，把第六道闸 docstring 里「不许 import」那句自我说明判成违例 —— **假阳性**，改走 AST 认 import 语句，扫描范围一行未缩；②`test_agent_pool_is_exactly_five_roles` 断「恰好五角色」，R-2 投放四个退款 Agent 后必红 —— 按 R-2 BACKLOG 建议改**子集口径**并改名 `..._contains_the_five_kernel_roles`；③**唯一真缺陷**：`verify.py` 第 3 项 authoritative-fact FAIL，`payment_observation.actor_invocation_id` 与 `SkillInvoked` 事件的 id 不同一 —— R-2 精确预告过但 `invoker.py` 不在其边界内、Ω 只写核验器不改被验对象，**两轨都修不了**，按 R-2 给的一行修法改 `invoker.py`（`extras={**extras, "invocation_id": invocation_id}`），该项转 1/1 PASS。快进合入主干 `92456ba` | 由**非编排总管会话**执行、人类当场授权（「现在你要开始整合」）。回滚锚点 tag **`pre-r0r2omega-merge`@`93529b4`**。三项验收均**主线上实测**：**383 passed**、场景 1-6 逐个 `exit=0`、`verify.py` **5/5 PASS + 2 SKIP** `exit=0`；冻结面 `contracts/`+`store.py`+`artifacts.py`+`.contracts.lock` 实测零改动。⚠️ 本会话 cwd 不在仓库根，**项目级守卫 hook 未加载**（已知项），全程以显式跑 `test_contracts_frozen.py` + 冻结面 diff 替代 |
 | 2026-08-28 17:05–17:07 | 收尾 | **三件**：①人类授权**解冻 `maos/main.py`** 补演示缺口 —— `DEFAULT_SCENARIOS` 此前是 `(1,2,3,4)` 且注释还写着「场景 5 未实现」，`run.py` 无参跑不到场景 5/6，**演示只跑 `run.py` 会整个漏掉退款域链路且不报错**；改为 `(1..6)` 并同步 docstring / argparse help / `run.py` / `CLAUDE.md:75` 四处措辞，排除标准写成「模块不存在」而非「谁负责」，故场景 7 一落地自动进（`9e5fd52`）。②证据按改后主线**重跑**，出处 `sha=9e5fd52`（`01824f2`）。③`task-r0` worktree 与分支清理；**W-1…W-7 七个新轨**（16:58–16:59 建，各 0 commit、工作区干净、无会话开在里面）用 `git merge --ff-only` **平移**至 `01824f2`，与主线同基线 | 平移用 ff-only 而非 `reset --hard`：有任何独有提交它会拒绝而不是丢弃。R-2 / Ω 两个 worktree **刻意留着** —— 17:06 复核时其会话 6 分钟前还在活动，删目录会踩掉正开着的窗口（同 08-28 16:35 口径）|
+| 2026-08-28 18:39–18:49 | W-1/W-2/W-3/W-6/W-7 | **整合轮 3（`integrate/round-3`，基线 `01bc8d8`）**：五轨按 **W-1 → W-2 → W-6 → W-7 → W-3** 顺序合入，合并提交 `823dc54` / `cd21681` / `e710262` / `ec63983` / `fa57c97`；随后 `fd3f7cc` 按 `fa57c97` 重跑证据束（补齐 `scenario-7`、新增 `scenario-R5`，`verify` 转 7/7）。冲突面：**W-1 无冲突**，另四轨的合并提交 `# Conflicts:` 段一律只有 `docs/BACKLOG.md` + `docs/DECISIONS.md`，**代码零冲突**、也无整合轮 2 那种接缝修复提交。`integrate/round-3` 与 `goai-restructure` 现同为 **`fd3f7cc`**（`ahead 48`，仍未 push） | **整合由另一并行会话执行**（本会话只做记录与复核，代码零改动）。以下均为本会话**当场实跑**、非转述：五个尖端 `git merge-base --is-ancestor <tip> HEAD` **全部成立**；主干 `fd3f7cc` 上 `python3 -m pytest maos/tests -q` → **455 passed**、`python3 run.py` → **exit=0**；`git diff --stat 01bc8d8 HEAD -- maos/contracts/ .contracts.lock maos/artifacts.py docs/parallel/contracts.md maos/main.py` → **空**（冻结面零改动）。⚠️ `python3 scripts/verify.py` 在**主检出**上 **exit=2**（`缺 evidence/scenario-7/maos.db`）—— 不是回归：`*.db` 按设计不入库（`.gitignore:40`，`make_evidence.py:456` 把库落在临时目录再整体 `os.replace` 挪位），主检出上次自跑 `make_evidence.py` 停在 17:05，故只有老的 1–6 有库、新的 7 / R5 没有；在 `.worktrees/integrate` 内同一 sha 复跑 **7/7 PASS、exit=0**。**要在主检出复现那一屏，必须先 `python3 scripts/make_evidence.py`** —— 演示前务必先跑这一步。⚠️ 本会话从 `~` 启动，项目级守卫 hook 未加载（已知形态） |
 
 ---
 

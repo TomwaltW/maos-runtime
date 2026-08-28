@@ -61,3 +61,59 @@
 |---|---|---|---|---|
 | 2026-08-28 | fix-2 | 派单要求给 Gate 的自检判定补行为测试，但测试落点在多轨并行下不是自由选项：全仓 grep `ReviewerGate` / `review_pending`，测试侧只命中 `test_registry_autodiscovery.py:27` 的 import 与 `:157/:163` 的 `build()` 六元组断言，Gate 目前**零行为直测** | 新建 `maos/tests/test_gate.py`，不往 `test_contracts.py` 里加。五条用例走 `gate.review_pending()` 而不是直调静态方法 `_gate_acceptance()`；用一个只记不发的 `_RecordingBus` 收 `REVIEW_VERDICT`，再按 `f["gate"] == "acceptance"` 过滤 findings | `test_contracts.py` 是 fix-1 本轮要改的文件，测试写进去两轨就从并行退化成串行。走 `review_pending()` 是因为本轮 P0 要验的正是「异常会不会从这个入口逃出去」——`flows/common.py:70` 是裸调用，直调静态方法验不到这一层。不用 `InMemoryEventBus` 是不让 `ControlPlane` 的订阅在 drain 时跟着跑状态迁移：这里测的是判定，不是状态机。按 gate 名过滤是因为同一份 artifact 会同时触发 evidence 等别的闸，不过滤就会拿别的闸的 finding 冒充 acceptance 的结果 |
 | 2026-08-28 | fix-2 | `self_check` 不是 dict（`None` / 字符串）时 `check.get(k)` 抛 `AttributeError`。两条修法：抛一个明确的契约异常让上游修，或按「没自检」降级判 finding | 降级。`isinstance` 不过就当 `{}`，与「键缺失」走同一条路径，一律判 finding；同时把判据从「只认字面 `fail`」改成「非 `pass` 即 finding」。finding 的 message 文案对「缺失」与「fail」**不作区分**，沿用原串；severity 沿用 `major`，未提 blocker | Gate 的契约是产出 findings 供 Coding Agent 消费，不是抛异常：`review_pending()` 在 `flows/common.py:70` 是裸调用，`WorkerRuntime._invoke` 的 try 只包住 `agent.run`，异常逃出去整个 plan 驱动循环当场崩，连退化成一次 rework 都做不到。不依赖上游收敛形状是因为 `code_repo_patch.py:112-113` 用的是 `setdefault`（键在则原样保留），且**畸形值在真实链路上确实到得了 Gate**——`artifacts.py::validate_artifact` 生产路径零调用方（另记 BACKLOG）。文案不分叉：分叉要改既有那条 message 串，属铁律 4 的顺手优化，且判据已统一到「非 pass」，分类信息对返工提示价值有限。severity 不提是因为提了会改四场景流转，超出本轮范围。安全边界已实测而非推断：`python3 -m pytest maos/tests -q` → 111 passed、`python3 run.py` 退出码 0；另把旧实现 monkeypatch 回去跑同一份 `run.py`，归一化随机 task/plan id 后与新实现输出 **diff 为空**；同一负控下五条新用例中该红的三条（缺失静默放行、`None` 抛 `AttributeError`、字符串抛 `AttributeError`）全红，证明测试不是空跑 |
+## fix-4
+
+2026-08-28 | P1 | 测试卫生轨（`fix/test-hygiene`，基线 `ece725a`）。派单三条发现同在
+`maos/tests/test_registry_autodiscovery.py`，白名单为该文件 + `.gitignore`。
+
+**1）`builtin.__path__` 注入方案，与 `registry._discovered` 的交互（派单点名必须留痕的一条）**
+
+情境：`probe_module` fixture 往真源码树 `maos/skills/builtin/` 写探针文件，pytest 被
+Ctrl-C / OOM / 超时杀掉时 `finally` 跑不到，残留文件会被 `builtin/__init__.py` 末尾的
+模块级 `discover()` 在 import 阶段注册，下次全量测试在 `:74` 假红。**已实测复现：
+留一个 `probe_autodiscovery_tmp.py` → `1 failed, 105 passed`，报错正是 `:74`。**
+
+选择：fixture 改用 `tmp_path` 建临时目录，`monkeypatch.setattr(builtin, "__path__", [...原有, 临时目录])`
+注入包搜索路径；探针文件落在临时目录，随 `tmp_path` 回收。同时把
+`registry._discovered` 在 fixture 里 **复位成 `False`**（不是钉成 `True`）。
+
+理由：`__path__` 是 list，`pkgutil.iter_modules` 与子模块 import 都按它找模块，追加一个
+目录即足以让 `discover()` 扫到探针，而真源码树自始至终没被动过。`_discovered` 那半边是
+本轮最容易被下一个人踩坏的地方，分三层说清：
+
+- 复位成 `False` 之后，`:74` 的 `registry.get()` **每次**都真的走一遍 `_discover_builtin()`
+  分支。原来它绿不绿取决于测试执行顺序（跑在别的测试后面时标志已被置位，那条断言退化成
+  纯字典查找），这个隐性依赖现在被消掉了。
+- 复位后它仍然绿，靠的是 `_discover_builtin()` 用的是 `import maos.skills.builtin`，
+  而 `sys.modules` 里已有缓存 —— 那次 import 是**空操作，不重扫目录**。这层依赖是承重的。
+- 正因为承重，它同时也是守卫：谁把 `registry.py:53` 那句 `import` 改成 `builtin.discover()`
+  （该文件 47-48 行明令禁止），扫描就会命中临时目录里的探针并注册，`:74` 当场变红。
+  **此结论已实测坐实**（在进程内替换 `_discover_builtin` 模拟该改动）：现状返回 `None`，
+  改成 `discover()` 返回 `ProbeSkill` 类。所以不能把 `_discovered` 钉成 `True` —— 那样省事，
+  但会把这条守卫一起关掉。
+
+**2）fixture 增加「进入前也清一次」，超出派单三条发现的范围**
+
+情境：把探针挪进 `tmp_path` 只解决了「我们自己制造残留」，解决不了「环境里本来就有残留」。
+旧分支带进来的、或本次改动之前被杀掉留下的 `probe_*.py` 仍会在 import 阶段注册，`:74` 照样红。
+选择：`probe_module` 在 setup 阶段也 `pop` 一次 `sys.modules` 与 `SKILL_REGISTRY`。
+理由：验收第 3 条要求「确认残留不再让别的测试假红」，只做 `tmp_path` 达不到这一条，只能退到
+派单给的「或至少被 `.gitignore` 挡住」。加了这七行之后两条都达成 —— **实测：带残留跑全量
+106 passed，且 `git status` 不列出残留文件**。测试对环境该是免疫的，起跑线自己划、不继承。
+
+**3）`.gitignore` 写死两个确切文件名，未按派单用 `probe_*` 通配**
+
+情境：派单写的是把 `probe_*` / `_private_probe*` 加进 `.gitignore`。
+选择：只写 `maos/skills/builtin/probe_autodiscovery_tmp.py` 与
+`maos/skills/builtin/_private_probe.py` 两行确切路径。
+理由：`builtin/` 是「投放即注册」的目录（C-1），通配会把将来某个真叫 `probe_xxx` 的 skill
+一并吞掉，而那种错是**静默**的 —— 文件在磁盘上、测试也绿，只是永远进不了版本库，换台机器
+就凭空少一个 skill。这两个名字是测试历史上唯一写过的文件名，写死即足够兜底。
+（改动已按派单要求放在最后做，前面两项先各自跑绿。）
+
+**4）范围外发现，未修，记此备查**
+
+`subprocess.TimeoutExpired` 的 `.stdout` / `.stderr` 即使 `subprocess.run(text=True)`
+也回 **bytes**（实测 `b'partial output\n'`）—— 这是 CPython 行为，不是本仓库的 bug。
+新加的超时分支已按此写了 `isinstance(raw, bytes)` 解码兜底；若照直接 f-string 拼，
+失败信息里会出现 `b'...'` 这种没法读的东西。此处只记，不外扩。

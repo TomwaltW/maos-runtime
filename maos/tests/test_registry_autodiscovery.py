@@ -255,10 +255,34 @@ def test_build_extra_params_are_keyword_only():
 
 # --- C-6 Task-0 期 matrix 恒回退 -------------------------------------------
 def test_build_matrix_falls_back_to_inner_bus():
+    """无 env 时 build(matrix=True) 必须降级 log-only，且三方法行为与 inner 完全一致。
+
+    判据在 Task-E 落地后升级过一次。原断言写的是「回退到 InMemoryEventBus 对象」，
+    它的前提就写在自己的消息里 ——「hiclaw/matrix_bus.py **落地前**」：那时
+    `_wrap_matrix` 恒走 ImportError 分支，返回的确实是 inner 本身。文件一落地，
+    该分支不再命中，返回的是 MatrixEventBus，这条判据自然失效。
+
+    语义没有变 —— 缺 env 不许中断 —— 变的是怎么验它：从「比对象类型」升级成
+    「比降级模式下的行为」。后者才是当初真正要守的东西。对象类型对了而 drain 的
+    返回值不对，演示照样当场垮；反过来只要行为等价，包不包一层根本不影响任何调用方。
+    """
+    # 函数内 import：本文件其余几十条断言与 hiclaw 无关，不该因为可选依赖层缺席
+    # 而在 collection 阶段集体失败。
+    from hiclaw.matrix_bus import MatrixEventBus
+    from maos.contracts.events import Envelope
+
     _, bus, _, _, _, _ = build({}, matrix=True)
-    assert isinstance(bus, InMemoryEventBus), (
-        "hiclaw/matrix_bus.py 落地前，matrix=True 必须告警回退进程内总线，不许抛异常"
-    )
+    assert isinstance(bus, MatrixEventBus), "matrix=True 落地后应返回 MatrixEventBus"
+    assert bus.config.log_only is True, "无 env 必须自动降级 log-only，不许抛异常"
+
+    # 用一个没人订阅的探针 topic：build() 已经把 ControlPlane / Worker 挂在了几个
+    # 正式 topic 上，借用它们会把状态机的重投与死信也搅进来，验不出总线本身。
+    seen: list[Envelope] = []
+    bus.subscribe("maos.probe", "probe", seen.append)
+    env = Envelope(event_type="Probe", plan_id="p", task_id="t", idempotency_key="probe:1")
+    bus.publish("maos.probe", env)
+    assert bus.drain() == 1, "降级模式下 drain 的返回值应与 inner 一致"
+    assert seen == [env], "降级模式下 publish/subscribe 没有原样委托给 inner"
 
 
 # --- A-5 invoker 的两条不对称 ----------------------------------------------

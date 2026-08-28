@@ -82,8 +82,15 @@ class SkillInvoker:
                 duration_ms=_elapsed_ms(started),
                 invocation_id=invocation_id), payload, extras)
 
+        # invocation_id 必须进 extras：skill 内部要拿它当 actor 锚点写库
+        # （退款域的 guard.update_biz_status 要求非空）。不塞进去的话，skill 只能
+        # 自己另生成一个，于是落库那行的 actor_invocation_id 与本次 SkillInvoked
+        # 事件的 id 不是同一个值 —— verify.py 第 3 项 authoritative-fact 按事件
+        # 对账，会判「权威事实边界被绕过」。故意覆盖调用方传入的同名键：
+        # 官方 id 只有这一个，调用方那个是 invoker 补齐前的兜底。
         ctx = SkillContext(model=extras.get("model"), store=self.store,
-                           identity=self.identity, extras=extras)
+                           identity=self.identity,
+                           extras={**extras, "invocation_id": invocation_id})
         attempts = contract.max_retries + 1 if contract.failure_policy == "retry" else 1
         skill = cls()
         output: Any = None

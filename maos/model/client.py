@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -85,6 +87,70 @@ def _scrub(text: str, secret: str) -> str:
     return text.replace(secret, "***") if secret else text
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    """usage 计数容错：网关给了非整数就回退 default 并告警。
+
+    这一行原本在 complete() 的 try 之外，``int("n/a")`` 会抛 ValueError **逃出**
+    统一的 RuntimeError 兜底与脱敏，用户看到的是裸 traceback。回退而不是抛：
+    token 计数不该让一次已经成功的模型调用失败；但必须 warning —— 计数错了
+    会一路传导到成本统计，静默吞掉等于埋雷。
+    """
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        log.warning("模型网关 usage 字段不是整数：%r，按 %d 计（成本统计会偏低）", value, default)
+        return default
+
+
+def _origin(url: str) -> str:
+    """取 ``scheme://host:port`` 作为 origin —— 三者全等才算「没换主机」。
+
+    刻意不含 userinfo 和 path：这个字符串会进异常文本，不能夹带凭据。
+    端口显式补默认值，免得 ``http://h`` 和 ``http://h:80`` 被判成两个 origin。
+    """
+    parts = urllib.parse.urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:      # 恶意 Location 里的非法端口，别让 ValueError 逃出兜底网
+        port = None
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    return f"{parts.scheme}://{(parts.hostname or '').lower()}:{port}"
+
+
+class RedirectRefused(Exception):
+    """跨 origin 重定向被拒。独立类型，好和网关真正返回的 HTTP 错误分开给口径。"""
+
+    def __init__(self, origin_from: str, origin_to: str, code: int) -> None:
+        super().__init__(f"HTTP {code} -> {origin_to}")
+        self.origin_from = origin_from
+        self.origin_to = origin_to
+        self.code = code
+
+
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """只放行同 origin 的 3xx，换了 scheme / 主机 / 端口一律拒绝。
+
+    urllib 默认跟随重定向，且 ``HTTPRedirectHandler`` 把原请求头（含
+    ``Authorization``）**原样**搬到新请求上。key 不是被打印，是被**发**出去 ——
+    ``_api_key`` 私有化、``__repr__``、``_scrub()``、``from None`` 这四道防的都是
+    「key 出现在日志/traceback 里」，一道都拦不住「key 出现在别人的服务器上」。
+    而 ``MAOS_LLM_BASE_URL`` 是环境变量可配的，配错一个地址就够。
+
+    同 origin 的纯路径跳转（补斜杠、路径规范化）是网关的正常行为，保留。
+    同主机的 https -> http 降级也算换 origin：那同样是把 Authorization 明文发上线。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        src, dst = _origin(req.full_url), _origin(newurl)
+        if src != dst:
+            fp.close()      # 本该由 http_error_302 在本函数返回后关，抛了就轮不到它
+            raise RedirectRefused(src, dst, code)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class GatewayModelClient(ModelClient):
     """OpenAI 兼容协议的真模型客户端（POST ``{base_url}/chat/completions``）。
 
@@ -94,7 +160,9 @@ class GatewayModelClient(ModelClient):
 
     api key 存在单下划线属性里，且 ``__repr__`` 不含它：异常、日志、pytest 的
     对象打印都不该把它带出去。所有出网异常都 ``from None`` 掐断链，
-    避免底层 traceback 把 Authorization 头顺出来。
+    避免底层 traceback 把 Authorization 头顺出来。以上三条防的都是「key 进日志」；
+    「key 进别人的服务器」由 :class:`_SameOriginRedirectHandler` 单独封 ——
+    走自建 opener，不用 ``urllib.request.urlopen`` 的全局默认 opener。
     """
 
     def __init__(self, base_url: str, api_key: str, model: str,
@@ -103,6 +171,8 @@ class GatewayModelClient(ModelClient):
         self.model = model
         self.timeout = timeout
         self._api_key = api_key
+        # 自建 opener：build_opener 见到 HTTPRedirectHandler 的子类实例就不再装默认那个
+        self._opener = urllib.request.build_opener(_SameOriginRedirectHandler())
 
     def __repr__(self) -> str:
         return f"GatewayModelClient(base_url={self.base_url!r}, model={self.model!r})"
@@ -124,8 +194,13 @@ class GatewayModelClient(ModelClient):
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self._opener.open(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+        except RedirectRefused as exc:
+            raise RuntimeError(
+                f"模型网关要求跳转到 {exc.origin_to}（HTTP {exc.code}），已拒绝："
+                f"Authorization 头不出 {exc.origin_from}。"
+                f"请把 {ENV_BASE_URL} 直接配成最终地址") from None
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:200]
             raise RuntimeError(
@@ -145,15 +220,22 @@ class GatewayModelClient(ModelClient):
         usage = data.get("usage") or {}
         return ModelResponse(
             text=text or "",
-            tokens_in=int(usage.get("prompt_tokens") or 0),
-            tokens_out=int(usage.get("completion_tokens") or 0),
+            tokens_in=_safe_int(usage.get("prompt_tokens")),
+            tokens_out=_safe_int(usage.get("completion_tokens")),
             model=str(data.get("model") or self.model),
             meta={"tier": tier, "finish_reason": choice.get("finish_reason", "")},
         )
 
 
 def _timeout_from_env() -> float:
-    """读 MAOS_LLM_TIMEOUT；非数字或非正数一律回退默认值，不让配置笔误变成挂死。"""
+    """读 MAOS_LLM_TIMEOUT；非数字 / 非有限值 / 非正数一律回退默认，不让配置笔误变成挂死。
+
+    ``inf`` 和 ``nan`` 两条都要单独拦：``float()`` 收它们**不抛 ValueError**，
+    而 ``inf <= 0`` 是 False、``nan`` 参与的一切比较都是 False —— 原来那两道闸
+    都放行。放行的后果不是超时变长，是 ``socket.settimeout()`` 抛
+    OverflowError / ValueError，**逃出** complete() 那张统一 RuntimeError 兜底网，
+    错误口径和脱敏一起失效。
+    """
     raw = (os.environ.get(ENV_TIMEOUT) or "").strip()
     if not raw:
         return DEFAULT_TIMEOUT
@@ -161,6 +243,10 @@ def _timeout_from_env() -> float:
         value = float(raw)
     except ValueError:
         log.warning("%s=%r 不是数字，回退默认 %.0fs", ENV_TIMEOUT, raw, DEFAULT_TIMEOUT)
+        return DEFAULT_TIMEOUT
+    if not math.isfinite(value):
+        log.warning("%s=%r 不是有限数值（inf/nan），回退默认 %.0fs",
+                    ENV_TIMEOUT, raw, DEFAULT_TIMEOUT)
         return DEFAULT_TIMEOUT
     if value <= 0:
         log.warning("%s=%r 非正数，回退默认 %.0fs", ENV_TIMEOUT, raw, DEFAULT_TIMEOUT)

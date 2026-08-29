@@ -1,15 +1,15 @@
-# generated at 2026-08-29T03:09:37.556842+00:00 from df96fa8f2b66564f9fd77f6f78437d723f3ebb93
+# generated at 2026-08-29T04:33:43.322525+00:00 from caf45d28b5d4c0541ecd94f01e14e560030c8f69
 {
   "scenario": 7,
   "exit_code": 0,
-  "wall_ms": 333,
+  "wall_ms": 365,
   "plan_count": 1,
   "plans": [
     {
-      "plan_id": "plan_4d0fc98be697",
+      "plan_id": "plan_e68b9aab5152",
       "goal": "处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常",
       "state": "FAILED",
-      "trace_id": "trace_088bd7d82beb",
+      "trace_id": "trace_71781bb5c5a0",
       "tasks": [
         {
           "task_id": "task-s7-intake",
@@ -41,29 +41,30 @@
         {
           "task_id": "task-s7-payment",
           "role": "refund_payment",
-          "title": "发起退款并观察网关终态",
+          "title": "发起退款并观察网关终态（改派备用渠道）",
           "state": "FAILED",
-          "attempt": 1,
+          "attempt": 2,
           "risk_level": "M",
           "effect_risk": "H"
         }
       ],
       "metrics": {
-        "duration_ms": 53,
-        "event_count": 36,
+        "duration_ms": 71,
+        "event_count": 48,
         "event_types": {
-          "PlanTransition": 2,
-          "StateTransition": 18,
-          "SkillInvoked": 8,
+          "PlanTransition": 4,
+          "StateTransition": 23,
+          "SkillInvoked": 10,
           "RefundBizStatusChanged": 3,
-          "ToolInvoked": 4,
+          "ToolInvoked": 6,
+          "Replanned": 1,
           "CompensationExecuted": 1
         },
-        "rework_count": 0,
-        "replan_count": 0,
+        "rework_count": 1,
+        "replan_count": 1,
         "compensation_count": 0,
-        "skill_invocations": 8,
-        "tool_invocations": 4
+        "skill_invocations": 10,
+        "tool_invocations": 6
       },
       "business_outcome": {
         "status": "failed",
@@ -77,8 +78,8 @@
     }
   ],
   "totals": {
-    "event_count": 36,
-    "rework_count": 0,
-    "replan_count": 0
+    "event_count": 48,
+    "rework_count": 1,
+    "replan_count": 1
   }
 }

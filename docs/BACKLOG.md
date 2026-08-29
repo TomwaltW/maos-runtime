@@ -1019,3 +1019,15 @@ T7–T14 八轨并入 + 活数字回填 + 证据束全量重跑。基线 `4cfef3
 | 2026-08-30 | P7 | **`a9d0d93` 的标题写着 `merge:`，但它不是 merge 提交**：修 t10 归属错位时那次 `git commit --amend` 没有生效（原因未查清，同一批里 t9 的 `8450d97` 与 t11 的 `a5b33ea` 都 amend 成功了），于是变成挂在真 merge `4c6fc17` 之上的单父普通提交，标题却原样保留 | `git log --oneline` 上会看到**两条一模一样的 `merge: t10-pgstore-polardb`**，读历史的人会以为 t10 被并了两次。机器判据：`git log -1 --format=%p a9d0d93` 只有一个父，`4c6fc17` 才是两个父 | **不修，记账即可**。修它要 rebase，而 `evidence/` 42 份出处头钉死 `3d504b1`（整合轮 11 活数字回填提交），重写历史会让这些 sha 全部指向不存在的提交 —— A-2 那条「出处头必须是干净且真实存在的 sha」当场失效。代价对比：一个误导的标题 vs 整束证据的可追溯性。下一轮若要清理，只能在**证据束重跑之前**做 |
 | 2026-08-30 | P7 | **`review/DISPATCH-TEMPLATE.md` 的改动被卷进了 `a9d0d93`**：它本该是一个独立的编排侧提交（给 §1 补「环境变量自检判据 = 非空**且不含 `<` 占位符**」，堵 T14 踩的那个假通过信号），却因为并轨期间它一直躺在主干工作区未提交，在 merge 状态下 `git commit` 带上了整个索引 | 内容完好、判据实测过四种情形（未设 / 占位符原文 / 真串 / 只替换一半），只是从提交历史上看不出这条改动的存在 —— 按标题找它会找不到 | **不单独修**（同上，要 rebase）。下次并轨前先把主干工作区清空：并轨期间主干**不该有**任何未提交改动，否则它会随机粘到某个 merge 提交上 |
 
+## task-T18
+
+本轨（PG 侧全文排序与本地同尺）只持有 `maos/store/pg_store.py`、`maos/tests/test_pg_rank_parity.py`（新建）
+外加两份账本。下面四条都是**白名单外**发现的，按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P5 | **`deploy/polardb.md` 的「已知差异」第 3 节已被本轨证伪**：那节写着「PG（`ts_rank`）`d1` 与 `d2` 同分 0.06079271」「要长度归一就给 `ts_rank` 传 normalization 参数，那会改变现有排序，属于检索调优，不在本轨范围」。本轨已经传了（`FTS_RANK_NORMALIZATION = 2`），实测同一条查询同一份语料，PG 侧现在排 `['d2', 'd1']`，与本地 `-bm25` 一致 | 那节的表格与结论现在都是错的，而它正是「换后端要注意什么」这页里最容易被照着做决定的一节 —— 读的人会以为两边名次仍然不同，从而在混合召回上做多余的兜底。**分数不可跨后端比较仍然成立**（PG 侧 1e-2 量级、本地侧 1e-6 量级），要改的只是「名次也不同」那半句 | 归 T9／T10／整合轮（`deploy/**` 是它们的面，派单 §4 划死只读）。建议措辞：「`ts_rank` 缺省不做长度归一，本层因此传了 normalization=2（见 `maos/store/pg_store.py` 的 `FTS_RANK_NORMALIZATION`），**名次两边一致**；但分数量纲差着四个数量级，**仍然不可跨后端比较绝对值**。名次一致性由 `maos/tests/test_pg_rank_parity.py` 守着」 |
+| 2026-08-30 | P5 | **`docs/BACKLOG.md` 的 `## task-T10` 第 5 条（本文件第 959 行）已由本轨解决**：那条写着「要对齐就给 `ts_rank` 传 normalization 参数……但那会改变现有 PG 侧排序，需要有人先决定以哪边为准」 | 条目本身没错，只是已经不是待办了。留着不标注的话，下一个人会重做一遍本轨做过的事 | 整合轮在那条尾部补一句「**已由 T18 解决**，口径以本地 `-bm25` 为准，见 `docs/DECISIONS.md`」即可。本轨不动别轨的记账行（改了就是合并冲突） |
+| 2026-08-30 | P5 | **`deploy/docker-compose.yml` 没把 `CREATE EXTENSION vector` 做成 initdb 脚本**（派单 §0.2 点名要记的那条）：起库之后必须手工 `psql -c "CREATE EXTENSION IF NOT EXISTS vector;"` 才有向量类型 | 每个起库的人都要多记一条命令；忘了的话第一条建表就报 `type "vector" does not exist`，而报错指向的是建表语句、不是缺扩展，排查方向容易带偏。`maos/tests/test_pg_store_live.py` 的 fixture 自己补了 `CREATE EXTENSION IF NOT EXISTS vector`，所以测试碰不到这个坑，**只有手工连库的人会踩** | 归 T9（`deploy/**` 是它的面）。改法是在 pgvector 服务上挂一个 `/docker-entrypoint-initdb.d/*.sql`，内容一行 `CREATE EXTENSION IF NOT EXISTS vector;` |
+| 2026-08-30 | P7 | **`scripts/demo_preflight.sh` 的 `EXPECT_TESTS` 在「配了 `MAOS_PG_DSN` 的环境」下必然对不上**：无库时本轨实测 `860 passed, 29 skipped`（条数没变，只是 skipped 从 22 涨到 29），有库时是 `889 passed, 0 skipped`。差的 29 条 = T10 的 22 条 live + 本轨的 7 条 parity | 同一份代码、同一条命令，条数取决于跑的时候环境里有没有 DSN —— 整合轮刷这个数字时，刷成哪个值全看当时库起没起，而脚本比的是精确相等。这不是本轨引入的（T10 那 22 条起就这样），但本轨把差额从 22 扩到了 29 | 整合轮刷条数时**在无库环境下刷**（即 `860`，本轨没有改变这个数，不需要为 T18 刷）。更彻底的修法是让脚本比「passed + skipped」或允许 `>=`，但那是 `scripts/demo_preflight.sh` 的面，契约 2 划死了谁都不许改 |
+

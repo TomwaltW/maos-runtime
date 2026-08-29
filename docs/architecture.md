@@ -21,7 +21,7 @@ flowchart TB
     BUS["EventBus<br/>maos/core/eventbus.py"]
     STORE["Store<br/>maos/core/store.py<br/>plan/task/artifact/event_log/…"]
     WK["Worker Runtime<br/>maos/runtime/worker.py<br/>Identity 三查"]
-    GATE["Reviewer Gate<br/>maos/runtime/gate.py<br/>六道闸"]
+    GATE["Reviewer Gate<br/>maos/runtime/gate.py<br/>七道闸"]
     FIN["Plan Finalizer<br/>maos/runtime/plan_finalizer.py"]
   end
 
@@ -55,8 +55,9 @@ flowchart TB
   STORE -.重放.-> OBS
 ```
 
-**读法**：`FROZEN` 与 `KERNEL` 两块在退款域上线前后 `git diff` 为零
-（`maos/core/` 空、`maos/runtime/` 只有第六道闸的 +126 行），
+**读法**：`FROZEN` 一块在退款域上线前后 `git diff` **严格为零**；`KERNEL` 一块不是零
+（`maos/core/` +46/−2、`maos/runtime/` +273/−7），但改动全部是**领域无关**的判据
+（第六/第七道闸与重规划口径，不 import 任何业务域，两条 AST/import 守卫钉着），
 论证见 [`domain-portability.md`](domain-portability.md)。
 
 ---
@@ -88,7 +89,7 @@ sequenceDiagram
   W->>B: TaskResult
   Note over CP: RUNNING → AWAITING_REVIEW
   B->>G: 轮询 AWAITING_REVIEW
-  G->>G: 六道闸<br/>schema→acceptance→security→evidence→compensation→finance
+  G->>G: 七道闸<br/>schema→acceptance→security→evidence→compensation→finance→gateway
   alt 全过 且 effect_risk ≠ H
     G->>B: ReviewVerdict(pass)
     Note over CP: AWAITING_REVIEW → DONE

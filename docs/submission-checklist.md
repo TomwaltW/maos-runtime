@@ -15,9 +15,9 @@
 ### A-1 机器验收（逐条跑，全绿才算）
 
 ```bash
-python3 -m pytest maos/tests -q          # □ 全绿（基线 455 passed）
-python3 run.py                           # □ exit=0（场景 1-6）
-python3 run.py --scenario 7              # □ exit=0（失败路径，不在缺省序列里）
+python3 -m pytest maos/tests -q          # □ 全绿（基线 521 passed）
+python3 run.py                           # □ exit=0（场景 1-7，缺省序列已含 7）
+python3 run.py --scenario 7              # □ exit=0（单跑失败路径，它已在缺省序列里）
 python3 scripts/gen_docs.py --check      # □ 退出 0：三份生成文档与代码一致
 python3 scripts/make_evidence.py         # □ 7 场景落盘，0 场景缺模块
 python3 -m maos.kb.experiment            # □ scenario-R5 落盘
@@ -59,8 +59,8 @@ git diff --stat maos/contracts/          # □ 空（冻结契约未被动过）
 | Matrix 房间 | 「镜像层已实现，降级路径实测等价，真房间待接通」 | 「全过程在 Element 里跑通」 |
 | StorePort / PolarDB | 「有地基、未接线；PG 后端是空壳且拒绝回落」 | 「后端已可插拔切 PolarDB」 |
 | AutoGen | 「可插拔内核之一，未在复赛演示中启用」 | 「基于 AutoGen 构建」 |
-| replan 换渠道 | 按合并状态如实说（见 `docs/BACKLOG.md ## task-W6` 第 1 条） | 「网关失败会自动换渠道重试到上限」 |
-| 场景覆盖 | 「`run.py` 无参跑 1–6，失败路径需 `--scenario 7`」 | 「一条命令跑全部七个场景」 |
+| replan 换渠道 | 「机制已落地并有 19 条测试守着，但演示里没有场景走这条路」（见 `docs/BACKLOG.md ## task-X2` 第 2 条） | 「演示里能看到它自动换渠道重试到上限」 |
+| 场景覆盖 | 「`run.py` 无参跑全部七个场景，含失败路径」 | 「七个场景都跑成功了」（场景 7 的 Plan 终态是 FAILED，那正是它要演的） |
 
 ---
 

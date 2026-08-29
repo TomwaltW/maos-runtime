@@ -59,7 +59,7 @@ flowchart LR
   subgraph K["领域无关内核（换域零改动）"]
     CP["Control Plane<br/>唯一的状态持有者"]
     WK["Worker<br/>Identity 三查"]
-    GT["Gate<br/>六道闸"]
+    GT["Gate<br/>七道闸"]
   end
   subgraph P["按域实现（新增文件）"]
     SK["Skill 九要素"]
@@ -92,14 +92,14 @@ python3 scripts/verify.py            # ③ 七项逐条重放校验
 echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 ```
 
-本机实跑（基线 `4a70cb0`）：
+本机实跑（基线 `df96fa8`）：
 
 ```
 [PASS] hash-integrity       74/74
-[PASS] business-ref         23/23
+[PASS] business-ref         33/33
 [PASS] authoritative-fact   3/3
 [PASS] trace-tree           18/18
-[PASS] kb-hit               1/1
+[PASS] kb-hit               4/4
 [PASS] business-outcome     9/9
 [PASS] history-case         1/1
 
@@ -143,15 +143,14 @@ RESULT: 7/7 PASS
 
 ```bash
 git clone <repo> && cd maos-runtime
-python3 -m pytest maos/tests -q     # 455 passed
-python3 run.py                      # 场景 1-6 端到端，exit=0
-python3 run.py --scenario 7         # 退款失败路径（见下方注意）
+python3 -m pytest maos/tests -q     # 521 passed
+python3 run.py                      # 场景 1-7 端到端，exit=0
+python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 ```
 
-⚠️ **`python3 run.py` 无参只跑 1–6**：`maos/main.py` 的 `DEFAULT_SCENARIOS` 还是
-`(1,…,6)`，场景 7 落地后没有加进缺省序列（`main.py` 是冻结文件，已记
-`docs/BACKLOG.md`）。**失败路径必须单跑 `--scenario 7`** —— 那是本仓库唯一一条
-「业务确实没成功」的演示路径，只跑 `run.py` 会漏掉它，而且不会有任何提示。
+**`python3 run.py` 无参跑全部 1–7**：`maos/main.py` 的 `DEFAULT_SCENARIOS` 已是
+`(1,…,7)`。场景 7 是本仓库唯一一条「业务确实没成功」的演示路径，无参跑就能看到它；
+`--scenario 7` 仍然可用，用于单跑这一场。
 
 ### 模型：Scripted 模式（缺省）与真模型
 

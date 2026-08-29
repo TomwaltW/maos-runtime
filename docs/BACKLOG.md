@@ -305,3 +305,15 @@ RAG 检索质量收口时发现、按铁律 4 与派单边界**不当场改**的
 | 2026-08-29 | P7 | `docs/hiclaw-probe.md` 不存在，而 `docs/EXECUTION.md:488` 与 `docs/phases/phase-3.md:25` 两处都要求「补一行记录最终选了哪档、为什么」 | 「最终选了 C 档、理由是时间盒不是技术受限」这条记录一直没有落盘。本轨已把它写进 `docs/agentteams-mapping.md` 的「最终采用哪一档」一节（含当前真实状态：真房间未接通、`_NioChannel` 未经实测） | 两条路：①补一份 `docs/hiclaw-probe.md`（手册指名的文件名）；②认可 `agentteams-mapping.md` 已经承载了这条记录，在手册那两处标注改指向。**建议 ②**，别为了对齐一个文件名再写一份会分叉的文档 |
 | 2026-08-29 | P7 | 「评审四维」的官方名称与权重、Demo 视频的官方规格（时长上限 / 分辨率 / 格式 / 大小 / 字幕），**仓库任何文件里都没有** | `docs/submission-checklist.md` 要求「PPT 逐页 ↔ 评审四维对照」，本轨拒绝编造，改按手册附 C 的十三条评委要求组织对照表，并把两处标成「待确认」 | **人类照官方通知补**。补齐后按四维重排 `docs/submission-checklist.md` 的 B 段表格，视频段把「待确认」换成实数 |
 | 2026-08-29 | P7 | 证据文件首行是 `# generated at ...` 注释，直接 `json.load()` 会抛 `JSONDecodeError`；跳过首行的读取辅助 `load_evidence_json` 只存在于 `scripts/verify.py` 内部，未对外导出 | 评委若自己写脚本读 `evidence/*.json`（这恰恰是「可核验」鼓励他做的事），第一步就会炸，而报错信息指向 JSON 语法，看不出是首行注释 | 低优先。可选修法：`make_evidence.py` 里把该函数提成公开工具并在 README 证据索引段点名，或在 `INDEX.json` 的说明里写一句。本轨已在 README §6 与 `demo-script.md` 各写了一句提示，够用 |
+
+## integrate-round-4
+
+X 轮四轨 + W-5 合并后的整体验收发现三条，均**不在整合轮可改面内**
+（派单 §2：整合轮只做合并 + 验证 + 刷过期事实，业务逻辑问题交下一轮），
+按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P4 | **`docs/domain-portability.md` 的「领域无关」论证，其证据区间 `90251b3..HEAD` 现在混进了非退款域的改动。** 该文档用「退款域上线前后 `git diff` 逐面为零」来论证内核领域无关，但本轮 X-2 给 `maos/core/control_plane.py` 加了 +46/−2（网关码四象限），X-4 给 `maos/tools/sandbox.py` 加了 +111/−13（降级可见化）—— 两者都**不是退款域上线带来的**，却落在同一个区间里 | 论证的**结论没塌**：`maos/contracts/` 仍严格为零，两条 AST/import 守卫（`test_runtime_and_core_do_not_import_refund_domain` / `test_kernel_does_not_know_the_refund_domain`）本轮实跑 2 passed，「内核不认识退款域」这件事仍被机器钉住。塌的是**数字的读法**：表格里 `maos/core/` 那一格从「（空，零改动）」变成非零，读者会以为是退款域把它改的 | 本轮已按真实值刷了数字，并在表格与「不是零 —— 如实说清楚」小节里点明这两笔的出处（整合轮 4 / X-2、X-4）。但更干净的做法是**把论证的区间端点从「当前主干」换成「退款域上线那一刻的 sha」**，让区间只包住退款域，非退款域的改动另起一段说。这要重新选 sha 并重跑全表数字，属文档结构调整，交下一轮 |
+| 2026-08-29 | P5 | **派单 §4 第四步写的「`python3 run.py` 重新生成 `evidence/`」与实际不符** —— `run.py` 跑完 `git status --porcelain` 只有 1 行（gen_docs 的产物），`evidence/` 一个文件都没动。真正产证据的是 README ①②③：`scripts/make_evidence.py`（产 scenario-1..7）+ `python3 -m maos.kb.experiment`（产 scenario-R5）+ `scripts/verify.py`（校验） | 照派单字面执行的会话会以为证据束已按新 HEAD 重跑，实际 `evidence/` 里仍是旧代码的产物 —— 正是派单自己要防的「假绿」。本轮已改跑实际生成器，见 DECISIONS `## integrate-round-4` 第 1 条 | 下一轮派单模板里把第四步的命令换成 `make_evidence.py` + `maos.kb.experiment` + `verify.py` 三条。README §3 的 ①②③ 就是正确版本，直接抄 |
+| 2026-08-29 | P4 | **`CLAUDE.md:75` 的常用命令注释仍写 `python3 run.py  # 场景 1-6 端到端`**，X-1 合并后实际跑 1-7 | 与 `## task-X1` 第 3 条是同一条（那条由 X-1 记下并建议「编排侧收口时一行改掉」）。`CLAUDE.md` 每个会话自动加载，是所有会话看到的第一份事实；留着它，下一个会话会照「1-6」去复核 `run.py` 输出，把多出来的场景 7 当成异常 | `CLAUDE.md` **不在整合轮派单的可改面内**（派单 §4 第三步只列 README.md 与 docs/\*.md），故本轮未改。README / demo-script / submission-checklist / architecture / domain-portability 里的同类措辞本轮已全部刷成 1-7，只剩 `CLAUDE.md` 这一处。**请人类一行改掉**，或在下一轮派单里把它列进可改面 |

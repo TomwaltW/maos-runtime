@@ -11,9 +11,9 @@
 
 ```bash
 cd <repo>
-python3 -m pytest maos/tests -q          # 应 455 passed
-python3 run.py                           # 场景 1-6，exit=0
-python3 run.py --scenario 7              # 失败路径，exit=0
+python3 -m pytest maos/tests -q          # 应 521 passed
+python3 run.py                           # 场景 1-7，exit=0
+python3 run.py --scenario 7              # 单跑失败路径，exit=0（它已在缺省序列里）
 python3 scripts/make_evidence.py         # 落 evidence/scenario-1..7
 python3 -m maos.kb.experiment            # 落 evidence/scenario-R5
 python3 scripts/verify.py                # 应 7/7 PASS
@@ -119,7 +119,7 @@ python3 -m maos.kb.experiment
     task-s7-finance  BLOCKED          -> DONE             [human_approve]
 ```
 
-**要念的**：六道闸按顺序跑 —— schema、验收、安全、证据、补偿干跑、财务复核。
+**要念的**：七道闸按顺序跑 —— schema、验收、安全、证据、补偿干跑、财务复核、网关回执。
 第六道闸只认两个数据形状：任务入参里的申报金额，和产物里的财务凭据。
 **它不查退款域的任何一张表、不 import 业务域**，所以换个域这道闸一行都不用改。
 
@@ -216,15 +216,18 @@ RESULT: 7/7 PASS
 
 > 本仓库在两个完全不同的领域上给出可运行实证：软件交付域（外部判据 = 真实测试结果）
 > 与制造售后退款域（外部判据 = 支付到账回执）。**换域只换 Skill、ToolPort 与业务对象**，
-> `contracts/` 与 `core/` **零改动**。
+> `contracts/` **零改动**，`core/` 与 `runtime/` 只多了领域无关的判据（不 import 任何业务域，
+> 有两条 AST/import 守卫钉着）。
 
 最后一屏打这一条命令的输出：
 
 ```bash
-git diff --stat 90251b3 4a70cb0 -- maos/contracts/ maos/core/
+git diff --stat 90251b3 df96fa8 -- maos/contracts/
 ```
 
-（空输出 = 退款域上线前后，事件契约、状态机、Control Plane 一个字节没变。）
+（空输出 = 退款域上线前后，事件契约与状态机一个字节没变。`maos/core/` 不是空 ——
+本轮为「网关码四象限」加了 +46/−2 行，那是领域无关的重规划判据，
+由 `docs/domain-portability.md` §3 的两条 AST/import 守卫钉住，别把它念成零。）
 
 ---
 
@@ -233,7 +236,7 @@ git diff --stat 90251b3 4a70cb0 -- maos/contracts/ maos/core/
 | # | 事项 | 现状 | 影响哪一镜 | 处置 |
 | :-- | :-- | :-- | :-- | :-- |
 | 1 | **Element / Matrix 房间** | 未接通（Synapse 账号需人工注册） | 手册原分镜的 00:00「房间里看拆解」与 02:00「审批卡 /approve」 | 接通了就补两镜房间画面（`run.py --scenario 7 --matrix`）；没接通就按本分镜走终端，**不要摆拍一个假房间** |
-| 2 | **网关错误码 → replan 换渠道** | 未落地，当前一次就转人工 | 02:35 那一镜 | 合并了就加 15 秒演「系统自己试过」；没合并按现状念 |
+| 2 | **网关错误码 → replan 换渠道** | **机制已落地**（第七道闸 `_gate_gateway` + 四象限一票否决，19 条测试守着），但**没有任何场景把它演出来** —— 场景 7 走的仍是 `effect_risk=H` 的 HITL 入口 | 02:35 那一镜 | 念词只能说到「机制在、有测试」，**不要在屏幕上找换渠道的画面** —— 找不到。出口见 `docs/BACKLOG.md ## task-X2` 第 2 条 |
 | 3 | **审批由谁驱动** | 场景脚本里直接调 `hq.decide()`（`maos/flows/scenario_7.py:318` / `:351`），不是真人在房间里发命令 | 02:00 与 03:10 两镜 | 念词用「主管审批」没问题（那确实是 HITL 停点），但**别说「我现在在聊天室里点一下」** —— 除非 ①已解决并真的现场发命令 |
 
 ## 与手册原分镜的对照

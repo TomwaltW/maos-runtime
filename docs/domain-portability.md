@@ -19,7 +19,7 @@ MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内�
 | **Task 状态机** | `PENDING → DISPATCHED → RUNNING → AWAITING_REVIEW → DONE/BLOCKED/FAILED` | 同左，**没加新状态、没加新迁移** | ✅ 同一份 `maos/contracts/states.py` |
 | **Control Plane** | 唯一的状态迁移持有者、幂等去重、版本冲突拒绝 | 同左 | ✅ 同一份 `maos/core/control_plane.py` |
 | **Worker Runtime** | 按 role 从 `AGENT_POOL` 取执行者，跑 Identity 三查 | 同左 | ✅ 同一份 `maos/runtime/worker.py` |
-| **Gate** | 六道闸；代码类任务看 `test_report` | 六道闸；退款任务在第六道闸看财务凭据 | ✅ 同一份 `maos/runtime/gate.py`（+1 道闸） |
+| **Gate** | 七道闸；代码类任务看 `test_report` | 七道闸；退款任务在第六道闸看财务凭据、第七道闸看网关回执 | ✅ 同一份 `maos/runtime/gate.py`（+2 道闸） |
 | **replan** | 单轮 blocker ≥ 2 / 同一任务第 2 次 rework，上限 `MAOS_MAX_REPLAN`（默认 2） | 同左，同一份实现 | ✅ `maos/core/control_plane.py:366` |
 | **HITL 审批** | `effect_risk=H` 停 `BLOCKED`，等 `/approve`｜`/reject` | 同左，审批人换成退款主管 | ✅ 同一份 `HumanApprovalQueue` |
 | **补偿** | 逆补丁：`sandbox.git_apply(reverse=True)` | 域内补偿：撤销 `refund_request` + 开人工工单 | ⚠️ **机制共用**（`_gate_compensation` 干跑闸 + `CompensationExecuted` 事件），**手段按域实现** |
@@ -35,30 +35,32 @@ MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内�
 ## 2. 数字：退款域上线前后的 `git diff --stat`
 
 - `90251b3` = P2 四轨收口，**退款域上线前**
-- `4a70cb0` = 当前主干（软件域 + 退款域 + RAG + 证据束全部在内）
+- `df96fa8` = 当前主干（软件域 + 退款域 + RAG + 证据束 + 整合轮 4 五轨全部在内）
 
 ```
-$ git diff --stat 90251b3 4a70cb0 -- maos/contracts/ maos/runtime/
- maos/runtime/gate.py | 130 +++++++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 126 insertions(+), 4 deletions(-)
+$ git diff --stat 90251b3 df96fa8 -- maos/contracts/ maos/runtime/
+ maos/runtime/gate.py | 280 +++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 273 insertions(+), 7 deletions(-)
 ```
 
-拆开逐面看（`git diff --shortstat 90251b3 4a70cb0 -- <path>`，空行 = 零改动）：
+拆开逐面看（`git diff --shortstat 90251b3 df96fa8 -- <path>`，空行 = 零改动）：
 
 | 面 | 改动 | 读法 |
 | :-- | :-- | :-- |
 | `maos/contracts/` | **（空，零改动）** | 事件契约与状态机一个字节没动 —— 铁律 1 与铁律 9 兑现 |
-| `maos/core/` | **（空，零改动）** | Control Plane、EventBus、Store 一个字节没动 |
-| `maos/runtime/` | 1 file, +126 / −4 | **只有 `gate.py`**，即第六道闸；`worker.py` / `plan_finalizer.py` 零改动 |
+| `maos/core/` | 1 file, +46 / −2 | **只有 `control_plane.py`** 的网关码四象限判据（整合轮 4 / X-2）；EventBus、Store 一个字节没动。不是零，读法见下节 |
+| `maos/runtime/` | 1 file, +273 / −7 | **只有 `gate.py`**，即第六道闸与第七道闸；`worker.py` / `plan_finalizer.py` 零改动 |
 | `maos/agents/` | 8 files, +604 / −27 | 退款域 4 个新角色 + 共用基类 |
 | `maos/skills/` | 11 files, +1536 / −25 | 退款域 7 个新 skill（含 `notify.customer`） |
-| `maos/tools/` | 2 files, +752 | `gateway.py` / `gateway_codes.py`，两个新 ToolPort |
+| `maos/tools/` | 3 files, +863 / −13 | `gateway.py` / `gateway_codes.py` 两个新 ToolPort；另 +111/−13 是 `sandbox.py` 的降级可见化（整合轮 4 / X-4），与退款域无关 |
 | `maos/domain/` | 5 files, +656 | 退款业务对象与 settled guard，**纯新增目录** |
 
-### 关于那 126 行不是零 —— 如实说清楚
+### 关于 `core/` 与 `runtime/` 那两块不是零 —— 如实说清楚
 
-`maos/runtime/` 那一侧**不是零**，是 `gate.py` 的 +126 行，即第六道闸
-`_gate_finance`（`maos/runtime/gate.py:377`）。这不是反例，理由是它**领域无关**：
+`maos/runtime/` 那一侧**不是零**，是 `gate.py` 的 +273 行：第六道闸 `_gate_finance`
+与第七道闸 `_gate_gateway`。`maos/core/` 那一侧**也不是零**，是 `control_plane.py`
+的 +46 行：网关码四象限的重规划否决判据（`GW_*` 常量与 `_should_replan` 的入口）。
+两处都不是反例，理由是它们**领域无关**：
 
 - 它的判据只落在两个数据形状上：`task["inputs"]` 里的 `biz_type` + `amount_claimed`，
   和 artifact `content` 里的 `finance_entry` 键。**不查退款域的任何一张表**。

@@ -261,11 +261,19 @@ grep -c 'CREATE TABLE' maos/domain/refund/schema.sql
 - **`runtime/` 不是零。** 区间 A 下 `contracts/` 与 `core/` 是真零，但 `gate.py`
   实实在在多了 126 行。本文件的主张是「这 126 行领域无关」，不是「一行都没加」——
   前者靠 §2.2 的三条理由 + §3 的两条守卫支撑，后者本仓库给不出。
-- **第六道闸的注释与实际拦点不完全一致。** `gate.py:454` 的注释写「没检索到历史案例
-  → 计划里漏排财务复核 → 在这里被拦下」，实测漏排时闸没有可判的对象（没有任何任务带
-  申报金额），真实拦点在 `payment.execute` 的「没有 finance_entry 不许发起付款」。
-  已记 `docs/BACKLOG.md ## task-W3`（该条记的行号是 `gate.py:363`，是 W-3 当时的
-  行号，第七道闸落地后已漂到 454，坑本身没变）。
+- ~~**第六道闸的注释与实际拦点不完全一致。**~~ **已修（task-D2，2026-08-29）。**
+  原坑：`gate.py` 的注释写「没检索到历史案例 → 计划里漏排财务复核 → 在这里被拦下」，
+  而实测漏排时闸没有可判的对象（没有任何任务带申报金额），真实拦点在 `payment.execute`
+  的「没有 finance_entry 不许发起付款」—— 注释描述的链路一次都没走过。
+  修法取 `docs/BACKLOG.md ## task-W3` 第 3 条的路 ②：给闸加一条 **plan 级判据**
+  （`_gate_finance_plan`，`gate.py:578` 起），判「这个 Plan 报了超阈金额却没有任何任务
+  把它带进闸的视野」。**这条判据仍然领域无关**：它只读 `store.list_tasks` 拿到的
+  `task["inputs"]`，按 F-1 那一个字段名（`FINANCE_AMOUNT_FIELD`）在 inputs 树里任意深度
+  扫，不写死 `case_seed` 这种嵌套路径、不 import 业务域，§3 的两条 AST 守卫照常绿。
+  注释同步改成实测口径（`gate.py:522`），并把「Phase 3–7 之间这句话是假的」写进正文。
+  代价如实记在 `maos/kb/experiment.py` 的模块 docstring 与 `## task-D2`：R5 对照实验的
+  without_kb 段拦点前移到闸，权威边界那条运行时演示由
+  `maos/tests/test_plan_gate.py` 的断言接住。
 - **`flows/` 与 `kb/` 的改动量很大**（**按区间 A**：`flows/` +1023 / −123、
   `kb/` +1568），这两处**本来就是按域写的**（演示流程与知识语料），不在「内核零改动」
   的主张范围内。把它们算进内核会让数字好看，但那是偷换。
@@ -307,6 +315,15 @@ does_not_know_the_refund_domain"` 仍 **2 passed**。该节已相应改写，不
 | `GW_*` 四常量 | `:54–68` | **`:54–62`** |
 | `test_refund_flow.py` 那条注释 | `:460` | **`:461`** |
 | `gate.py` 第六道闸注释、`test_gate.py:561`、`test_refund_flow.py:454` | — | **未漂，复核过** |
+
+**task-D2（2026-08-29）之后的第三批**：第六道闸补了 plan 级判据，`gate.py` 内部行号整体下移，
+两条 AST 守卫所在的测试文件本轨没动，行号原样。
+
+| 引用 | 旧 | 新 |
+| :-- | :-- | :-- |
+| `gate.py` 第六道闸的「RAG 有无」注释 | `:454` | **`:522`** |
+| `gate.py` plan 级判据 `_gate_finance_plan` | — | **`:578`**（新增） |
+| `test_gate.py:561`、`test_refund_flow.py:454` | — | **未漂，复核过** |
 
 ---
 

@@ -15,16 +15,34 @@
 两段喂给模型的脚本逐字节相同，差的只有那个环境变量。两版 DAG 的差异是跑出来的，
 不是写出来的（铁律 3）。
 
-## 拦点是权威边界，不是质量门禁 —— 这一点比手册的设想更硬
+## 拦点从权威边界前移到闸 —— 两层防线，两段历史
 
-手册预期 without_kb 会被第六道闸判 blocker。**实测不是**，而且原因是对的：
-第六道闸按 `task.inputs` 的 `biz_type + amount_claimed` 触发（F-1 冻结口径），
-而「漏排财务核算」意味着**没有任何任务带着申报金额**——闸根本没有可判的对象。
-漏排的真正症状出在下一步：`payment.execute` 查不到 `finance_entry`，
-抛「金额未经核算，不许发起付款」，整个 Plan 收在 FAILED。
+**Phase 7 之前**：手册预期 without_kb 会被第六道闸判 blocker，实测不是。
+第六道闸按 `task.inputs` 的 `biz_type + amount_claimed` **逐任务**触发（F-1 冻结口径），
+而「漏排财务核算」意味着**没有任何任务带着申报金额**——闸根本没有可判的对象，
+`finance_gate` 如实记 `not_triggered`。漏排的真正症状出在下一步：
+`payment.execute` 查不到 `finance_entry`，抛「金额未经核算，不许发起付款」，
+整个 Plan 收在 FAILED。拦住它的不是审查员的意见，是权威事实边界本身。
 
-这比 blocker 更有说服力：拦住它的不是审查员的意见，是权威事实边界本身。
-两版的 `finance_gate` 字段如实记 `not_triggered` / `pass`，不硬凑成 blocker ——
+**Phase 7 起**（BACKLOG `## task-W3` 第 3 条）：第六道闸补上 **plan 级判据** ——
+「这个 Plan 报了超阈金额，却没有任何任务把它带进闸的视野」。它判计划的**静态结构**，
+不判凭据跑出来没有，所以与评审顺序无关。于是 without_kb 段在**受理那一步过闸时**
+就被判出计划缺陷，比付款早两步，`finance_gate` 记 `blocker`。
+
+**权威边界没被拆，只是这一跑走不到那儿了。** 两层防线各管各的：闸判「计划里排没排
+这一步」，付款方判「这一笔到底核算过没有」；上面那层永远可能被绕过（改阈值、改
+`biz_type`），下面这层不能。R5 让出的那条运行时演示，由 `maos/tests/test_plan_gate.py`
+的 `test_authority_boundary_still_refuses_payment_without_a_finance_entry` 接住 ——
+唯一的演示没了却没人补断言，是这次改动最容易留下的暗坑。
+
+⚠️ **当前 without_kb 段的拦点是个过渡态。** plan 级 finding 带 `scope="plan"`，按跨轨
+冻结契约该由控制面直接转人工（`AWAITING_REVIEW -> BLOCKED`，**不返工**）；那条路由在
+D-1 轨，本分支里还没有。于是 blocker 走了普通返工路径，受理那一步被重跑，撞上
+`refund_case` 的唯一键 —— 日志里那句 IntegrityError 就是这么来的（受理 skill 在返工下
+不幂等，是先于本次改动就在的问题，记在 BACKLOG `## task-D2`）。D-1 合并后这一段会变成
+「受理 BLOCKED，等人决策」，**证据束届时必须重跑**。
+
+两版的 `finance_gate` 字段一律**如实记闸真的说了什么**，不硬凑 ——
 对照实验的价值在于差异是真的，不在于差异长成预期的样子。
 
 ## 领域相关性
@@ -145,8 +163,12 @@ def _tasks(case_id: str, *, with_finance: bool) -> list[dict]:
     if with_finance:
         tasks.insert(2, {
             "task_id": finance, "role": ROLE_FINANCE, "title": "核算退款金额并写财务分录",
-            # 申报金额只挂在这一步：第六道闸按 biz_type + amount_claimed 触发（F-1），
-            # 而判据是同 attempt 的产物里有没有 finance_entry —— 那份产物只有本任务产得出来。
+            # 申报金额只挂在这一步：第六道闸的**任务级**判据按 biz_type + amount_claimed
+            # 触发（F-1），而判据是同 attempt 的产物里有没有 finance_entry —— 那份产物只有
+            # 本任务产得出来。所以 with_finance=False 那一版，顶层申报金额跟着一起消失。
+            # 那一版由**plan 级**判据接住（P7 起）：它扫的是 inputs 树里任意深度的同一个
+            # 字段名，于是受理那一步 case_seed 里那份金额仍然在场 —— 这个形状**不许为了
+            # 迁就判据去改**（把金额塞进 shared 就是自证，与本文件抬头那条红线同一件事）。
             "inputs": {**shared, "amount_claimed": AMOUNT},
             "acceptance": ["产出 finance_entry 且与库表一致", "金额按锁定政策版本核算"],
             "depends_on": [policy], "risk_level": "M", "effect_risk": "H"})
@@ -448,12 +470,20 @@ def _gate_result(verdicts: list[dict]) -> str:
 def _finance_gate(task_rows: list[dict], verdicts: list[dict]) -> str:
     """第六道闸的真实判定：`not_triggered` / `pass` / `blocker`。
 
-    `not_triggered` 是**有意义的一档**，不是「没数据」。闸按 `task.inputs` 的
-    `biz_type + amount_claimed` 触发（F-1 冻结口径）—— 漏排财务核算时没有任何任务
-    带着申报金额，闸连可判的对象都没有。这正是漏排最危险的地方：它不是被判不合格，
-    是压根没进入判定视野。所以这一档必须能与 `pass` 区分，不能都记成「闸过了」。
+    **先读闸真的说了什么，再谈触没触发**。闸有两条判据（P7 起）：任务级按
+    `task.inputs` 的 `biz_type + amount_claimed` 触发，plan 级按「这个 Plan 报了超阈
+    金额却没有任何任务带着它」触发。后者命中时**没有任何一个任务的顶层 inputs 带
+    金额** —— 照着任务级的触发面去反推，会把一条真的 blocker 记成 `not_triggered`。
+    所以这里的顺序是：`gate_results["finance"] == "fail"` 即 blocker，不问是哪条判据。
+
+    `not_triggered` 仍是**有意义的一档**，不是「没数据」：两条判据都没开口，才说明
+    这个 Plan 里根本没有超阈的钱。它必须能与 `pass` 区分，不能都记成「闸过了」。
     """
     from maos.runtime.gate import DEFAULT_FINANCE_THRESHOLD, FINANCE_BIZ_TYPE
+
+    judged_all = [v for v in verdicts if isinstance(v.get("gate_results"), dict)]
+    if any(v["gate_results"].get("finance") == "fail" for v in judged_all):
+        return "blocker"
 
     triggering = set()
     for task in task_rows:
@@ -469,10 +499,7 @@ def _finance_gate(task_rows: list[dict], verdicts: list[dict]) -> str:
     if not triggering:
         return "not_triggered"
 
-    judged = [v for v in verdicts if v.get("task_id") in triggering
-              and isinstance(v.get("gate_results"), dict)]
-    if any(v["gate_results"].get("finance") == "fail" for v in judged):
-        return "blocker"
+    judged = [v for v in judged_all if v.get("task_id") in triggering]
     return "pass" if judged else "not_reviewed"
 
 

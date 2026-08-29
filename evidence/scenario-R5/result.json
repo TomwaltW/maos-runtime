@@ -1,15 +1,15 @@
-# generated at 2026-08-29T04:33:43.834339+00:00 from caf45d28b5d4c0541ecd94f01e14e560030c8f69-dirty
+# generated at 2026-08-29T05:28:17.576426+00:00 from 956e6afb1f48770330908f9ab78d2cb295b87a8b-dirty
 {
   "scenario": "R5",
   "exit_code": 0,
-  "wall_ms": 449,
+  "wall_ms": 401,
   "plan_count": 3,
   "plans": [
     {
-      "plan_id": "plan_6390bffbd98a",
+      "plan_id": "plan_a525b1199a01",
       "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
       "state": "DONE",
-      "trace_id": "trace_887ea0cfe6be",
+      "trace_id": "trace_5daadac32e41",
       "tasks": [
         {
           "task_id": "task-hist-intake",
@@ -58,7 +58,7 @@
         }
       ],
       "metrics": {
-        "duration_ms": 53,
+        "duration_ms": 47,
         "event_count": 38,
         "event_types": {
           "PlanTransition": 2,
@@ -82,10 +82,10 @@
             "kind": "payment_observation",
             "case_id": "case-r5-hist",
             "tenant_id": "tnt-mfg-a",
-            "request_id": "gw_4828e91f0c7c4c78",
+            "request_id": "gw_77e9cf65d0ac4ac1",
             "gateway_code": "10000",
             "observed_state": "settled",
-            "actor_invocation_id": "dae62fb2d4f542b7a8236d3a3f4d78d2",
+            "actor_invocation_id": "7f9a9c3148be44c292eb4441bb163ddf",
             "provenance": "payment_observation"
           }
         ],
@@ -95,17 +95,17 @@
       }
     },
     {
-      "plan_id": "plan_28287289b194",
+      "plan_id": "plan_5fae67bbc730",
       "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
       "state": "FAILED",
-      "trace_id": "trace_ff955015000b",
+      "trace_id": "trace_d5e13cebc4c1",
       "tasks": [
         {
           "task_id": "task-nokb-intake",
           "role": "refund_intake",
           "title": "受理多源退款诉求并聚合证据",
-          "state": "DONE",
-          "attempt": 1,
+          "state": "FAILED",
+          "attempt": 3,
           "risk_level": "L",
           "effect_risk": "L"
         },
@@ -113,8 +113,8 @@
           "task_id": "task-nokb-policy",
           "role": "refund_policy",
           "title": "按下单锁定的政策版本裁定退款资格",
-          "state": "DONE",
-          "attempt": 1,
+          "state": "PENDING",
+          "attempt": 0,
           "risk_level": "L",
           "effect_risk": "L"
         },
@@ -122,8 +122,8 @@
           "task_id": "task-nokb-payment",
           "role": "refund_payment",
           "title": "发起退款并观察网关终态",
-          "state": "FAILED",
-          "attempt": 3,
+          "state": "PENDING",
+          "attempt": 0,
           "risk_level": "M",
           "effect_risk": "L"
         },
@@ -138,14 +138,14 @@
         }
       ],
       "metrics": {
-        "duration_ms": 34,
-        "event_count": 25,
+        "duration_ms": 19,
+        "event_count": 19,
         "event_types": {
           "PlanTransition": 2,
-          "StateTransition": 17,
+          "StateTransition": 11,
           "SkillInvoked": 6
         },
-        "rework_count": 0,
+        "rework_count": 1,
         "replan_count": 0,
         "compensation_count": 0,
         "skill_invocations": 6,
@@ -162,10 +162,10 @@
       }
     },
     {
-      "plan_id": "plan_9dc15507682b",
+      "plan_id": "plan_fa6c20f8df25",
       "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
       "state": "DONE",
-      "trace_id": "trace_d0462ddd8ab6",
+      "trace_id": "trace_9147d6849ef8",
       "tasks": [
         {
           "task_id": "task-kb-intake",
@@ -186,7 +186,7 @@
           "effect_risk": "L"
         },
         {
-          "task_id": "task_ae7e47af725b",
+          "task_id": "task_9e6fb0cb40e5",
           "role": "refund_finance",
           "title": "核算退款金额并写财务分录",
           "state": "DONE",
@@ -214,7 +214,7 @@
         }
       ],
       "metrics": {
-        "duration_ms": 56,
+        "duration_ms": 49,
         "event_count": 40,
         "event_types": {
           "KbRetrieved": 1,
@@ -239,10 +239,10 @@
             "kind": "payment_observation",
             "case_id": "case-r5-kb",
             "tenant_id": "tnt-mfg-a",
-            "request_id": "gw_ef869ad67d804c5e",
+            "request_id": "gw_c15e263acc75464a",
             "gateway_code": "10000",
             "observed_state": "settled",
-            "actor_invocation_id": "31ac3fa27b6945e79aed18505c5ccf6e",
+            "actor_invocation_id": "25a3160b82ac4d14ae4599f5204ca107",
             "provenance": "payment_observation"
           }
         ],
@@ -253,8 +253,8 @@
     }
   ],
   "totals": {
-    "event_count": 103,
-    "rework_count": 0,
+    "event_count": 97,
+    "rework_count": 1,
     "replan_count": 0
   }
 }

@@ -62,6 +62,19 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 #: 但这里不 import 它 —— 本文件要在退款域缺席时也能跑（那时第 3 项 SKIP）。
 AUTHORITATIVE_WRITER = "payment.observe"
 
+#: 权威终态要求回执里的 `observed_state` 取什么值。与
+#: maos/domain/refund/guard.py::AUTHORITATIVE_RECEIPT_STATE **同源**，
+#: 改一边就要改另一边（那边的注释里写着取值域的出处：回执的 `status` 字段，
+#: 四态 processing/unknown/settled/failed，不是 `outcome` 的 success/failed/unknown）。
+#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要在退款域缺席时照跑。
+AUTHORITATIVE_RECEIPT_STATE = {"settled": frozenset({"settled"})}
+
+#: 出处注释里 sha 的合法后缀 —— `make_evidence.py` 在工作区脏时写 `<sha>-dirty`。
+#: `scenario-R5` 恒带这个后缀：它由 `build_r5()` 在场景 1-7 已经把 evidence/ 改脏之后
+#: 才自算 sha（其余场景共用主流程开头那一次干净的取值）。这是 submission-checklist.md
+#: §A-2 认下的当前口径，不是篡改，所以比对前一律先剥掉它。
+_SHA_DIRTY_SUFFIX = "-dirty"
+
 
 @dataclass
 class Check:
@@ -98,14 +111,64 @@ class VerifyError(RuntimeError):
 # ---------------------------------------------------------------------------
 # 证据读取
 # ---------------------------------------------------------------------------
-def load_evidence_json(path: str):
-    """读 make_evidence.py 写的 json：跳过首行出处注释。缺注释即判不合规。"""
+#: 出处注释的形状：`# generated at <ISO8601> from <sha>`（make_evidence.py::header_line）。
+_HEADER_RE = re.compile(r"^# generated at (?P<at>\S+) from (?P<sha>\S+)\s*$")
+
+
+def header_sha(path: str, first_line: str) -> str:
+    """从出处注释里取出 sha，剥掉 `-dirty` 后缀。首行不成形即判不合规。"""
+    match = _HEADER_RE.match(first_line.rstrip("\n"))
+    if not match:
+        raise VerifyError(f"{path} 首行不是出处注释（铁律 3），证据格式不合规")
+    sha = match.group("sha")
+    return sha[: -len(_SHA_DIRTY_SUFFIX)] if sha.endswith(_SHA_DIRTY_SUFFIX) else sha
+
+
+def evidence_sha(evidence_root: str) -> str | None:
+    """整束证据自报的出处 sha —— `INDEX.json` 的 `git_sha`，且它自己的首行得与之对上。
+
+    这是全束唯一一处「代码是哪个 commit」的声明，各文件的首行都拿它当锚。
+    没有 INDEX.json 就返回 None（只产了单场景的老束），那时退回到只校验首行成形 ——
+    宁可少查一层，也不许对着不存在的锚点把一整束正常证据判负。
+    """
+    path = os.path.join(evidence_root, "INDEX.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        declared = header_sha(path, fh.readline())
+        try:
+            index = json.loads(fh.read())
+        except ValueError as exc:
+            raise VerifyError(f"{path} 不是合法 JSON: {exc}") from exc
+    recorded = str(index.get("git_sha") or "")
+    if not recorded:
+        raise VerifyError(f"{path} 没有 git_sha，整束证据没有出处锚点（铁律 3）")
+    recorded = (recorded[: -len(_SHA_DIRTY_SUFFIX)]
+                if recorded.endswith(_SHA_DIRTY_SUFFIX) else recorded)
+    if declared != recorded:
+        raise VerifyError(
+            f"{path} 首行出处 sha={declared} 与它自己记的 git_sha={recorded} 不一致 ——"
+            f" 索引的出处都自相矛盾，这一束证据说不清是哪份代码产的")
+    return recorded
+
+
+def load_evidence_json(path: str, *, expect_sha: str | None = None):
+    """读 make_evidence.py 写的 json：校验首行出处注释，再读正文。
+
+    `expect_sha` 非空时，首行的 sha 必须与它一致（`-dirty` 后缀先剥掉，见
+    `_SHA_DIRTY_SUFFIX`）。只查「首行以 `# generated at ` 开头」是挡不住事的：
+    把整行换成 `# generated at 2020-01-01T00:00:00+00:00 from deadbeef` 一样合格式，
+    而这份文件自称出自一份根本不是本次核验对象的代码。**失败意味着**：这个文件的
+    出处是编的 —— 它证明不了任何事，与它同束的其余文件也跟着不可信。
+    """
     if not os.path.exists(path):
         raise VerifyError(f"缺文件: {path}")
     with open(path, encoding="utf-8") as fh:
-        first = fh.readline()
-        if not first.startswith("# generated at "):
-            raise VerifyError(f"{path} 首行不是出处注释（铁律 3），证据格式不合规")
+        sha = header_sha(path, fh.readline())
+        if expect_sha and sha != expect_sha:
+            raise VerifyError(
+                f"{path} 首行自称出自 {sha}，与 INDEX.json 记的 {expect_sha} 不是同一份代码"
+                f" —— 出处对不上的证据不予采信（铁律 3）")
         try:
             return json.loads(fh.read())
         except ValueError as exc:
@@ -155,6 +218,9 @@ class Case:
     tables: set[str]
     trace: dict
     result: dict
+    #: 这一束在 INDEX.json 里自报的 git sha；本目录每个 json 的首行都得与它对上。
+    #: None = 没有 INDEX.json，那时只校验首行成形（见 evidence_sha）。
+    expect_sha: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +321,8 @@ def check_business_ref(cases: list[Case]) -> Check:
         recorded = {(o["plan_id"], o["task_id"], o["tenant_id"], o["object_type"],
                      o["object_id"], o["object_version"]): o
                     for o in load_evidence_json(
-                        os.path.join(case.directory, "business-objects.json")).get("objects", [])}
+                        os.path.join(case.directory, "business-objects.json"),
+                        expect_sha=case.expect_sha).get("objects", [])}
         for r in case.conn.execute("SELECT * FROM business_ref"):
             ref = dict(r)
             key = (ref["plan_id"], ref["task_id"], ref["tenant_id"], ref["object_type"],
@@ -282,10 +349,18 @@ def check_business_ref(cases: list[Case]) -> Check:
 def check_authoritative_fact(cases: list[Case]) -> Check:
     """settled 是权威终态，只有 payment.observe 写得进去（铁律 8）。
 
-    两头都查：settled 必须有回执；回执的 actor_invocation_id 必须真的属于一次
-    payment.observe 调用。只查前者的话，任何一个 skill 自己伪造一条回执就能过关。
+    三头都查：settled 必须有回执；回执的 actor_invocation_id 必须真的属于一次
+    payment.observe 调用；且回执里至少有一条**说的是到账了**。
+    只查第一条，任何一个 skill 自己伪造一条回执就能过关；只查前两条，一条网关明确
+    失败的真回执就能给 settled 背书 —— 那时系统持有的是「有一张回执」，
+    而不是「网关说到账了」，两者差着这一项的全部意义。
+
+    为什么这一项非有牙不可：`refund_case` / `payment_observation` 两张表**不参与**
+    第 4 项的 trace 重放（那一项比对的是 span 树与事件链），所以对这两张表的直接
+    篡改，全核验器只有这一项拦得住。
     """
-    chk = Check("authoritative-fact", "settled 有回执，且回执出自 payment.observe")
+    chk = Check("authoritative-fact", "settled 有回执，回执出自 payment.observe 且说到账了")
+    allowed = AUTHORITATIVE_RECEIPT_STATE["settled"]
     live = [c for c in cases if {"refund_case", "payment_observation"} <= c.tables]
     if not live:
         chk.skip("本轮证据里没有 refund_case / payment_observation 表（退款场景未落地）")
@@ -319,6 +394,15 @@ def check_authoritative_fact(cases: list[Case]) -> Check:
                     chk.bad(f"{label}: 回执的 actor_invocation_id={actor} 不属于任何一次 "
                             f"{AUTHORITATIVE_WRITER} 调用 —— 权威事实边界被绕过")
                     bad = True
+            # 回执得**说的是这件事**。上面两问查的是「有没有回执」「回执是谁递的」，
+            # 都问不到回执的内容 —— 一条网关明确失败的观察（observed_state='failed'）
+            # 由真的 payment.observe 落库，两问全过，却给 settled 背了书。
+            seen = sorted({str(o["observed_state"]) for o in obs})
+            if not (set(seen) & allowed):
+                chk.bad(f"{label}: 有回执，但没有一条说到账了（observed_state={seen}，"
+                        f"要的是 {sorted(allowed)}）—— 「有一张回执」被当成了"
+                        f"「网关说到账了」，settled 背后没有外部权威支撑")
+                bad = True
             if not bad:
                 chk.ok()
 
@@ -613,6 +697,7 @@ def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
     if not dirs:
         raise VerifyError(
             f"{evidence_root} 下没有 scenario-* 目录；先跑 python3 scripts/make_evidence.py")
+    expect_sha = evidence_sha(evidence_root)
     cases = []
     for d in dirs:
         db_path = resolve_db(evidence_root, d, db_arg)
@@ -620,8 +705,9 @@ def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
         cases.append(Case(
             name=os.path.basename(d), directory=d, db_path=db_path, conn=conn,
             tables=table_names(conn),
-            trace=load_evidence_json(os.path.join(d, "trace.json")),
-            result=load_evidence_json(os.path.join(d, "result.json")),
+            trace=load_evidence_json(os.path.join(d, "trace.json"), expect_sha=expect_sha),
+            result=load_evidence_json(os.path.join(d, "result.json"), expect_sha=expect_sha),
+            expect_sha=expect_sha,
         ))
     return cases
 

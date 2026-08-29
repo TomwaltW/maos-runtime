@@ -42,6 +42,31 @@ DEFAULT_MAX_REPLAN = 2
 # 单轮 findings 里 blocker 达到这个数，说明方案本身有问题，返工同一份规格是浪费
 REPLAN_BLOCKER_THRESHOLD = 2
 
+# -- 网关回执：replan 的第三条触发线（手册 R2 / Demo 分镜 02:30）----------------
+# 判据**不在这里算**。四象限由 ReviewerGate 的第七道闸按
+# maos/tools/gateway_codes.py 的官方码表算出，随 finding 一起送进来；控制面只认
+# disposition 这个字段，自己一次 lookup 都不做。理由是判据要单点：控制面再推断一遍，
+# 两处口径迟早分叉，而分叉那天的症状是「该转人工的自旋了」—— 正是本条要防的事。
+GATEWAY_GATE = "gateway"
+
+#: retriable=True + outcome=failed —— 网关在入口就拒了，业务确定没执行，
+#: 重发不会造成第二笔。**四格里只有这一格允许触发重规划换渠道。**
+GW_REPLAN_CHANNEL = "replan_channel"
+#: retriable=True + outcome=unknown —— 能再发一次，但那一笔的下落网关自己说不清。
+#: 直接重发就可能造成第二笔退款，必须先 gateway.query（铁律 8）。
+GW_QUERY_FIRST = "query_first"
+#: retriable=False + outcome=failed —— 终态失败，原样重发没有意义，转人工或改单。
+GW_HUMAN_TERMINAL = "human_terminal"
+#: retriable=False + outcome=unknown —— 最危险的一档：既不能原样重发，下落也不明。
+#: 未知错误码（不在已核对官方表里）一并归到这一档，不许兜底成「可重试」。
+GW_QUERY_OR_HUMAN = "query_or_human"
+
+#: 这三格一律不许自旋：出现任意一条就**一票否决**重规划，且否决先于下面那两条
+#: 既有触发线判。重规划会把任务重新派发出去，那等价于重发 —— 而这三格恰恰是
+#: 「不许重发」的三格。少了这条优先级，一轮里凑够两个别的 blocker 就能把一笔
+#: 下落不明的退款重新发一次。
+GW_NO_REPLAN = frozenset({GW_QUERY_FIRST, GW_HUMAN_TERMINAL, GW_QUERY_OR_HUMAN})
+
 # 被重规划取代、不再派发的任务，用 last_error 打标。
 # 借 last_error 而不是加状态：states.py 是冻结契约（铁律 1），加「冻结态」要动
 # 迁移表；而 last_error 本就是「这个任务为什么没往前走」的说明字段，语义相容。
@@ -339,8 +364,15 @@ class ControlPlane:
     # Replan：判定与执行分开 —— 判定是纯函数，可以脱开重规划回调单独验边界
     # ------------------------------------------------------------------
     def _should_replan(self, task: dict, findings: list[dict]) -> bool:
-        """两条触发线，任一命中即重规划（phase-4.md 第 4 步）。
+        """三条触发线，任一命中即重规划；网关回执另有一条**一票否决**。
 
+        · **网关回执**（第三条，手册 R2）：``{"gate": "gateway"}`` 的 finding 带
+          ``disposition``，四象限见本文件 GW_* 常量。只有 ``replan_channel``
+          （retriable=True 且 outcome=failed）才允许换渠道重试；另外三格一律否决，
+          **而且否决先于下面两条线判**。理由是 retriable 与 outcome 正交：前者答
+          「能不能再发一次」，后者答「这一笔到底执行了没有」（铁律 8，MAOS 不持有
+          权威事实）。重规划会把任务重新派发，等价于重发 —— outcome=unknown 时
+          那可能造出第二笔退款，retriable=False 时重发则纯属自旋。
         · 单轮 findings 中 blocker >= 2：一轮里堵住两处，问题多半在方案本身，
           拿同一份规格再返工一次是浪费一个 attempt。
         · 同一任务第 2 次 rework：第一次返工没解决，说明规格没描述清楚。
@@ -349,6 +381,18 @@ class ControlPlane:
         唯一来源（本文件铁律 4），再维护一个内存计数器就有了第二份事实，进程重启即失真。
         判定发生在本次 REWORK 落库**之前**，所以历史里有 1 条就意味着这将是第 2 次。
         """
+        dispositions = {f.get("disposition") for f in findings
+                        if isinstance(f, dict) and f.get("gate") == GATEWAY_GATE}
+        vetoed = dispositions & GW_NO_REPLAN
+        if vetoed:
+            log.info("[%s] 网关回执处置为 %s，不许自旋 —— 否决重规划",
+                     task["task_id"], sorted(vetoed))
+            return False
+        if GW_REPLAN_CHANNEL in dispositions:
+            log.info("[%s] 网关回执可重发且业务确定未执行，触发重规划换渠道",
+                     task["task_id"])
+            return True
+
         blockers = sum(1 for f in findings
                        if isinstance(f, dict) and f.get("severity") == "blocker")
         if blockers >= REPLAN_BLOCKER_THRESHOLD:

@@ -1,6 +1,6 @@
 """Reviewer Gate —— 质量门禁。
 
-六道闸按顺序跑，任何一道不过就出 rework，findings 必须结构化
+七道闸按顺序跑，任何一道不过就出 rework，findings 必须结构化
 （Coding Agent 要能直接消费，不能是一段自然语言吐槽）。
 
 刻意做成规则驱动而不是模型驱动：Gate 的判定必须可复现、可解释、可审计。
@@ -16,6 +16,17 @@ Phase 3 加第六道闸 ``_gate_finance``（判据见跨轨冻结契约 F-1）�
 **不许 import** ``maos.domain.refund``（铁律 9 推论）—— 判据只落在 ``task["inputs"]``
 与 artifact 的 ``content`` 这两个数据形状上，不落在业务模块上。做不到这一点，
 「换域只换 Skill/ToolPort/业务对象」当场作废。
+
+Phase 4 加第七道闸 ``_gate_gateway``（手册 R2）。它是「网关错误码 -> replan 换渠道」
+这条触发线的**输入端**：闸认网关回执、按官方码表判四象限处置，产出
+``{"gate": "gateway", "disposition": ...}``；判定由 ``ControlPlane._should_replan``
+消费。判据只算一次，就在这里。它同样只认数据形状（``content["receipt"]``），
+不 import 退款域。
+
+这道闸引入了一个新概念：**只记录、不挡闸的 finding**（``SEVERITY_INFO``）。
+网关回执 ``outcome=unknown`` 时既不能判通过、也不能判不合格 —— 网关自己都说不清，
+Gate 替它下结论就是铁律 8 的正面违例。于是这条观察进 findings 供控制面否决重规划，
+但不把 verdict 拉成 rework。
 """
 
 from __future__ import annotations
@@ -33,9 +44,17 @@ from maos.artifacts import (
 from maos.contracts import events as E
 from maos.contracts.events import Topic
 from maos.contracts.states import Risk, TaskState
-from maos.core.control_plane import ControlPlane
+from maos.core.control_plane import (
+    GATEWAY_GATE,
+    GW_HUMAN_TERMINAL,
+    GW_QUERY_FIRST,
+    GW_QUERY_OR_HUMAN,
+    GW_REPLAN_CHANNEL,
+    ControlPlane,
+)
 from maos.core.eventbus import EventBus
 from maos.core.store import Store
+from maos.tools.gateway_codes import OUTCOME_FAILED, OUTCOME_SUCCESS, lookup
 from maos.tools.sandbox import sandbox_git_apply
 
 log = logging.getLogger("maos.gate")
@@ -68,6 +87,38 @@ FINANCE_THRESHOLD_ENV = "MAOS_FINANCE_THRESHOLD"
 DEFAULT_FINANCE_THRESHOLD = 5000.0
 
 
+# -- 第七道闸的口径（手册 R2）------------------------------------------------
+#: 网关回执在 artifact ``content`` 里的字段名。闸只认这个**数据形状**，不认产物
+#: kind、更不 import 退款域（同 ``_gate_finance``，铁律 9 推论）：换域之后只要产物
+#: 里还挂着一份形如 ``{"code": ...}`` 的网关回执，这道闸一行都不用改。
+GATEWAY_RECEIPT_FIELD = "receipt"
+
+#: 只记录、不挡闸的严重度。网关回执 ``outcome=unknown`` 的两格用它 ——
+#: 「网关自己也说不清」不是本轮产出的缺陷，判成 rework 等于替网关下了它没下的结论
+#: （铁律 8）。但这条观察必须进 findings：控制面靠它一票否决重规划，否则一轮里
+#: 凑够两个别的 blocker 就会把一笔下落不明的退款重新派发出去。
+SEVERITY_INFO = "info"
+
+#: 四象限的人话说明。四条文案分开写而不是拼字符串：findings 会原样喂回返工提示词，
+#: 「可以换渠道重发」和「重发可能造成第二笔」差一个字，处置就反了。
+GATEWAY_MESSAGES: dict[str, str] = {
+    GW_REPLAN_CHANNEL:
+        "网关回执 {code}（{message}）：retriable={retriable} / outcome={outcome}"
+        " —— 网关在入口就拒了，这一笔业务确定没执行，可以换渠道重发。官方处置：{remedy}",
+    GW_QUERY_FIRST:
+        "网关回执 {code}（{message}）：retriable={retriable} / outcome={outcome}"
+        " —— 能再发一次，但那一笔的下落网关自己说不清；**直接重发可能造成第二笔**，"
+        "必须先 gateway.query 问清楚。官方处置：{remedy}",
+    GW_HUMAN_TERMINAL:
+        "网关回执 {code}（{message}）：retriable={retriable} / outcome={outcome}"
+        " —— 终态失败，原样重发没有意义，需转人工或改单。官方处置：{remedy}",
+    GW_QUERY_OR_HUMAN:
+        "网关回执 {code}（{message}）：retriable={retriable} / outcome={outcome}"
+        " —— 既不能原样重发、那一笔的下落也不明，是最危险的一档；必须 gateway.query"
+        " 或转人工。官方处置：{remedy}",
+}
+
+
 def _finance_threshold() -> float:
     """每次判定现读 env，不在 import 时固化 —— 否则改阈值得重启进程。
 
@@ -87,7 +138,7 @@ def _finance_threshold() -> float:
 
 
 class ReviewerGate:
-    """轮询 AWAITING_REVIEW 的任务，跑六道闸，发 ReviewVerdict。"""
+    """轮询 AWAITING_REVIEW 的任务，跑七道闸，发 ReviewVerdict。"""
 
     def __init__(self, store: Store, bus: EventBus, cp: ControlPlane) -> None:
         self.store = store
@@ -116,12 +167,18 @@ class ReviewerGate:
             ("evidence", self._gate_evidence),
             ("compensation", self._gate_compensation),
             ("finance", self._gate_finance),
+            (GATEWAY_GATE, self._gate_gateway),
         ):
             fs = check(task, artifacts)
-            results[name] = "fail" if fs else "pass"
+            # 挡闸的只算非 info 的那些。info 是「记下来了，但这不是本轮产出的缺陷」，
+            # 三态而不是两态：读 gate_results 的人要分得清「这道闸没话说」和
+            # 「这道闸有话说但没拦」，压成 pass 就把后者藏起来了。
+            blocking = [f for f in fs if f.get("severity") != SEVERITY_INFO]
+            results[name] = "fail" if blocking else ("noted" if fs else "pass")
             findings.extend(fs)
 
-        verdict = "pass" if not findings else "rework"
+        verdict = "rework" if any(f.get("severity") != SEVERITY_INFO
+                                  for f in findings) else "pass"
         log.info("[%s] Gate %s -> %s", task["task_id"], results, verdict)
 
         self.bus.publish(Topic.REVIEW_VERDICT, E.review_verdict(
@@ -130,7 +187,7 @@ class ReviewerGate:
             gate_results=results,
         ))
 
-    # -- 六道闸 -----------------------------------------------------------
+    # -- 七道闸 -----------------------------------------------------------
     @staticmethod
     def _gate_schema(task, artifacts) -> list[dict]:
         if not artifacts:
@@ -426,6 +483,93 @@ class ReviewerGate:
             "message": f"{why}，而本轮产出里没有任何一份 artifact 带非空 finance_entry"
                        f" —— 缺少财务核算凭据，不放行",
         }]
+
+    # -- 第七道闸：网关回执 ------------------------------------------------
+    @staticmethod
+    def _gate_gateway(task, artifacts) -> list[dict]:
+        """认网关回执，按官方码表判四象限处置 —— replan 第三条触发线的输入端。
+
+        · **触发**：本轮任一 artifact 的 ``content["receipt"]`` 是带 ``code`` 的 dict。
+          只认数据形状，不认产物 kind、不 import 退款域（同 ``_gate_finance``）。
+        · **判据**：一律查 ``maos/tools/gateway_codes.py`` 的已核对官方码表，
+          **不看 message 文案、不按语感自判**。码表里 ``retriable`` 与 ``outcome``
+          是两个正交维度 —— 前者答「能不能再发一次」，后者答「这一笔到底执行了
+          没有」，四象限各对应一种处置（见 control_plane 的 GW_* 常量）。
+        · **产出**：``{"gate": "gateway", "disposition": ...}``，由
+          ``ControlPlane._should_replan`` 消费；判据只在这里算一次。
+
+        严重度分两档，分界线正是 ``outcome``：
+          · ``outcome=failed`` -> **blocker**。业务确定没执行，本轮产出确实不合格。
+          · ``outcome=unknown`` -> **info**，不挡闸。网关自己都说不清，判它「不合格」
+            就是替网关下结论（铁律 8）；这一格的正确动作是 query 或转人工，那条路
+            由 ``effect_risk=H`` 的人工审批走，不该退化成一次机器返工 —— 场景 7
+            走的就是这条，闸在那里必须放行。
+          · **未知码**（不在已核对官方表里）-> blocker，且归到最危险的那一档。
+            ``gateway_codes.lookup`` 的规矩是未知码抛而不兜底，这里照办：兜底成
+            「可重试」正是那张表要防的事。
+        """
+        out: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for a in artifacts:
+            content = a.get("content")
+            if not isinstance(content, dict):
+                continue
+            receipt = content.get(GATEWAY_RECEIPT_FIELD)
+            if not isinstance(receipt, dict):
+                continue
+            code = receipt.get("code")
+            if not isinstance(code, str) or not code:
+                continue
+            # 同一笔请求的受理回执与观察回执常常是同一个码（付款任务两份产物各带
+            # 一份），只出一条：findings 会原样喂回返工提示词，重复条目只是噪声。
+            key = (str(receipt.get("request_id") or ""), code)
+            if key in seen:
+                continue
+            seen.add(key)
+            finding = ReviewerGate._gateway_finding(code)
+            if finding is not None:
+                out.append(finding)
+        return out
+
+    @staticmethod
+    def _gateway_finding(code: str) -> dict | None:
+        """一个码 -> 一条 finding。成功码返回 None（没什么要说的）。"""
+        try:
+            entry = lookup(code)
+        except KeyError as exc:
+            log.error("网关回执带未知错误码 %r，按未知外部状态处置", code)
+            return {
+                "gate": GATEWAY_GATE, "severity": "blocker", "path": None,
+                "id": code, "disposition": GW_QUERY_OR_HUMAN,
+                "code": code, "retriable": None, "outcome": None,
+                "msg": str(exc),
+                "message": f"网关回执带未知错误码 {code!r}：不在已核对官方文档的清单内，"
+                           f"既判不了它可重试、也判不了它终态失败 —— 按未知外部状态处置，"
+                           f"先 gateway.query 或转人工，不许兜底重发",
+            }
+
+        if entry.outcome == OUTCOME_SUCCESS:
+            return None
+
+        if entry.retriable:
+            disposition = (GW_REPLAN_CHANNEL if entry.outcome == OUTCOME_FAILED
+                           else GW_QUERY_FIRST)
+        else:
+            disposition = (GW_HUMAN_TERMINAL if entry.outcome == OUTCOME_FAILED
+                           else GW_QUERY_OR_HUMAN)
+
+        return {
+            "gate": GATEWAY_GATE,
+            "severity": "blocker" if entry.outcome == OUTCOME_FAILED else SEVERITY_INFO,
+            "path": None,
+            "id": entry.code, "disposition": disposition, "code": entry.code,
+            "retriable": entry.retriable, "outcome": entry.outcome,
+            "remedy": entry.remedy, "source": entry.source,
+            "msg": entry.message,
+            "message": GATEWAY_MESSAGES[disposition].format(
+                code=entry.code, message=entry.message, retriable=entry.retriable,
+                outcome=entry.outcome, remedy=entry.remedy),
+        }
 
 
 class HumanApprovalQueue:

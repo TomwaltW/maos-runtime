@@ -31,6 +31,19 @@ W-2 轨的 `maos/store/port.py` 落地后，`fts_search` / `vector_search` 由�
 （SQLite 走 FTS5，PG 走 tsvector + pgvector）。这里按**能力探测**接：store 上有那两个
 方法就用，没有就退化成本模块的纯 Python 实现。**不自己另起一套同名类** ——
 合并后两个同名实现、行为不一致，是这个仓库反复踩过的坑。
+
+消费端口要过三道口径对齐，缺一条这条分支就恒退化成本地实现（T13 轨补齐，
+原状记在 BACKLOG `## task-X3` 第 1、2 条）：
+
+1. **主键**。F-2 返回的第一位是源表主键 `id`，本层却按 `doc_id` 索引候选集。
+   `kb_doc.id` 是 `tenant_id:doc_id` 的生成列，所以端口回来的 id 要过
+   `_row_id_index()` 那张回查表换成 `doc_id`。
+2. **分词**。影子表存的是 `kb.fts_text()` 切过的文本（中文按字），端口不知道这个
+   约定，把原查询串直接丢给 FTS5 就是「整串汉字一个 token」—— 一条都命不中，
+   而且不报错。所以发给端口的 `q` 也先过 `kb.fts_text()`。
+3. **查询语义归端口所有**。端口把词间做 AND、且只查 `field` 那一列；本地实现是
+   跨列 OR。两条通道的召回集**本来就可以不同**，那是 F-2 把语义下放给后端的
+   结果，不是 bug。跨后端必须一致的只有附则那两条：分数越大越相关、次序确定。
 """
 
 from __future__ import annotations
@@ -194,12 +207,14 @@ def port_channel_state(store: Any) -> dict[str, bool]:
 def _port_search(store: Any, channel: str, args: tuple) -> list[tuple[str, float]] | None:
     """走 StorePort 的一条通道。返回 `None` = 这条通道走不通，调用方用本地实现。
 
-    **「有这个方法」不等于「这条通道能用」。** F-2 约定源表主键列名固定为 `id`，
-    而 `kb_doc` 的主键是 `(tenant_id, doc_id)`、影子表存的也是 `doc_id` ——
-    真 `SqliteStorePort` 在本层这份 schema 上两条通道都抛 `LookupError`
-    （`no such column: id`，本轨实测，见 BACKLOG `## task-X3`）。所以第一次调用
-    兼作探测：抛了就**记住判定**并只告警一次。每次检索都抛一次再吞掉的写法，
-    症状是日志被刷满而没人看得出这条通道其实一直没通。
+    **「有这个方法」不等于「这条通道能用」。** 端口是后端自己的实现，schema 对不上、
+    驱动没装、索引没建，都只会在第一次真调用时才暴露。所以第一次调用兼作探测：
+    抛了就**记住判定**并只告警一次。每次检索都抛一次再吞掉的写法，症状是日志被
+    刷满而没人看得出这条通道其实一直没通。
+
+    这层探测**不是**用来兜「列名没对齐」的 —— 那种恒退化是缺陷，T13 轨已经把
+    `kb_doc` / 影子表的 `id` 列补齐（见本模块开头 StorePort 一节的三道对齐）。
+    它兜的是 PG 那种「装不上就优雅降级」：后端真的不在，检索也不该整条挂掉。
 
     探测通过之后，端口返回的**空列表就是真的没命中**，不再回落本地实现 ——
     F-2 原话「『后端没准备好』不许伪装成『没命中』」，反过来同样成立：
@@ -226,6 +241,35 @@ def _port_search(store: Any, channel: str, args: tuple) -> list[tuple[str, float
         return None
     state[channel] = True
     return rows
+
+
+def _row_id_index(candidates: dict[str, dict]) -> dict[str, str]:
+    """候选集的 `kb_doc.id -> doc_id` 回查表。
+
+    **正向构造，不反解字符串**：`id` 是 `tenant_id:doc_id` 拼出来的，doc_id 里
+    带冒号时按分隔符劈会劈错，而候选集手上两个字段都在，拼一次必然对得上。
+    """
+    return {kb.doc_row_id(doc.get("tenant_id"), doc_id): doc_id
+            for doc_id, doc in candidates.items()}
+
+
+def _to_doc_scores(raw: list[tuple[str, float]],
+                   candidates: dict[str, dict]) -> dict[str, float]:
+    """端口/本地回来的 `(id, 分数)` 收敛成 `{doc_id: 分数}`，顺带做候选集过滤。
+
+    两种 id 都认：F-2 口径的源表主键（`tenant_id:doc_id`），以及本地实现直接给的
+    `doc_id`。**先认前者**——后者只是本模块自己那条 SQL 的形态，撞车时以契约为准。
+
+    候选集之外的一律丢掉。F-2 的两条通道都没有租户参数、端口是**全表**查的，
+    跨租户不召回全靠这一句兜 —— 它不是性能优化，删掉就是事故。
+    """
+    row_ids = _row_id_index(candidates)
+    scores: dict[str, float] = {}
+    for raw_id, score in raw:
+        doc_id = row_ids.get(raw_id, raw_id if raw_id in candidates else None)
+        if doc_id is not None:
+            scores[doc_id] = score
+    return scores
 
 
 def _rank_normalize(scores: dict[str, float]) -> dict[str, float]:
@@ -282,15 +326,21 @@ def _fts_scores(store: Any, tenant_id: str, keyword: str,
     BM25 的绝对值随语料规模浮动，拿它跟另外三个通道直接相加是量纲错配。
 
     **租户收窄不靠这一层**：F-2 的 `fts_search` 没有租户参数，端口是全表查的；
-    跨租户不召回由阶段一的候选集兜住（下面那句 `d in candidates`），
+    跨租户不召回由阶段一的候选集兜住（`_to_doc_scores` 里那一句），
     这也正是「阶段一是硬约束而不是打分项」在实现上的样子。
+
+    发给端口的是 `kb.fts_text(keyword)` 而**不是**原查询串：影子表里存的就是这个
+    函数切过的文本，查询侧不走同一个函数，中文那一段一个字都对不上（缺省的
+    unicode61 把整串汉字当一个 token），而且不报错 —— 这正是 `kb.fts_text` 的
+    docstring 里写的那条「两边各写一份 = 召回恒为空」，端口这条路上同样成立。
     """
     if not keyword:
         return {}
-    raw = _port_search(store, "fts_search", ("kb_doc", "body", keyword, int(limit)))
+    raw = _port_search(
+        store, "fts_search", ("kb_doc", "body", kb.fts_text(keyword), int(limit)))
     if raw is None:
         raw = _local_fts_rows(store, tenant_id, keyword, limit)
-    return _rank_normalize({d: s for d, s in raw if d in candidates})
+    return _rank_normalize(_to_doc_scores(raw, candidates))
 
 
 def _vector_scores(store: Any, query_text: str,
@@ -301,7 +351,10 @@ def _vector_scores(store: Any, query_text: str,
     vec = embed(query_text)
     raw = _port_search(store, "vector_search", ("kb_doc", "embedding", vec, int(limit)))
     if raw is not None:
-        return {d: max(0.0, min(1.0, float(s))) for d, s in raw if d in candidates}
+        # 截到 [0,1]：余弦本身取值 [-1,1]，负相关对检索没有意义 —— 与本地那条
+        # `cosine()` 同一个口径，两边都截一次，别让方向差落到融合那一步才显形。
+        return {d: max(0.0, min(1.0, float(s)))
+                for d, s in _to_doc_scores(raw, candidates).items()}
     return {doc_id: cosine(vec, _doc_vector(doc)) for doc_id, doc in candidates.items()}
 
 

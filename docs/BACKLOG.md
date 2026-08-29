@@ -1075,3 +1075,14 @@ T7–T14 八轨并入 + 活数字回填 + 证据束全量重跑。基线 `4cfef3
 | 2026-08-30 | P5 | **`docs/BACKLOG.md` 的 `## task-T10` 第 5 条（本文件第 959 行）已由本轨解决**：那条写着「要对齐就给 `ts_rank` 传 normalization 参数……但那会改变现有 PG 侧排序，需要有人先决定以哪边为准」 | 条目本身没错，只是已经不是待办了。留着不标注的话，下一个人会重做一遍本轨做过的事 | 整合轮在那条尾部补一句「**已由 T18 解决**，口径以本地 `-bm25` 为准，见 `docs/DECISIONS.md`」即可。本轨不动别轨的记账行（改了就是合并冲突） |
 | 2026-08-30 | P5 | **`deploy/docker-compose.yml` 没把 `CREATE EXTENSION vector` 做成 initdb 脚本**（派单 §0.2 点名要记的那条）：起库之后必须手工 `psql -c "CREATE EXTENSION IF NOT EXISTS vector;"` 才有向量类型 | 每个起库的人都要多记一条命令；忘了的话第一条建表就报 `type "vector" does not exist`，而报错指向的是建表语句、不是缺扩展，排查方向容易带偏。`maos/tests/test_pg_store_live.py` 的 fixture 自己补了 `CREATE EXTENSION IF NOT EXISTS vector`，所以测试碰不到这个坑，**只有手工连库的人会踩** | 归 T9（`deploy/**` 是它的面）。改法是在 pgvector 服务上挂一个 `/docker-entrypoint-initdb.d/*.sql`，内容一行 `CREATE EXTENSION IF NOT EXISTS vector;` |
 | 2026-08-30 | P7 | **`scripts/demo_preflight.sh` 的 `EXPECT_TESTS` 在「配了 `MAOS_PG_DSN` 的环境」下必然对不上**：无库时本轨实测 `860 passed, 29 skipped`（条数没变，只是 skipped 从 22 涨到 29），有库时是 `889 passed, 0 skipped`。差的 29 条 = T10 的 22 条 live + 本轨的 7 条 parity | 同一份代码、同一条命令，条数取决于跑的时候环境里有没有 DSN —— 整合轮刷这个数字时，刷成哪个值全看当时库起没起，而脚本比的是精确相等。这不是本轨引入的（T10 那 22 条起就这样），但本轨把差额从 22 扩到了 29 | 整合轮刷条数时**在无库环境下刷**（即 `860`，本轨没有改变这个数，不需要为 T18 刷）。更彻底的修法是让脚本比「passed + skipped」或允许 `>=`，但那是 `scripts/demo_preflight.sh` 的面，契约 2 划死了谁都不许改 |
+
+## task-T19
+
+裸 clone 可用性（默认分支卡点 + README 活数字）。基线 `f15e5dd`。
+三条都是**单轨做不了、必须人类动手**的，且前两条都卡在提交之前。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P7 | 🔴 **卡点 8（本轨新发现）：远端 `goai-restructure` 停在 `4cfef38`，落后本地 `f15e5dd` 21 个 commit** —— 整合轮 11 连同 T7–T14 八轨从未推送。机器判据：`git ls-remote --heads origin` 给 `4cfef38…`，`git rev-parse goai-restructure` 给 `f15e5dd…` | **评委分支敲对了也拿不到当前代码**：实测远端 clone 跑出 `802 passed`（README 写 `860 passed`，差 58 条）、`trace-tree 19/19`（README §3 贴 `29/29`）。**而七项全 PASS、退出码全 0，没有任何一条命令报错** —— 卡点 7 会让人立刻发现不对，这条不会，评委只会看到「跑得通但和 README 对不上数」，最自然的解释是**「这份 README 的数字是编的」**，恰好打在铁律 3 上。逐条读数见 `docs/clone-smoke-report.md` 第六遍「卡点 8」 | 🔴 **提交之前必须做，且必须在卡点 7 之前想到**：人类把本地 `goai-restructure` push 到远端。铁律 5 禁止任何单轨 push，本轨做不了。**不做的话卡点 7 修好了也没用** |
+| 2026-08-30 | P7 | 🔴 **卡点 7 的甲路仍未闭合：GitHub 默认分支仍是 `main`**（`git ls-remote --symref origin HEAD` → `ref: refs/heads/main`）。更要命的是实测 `main` 的 `README.md` 里 **`goai-restructure` 零命中、`branch`/`分支` 零命中** —— 它自带一份也叫 “MAOS Runtime” 的 README，看起来完全像对的 | 本轨改的是乙路（`README.md` 的 clone 命令补 `-b` + 显式警告），**但乙路只在「读者已经到了正确分支」时才起作用**。裸 `git clone` 的人、以及在 GitHub 网页上打开仓库的人，读到的都是 `main` 那份 README —— 本轨写的警告他们一个字都看不到，而那份 README 不会告诉他们该切到哪儿去 | 🔴 **提交之前**：人类在 GitHub 设置里把默认分支改成 `goai-restructure`。这是唯一能覆盖「冷启动落地」的修法；乙路是兜底，不是替代 |
+| 2026-08-30 | P7 | `docs/submission-checklist.md` A-1 的冒烟判据量不到卡点 7 与卡点 8：它从「clone 对了分支之后」开始掐表，于是这两条对读数的影响都是 **0** | 判据全绿，但评委实际连第一条命令都跑不到（卡点 7），或跑得到却拿到旧代码（卡点 8）。A-1 现在只能证明「机器够快」，证明不了「评委拿得到这份东西」 | 归 **T20**（`submission-checklist.md` 持有轨，本轨按契约 1 不改该文件）。建议 A-1 补两句：**「且用评委最可能敲的那条命令 clone」**（第五遍已提，仍未补）与**「且远端 `goai-restructure` 与本地同 sha」** |

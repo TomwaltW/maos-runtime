@@ -399,12 +399,12 @@ RAG 命中是真的、Agent 完成没被当成业务成功、知识层没被污�
 `77/77`+`7/7` 是合 Y-4 前读数，都别照抄）：
 
 ```
-[PASS] hash-integrity       81/81
-[PASS] business-ref         33/33
+[PASS] hash-integrity       86/86
+[PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
-[PASS] trace-tree           18/18
+[PASS] trace-tree           19/19
 [PASS] kb-hit               7/7
-[PASS] business-outcome     9/9
+[PASS] business-outcome     10/10
 [PASS] history-case         1/1
 
 RESULT: 7/7 PASS
@@ -421,11 +421,14 @@ RESULT: 7/7 PASS
 - 不许说「新克隆的仓库直接跑 `verify.py` 就有 7/7」—— `*.db` 不入库，
   直接跑会报缺数据库并退出 2，**这是设计行为**（`README.md:113-115`）。
 
-（整合轮 5 合入 Y-4 后实测：`warn:` 共 **11 行 / 3 类** —— `trace-tree` 下 6 行、
-`business-outcome` 下 4 行、`authoritative-fact` 下 1 行。此前的 17 行 / 4 类里，
-B 类「执行路径不可审计」与 C 类「事件不在任何一棵树内」已由 Y-1、Y-2 归零；
-新出的那 1 行是 Y-4 带来的**预期内**新增：scenario-7 主渠道那笔真收到过回执，
-而全案落人工审批、`biz_status` 收在 `compensated`，两者并存正是这一页要讲的东西。）
+（整合轮 6 合入 D-1 + D-2 后实测：`warn:` 共 **12 行 / 3 类** —— `trace-tree` 下 6 行、
+`business-outcome` 下 4 行、`authoritative-fact` 下 2 行。此前的 17 行 / 4 类里，
+B 类「执行路径不可审计」与 C 类「事件不在任何一棵树内」已由 Y-1、Y-2 归零。
+`authoritative-fact` 那 2 行都是**预期内**的：scenario-7 的 `case-s7-0001`（Y-4 带来，
+主渠道那笔真收到过回执而全案落人工审批、`biz_status` 收在 `compensated`）与
+`case-s7-0002`（D-1 带来，第二笔撞终态失败码后走第三出口转人工、被主管驳回）。
+🔴 **这一类的行数按「场景 7 里未 settled 的退款 case 数」走** —— 每加一笔演示就 +1，
+不是回归。写死一个数当判据，下一轮加演示时它自己会变成假警报源。）
 
 ---
 
@@ -505,7 +508,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 ```bash
 git clone <repo> && cd maos-runtime
-python3 -m pytest maos/tests -q     # 596 passed
+python3 -m pytest maos/tests -q     # 645 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/
@@ -522,7 +525,7 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 - `README.md:170-177`（§4 5 分钟快速开始：pytest + run.py + 证据链两条 + `exit=0`）
 - `README.md:95-97`（①② 两条命令原文）
 - `README.md:119`（**①② 两条缺一不可，顺序不能换**；直接跑 ② 会报缺数据库并退出 2）
-- 编排侧整合轮 5 实跑：`python3 -m pytest maos/tests -q` → **596 passed**；
+- 编排侧整合轮 6 实跑：`python3 -m pytest maos/tests -q` → **645 passed**；
   `python3 run.py` → **exit=0**，跑完 `git status --porcelain` 仍 0 行；
   全新克隆 + 无任何 API key，`clone → ① → ②` **5.4 秒**到 `RESULT: 7/7 PASS`
 
@@ -549,13 +552,13 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 | 3 | 关键 Skill 的真实调用 | **P7** | P3 | `docs/skill-catalog.md:15-29`（13 skill，含退款域 7 个） |
 | 4 | 返工 / HITL Trace | **P5** | P10 | `maos/runtime/gate.py:164-170` + 场景 7 的 `BLOCKED → FAILED` 轨迹 |
 | 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py:514-522` → 7/7 PASS |
-| 6 | 业务对象关联到同一案例 | **P11** | P3 | verify 第 2 项 `business-ref 33/33` |
+| 6 | 业务对象关联到同一案例 | **P11** | P3 | verify 第 2 项 `business-ref 35/35` |
 | 7 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | **P9** | P10 | `maos/domain/refund/guard.py:31` + `:178-187` |
 | 8 | RAG 面向 workflow 规划 | **P8a** | P8b | `maos/kb/retriever.py:151-163` + `evidence/scenario-R5/dag-diff.json` |
 | 9 | 先按租户/业务/地区/渠道/商品/政策/版本过滤，再组合规则编号、错误码、全文、语义 | **P8a** | — | `maos/kb/retriever.py:51-55`（过滤顺序与评委原话逐字一致） |
 | 10 | 减少遗漏财务复核、错误套用政策、无限重试 | **P5** | P8b | 第六道闸 `maos/runtime/gate.py:169` + 政策版本锁定 + `MAOS_MAX_REPLAN` |
 | 11 | 历史流程不能替代当前订单事实和人工授权 | **P8b** | P9 | `maos/kb/guardrails.py:1-16` 三条护栏 + `:149-156` `check_all` |
-| 12 | 以退款到账 / 客户确认 / 人工纠错验证 DAG | **P10** | P11 | `result.json` 的 `business_outcome` / verify 第 6 项 `9/9` |
+| 12 | 以退款到账 / 客户确认 / 人工纠错验证 DAG | **P10** | P11 | `result.json` 的 `business_outcome` / verify 第 6 项 `10/10` |
 | 13 | 只有证据完整且外部结果明确的案例进默认知识层 | **P8b** | P11 | 晋升规则 `promote_history_case` / verify 第 7 项 `1/1` |
 
 **十三条零空行。** 每一条至少命中一个页锚，且该页在自己的「可核验证据」小节里
@@ -600,8 +603,10 @@ Y-1 / Y-2 / Y-3 已并入，下面四条**已按实跑回填**：
 | 3 | **P8a / P8b** | 未提 `plan_id` 归属 | Y-2 修好归属，场景 6 的 `KbRetrieved` 已挂到实 plan 上（此前 `plan_id=''`），`kb-hits.json` 可读性变好 —— **若 P8b 用到该文件的截图，录制前重截一张** | Y-2 |
 | 4 | **P11 / P14** | 「①②③ 三条命令缺一不可」 | 收敛成 **①② 两条**；P11 第三条禁语与 P14 讲稿、证据锚、禁语全部改写。全新克隆实测 **5.4 秒**到 7/7 | Y-3 |
 
-**数字口径**：本文件所有数字（596 passed / 7 项 / 33 / 7 / 81 / 18 / 9 / 1 / +62−4 / +273−7）
-都来自**整合轮 5 合并后**的真实输出，不是基线 `42822fc` 的旧值。
+**数字口径**：本文件所有数字（645 passed / 7 项 / 35 / 7 / 86 / 19 / 10 / 1 / +62−4 / +273−7）
+都来自**整合轮 6 合并 D-1 + D-2 后**的真实输出（实测于 `2474c56`），不是基线 `42822fc` 的旧值。
+⚠️ 末尾两组 diff 统计（`+62−4` / `+273−7`）本轮**没有重算** —— D-2 给 `maos/runtime/gate.py`
+加了约 +200 行，这两个数多半已偏小。已记进 `docs/BACKLOG.md` 的 `## integrate-round-6`。
 
 ---
 
@@ -614,6 +619,7 @@ Y-4 已并入（`783d9dd`），下面三条**已按实跑回填**：
 | 1 | **P5** | 「机制已落地并有 19 条测试守着，但演示里没有场景走这条路」 | 改口为「演到了，但只 replan **1 次**」；禁语从「演不出来」翻成「**别说成重试到上限**」 | Y-4 |
 | 2 | **P10** | 「场景 7 走的是 `effect_risk=H` 那条 HITL 入口，不是换渠道 replan」 | 屏幕上真有换渠道那一段（原话与状态轨迹已贴进页内）；最终仍落 HITL 驳回 | Y-4 |
 | 3 | **P11** | warn 10 行 / 2 类 | **11 行 / 3 类**，新增的 1 行是 scenario-7「有回执但 `biz_status` 不是 settled」——**预期内**，正是这一页要讲的东西 | Y-4 |
+| 5 | **P11** | warn 11 行 / 3 类；七行读数 `81/81` `33/33` `18/18` `9/9` | **12 行 / 3 类**（`authoritative-fact` 由 1 行变 2 行，新增 `case-s7-0002`）；读数 **`86/86` `35/35` `19/19` `10/10`** | 整合轮 6 合 D-1 + D-2 |
 
 🔴 **台上最容易讲错的一句已经反向了**：以前的风险是「把没做到的说成做到」，
 现在反过来 —— 换渠道**确实演到了**，风险变成「把 1 次 replan 说成重试到上限」。

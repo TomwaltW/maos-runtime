@@ -6,11 +6,14 @@
 > 都在该基线上逐条打开核对过，核不到的断言已就地改弱 —— 见文末「核对台账」。
 > 初版按 `42822fc` 写，两批回填台账记在文末。
 >
-> ⚠️ **「评审四维」的官方名称与权重，仓库里没有，官方通知也还没到。**
-> 本文件一律不猜、不按惯例推测、不写预估权重，凡涉及处写
-> **（四维口径待确认，见 `docs/open-questions.md` OQ-1）**。对照表改按
-> **十三条评委要求**组织（出处 `README.md:249-261`）。这与
-> `docs/DECISIONS.md:491`、`docs/BACKLOG.md:306` 已定的口径一致。
+> ✅ **OQ-1 已由人类答复（T 轮派单 §0.2 转述复赛规则原文，2026-08-29）**：评审维度与权重为
+> **场景价值与复用性 20% ／ 多 Agent 协同 25% ／ Skill 工程体系 20% ／
+> 工程落地与安全审计 30% ／ 开源贡献 5%**；交付形式 PPT 或 PDF，必要内容含
+> 核心解决思路、技术亮点、**风险边界**、可复现路径；截止 **9 月 3 日 18:00**。
+> 本文件此前一律不猜、不写预估权重的做法到此为止 —— 现在有权威口径，按它填。
+> **十三条评委要求的对照表（表 A / 表 B）继续保留**（出处 `README.md:280-294`），
+> 两套口径并行不冲突：十三条是「答没答到」，四维是「按什么打分」。
+> 四维 → 页的承接见文末「T 轮渲染台账」的表 C。
 >
 > **页锚 P1–P14 由编排侧钉死，不许改编号与页名** —— `docs/submission-checklist.md`
 > B 段的「PPT 页」列要按同一套锚填。P8 因内容过挤已拆成 P8a / P8b（编排侧允许的
@@ -33,7 +36,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 七项证据逐项重放，全绿才是零。
 
 **可核验证据**
-`README.md:1-11`（标题、副标题与那条 `verify.py` 命令逐字对应本页文案）
+`README.md:1-18`（标题、副标题与那条 `verify.py` 命令逐字对应本页文案）
 
 **对应评委要求编号**
 —（封面页，不单独扛要求）
@@ -65,7 +68,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 它正是我们这一版的主线，第十页专讲。
 
 **可核验证据**
-`docs/submission-checklist.md:88-93`（三条诊断的原文与要求指向的落点）
+`docs/submission-checklist.md:183-190`（三条诊断的原文与要求指向的落点）
 
 **对应评委要求编号**
 —（本页扛的是三段反馈诊断，不是十三条要求）
@@ -82,7 +85,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 一条真实形态的售后退款诉求，从三处来源进来，走完受理、裁定、核算、放行、支付、通知。
 
 **画面要素**
-`README.md:20-30` 那张八行表照搬上版：左列「谁」，中列「干了什么」，右列「留下了什么」。
+`README.md:28-40` 那张八行表照搬上版：左列「谁」，中列「干了什么」，右列「留下了什么」。
 右列全部是落库的对象名（`refund_case` / `plan` + 5 个 `task` / `finance_entry` /
 `payment_observation`），不是描述性文字。底部一行小字标数据口径。
 
@@ -92,7 +95,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 和软件交付域是同一个，零改动。往下每一步都往库里落一个真实业务对象。
 
 **可核验证据**
-- `README.md:15-43`（本页叙事与表格的原文）
+- `README.md:21-43`（本页叙事与表格的原文）
 - 一条可跑的命令：`python3 run.py --scenario 6`
 
 **对应评委要求编号**
@@ -122,7 +125,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 Skill、ToolPort 和业务对象。最下面是旁路 —— 缺席也不阻塞主链路。
 
 **可核验证据**
-`docs/architecture.md:12-56`（分层图源码；`README.md:57-77` 是同一张图的精简版，
+`docs/architecture.md:12-56`（分层图源码；`README.md:61-88` 是同一张图的精简版，
 两者的分块与命名一致）
 
 **对应评委要求编号**
@@ -153,9 +156,9 @@ DONE / BLOCKED / FAILED`），右半张七道闸竖排列表，第六第七道�
 
 **可核验证据**
 - `maos/contracts/states.py:26`（`TASK_TRANSITIONS` 迁移表）
-- `maos/core/control_plane.py:119-123`（注释「唯一的状态迁移出口」+ `_transit`，
+- `maos/core/control_plane.py:172-176`（注释「唯一的状态迁移出口」+ `_transit`，
   首行即 `assert_transition`）
-- `maos/runtime/gate.py:164-170`（七道闸的元组，顺序即执行顺序）
+- `maos/runtime/gate.py:254-260`（七道闸的元组，顺序即执行顺序）
 
 **对应评委要求编号**
 **4**（返工 / HITL Trace）、**10**（减少遗漏财务复核、错误套用政策、无限重试）
@@ -175,7 +178,7 @@ DONE / BLOCKED / FAILED`），右半张七道闸竖排列表，第六第七道�
 AgentTeams 的五个概念逐项落到代码位置；事件链的权威记录不在房间里，在 `event_log` 表。
 
 **画面要素**
-`docs/agentteams-mapping.md:18-24` 那张五行表照搬，保留「代码位置」与「状态」两列
+`docs/agentteams-mapping.md:16-24` 那张五行表照搬，保留「代码位置」与「状态」两列
 （状态列的 ✅ / 「代码就绪，真房间未接通」原样保留，不许统一成 ✅）。
 右下角一个小方块写「当前真实状态」三行。
 
@@ -185,7 +188,7 @@ HITL 是房间里的斜杠命令，第五项是可观测。第五项要单说：
 不在房间里，在 event_log 表里，房间挂了不影响重放。
 
 **可核验证据**
-- `docs/agentteams-mapping.md:18-24`（五项映射表，每项都带 `文件:行号`）
+- `docs/agentteams-mapping.md:16-24`（五项映射表，每项都带 `文件:行号`）
 - `docs/agentteams-mapping.md:52-63`（「当前真实状态（不吹）」小节）
 
 **对应评委要求编号**
@@ -278,9 +281,9 @@ RAG 的价值要用「有无对照」证明 —— 两版 DAG 的 diff；而检�
 **可核验证据**
 - `maos/kb/guardrails.py:1-16`（模块 docstring 引评委原话，拆成三条断言；
   代码里是 4 个 assert 函数 —— `assert_no_dependency_removed` 是第 1 条「只增不删」
-  的依赖侧半条，`check_all` 在 `:149-156` 一次跑完）
-- `maos/kb/experiment.py:687`（写出 `dag-diff.json`）
-- `README.md:217`（证据索引里 `dag-diff.json` 的定位：「对照实验的判定面」）
+  的依赖侧半条，`check_all` 在 `:149` 一次跑完）
+- `maos/kb/experiment.py:788`（写出 `dag-diff.json`）
+- `README.md:250`（证据索引里 `dag-diff.json` 的定位：「对照实验的判定面」）
 - 一条可跑的命令：`python3 -m maos.kb.experiment`
 
 **对应评委要求编号**
@@ -311,8 +314,8 @@ FAIL 输出片段。
 没有回执的 settled 就是把外部状态写死为终态，那是 bug 不是功能，直接抛异常。
 
 **可核验证据**
-- `maos/domain/refund/guard.py:31`（`AUTHORITATIVE_STATES = frozenset({"settled"})`）
-- `maos/domain/refund/guard.py:178-187`（「③ 权威终态必须有回执」+ 缺字段时
+- `maos/domain/refund/guard.py:33`（`AUTHORITATIVE_STATES = frozenset({"settled"})`）
+- `maos/domain/refund/guard.py:307-315`（「③ 权威终态必须有回执」+ 缺字段时
   `_log_violation` 落库并 `raise AuthoritativeFactViolation`）
 - `docs/authoritative-facts.md:113-145`（**实况**：核验器第 3 项真的抓到过一次绕过，
   含根因、为什么两轨各自全绿、以及那一行修法）
@@ -344,7 +347,7 @@ FAIL 输出片段。
 
 **可核验证据**
 - 一条可跑的命令：`python3 run.py --scenario 7`
-- `maos/flows/scenario_7.py:383-386`（本场景存在的理由，两条断言：
+- `maos/flows/scenario_7.py:692-696`（本场景存在的理由，两条断言：
   `biz_status == "compensated"`、`settled_rows == 0`）
 - `README.md:43`（「四个 Agent 全部回复「完成」，而这一单没有成功，系统如实这么记了。」）
 
@@ -383,7 +386,7 @@ FAIL 输出片段。
 
 **画面要素**
 整屏终端输出，七行 PASS + 一行 RESULT，等宽大字号。左侧配一张七行小表：
-每项失败**意味着什么**（`README.md:126-136` 那张表）。
+每项失败**意味着什么**（`README.md:149-158` 那张表）。
 
 **讲稿**
 这一节是给评委的。两条命令：一条生成全部证据束（七个场景 + RAG 对照），一条逐项重放校验。
@@ -391,8 +394,8 @@ FAIL 输出片段。
 RAG 命中是真的、Agent 完成没被当成业务成功、知识层没被污染。全绿退出 0。
 
 **可核验证据**
-- `scripts/verify.py:514-522`（`CHECKS` 七项函数清单，顺序即输出顺序）
-- `README.md:88-160`（§3 一条命令核验：两条命令、七行实跑输出、七项各验什么）
+- `scripts/verify.py:859-866`（`CHECKS` 七项函数清单，顺序即输出顺序）
+- `README.md:89-159`（§3 一条命令核验：两条命令、七行实跑输出、七项各验什么）
 
 编排侧在 `147df03` 上实跑到的七行（读数变过三轮，**只认这一份**：
 `business-ref 23/23`+`kb-hit 1/1` 是 X 轮读数、`74/74`+`4/4` 是 Y 轮前读数、
@@ -417,9 +420,9 @@ RESULT: 7/7 PASS
 **不许说的话**
 - 不许说「七个场景都跑成功了」（`docs/submission-checklist.md:63`）。
 - 不许把 `warn:` 行藏起来。`trace-tree` 与 `business-outcome` 两项会附若干 `warn:`，
-  它们不改判定但是真的（`README.md:110-111`）。台上被问到要能直接答。
+  它们不改判定但是真的（`README.md:116-117`）。台上被问到要能直接答。
 - 不许说「新克隆的仓库直接跑 `verify.py` 就有 7/7」—— `*.db` 不入库，
-  直接跑会报缺数据库并退出 2，**这是设计行为**（`README.md:113-115`）。
+  直接跑会报缺数据库并退出 2，**这是设计行为**（`README.md:117-119`）。
 
 （整合轮 6 合入 D-1 + D-2 后实测：`warn:` 共 **12 行 / 3 类** —— `trace-tree` 下 6 行、
 `business-outcome` 下 4 行、`authoritative-fact` 下 2 行。此前的 17 行 / 4 类里，
@@ -471,7 +474,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 合成数据、公开规范、模拟实现 —— 三者分清楚，这是最容易被问穿也最伤的一处。
 
 **画面要素**
-`docs/submission-checklist.md:55-63` 的 A-4 表照搬上版，但**只留两列**：
+`docs/submission-checklist.md:119-137` 的 A-4 表照搬上版，但**只留两列**：
 「只能这么说」和「不许这么说」，右列全部灰掉加删除线。这一页是全场唯一一页
 主动列自己不能说什么的页，视觉上要显得坦白，不要藏在角落。
 
@@ -481,10 +484,10 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 演示用对齐该规范的模拟实现，沙箱账号未接通。
 
 **可核验证据**
-- `README.md:263-270`（§8 数据口径小节：合成数据 / 公开规范 / 模拟实现 / Matrix 未接通 四条）
-- `docs/submission-checklist.md:55-63`（A-4 口径一致性七行表，本页即这张表的上版）
+- `README.md:295-303`（§8 数据口径小节：合成数据 / 公开规范 / 模拟实现 / Matrix 未接通 四条）
+- `docs/submission-checklist.md:119-137`（A-4 口径一致性七行表，本页即这张表的上版）
 - `maos/tools/gateway_codes.py`（错误码逐条核对后写入的落点，
-  `README.md:266-268` 明写「禁止凭记忆编造」）
+  `README.md:297-299` 明写「禁止凭记忆编造」）
 
 **对应评委要求编号**
 —（口径页，不扛具体要求；但它是全篇每一条断言可信的前提）
@@ -507,14 +510,17 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 「新克隆的仓库直接跑 `verify.py` 会报缺数据库并退出 2 —— 这是设计行为，先跑 ①②」。
 
 ```bash
-git clone <repo> && cd maos-runtime
+git clone <repo> maos && cd maos
 python3 -m pytest maos/tests -q     # 749 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
-python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/
-python3 -m maos.kb.experiment       # ② 产 evidence/scenario-R5/
-python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
+python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/ 与 -R5/（缺省一并产 R5）
+python3 scripts/verify.py           # ② 七项逐条重放校验 → RESULT: 7/7 PASS
 ```
+
+🔴 **是 ①② 两条，不是三条。** `python3 -m maos.kb.experiment` 曾经要单独敲才产
+`scenario-R5`，Y-3 之后 ① 已缺省一并产出（`--no-r5` 可显式跳过，届时 verify 第 5、7 项按
+`[SKIP]` 计，**不会**冒充 PASS）。口径出处 `README.md:96-98`、`README.md:119`。
 
 **讲稿**
 不需要任何 API key，核心零依赖，只要 Python 三点十以上。缺省走 Scripted 模式，
@@ -522,8 +528,8 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 核验是②，两条缺一不可、顺序不能换。全新克隆到 7/7，实测五秒四。
 
 **可核验证据**
-- `README.md:170-177`（§4 5 分钟快速开始：pytest + run.py + 证据链两条 + `exit=0`）
-- `README.md:95-97`（①② 两条命令原文）
+- `README.md:161-177`（§4 5 分钟快速开始：pytest + run.py + 证据链两条 + `exit=0`）
+- `README.md:96-98`（①② 两条命令原文）
 - `README.md:119`（**①② 两条缺一不可，顺序不能换**；直接跑 ② 会报缺数据库并退出 2）
 - 编排侧整合轮 9 实跑：`python3 -m pytest maos/tests -q` → **749 passed**；
   `python3 run.py` → **exit=0**，跑完 `git status --porcelain` 仍 0 行；
@@ -540,7 +546,7 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 
 # 表 A · 评委要求 → 页
 
-十三条出自 `README.md:249-261`（§8，**以此为准**）。
+十三条出自 `README.md:280-294`（§8，**以此为准**）。
 `docs/EXECUTION.md:788-802` 的附 C 是 v4 手册原文，条数一致（13 条），
 但里面写的是 `scenario-R1/R2`、`Phase 5`、「退款域 6 Skill」这类**已改名的旧编号**，
 只用来确认「一条不漏」，**不要照抄其落点**。
@@ -548,16 +554,16 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 | # | 评委要求（README §8 原文） | 主页 | 辅页 | 该页给出的证据 |
 | :-- | :-- | :-- | :-- | :-- |
 | 1 | 用一条脱敏真实退款需求完成可执行纵向切片 | **P3** | P10 | `python3 run.py --scenario 6` / `--scenario 7` |
-| 2 | AgentTeams 事件链 | **P6** | — | `docs/agentteams-mapping.md:18-24` 五项映射（每项带行号） |
+| 2 | AgentTeams 事件链 | **P6** | — | `docs/agentteams-mapping.md:16-24` 五项映射（每项带行号） |
 | 3 | 关键 Skill 的真实调用 | **P7** | P3 | `docs/skill-catalog.md:15-29`（13 skill，含退款域 7 个） |
-| 4 | 返工 / HITL Trace | **P5** | P10 | `maos/runtime/gate.py:164-170` + 场景 7 的 `BLOCKED → FAILED` 轨迹 |
-| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py:514-522` → 7/7 PASS |
+| 4 | 返工 / HITL Trace | **P5** | P10 | `maos/runtime/gate.py:254-260` + 场景 7 的 `BLOCKED → FAILED` 轨迹 |
+| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py:859-866` → 7/7 PASS |
 | 6 | 业务对象关联到同一案例 | **P11** | P3 | verify 第 2 项 `business-ref 35/35` |
-| 7 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | **P9** | P10 | `maos/domain/refund/guard.py:31` + `:178-187` |
+| 7 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | **P9** | P10 | `maos/domain/refund/guard.py:33` + `:307-315` |
 | 8 | RAG 面向 workflow 规划 | **P8a** | P8b | `maos/kb/retriever.py:151-163` + `evidence/scenario-R5/dag-diff.json` |
 | 9 | 先按租户/业务/地区/渠道/商品/政策/版本过滤，再组合规则编号、错误码、全文、语义 | **P8a** | — | `maos/kb/retriever.py:51-55`（过滤顺序与评委原话逐字一致） |
-| 10 | 减少遗漏财务复核、错误套用政策、无限重试 | **P5** | P8b | 第六道闸 `maos/runtime/gate.py:169` + 政策版本锁定 + `MAOS_MAX_REPLAN` |
-| 11 | 历史流程不能替代当前订单事实和人工授权 | **P8b** | P9 | `maos/kb/guardrails.py:1-16` 三条护栏 + `:149-156` `check_all` |
+| 10 | 减少遗漏财务复核、错误套用政策、无限重试 | **P5** | P8b | 第六道闸 `maos/runtime/gate.py:259` + 政策版本锁定 + `MAOS_MAX_REPLAN` |
+| 11 | 历史流程不能替代当前订单事实和人工授权 | **P8b** | P9 | `maos/kb/guardrails.py:1-16` 三条护栏 + `:149` `check_all` |
 | 12 | 以退款到账 / 客户确认 / 人工纠错验证 DAG | **P10** | P11 | `result.json` 的 `business_outcome` / verify 第 6 项 `10/10` |
 | 13 | 只有证据完整且外部结果明确的案例进默认知识层 | **P8b** | P11 | 晋升规则 `promote_history_case` / verify 第 7 项 `1/1` |
 
@@ -638,3 +644,98 @@ Y 轮四轨与 Z 轮五轨全部合入，本文件的断言**本轮已全部对�
 | 1 | 表 A 的「四维」列 | 官方评审四维口径，见 [`docs/open-questions.md`](open-questions.md) **OQ-1** |
 
 **回填时的纪律**：每一条都要**先实跑拿到新输出**再改文案，只认实跑，不认推断。
+
+---
+
+# T 轮渲染台账（T5 轨 · 2026-08-29 · 基线 `27c9e18`）
+
+本轮把这份大纲**渲染成了可交的演示稿**，不是重写内容：
+
+| 产物 | 说明 |
+| :-- | :-- |
+| `artifacts/maos-复赛方案.html` | **正本**。自包含单文件，15 页，16:9，无任何外链 |
+| `artifacts/maos-复赛方案.pdf` | **提交件**。无头 Chrome 导出，15 页，`/MediaBox [0 0 960 540]` |
+| `artifacts/README.md` | 重导 PDF 的两条路子、截图 slot 回填步骤、改稿三条硬约束 |
+
+页锚 P1–P14（P8 拆 P8a/P8b）**一一对应，一页不多一页不少**，编号与页名未改。
+
+## 表 C · 评审四维 → 页承接
+
+口径来自 T 轮派单 §0.2（人类转述的复赛规则原文），即 OQ-1 的答复。
+演示稿每一页的页眉右上角都印着它承接的维度徽章，评委翻到哪页就看得见。
+
+| 评审维度 | 权重 | 承接页 | 页数 |
+| :-- | :-- | :-- | :-- |
+| 场景价值与复用性 | 20% | P3、P10、P12 | 3 |
+| 多 Agent 协同 | 25% | P5、P6、P10 | 3 |
+| Skill 工程体系 | 20% | P7、P8a、P8b | 3 |
+| **工程落地与安全审计** | **30%** | **P5、P9、P11、P13、P14** | **5** |
+| 开源贡献 | 5% | P14 | 1 |
+
+**30% 那一维承接 5 页 > 25% 那一维的 3 页**，权重最高的一维页数最多，符合编排侧的验收判据。
+不扛维度的四页（P1 封面、P2 三段反馈、P4 架构地基、P8b 已计入 Skill 维）各自的理由见表 B。
+
+## 本轮改了大纲哪几处（全部属 §0.1 情形②：读数过期）
+
+大纲基线是 `147df03`，主干已到 `27c9e18`，中间经 D 轮与 H 轮八轨。
+**12 处代码/文档锚点行号漂移**，逐条当场打开核对后改成实测值：
+
+| # | 锚点 | 原写 | 实测 | 那一行现在是什么 |
+| :-- | :-- | :-- | :-- | :-- |
+| 1 | `maos/core/control_plane.py` | `:119-123` | **`:172-176`** | 「唯一的状态迁移出口」+ `_transit` + `assert_transition` |
+| 2 | `maos/runtime/gate.py` | `:164-170` | **`:254-260`** | 七道闸元组（`schema`…`GATEWAY_GATE`） |
+| 3 | `maos/runtime/gate.py` | `:169` | **`:259`** | 第六道闸 `finance` |
+| 4 | `maos/domain/refund/guard.py` | `:31` | **`:33`** | `AUTHORITATIVE_STATES = frozenset({"settled"})`（`:31` 是它上面的注释行） |
+| 5 | `maos/domain/refund/guard.py` | `:178-187` | **`:307-315`** | 「③ 权威终态必须有回执」+ `_log_violation` + `raise` |
+| 6 | `maos/flows/scenario_7.py` | `:383-386` | **`:692-696`** | 「本场景存在的理由」两条断言 |
+| 7 | `maos/kb/experiment.py` | `:687` | **`:788`** | 写出 `dag-diff.json` |
+| 8 | `maos/kb/guardrails.py` | `:149-156` | **`:149`** | `check_all` 定义行 |
+| 9 | `scripts/verify.py` | `:514-522` | **`:859-866`** | `CHECKS` 七项函数清单 |
+| 10 | `docs/submission-checklist.md` | `:88-93` | **`:183-190`** | 评委三段反馈的诊断与回应落点 |
+| 11 | `docs/submission-checklist.md` | `:55-63` | **`:119-137`** | A-4 口径一致性七行表 |
+| 12 | README 共 13 处 | 见上文 | 已逐条改 | §1/§3/§4/§6/§7/§8 各段 |
+
+**另一处口径改判（同属情形②）**：P14 的复现命令由 **三条收敛成两条** ——
+`make_evidence.py` 缺省一并产 `scenario-R5`，`python3 -m maos.kb.experiment` 不再需要单独敲
+（出处 `README.md:96-98`、`README.md:119`）。这一条最要害：**漏掉 ① 直接跑 ② 会报缺数据库并退出 2**，
+是评委最容易踩的坑，演示稿 P11 与 P14 两页都写了。
+
+**未改**：情形①（仓库里不存在）与情形③（塞不下要拆页）本轮**一处都没有触发** ——
+大纲写的每一页在仓库里都找得到落点，15 页也都装得下。
+
+## 活数字复跑（不抄大纲，逐条自己跑）
+
+| 数字 | 跑的命令 | 实测 | 大纲原值 |
+| :-- | :-- | :-- | :-- |
+| 测试条数 | `python3 -m pytest maos/tests -q` | **749 passed**，exit=0 | 749 ✅ 一致 |
+| 证据束 | `ls evidence/` | **8 束**（`scenario-1..7` + `-R5`）／**50** 个证据文件 | 8 ✅ 一致 |
+| Skill 数 | `docs/skill-catalog.md:7` | **13** | 13 ✅ 一致 |
+| ToolPort 数 | `docs/toolport-contract.md:7` | **4** 个已实现 | 4 ✅ 一致 |
+| Agent 数 | `docs/agent-identity.md:9` | **10** Identity，**9** 个可派单 | ✅ 一致 |
+| 场景 7 汇总 | `python3 run.py --scenario 7` | `compensated` ／ settled **0 条** ／ **1 次** replan | ✅ 逐字一致 |
+| 七道闸 | `grep -n '_gate_' maos/runtime/gate.py` | 判据表 **7 个条目**（`:254-260`；`def _gate_` 有 9 个是 D-2 拆函数所致） | ✅ 仍是七道 |
+| `contracts/` 跨域 | `git diff --shortstat 90251b3 27c9e18 -- maos/contracts/` | **空输出（零改动）** | ✅ 且比大纲更强：到当前 HEAD 仍为零 |
+| 区间 A 内核代价 | `git diff --shortstat 90251b3 4a70cb0 -- maos/<面>` | `contracts/` 零、`core/` **零**、`runtime/` 只有 `gate.py` **+126/−4** | 大纲未分区间，本轮按 `docs/domain-portability.md:60-80` 的两区间口径写 |
+| 全区间内核增量 | `git diff --shortstat 90251b3 27c9e18 -- maos/core/ maos/runtime/` | `core/` **+194/−10**、`runtime/` **+497/−9** | ⚠️ 大纲写的 `+46/−2` / `+273/−7` **已偏小**，大纲自己预警过；演示稿 P12 用实测值 |
+| 按域实现四面 | `git diff --shortstat 90251b3 4a70cb0 -- maos/{agents,skills,tools,domain}/` | **26 files, +3548/−52** | 新增，演示稿 P12 用 |
+
+⚠️ **`verify.py` 的七行读数（`86/86` `35/35` `3/3` `19/19` `7/7` `10/10` `1/1`）与 warn 12 行 3 类
+本轮没有当场复跑** —— T5 轨禁止跑 `make_evidence.py`（会重写 50 个证据文件，与整合轮撞车），
+而 `*.db` 不入库、直接跑 `verify.py` 必然退出 2。演示稿 P11 引的是 `README.md:89-159` 里
+**整合轮 6 的实跑记录**，口径与 `docs/submission-checklist.md` 的 warn 表一致。
+整合轮如果重跑出不同读数，**以那次为准改 P11**。
+
+## 演示稿的三条自我约束（写进了 `artifacts/README.md`）
+
+1. **自包含**：`grep -c "cdn|unpkg|cdnjs|@import url("` = **0**，全文**一个 `http(s)://` 都没有**。
+2. **一页就是一页**：`.body` 是 `overflow:hidden`，内容超高会被**静默裁掉**。
+   本轮实测 15 页 `bodyOverflow` 全为 **0**；等价判据是把 `overflow` 改成 `visible` 重导 PDF，
+   **页数仍是 15**（若有页溢出会变 16）。P7/P12/P13 三页带实测收敛出的 `zoom`（`.94`/`.93`/`.96`）。
+3. **每句断言指得出证据**：每页页脚固定一行「可核验证据」，给 `文件:行号` 或可当场跑的命令。
+
+## 留给整合轮的一件事
+
+**P6 的房间实拍 slot**（`<!-- SLOT: room-screenshot -->`）。T5 交稿时 T4 轨仍在采真房间证据，
+所以 P6 正文只写**代码事实**（镜像层、降级等价性、审批命令解析、越权落库），
+并**主动自曝「真房间未接通」**，没有写「已在真房间跑通」。
+回填步骤（含 base64 内联，不许外链图片）写在 `artifacts/README.md` 第 2 节。

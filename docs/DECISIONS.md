@@ -831,3 +831,16 @@ verify 第 6 项自述层收口。派单 §5 只说了「补 FAILED 分支的 st
 | 2026-08-29 | P7 | 新异常独立成类还是复用 `AuthoritativeFactViolation` | **独立成 `CaseIdentityConflict(ValueError)`** | 复用会把两种排查方向压成一个：`AuthoritativeFactViolation` 说的是「你没资格写」，这条说的是「你写的和库里那份不是同一件事」。事件类型同理另起 `CASE_CONFLICT_EVENT`，否则读事件的人得靠解析 reason 才分得开。父类选 `ValueError` 与既有的 `BizStatusTransitionError` 一致（都是入参与既有状态对不上），不选 `RuntimeError` |
 | 2026-08-29 | P7 | `create_case` 的签名在 `guard.py` 头部标着「T+0 commit（3b0ca8f）冻结，R-2 从那个 sha 起按名调用」，而本轨要改它的行为 | **签名一个字符不动**（位置/关键字参数、返回类型全同），只在模块级**新增** `CaseIdentityConflict` / `CASE_CONFLICT_EVENT`；行为差异是「原来撞主键抛 `sqlite3.IntegrityError`，现在幂等返回既有行、或抛 `CaseIdentityConflict`」 | 冻结的是签名，不是「重跑必炸」这个 bug。新增名字是纯增量，按名调用的一方不受影响；真正会被影响的只有**依赖那次 IntegrityError 的代码**，全仓 grep 过只有两处且都不是：`maos/tests/test_refund_domain.py:227` 那条 `pytest.raises(sqlite3.IntegrityError)` 验的是 `payment_observation` 的唯一键、不是本表；`maos/kb/experiment.py:41` 只是 docstring 里的一句归因（已记进 `docs/BACKLOG.md` 的 `## task-H3`） |
 | 2026-08-29 | P7 | 幂等回归落在哪（派单 §4 给了「新建或就近追加」两条） | **新建 `maos/tests/test_refund_intake_idempotent.py`**，12 条 | 就近的 `test_refund_domain.py` / `test_refund_flow.py` 同期被别的轨读写的概率更高，新文件是零冲突面；且这 12 条有共同题眼（受理被返工重跑），塞进那两个文件会被它们各自的题眼稀释。文件名写进回执 |
+
+## task-H4
+
+`_shared_inputs` 取不到嵌套共享参数（分支 `task/h4-nested-inputs`，基线 `1131795`）。
+五处自行判断，按铁律 7 记账。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | 派单说「拿不准要不要递归任意深度时，影响闸的触发条件 → 停手提问」。本改动**确实**影响第六道闸的触发条件 | **不停手**，照 `runtime/gate.py` 已冻结的那把尺做：按字段名下潜、深度上限 4、命中的键不再往下潜 | 「停手问」防的是**自行发明一套口径**。而这三条不是我发明的：`_claimed_amounts` 已经在扫同一片 `inputs` 树、判同一个字段名，且把每一条的理由写在 docstring 里（写死嵌套路径会变死代码、命中后下潜会把脏数据洗干净）。规划期与判定期用同一把尺，恰恰是消除分叉；另立一套才是要问的那件事 |
+| 2026-08-29 | P7 | 深度上限的数值要不要 `from maos.runtime.gate import FINANCE_SCAN_MAX_DEPTH`，做成单点 | **各写各的常量（都是 4），靠注释互相指认**，不 import | `maos/kb/` 是领域无关的检索内核，现在只 import `maos.kb` 与 `contracts.events`。为一个整数把 `kb → runtime` 这条依赖建起来，代价大于收益（`kb.experiment` 那处 import 是证据生成器的刻意破例，且文件抬头写明「仅此一处」）。代价是两处可能分叉 —— 已记进 BACKLOG `## task-H4` 第 3 条，并给了守卫测试的修法 |
+| 2026-08-29 | P7 | 扫描顺序：一轮深度优先（顶层与嵌套一起扫），还是两轮（先全扫顶层、只补没取到的键） | **两轮，顶层优先** | 一轮深度优先会改变**现在跑绿的**场景：场景 7 的 baseline 里，受理那一步的 `case_seed` 排在带顶层金额的财务任务之前，深度优先会先命中种子里那份。两轮的写法让「顶层齐全」的计划取到的东西与旧版逐字节相同，第二轮只在某个键一个任务都没在顶层声明过时才被叫到。这条顺序同时是误取的主要闸门：多源信号 `signals[]` 里混进别的 case 的同名键时，只要有任何一个任务顶层声明过它，深搜压根不会执行 |
+| 2026-08-29 | P7 | 修好之后，R5 的 with_kb 段建议任务多带了一个 `channel_id="ch-online"`（从 `case_seed` 取到），这是行为变化 | **保留，不做例外** | `channel_id` 本来就在 `_shared_inputs` 的 `keys` 里 —— 它一直是「要取的共享参数」，只是以前顶层取不到所以静默缺席。为了让 diff 更小去把它排除，等于用一个新例外掩盖同一个 bug 的另一半。实测无副作用：全量 718 passed、`run.py` exit=0、证据束 `RESULT: 7/7 PASS` 七项读数与基线逐项相同 |
+| 2026-08-29 | P7 | 派单 §5.1 的结论是「取不到 = 抄成了空，比抄错一位更彻底」。实测**不是空** | **按实测改写归因，不照抄派单结论**：取不到之后，`suggested_tasks_from_docs` 里历史文档那份 `amount_claimed` 没被覆盖，于是**原样留在了建议任务上** | 派单自己要求「不许照抄结论，自己复跑一遍确认」。实测 R5 with_kb 段补出来的财务任务顶层 `amount_claimed=6800.0`，而同一次调用里 `_shared_inputs` 返回的 dict 里根本没有这个键 —— 这个数只能来自历史文档。所以真实症状不是「闸不触发」，是**闸按别人的钱数触发**，比派单说的更隐蔽（有值、看着正常）。R5 两段共用 `AMOUNT` 常量让两个数碰巧相等，症状被完全掩盖，回归测试因此必须把两个金额拉开才做得出「修前必红」 |

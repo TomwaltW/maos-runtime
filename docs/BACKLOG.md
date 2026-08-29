@@ -714,3 +714,14 @@ verify 第 6 项的自述层收口（FAILED 自称成功 + 四个元数据字段
 | 2026-08-29 | P7 | **`maos/skills/builtin/refund/intake.py:79` 那条注释的前提已被本轨推翻**。原文「纯规则 + 一次库写入。重试会撞 refund_case 主键，没有可重试的失败形态」，而 `create_case` 现在幂等，重试不再撞主键 | 注释给的理由已不成立，这是纠错；但同处的 `max_retries=0` + `failure_policy="escalate"` 还对不对是**策略判断**，两件事要分开：受理的库写入之外全是入参校验，确实没有别的可重试失败形态，保持 0 也说得通 | `intake.py` 不在本轨白名单（派单 §4 只给了 `guard.py`）。建议下一轮连注释带 `max_retries` 一并定：要么只改注释，要么把「重跑安全」这条新事实兑现成允许一次重试 |
 | 2026-08-29 | P7 | **`maos/kb/experiment.py:41` 的模块 docstring 把 R5 without_kb 段那句 IntegrityError 归因于「受理 skill 在返工下不幂等」，本轨之后这个归因不再成立**。同段自己已声明是过渡态（「D-1 合并后这一段会变成『受理 BLOCKED，等人决策』」），而 D-1 早已并进主干 `1131795` | 纯文档失真，不改行为。本轨实跑 `make_evidence.py` + `verify.py` 仍 `RESULT: 7/7 PASS`、`business-ref 35/35`，与基线逐项相同 —— 恰好反证那条返工路径已不可达，这句归因描述的是一个现在跑不出来的现象 | `maos/kb/experiment.py` 是 D-2 的独占面，本轨一个字节没碰。`## task-F1` 第 1 条也在等同一个文件的另一处改动，建议一并处理 |
 | 2026-08-29 | P7 | **退款域内出现了两种「重跑安全」口径**：`refund_case` 走本轨这条「同则幂等、异则报错」，而 `business_ref` 与 `customer_evidence` 走 `INSERT OR REPLACE` 静默覆盖（`objects.attach_business_ref`、`intake.py:137`） | 当前无症状，且对那两张表说得通 —— 它们存的是引用与证据指针，重跑覆盖成同一份值本就幂等，没有「被推进过的状态」会被盖掉。问题在于同一个域里两种口径并存而没有一处说明，下一个人照着哪张表抄都不知道自己抄的对不对 | **不建议为统一而统一**：`refund_case` 那条口径的理由是 `biz_status` 会被推进、`amount_claimed` 是财务闸的量，那两张表两条都不占。建议在 `docs/` 补一句「按表说明为什么口径不同」，归下一轮文档面 |
+
+## task-H4
+
+本轨只做一件事：让 `guardrails._shared_inputs` 取得到嵌在 `case_seed` 之类载荷里的
+共享参数（基线 `1131795`）。下面几条是查这件事时**实测撞到、按铁律 4 不当场改**的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`suggested_tasks_from_docs` 会把历史文档里的 `amount_claimed` 原样抄到建议任务上**：它先抄历史 step 的 inputs，再用 `_shared_inputs` 的结果覆盖；而 `ORDER_FACT_FIELDS` 不含 `amount_claimed`（申报金额是客户诉求、不是订单事实，这个归类本身是对的），所以历史那份不会被丢弃。**本轨修的是「取得到就覆盖」**，`baseline` 顶层与嵌套**一份都没有**时，历史金额仍会原样留在建议任务上 | 第六道闸会按**历史那一单**的钱数判当前这一单 —— 正是 `_shared_inputs` 自己 docstring 里警告的「抄错一位数就是把闸绕过去」。现有测试 `test_kb_retriever.py::test_apply_suggestions_adds_step_without_carrying_facts` 的 baseline 恰好就是这个形状（历史 `9999.0` 被抄进建议任务），但那条测试没有断言金额，所以一直是绿的 | 改法有两条，都不在本轨白名单内：① 覆盖不到就**显式删掉** `amount_claimed`（宁可让闸的 plan 级判据接住，也不用别人的钱数放行）；② 把「知识层不许携带的触发量」单独立一份清单，与 `ORDER_FACT_FIELDS` 并列。①更省事但会改闸的触发面，需要与持 `gate.py` 的轨一起定 |
+| 2026-08-29 | P7 | **R5 对照实验的两个金额是同一个常量**（`kb.experiment.AMOUNT = 6800.00`，历史 case 与当前 case 共用），于是上面那条症状在证据束里**完全没有表象** | 本轨修前修后，R5 的 `dag-diff.json` 逐项相同（`finance_gate` 仍是 blocker/pass、`finance_entries` 仍是 0/1）——「建议任务的金额来自历史文档」这件事，靠 R5 一个字都看不出来。要靠回归测试把两个数拉开才显形（`test_kb_nested_inputs.py`：历史 3200 阈下 / 当前 9000 阈上） | 属 `maos/kb/experiment.py`（本轨只读）。建议把历史 case 的金额与当前 case **拉开**，让证据束自己就能证明「补出来的财务任务用的是这一单的钱」。改动会动 R5 证据束的读数，须与证据面一轨一起做 |
+| 2026-08-29 | P7 | **深度上限 `SHARED_SCAN_MAX_DEPTH = 4` 与 `runtime.gate.FINANCE_SCAN_MAX_DEPTH` 是两份各自写死的常量**，靠注释互相指认，没有任何机器守卫 | 两处扫的是同一片 `inputs` 树。哪天有人只改一边，症状是「闸看得见的金额，规划期取不到」—— 正是本轨修的这个 bug 的形状，只是换个深度重现一次，且不会有任何测试变红 | 加一条守卫测试断言两个常量相等即可（一行），但断言要落在哪个文件里、由谁持有，得等 `gate.py` 那轨收工后定。本轨不跨面加测试 |

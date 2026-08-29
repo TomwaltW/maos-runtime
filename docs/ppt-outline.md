@@ -208,7 +208,7 @@ Skill 与 ToolPort 都是九要素声明，投放一个文件即注册；两份�
 
 **画面要素**
 左右分栏：左栏 `SkillContract` 九要素，右栏 `ToolPort` 九要素，字段名用等宽字体。
-底部一行横条：「13 个 skill / 4 个已实现工具 / 10 个 Agent Identity —— 三份文档全部代码生成」，
+底部一行横条：「13 个 skill / 4 个已实现工具 / 11 个 Agent Identity —— 三份文档全部代码生成」，
 配一条 `python3 scripts/gen_docs.py --check` 的终端输出截图。
 
 **讲稿**
@@ -405,7 +405,7 @@ RAG 命中是真的、Agent 完成没被当成业务成功、知识层没被污�
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
-[PASS] trace-tree           19/19
+[PASS] trace-tree           29/29
 [PASS] kb-hit               7/7
 [PASS] business-outcome     10/10
 [PASS] history-case         1/1
@@ -511,7 +511,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 ```bash
 git clone <repo> maos && cd maos
-python3 -m pytest maos/tests -q     # 802 passed
+python3 -m pytest maos/tests -q     # 860 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/ 与 -R5/（缺省一并产 R5）
@@ -609,10 +609,12 @@ Y-1 / Y-2 / Y-3 已并入，下面四条**已按实跑回填**：
 | 3 | **P8a / P8b** | 未提 `plan_id` 归属 | Y-2 修好归属，场景 6 的 `KbRetrieved` 已挂到实 plan 上（此前 `plan_id=''`），`kb-hits.json` 可读性变好 —— **若 P8b 用到该文件的截图，录制前重截一张** | Y-2 |
 | 4 | **P11 / P14** | 「①②③ 三条命令缺一不可」 | 收敛成 **①② 两条**；P11 第三条禁语与 P14 讲稿、证据锚、禁语全部改写。全新克隆实测 **5.4 秒**到 7/7 | Y-3 |
 
-**数字口径**：本文件所有数字（802 passed / 7 项 / 35 / 7 / 86 / 19 / 10 / 1 / +62−4 / +273−7）
-都来自**整合轮 10 合入 T-1…T-6 六轨后**的真实输出（实测于 `16563ef`），不是基线 `42822fc` 的旧值。
-pytest 条数由 749 涨到 802（T-1 +21 / T-2 +11 / T-3 +21，加法自洽；T-4/T-5/T-6 不改源码，0 条）；
-verify 七项分子分母（35 / 7 / 86 / 19 / 10 / 1）与 warn 12 行 3 类**连续两轮一个没变**。
+**数字口径**：本文件所有数字（860 passed / 7 项 / 35 / 7 / 86 / 29 / 10 / 1 / +62−4 / +273−7）
+都来自**整合轮 11 合入 T7…T14 八轨后**的真实输出，不是基线 `42822fc` 的旧值。
+pytest 条数由 802 涨到 860（T7 +15 / T11 +15 / T12 +17 / T13 +11，加法自洽；T8/T9/T14 不改源码，0 条）；
+verify 七项里**六项一个没变**（86 / 35 / 3 / 7 / 10 / 1），只有 `trace-tree` 由 19/19 涨到
+**29/29** —— 那是判据**加强**了（T12 给三条旁路补审计链，同批加了 `_check_seeded_provenance`），
+不是分母放宽。warn 由 12 行 3 类收到 **1 行 1 类**。
 ⚠️ 末尾两组 diff 统计（`+62−4` / `+273−7`）本轮**没有重算** —— D-2 给 `maos/runtime/gate.py`
 加了约 +200 行，这两个数多半已偏小。已记进 `docs/BACKLOG.md` 的 `## integrate-round-6`。
 
@@ -707,7 +709,7 @@ Y 轮四轨与 Z 轮五轨全部合入，本文件的断言**本轮已全部对�
 
 | 数字 | 跑的命令 | 实测 | 大纲原值 |
 | :-- | :-- | :-- | :-- |
-| 测试条数 | `python3 -m pytest maos/tests -q` | **802 passed**，exit=0 | 802 ✅ 一致 |
+| 测试条数 | `python3 -m pytest maos/tests -q` | **860 passed**，exit=0 | 802 ⚠️ 已刷为 860（T 轮八轨 +58）|
 | 证据束 | `ls evidence/` | **8 束**（`scenario-1..7` + `-R5`）／**50** 个证据文件 | 8 ✅ 一致 |
 | Skill 数 | `docs/skill-catalog.md:7` | **13** | 13 ✅ 一致 |
 | ToolPort 数 | `docs/toolport-contract.md:7` | **4** 个已实现 | 4 ✅ 一致 |
@@ -719,11 +721,13 @@ Y 轮四轨与 Z 轮五轨全部合入，本文件的断言**本轮已全部对�
 | 全区间内核增量 | `git diff --shortstat 90251b3 27c9e18 -- maos/core/ maos/runtime/` | `core/` **+194/−10**、`runtime/` **+497/−9** | ⚠️ 大纲写的 `+46/−2` / `+273/−7` **已偏小**，大纲自己预警过；演示稿 P12 用实测值 |
 | 按域实现四面 | `git diff --shortstat 90251b3 4a70cb0 -- maos/{agents,skills,tools,domain}/` | **26 files, +3548/−52** | 新增，演示稿 P12 用 |
 
-⚠️ **`verify.py` 的七行读数（`86/86` `35/35` `3/3` `19/19` `7/7` `10/10` `1/1`）与 warn 12 行 3 类
-本轮没有当场复跑** —— T5 轨禁止跑 `make_evidence.py`（会重写 50 个证据文件，与整合轮撞车），
-而 `*.db` 不入库、直接跑 `verify.py` 必然退出 2。演示稿 P11 引的是 `README.md:89-159` 里
-**整合轮 6 的实跑记录**，口径与 `docs/submission-checklist.md` 的 warn 表一致。
-整合轮如果重跑出不同读数，**以那次为准改 P11**。
+✅ **整合轮 11 已当场复跑，读数确实变了，P11 与本文件都已按实测改**（这正是上一版
+留的那句「整合轮如果重跑出不同读数，以那次为准改 P11」所指的情形）：
+七行读数现为 `86/86` `35/35` `3/3` **`29/29`** `7/7` `10/10` `1/1`，warn 由 12 行 3 类
+收到 **1 行 1 类**。`trace-tree` 涨的是**判据数**不是分母放宽 —— T12 给三条绕开
+`on_task_result` 的旁路补上 `ArtifactSeeded`，同批加了 `_check_seeded_provenance`
+（自称有来源却指不出来即判负）。上一版说不能复跑的理由（T5 轨禁跑 `make_evidence.py`）
+在整合轮不成立：证据束本来就该在这一轮全量重跑。
 
 ## 演示稿的三条自我约束（写进了 `artifacts/README.md`）
 

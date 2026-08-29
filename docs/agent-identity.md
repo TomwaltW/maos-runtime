@@ -4,9 +4,9 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-扫到 **10 个** 带 Identity 的 Agent 类，其中 **9 个**注册进 `AGENT_POOL`（可被 Worker 按 role 派单），**1 个**未注册（由流程层直接构造）。
+扫到 **11 个** 带 Identity 的 Agent 类，其中 **10 个**注册进 `AGENT_POOL`（可被 Worker 按 role 派单），**1 个**未注册（由流程层直接构造）。
 
-分域：软件交付域 6 个；制造售后退款域 4 个。
+分域：软件交付域 6 个；制造售后退款域 5 个。
 
 **字段顺序即冻结契约附录 A 的声明顺序**，由 `dataclasses.fields(AgentIdentity)` 取（maos/agents/base.py:20）：`agent_id`、`role`、`duty`、`allowed_skills`、`allowed_tools`、`write_scope`、`max_risk`、`model_tier`、`max_self_repair`。本文件不另抄一份顺序。
 
@@ -22,6 +22,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `requirement` | `requirement` | 软件交付域 | 是 | `maos/agents/requirement.py:29` |
 | `reviewer` | `reviewer` | 软件交付域 | 是 | `maos/agents/reviewer.py:33` |
 | `testing` | `testing` | 软件交付域 | 是 | `maos/agents/testing.py:158` |
+| `refund_channel` | `refund-channel` | 制造售后退款域 | 是 | `maos/agents/refund/channel_agent.py:40` |
 | `refund_finance` | `refund-finance` | 制造售后退款域 | 是 | `maos/agents/refund/finance_agent.py:26` |
 | `refund_intake` | `refund-intake` | 制造售后退款域 | 是 | `maos/agents/refund/intake_agent.py:26` |
 | `refund_payment` | `refund-payment` | 制造售后退款域 | 是 | `maos/agents/refund/payment_agent.py:58` |
@@ -127,7 +128,23 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `model_tier` | 模型档位 | medium |
 | `max_self_repair` | 自修复上限 | 0 |
 
-## 制造售后退款域（4 个）
+## 制造售后退款域（5 个）
+
+### refund_channel — RefundChannelAgent
+
+声明位置：`maos/agents/refund/channel_agent.py:40`
+
+| 字段 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `agent_id` | 实例 id | refund-channel |
+| `role` | 角色名（派单按它路由） | refund_channel |
+| `duty` | 职责边界 | 按政策规则要求登记经销渠道的核销事项，并保留其规则出处 |
+| `allowed_skills` | 可调 Skill 白名单 | （空） |
+| `allowed_tools` | 可调工具白名单 | （空） |
+| `write_scope` | 可写资源 | `artifact` |
+| `max_risk` | 最高授权风险级 | M |
+| `model_tier` | 模型档位 | light |
+| `max_self_repair` | 自修复上限 | 0 |
 
 ### refund_finance — RefundFinanceAgent
 

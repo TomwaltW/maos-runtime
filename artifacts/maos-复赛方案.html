@@ -215,7 +215,7 @@ python3 scripts/verify.py          <span class="d"># ② 七项证据逐项重�
       ①② 两条缺一不可、顺序不能换。<span class="k">*.db</span> 不入 git，直接跑 ② 会报「缺数据库」并退出 2 —— 这是设计行为。
     </div>
     <div class="facts">
-      <div class="fact"><div class="n">802</div><div class="l">pytest 全绿</div></div>
+      <div class="fact"><div class="n">860</div><div class="l">pytest 全绿</div></div>
       <div class="fact"><div class="n">7/7</div><div class="l">证据核验项</div></div>
       <div class="fact"><div class="n">8</div><div class="l">证据束 / 50 个证据文件</div></div>
       <div class="fact"><div class="n">10</div><div class="l">Agent Identity（9 个可派单）</div></div>
@@ -531,7 +531,7 @@ python3 scripts/verify.py          <span class="d"># ② 七项证据逐项重�
             <tr><td><b>可观测 / 回放</b></td>
               <td>权威记录在 <span class="k">event_log</span> 表；<span class="k">obs/trace.py</span> 转成 OTel 对齐 span 树，
                 verify 第 4 项重放校验「无孤儿、无环、与库逐字节一致」</td>
-              <td><span class="tag ok">✅ 已跑通<br>trace-tree 19/19</span></td></tr>
+              <td><span class="tag ok">✅ 已跑通<br>trace-tree 29/29</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -619,7 +619,7 @@ python3 scripts/verify.py          <span class="d"># ② 七项证据逐项重�
 <span class="g">3 份文档与代码逐字节一致</span>   <span class="d">exit=0</span>
 <span class="d">skill-catalog.md · agent-identity.md · toolport-contract.md</span></div>
         <p class="note" style="margin:9px 0 0;">
-          扫出 <b>13 个 Skill</b> · <b>4 个已实现 ToolPort</b> · <b>10 个 Agent Identity</b> ——
+          扫出 <b>13 个 Skill</b> · <b>4 个已实现 ToolPort</b> · <b>11 个 Agent Identity</b> ——
           三份目录文档全部由运行时代码生成，<b>不一致即非零退出</b>，文档吹不了牛。</p>
       </div>
     </div>
@@ -908,7 +908,7 @@ $ python3 scripts/verify.py          <span class="d"># ②</span>
 <span class="g">[PASS]</span> hash-integrity       <span class="w">86/86</span>
 <span class="g">[PASS]</span> business-ref         <span class="w">35/35</span>
 <span class="g">[PASS]</span> authoritative-fact   <span class="w">3/3</span>
-<span class="g">[PASS]</span> trace-tree          <span class="w">19/19</span>
+<span class="g">[PASS]</span> trace-tree          <span class="w">29/29</span>
 <span class="g">[PASS]</span> kb-hit               <span class="w">7/7</span>
 <span class="g">[PASS]</span> business-outcome     <span class="w">10/10</span>
 <span class="g">[PASS]</span> history-case         <span class="w">1/1</span>
@@ -1075,7 +1075,7 @@ agents/ skills/ tools/ domain/
       <div>
         <div class="term" style="font-size:14px; line-height:1.75;">git clone &lt;repo&gt; maos &amp;&amp; cd maos
 
-python3 -m pytest maos/tests -q   <span class="g"># 802 passed</span>
+python3 -m pytest maos/tests -q   <span class="g"># 860 passed</span>
 python3 run.py                    <span class="g"># 场景 1-7，exit=0</span>
 python3 run.py --scenario 7       <span class="g"># 单跑失败路径</span>
 
@@ -1111,7 +1111,7 @@ python3 scripts/verify.py         <span class="y"># ② RESULT: 7/7 PASS</span><
             <li><b>三份目录文档由代码生成</b> —— <span class="k">gen_docs.py --check</span> 不一致即非零退出，
               文档吹不了牛</li>
             <li><b>Apache-2.0 开源</b>：代码、文档、证据束、以及本页每一条命令，随仓库一起公开</li>
-            <li><b>失败与缺口没有删</b>：warn 12 行、真房间未接通、核验器抓到的那次绕过，全部留在文档里</li>
+            <li><b>失败与缺口没有删</b>：warn 1 行、真房间未接通、核验器抓到的那次绕过，全部留在文档里</li>
           </ul>
         </div>
         <div class="card warn" style="margin-top:12px;">

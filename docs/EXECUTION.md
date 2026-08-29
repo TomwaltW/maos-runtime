@@ -722,9 +722,9 @@ feat(p6): otel-aligned trace, evidence generator, verify.py, docker-compose + po
 
 1. `scripts/gen_docs.py` 生成（保证文档和代码永不打架）：
 
-   - `docs/agent-identity.md`：**十角色**清单（软件域 6 + 退款域 4），从代码 Identity 生成，按参赛手册附录 A 字段顺序。
-     ⚠️ 「十」是**带 Identity 的角色总数**，与代码里 `len(AGENT_POOL) == 9` 不矛盾——这是两个数、两件事：
-     10 个角色都有 Identity（白名单同样被 `SkillInvoker` 强制），其中 **9 个注册进 `AGENT_POOL`**（Worker 收到
+   - `docs/agent-identity.md`：**十一角色**清单（软件域 6 + 退款域 5），从代码 Identity 生成，按参赛手册附录 A 字段顺序。
+     ⚠️ 「十一」是**带 Identity 的角色总数**，与代码里 `len(AGENT_POOL) == 10` 不矛盾——这是两个数、两件事：
+     11 个角色都有 Identity（白名单同样被 `SkillInvoker` 强制），其中 **10 个注册进 `AGENT_POOL`**（Worker 收到
      TaskAssignment 后按 role 找得到的执行者），`manager` 是规划者、由流程层直接构造并调 `plan()`、不接派单，
      所以有 Identity 但不进池。软件域 6 = 5 个可派单（architecture / coding / requirement / reviewer / testing）+ manager。
      生成物自己 `docs/agent-identity.md:7` 会如实印出「10 个 / 9 个 / 1 个」并解释差在哪，**引用时别把 10 直接挂在 `AGENT_POOL` 后面**

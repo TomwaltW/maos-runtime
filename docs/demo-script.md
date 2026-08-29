@@ -82,7 +82,7 @@ T 轮把原来那 5 条人肉命令收敛成了一条脚本。它**不是跑完�
 
 | 步 | 跑什么 | 断言 |
 | :-- | :-- | :-- |
-| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望（当前 802），且 0 failed |
+| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望（当前 860），且 0 failed |
 | 2 | `python3 run.py` | exit=0 |
 | 3 | `python3 run.py --scenario 7` | exit=0，且屏幕上**仍有**镜 5 的 `disposition=replan_channel` 与镜 6 的 `业务状态  : compensated` |
 | 4 | `python3 scripts/make_evidence.py` | 落盘 **8 束**（数出来的，不是假定的） |
@@ -558,7 +558,7 @@ warn 说的是产物来源可审计性，出处已记在 `docs/BACKLOG.md task-X
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
-[PASS] trace-tree           19/19
+[PASS] trace-tree           29/29
 [PASS] kb-hit               7/7
 [PASS] business-outcome     10/10
 [PASS] history-case         1/1

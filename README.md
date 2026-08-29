@@ -97,14 +97,14 @@ python3 scripts/verify.py            # ② 七项逐条重放校验
 echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 ```
 
-本机实跑（整合轮 6，**全新克隆 + 无任何 API key**，逐步耗时见
+本机实跑（整合轮 11，T7–T14 八轨并入后当场重跑；全新克隆 + 无任何 API key 的逐步耗时见
 [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
 
 ```
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
-[PASS] trace-tree           19/19
+[PASS] trace-tree           29/29
 [PASS] kb-hit               7/7
 [PASS] business-outcome     10/10
 [PASS] history-case         1/1
@@ -167,7 +167,7 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 
 ```bash
 git clone <本仓库地址> maos && cd maos
-python3 -m pytest maos/tests -q     # 802 passed
+python3 -m pytest maos/tests -q     # 860 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 

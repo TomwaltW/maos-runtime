@@ -62,6 +62,25 @@
 两个码一前一后，演的正是要讲给评委的那句话：**可重试的那一格才重试，
 说不清的那一格一次都不许重发**。收口断言（第 383 行起）一条都没有因此改动 ——
 换渠道消耗的是一次 replan 额度，不是轮询预算，`poll_count` 仍恰好打满 3 次。
+
+## 第二段：终态失败码一次干净转人工（D-1，`drive_human_exit()`）
+
+上面那两个码都落在 `retriable=True` 那一半。**第二段演的是另一半** ——
+`ACQ.TRADE_NOT_EXIST`（`retriable=False + outcome=failed`）：
+
+    第二笔案子 case-s7-0002 → 政策裁定 → 财务核算 → 主管审批通过
+      → payment.execute → s7-terminal 返 ACQ.TRADE_NOT_EXIST
+      → 第七道闸判 disposition=human_terminal（终态失败，机器返工修不好）
+      → **控制面第三出口**：AWAITING_REVIEW -> BLOCKED，reason=gateway_needs_human
+      → 人工队列捞到它 → 主管判「交易号有误，改单重来」→ Plan FAILED
+
+改造前这一格的样子记在 `docs/BACKLOG.md` 的 `## task-X2`：闸判 blocker → 普通返工
+→ 原样重发 → 再撞同一个码 → `FAILED("返工次数耗尽")`。收敛是对的，但屏幕上会出现
+**三条一模一样的失败日志**，而那两次重发从第一次起就注定不可能成功。
+现在返工 0 次、失败日志 1 条 —— 这一段买的就是这个差。
+
+三段合起来，四象限的三格各演一次，且每一格的出口都不同：
+`replan_channel` 换渠道、`query_first` 落人工审批、`human_terminal` 走第三出口。
 """
 
 from __future__ import annotations
@@ -80,7 +99,7 @@ from maos.agents.refund import (
 from maos.agents.reviewer import ReviewerAgent, review_after_gate
 from maos.contracts.events import new_id
 from maos.contracts.states import TASK_TRANSITIONS, PlanState, TaskState
-from maos.core.control_plane import GATEWAY_GATE
+from maos.core.control_plane import GATEWAY_GATE, HUMAN_EXIT_GATEWAY
 from maos.domain.refund import guard, objects
 from maos.flows.common import build, dump, run_until_settled
 from maos.model.client import Tier, select_model_client
@@ -135,16 +154,40 @@ GATEWAY_ERROR_CODE = "ACQ.SYSTEM_ERROR"
 MAX_POLLS = 3
 SETTLE_AFTER = 99
 
+# ---- 第二段（D-1）：终态失败码，一次干净的转人工 ----------------------------
+#: 四象限里 `retriable=False + outcome=failed` 那一格。官方 remedy 是
+#: 「检查交易号或商户订单号是否正确」——要**改单**，不是重发。
+#: 选它而不是 `ACQ.SELLER_BALANCE_NOT_ENOUGH`（同一格）：BACKLOG 那条原文点的名
+#: 就是「一笔『交易不存在』的退款会被原样重发两次」，演的要正是它。
+GATEWAY_TERMINAL_NAME = "s7-terminal"
+GATEWAY_TERMINAL_CODE = "ACQ.TRADE_NOT_EXIST"
+
+#: 第二笔案子。另起一个 case 而不是复用第一笔：第一笔已经 compensated、
+#: 退款请求已作废，在它上面再发一次付款就不是演示了，是在演一个不该发生的动作。
+CASE_ID_2 = "case-s7-0002"
+ORDER_ID_2 = "ord-s7-88232"
+AMOUNT_PAID_2 = 5200.00
+AMOUNT_CLAIMED_2 = 5200.00
+
 TASK_INTAKE = "task-s7-intake"
 TASK_POLICY = "task-s7-policy"
 TASK_FINANCE = "task-s7-finance"
 TASK_PAYMENT = "task-s7-payment"
+
+TASK_INTAKE_2 = "task-s7b-intake"
+TASK_POLICY_2 = "task-s7b-policy"
+TASK_FINANCE_2 = "task-s7b-finance"
+TASK_PAYMENT_2 = "task-s7b-payment"
+
+GOAL_2 = "处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在"
 
 #: 只用于打印，判据仍在 control_plane —— 这里不重算一遍上限逻辑。
 MAX_REPLAN_ENV = "MAOS_MAX_REPLAN"
 
 APPROVER = "沈思锴"
 REJECT_REASON = "渠道异常，转人工"
+#: 第二笔的处置。照官方 remedy 原文写 —— 「检查交易号」要的是改单，不是再发一次。
+REJECT_REASON_2 = "网关判定该交易不存在，交易号有误，本单作废改单重来"
 
 GOAL = "处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常"
 
@@ -163,6 +206,18 @@ SIGNALS = [
      "title": "随货保修卡缺失", "detail": "包装内未见保修卡",
      "uri": "oss://after-sales/case-s7-0001/card-01.jpg",
      "digest": "sha256:demo-card-01", "evidence_id": "ev-12"},
+]
+
+# 第二笔的诉求。两条足够 —— 这一段要演的是**付款那一步**怎么收口，
+# 多源归一已经在第一笔演过了，再演一遍只是把屏幕撑满。
+SIGNALS_2 = [
+    {"source": "工单系统", "kind": "ticket", "severity": "major",
+     "title": "轴承保持架变形", "detail": "工单 T-20977：客户反馈保持架变形，要求全额退款",
+     "evidence_id": "ev-21"},
+    {"source": "客户上传", "kind": "image", "severity": "major",
+     "title": "轴承保持架变形", "detail": "客户上传的实物照片",
+     "uri": "oss://after-sales/case-s7-0002/cage-01.jpg",
+     "digest": "sha256:demo-cage-01", "evidence_id": "ev-22"},
 ]
 
 # 政策与场景 6 同一套：两版生效区间完全相同，只有版本号不同，
@@ -216,6 +271,41 @@ _TASKS = [
 ]
 
 PLAN_JSON = json.dumps({"tasks": _TASKS}, ensure_ascii=False)
+
+# ---- 第二段的 DAG：与上面同构，只换案子与渠道 --------------------------------
+# 不走 ManagerAgent 出方案：`SCRIPT` 是按关键字查表的，再塞一份方案 JSON 进去就得
+# 靠提示词里的关键字来分派两份方案，那是拿确定性换省事。这里直接把规格交给
+# `create_plan` —— 控制面本来就收规格列表，Manager 只是规格的一种来源。
+_TASKS_2 = [
+    {"task_id": TASK_INTAKE_2, "role": ROLE_INTAKE, "title": "受理第二笔退款诉求",
+     "inputs": {"step": "intake", "biz_type": C.BIZ_TYPE, "signals": SIGNALS_2,
+                "case_seed": {
+                    "tenant_id": TENANT_ID, "case_id": CASE_ID_2, "channel_id": CHANNEL_ID,
+                    "order_id": ORDER_ID_2, "order_version": ORDER_VERSION, "sku": SKU,
+                    "reason_code": "quality_defect", "amount_claimed": AMOUNT_CLAIMED_2}},
+     "acceptance": ["建出第二笔 refund_case", "证据引用落库"],
+     "depends_on": [], "risk_level": "L"},
+
+    {"task_id": TASK_POLICY_2, "role": ROLE_POLICY, "title": "按下单锁定的政策版本裁定退款资格",
+     "inputs": {"biz_type": C.BIZ_TYPE, "tenant_id": TENANT_ID, "case_id": CASE_ID_2},
+     "acceptance": ["按订单快照锁定的政策版本判定"],
+     "depends_on": [TASK_INTAKE_2], "risk_level": "L"},
+
+    {"task_id": TASK_FINANCE_2, "role": ROLE_FINANCE, "title": "核算第二笔退款金额并写财务分录",
+     "inputs": {"biz_type": C.BIZ_TYPE, "amount_claimed": AMOUNT_CLAIMED_2,
+                "tenant_id": TENANT_ID, "case_id": CASE_ID_2},
+     "acceptance": ["产出 finance_entry 且与库表一致"],
+     "depends_on": [TASK_POLICY_2], "risk_level": "M", "effect_risk": "H"},
+
+    # 与第一笔同样是 effect_risk=H —— 换个案子不降它的风险。
+    # 但这一笔**走不到**高风险审批那道门：第七道闸在它之前就判出终态失败码，
+    # 控制面第三出口直接把它停到人手上（reason=gateway_needs_human）。
+    {"task_id": TASK_PAYMENT_2, "role": ROLE_PAYMENT, "title": "发起第二笔退款并观察网关终态",
+     "inputs": {"biz_type": C.BIZ_TYPE, "tenant_id": TENANT_ID, "case_id": CASE_ID_2,
+                "gateway": GATEWAY_TERMINAL_NAME, "max_polls": MAX_POLLS},
+     "acceptance": ["发起后不得写 settled", "终态必须由 query 观察得到"],
+     "depends_on": [TASK_FINANCE_2], "risk_level": "M", "effect_risk": "H"},
+]
 
 REVIEW_JSON = json.dumps({
     "defects": [],
@@ -447,7 +537,109 @@ def drive(*, matrix: bool = False) -> dict:
 
     dump(cp, plan_id, "场景 7：制造企业售后退款（失败路径）")
     return {"store": store, "cp": cp, "plan_id": plan_id, "trace_id": trace_id,
-            "receipt": receipt, "compensation": comp, "replans": replans}
+            "receipt": receipt, "compensation": comp, "replans": replans,
+            # 第二段（D-1）要拿这三个继续驱动同一套运行时。只增不改 ——
+            # `test_refund_failure.py` 与 `test_gateway_demo.py` 都吃这个返回值。
+            "bus": bus, "gate": gate, "hq": hq}
+
+
+# ------------------------------------------------------- 第二段：一次干净的转人工
+def seed_second_order(store) -> None:
+    """第二笔的订单快照。同一租户同一 SKU，只是另一张订单。"""
+    objects.execute(
+        store,
+        "INSERT OR REPLACE INTO order_snapshot (tenant_id, order_id, version, sku, amount_paid,"
+        " paid_at, channel_id, policy_version_at_order, payload_json, read_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (TENANT_ID, ORDER_ID_2, ORDER_VERSION, SKU, AMOUNT_PAID_2, PAID_AT, CHANNEL_ID,
+         1, "{}", C.now_iso()))
+
+
+def drive_human_exit(*, store, bus, cp, gate, hq) -> dict:
+    """第二笔：网关判「交易不存在」→ 控制面第三出口 → **一次**干净的转人工。
+
+    ## 这一段在演什么
+
+    第一段演的是「说不清的那一格一次都不许重发」。这一段演的是它的邻格：
+    `ACQ.TRADE_NOT_EXIST`（`retriable=False + outcome=failed`）—— 网关明确说了
+    这笔交易不存在，官方 remedy 是**检查交易号**，也就是要改单。
+
+    `docs/BACKLOG.md` 的 `## task-X2` 记的正是这一格改造前的样子：闸判 blocker →
+    普通返工 → 原样重发 → 再撞同一个码 → 返工次数耗尽 FAILED。收敛是对的，
+    但**收敛的姿势不对**：那两次重发从第一次起就注定不可能成功，而屏幕上会出现
+    三条一模一样的失败日志。现在第七道闸判出 `disposition=human_terminal`，
+    控制面在 `max_attempts` **之前**就把它路由到人 —— 返工 0 次，失败日志 1 条。
+
+    ## 为什么另起一个 plan 而不是新开场景 8
+
+    `ALL_SCENARIOS` / `DEFAULT_SCENARIOS` 一动，连带 `--scenario` 的 argparse
+    choices、`scripts/make_evidence.py` 取的场景列表、证据束从 8 束变 9 束、
+    `verify.py` 的来源数，再牵动 README / 自查单 / PPT 里写死的「场景 1-7」。
+    为一段 20 行的叙事付这些，不划算。与 Y-4 当时否掉「新开场景专演 R2」同一条理由。
+
+    ## 只跑不断言
+
+    口径同 `drive()`：断言在 `run()` 里，测试对返回的句柄自己下断言。
+    """
+    seed_second_order(store)
+    # 第三个网关实例。同一个 MockGateway 类，行为一行没改 —— 换的是注进去的码。
+    C.register_gateway(GATEWAY_TERMINAL_NAME, MockGateway(
+        settle_after=SETTLE_AFTER, script={ORDER_ID_2: GATEWAY_TERMINAL_CODE}))
+
+    print(f"\n{'-' * 68}\n第二笔退款：网关判定「交易不存在」—— 一次干净的转人工\n{'-' * 68}")
+
+    trace_id = new_id("trace")
+    plan_id = cp.create_plan(goal=GOAL_2, trace_id=trace_id, tasks=_TASKS_2)
+    cp.start_plan(plan_id)
+    run_until_settled(bus, gate, cp, plan_id)
+
+    # —— 第一次人工介入：财务核算照旧走高风险审批那道门 ——
+    # 第三出口只截它该截的那一类，别的门一道都没动。
+    pending = hq.pending(plan_id)
+    assert [t["task_id"] for t in pending] == [TASK_FINANCE_2], (
+        f"第二笔也应先停在财务核算的人工审批上，实际 {[t['task_id'] for t in pending]}")
+    print(f"\n[6] 待主管审批: {pending[0]['title']}（既有的 effect_risk=H 入口，未改动）")
+
+    C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=APPROVER,
+                      decision="approved", reason="金额与订单锁定的政策 v1 一致")
+    hq.decide(TASK_FINANCE_2, approved=True, operator=APPROVER, note="已核对金额与政策版本")
+    run_until_settled(bus, gate, cp, plan_id)
+
+    # —— 付款撞终态失败码：第三出口 ——
+    payment = store.get_task(TASK_PAYMENT_2)
+    moves = [e for e in cp.store.list_event_log(plan_id)
+             if e["event_type"] == "StateTransition" and e["task_id"] == TASK_PAYMENT_2]
+    reworks = [e for e in moves if e["to_state"] == TaskState.REWORK]
+    blocked = [e for e in moves if e["to_state"] == TaskState.BLOCKED]
+    detail = blocked[-1]["detail"] if blocked else {}
+    receipt2 = receipt_artifact(store, TASK_PAYMENT_2)
+
+    print(f"\n[7] 第七道闸认出网关回执: code={receipt2['receipt']['code']} "
+          f"retriable={receipt2['receipt']['retriable']} "
+          f"outcome={receipt2['receipt']['outcome']}")
+    print(f"    官方处置: {receipt2['remedy']}")
+    print(f"    出处    : {receipt2['source']}")
+    print(f"    → 终态失败，机器返工修不好：原样重发一次，交易还是不存在。"
+          f"控制面第三出口把它路由到人")
+    print(f"\n[8] {payment['state']}  reason={detail.get('reason')}  "
+          f"await={detail.get('await')}  attempt={payment['attempt']}")
+    print(f"    无谓返工 {len(reworks)} 次 —— 改造前这里是 2 次，"
+          f"屏幕上会出现三条一模一样的失败日志")
+    print(f"    证据: {detail.get('evidence')}")
+    print(f"    人工队列捞到: {[t['task_id'] for t in hq.pending(plan_id)]} "
+          f"—— BLOCKED 而没人捞得到就是静默挂起，比 FAILED 更糟")
+
+    # —— 第二次人工介入：主管按官方 remedy 判「改单重来」，不是再发一次 ——
+    C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=APPROVER,
+                      decision="rejected", reason=REJECT_REASON_2)
+    hq.decide(TASK_PAYMENT_2, approved=False, operator=APPROVER, note=REJECT_REASON_2)
+    bus.drain()
+    print(f"\n[9] 主管处置: {REJECT_REASON_2} —— 人决定改单，MAOS 不替他决定")
+
+    dump(cp, plan_id, "场景 7 第二段：终态失败码一次干净转人工")
+    return {"plan_id": plan_id, "trace_id": trace_id, "task": store.get_task(TASK_PAYMENT_2),
+            "receipt": receipt2, "detail": detail,
+            "reworks": len(reworks), "blocked": blocked}
 
 
 # -------------------------------------------------------------------------- run
@@ -534,4 +726,36 @@ def run(*, matrix: bool = False) -> int:
 
     assert plan["state"] == PlanState.FAILED, (
         f"主管驳回后 Plan 应收敛到 FAILED，实际 {plan['state']}")
+
+    # ================================================================ 第二段（D-1）
+    # **位置不能挪到上面去**：上面那 11 条收口断言里有两条是全库口径
+    # （`settled_rows == 0` 数的是整张 payment_observation），第二笔一旦先跑，
+    # 它们校验的就不再是第一笔那条链路了。所以第二段一律排在收口之后。
+    exit2 = drive_human_exit(store=store, bus=out["bus"], cp=cp, gate=out["gate"],
+                             hq=out["hq"])
+    task2, detail2 = exit2["task"], exit2["detail"]
+
+    # —— 本段真正买的东西：**一次**干净的转人工 ——
+    assert exit2["reworks"] == 0, (
+        f"终态失败码不该产生任何无谓返工，实际 {exit2['reworks']} 次 —— "
+        "改造前这里是 2 次，而那两次从第一次起就注定撞同一个码")
+    assert len(exit2["blocked"]) == 1, (
+        f"应恰好停一次，实际 {len(exit2['blocked'])} 次")
+    assert detail2["reason"] == HUMAN_EXIT_GATEWAY, (
+        f"转人工的理由应是 {HUMAN_EXIT_GATEWAY}，实际 {detail2.get('reason')}")
+    assert detail2["await"] == "human_decision"
+    assert detail2["evidence"][0]["code"] == GATEWAY_TERMINAL_CODE, (
+        "转人工那一刻的证据链要能追回到第七道闸判的那个码")
+    assert exit2["receipt"]["receipt"]["retriable"] is False, (
+        "演的必须是 retriable=False 那一格 —— 可重试的那格该走 replan，不该占人的时间")
+
+    # —— 人处置完才收敛，且仍然只用既有迁移表（铁律 9 在第二笔上同样成立）——
+    assert task2["state"] == TaskState.FAILED, (
+        f"主管驳回后第二笔应收敛到 FAILED，实际 {task2['state']}")
+    moves2 = {(e["from_state"], e["to_state"])
+              for e in cp.store.list_event_log(exit2["plan_id"])
+              if e["event_type"] == "StateTransition"}
+    assert moves2 <= set(TASK_TRANSITIONS), (
+        f"第二段出现了不在冻结迁移表里的 Task 迁移：{sorted(moves2 - set(TASK_TRANSITIONS))}")
+    assert cp.store.get_plan(exit2["plan_id"])["state"] == PlanState.FAILED
     return 0

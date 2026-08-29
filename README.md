@@ -13,7 +13,7 @@ python3 scripts/verify.py          # ② 七项证据逐项重放校验 -> RESUL
 
 > **新克隆必须按 ①② 跑满两条，一条都不能省。** `*.db` 不入 git（`.gitignore` 挡着），
 > 核验器要的是库、不是快照 —— 直接跑 ② 会报 `缺数据库` 并**退出 2**。这是设计行为。
-> 全新克隆实测：clone + 这两条共约 **5 秒**，`RESULT: 7/7 PASS`，退出码 0。原委见
+> 全新克隆实测：clone + 这两条共约 **7 秒**，`RESULT: 7/7 PASS`，退出码 0。原委见
 > [§3](#3-一条命令核验这一节是给评委的)。
 
 ---
@@ -162,11 +162,19 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 
 **不需要任何 API key。** 核心零依赖，只要 Python ≥ 3.10。
 
+> 🔴 **`-b goai-restructure` 一个字都不能省。** 本仓库的默认分支是 `main`，而 `main` 上
+> 是**已封存的 TypeScript 骨架**（`package.json` / `src/` / `tsconfig.json`，外加一份早期的
+> `python/` 移植），**不是**这份 README 描述的运行时。麻烦的是它**看起来像对的**：
+> 那个分支自带一份也叫 “MAOS Runtime” 的 README。而裸 `git clone <地址>` 会**安静地成功**，
+> 不给任何提示 —— 但本文此后每一条命令都会失败，因为那个分支上没有
+> `maos/`、没有 `run.py`、没有 `scripts/`。**认准下面第二条自检回 `goai-restructure`。**
+
 下面每条命令都在**仓库根目录**执行（clone 出来的目录名由你给的地址决定，
 `cd` 进去即可，不要写死成别的名字）：
 
 ```bash
-git clone <本仓库地址> maos && cd maos
+git clone -b goai-restructure <本仓库地址> maos && cd maos
+git rev-parse --abbrev-ref HEAD     # 必须回 goai-restructure；不是它就停下，别往下跑
 python3 -m pytest maos/tests -q     # 860 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
@@ -176,8 +184,9 @@ python3 scripts/make_evidence.py    # ① scenario-1..7 + scenario-R5
 python3 scripts/verify.py           # ② RESULT: 7/7 PASS，exit=0
 ```
 
-全新克隆 + 无任何 API key 实测：以上全部跑完约 **18 秒**，其中「clone + 证据链两条」
-这条最短路径约 **5 秒**；
+全新克隆 + 无任何 API key 实测：以上全部跑完约 **28 秒**，其中「clone + 证据链两条」
+这条最短路径约 **7 秒**（第六遍冒烟读数，`860 passed` 基线；逐步耗时见
+[`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）；
 跑完 `git status` 会有 50 行 `evidence/` 改动，属预期 —— **别用 `git checkout` 单独还原**，
 原因与两条出路见 [§3](#3-一条命令核验这一节是给评委的)。
 
@@ -317,8 +326,16 @@ evidence/
 | [`docs/toolport-contract.md`](docs/toolport-contract.md) | ToolPort 九要素 + 已实现工具 + MCP 迁移 | **代码生成** |
 | [`docs/demo-script.md`](docs/demo-script.md) | Demo 分镜，每镜标注确切命令 | 人写 |
 | [`docs/submission-checklist.md`](docs/submission-checklist.md) | 提交自查单 | 人写 |
+| [`deploy/polardb.md`](deploy/polardb.md) | **怎么做**：迁到 PolarDB PG 的三步（建库 → 装 pgvector → 换连接串）、怎么配、怎么降级 | 人写 |
+| [`deploy/polardb-live.md`](deploy/polardb-live.md) | **实际跑通了哪几条**：真实 PolarDB 实例上的逐条记录，**含没跑通的** | 人写 |
 | [`docs/EXECUTION.md`](docs/EXECUTION.md) | 执行手册 v4（原文保真） | 外部 |
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) / [`docs/DECISIONS.md`](docs/DECISIONS.md) | 发现但不当场改的问题 / 偏离手册的判断 | 人写 |
+
+🔴 **PolarDB 那两份别混着读，它们回答的不是同一个问题。**
+`polardb.md` 答的是「**MAOS 这侧怎么接**」（怎么配、怎么降级），它的实测天花板是
+本机 Docker `pgvector/pgvector:pg16`；`polardb-live.md` 答的是「**真 PolarDB 实例上
+到底跑通了哪几条**」（只验数据库那一侧，含没跑通的）。只读前者，容易把
+「本机 pgvector 跑通」误当成「PolarDB 跑通」—— 那是两件事。
 
 三份**代码生成**的文档由 `scripts/gen_docs.py` 产出，不许手改：
 
@@ -349,11 +366,22 @@ hiclaw/          HiClaw(Matrix) 镜像总线与房间审批
 scenarios/       演示靶场（fixture-repo）与多源输入信号
 evidence/        验收证据（只放真实命令输出）
 deploy/          沙箱 Dockerfile / docker-compose
-scripts/         gen_docs.py / make_evidence.py / verify.py / guard_bash.py
+scripts/         gen_docs.py / make_evidence.py / verify.py / make_release.sh / guard_bash.py
 docs/            见 §9
 run.py           薄入口
 legacy-ts/       早期 TS 契约参考实现（已封存，权威以 maos/contracts/ 为准）
 ```
+
+**提交物压缩包**由 `scripts/make_release.sh` 现打，不要手工 `zip`：
+
+```bash
+bash scripts/make_release.sh        # 产出 dist/maos-runtime-<sha7>.zip
+```
+
+它只打版本库里的东西（走 `git clone --depth 1`，未跟踪文件一个都进不来），
+**打完当场解压跑一遍** pytest + ①② 到 `7/7 PASS`，再做一遍密钥自查 ——
+任一不过就非 0 退出，不产出跑不起来的交付物。`dist/` 被 `.gitignore` 挡着，
+包不入版本库，**提交前现打一次**单独上传。
 
 ## License
 

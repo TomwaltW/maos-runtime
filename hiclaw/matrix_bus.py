@@ -164,9 +164,16 @@ def render_mirror(topic: str, env: Envelope) -> tuple[str, str]:
 # 房间通道
 # --------------------------------------------------------------------------
 class MirrorChannel(Protocol):
-    """镜像通道。抽出来是为了能在测试里塞一个「必炸」的实现验证旁路语义。"""
+    """镜像通道。抽出来是为了能在测试里塞一个「必炸」的实现验证旁路语义。
+
+    ``listen`` 声明在这里而不是只留在 ``_NioChannel`` 上：下游（C-3 的 room_demo）
+    拿到的是 :attr:`MatrixEventBus.channel`，形状写进 Protocol 才有一处可读的出处。
+    否则换一个通道实现时漏掉 listen，症状是「房间里发命令没反应」—— 离原因很远。
+    """
 
     def send(self, plain: str, html: str) -> None: ...
+
+    def listen(self, on_message: Callable[[str, str], None]) -> None: ...
 
     def close(self) -> None: ...
 
@@ -316,6 +323,16 @@ class MatrixEventBus(EventBus):
         except Exception as exc:                        # noqa: BLE001 —— 见不变量 2
             log.warning("Matrix 房间连接失败（%s），降级 log-only", exc)
             self.config = replace(config, log_only=True)
+
+    @property
+    def channel(self) -> "MirrorChannel | None":
+        """当前镜像通道；降级或未接通时为 None。C-3 的 room_demo 靠它起监听。
+
+        只读是刻意的：``_channel`` 的唯一写入方是本类的降级逻辑（连续镜像失败
+        ``MAX_MIRROR_FAILURES`` 次后置 None）。开一个 setter 就多一条绕过降级的路 ——
+        外部把通道塞回来，永久降级就失效了，而症状是告警墙，不是崩。
+        """
+        return self._channel
 
     # -- EventBus 三方法（签名逐字对齐 maos/core/eventbus.py:26-34）---------
     def publish(self, topic: str, env: Envelope) -> None:

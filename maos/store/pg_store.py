@@ -1,21 +1,65 @@
-"""StorePort 的 PostgreSQL 后端 —— 本 Phase 只有空壳。
+"""StorePort 的 PostgreSQL 后端 —— P5 填实，全文走 tsvector、向量走 pgvector。
 
-手册 P1 第 7 步原文：「本 Phase 只写空壳 + NotImplementedError，P5 再填。留位置
-就行。」所以这里**故意什么都没实现**：真实现（tsvector 走全文、pgvector 走向量）
-归 P5，提前做等于在没有验收命令的情况下写一份没人跑过的代码。
-
-**为什么空壳也要显式抛错、一个字都不许回落 sqlite**：静默回落的症状是「PG 后端
-看起来跑通了」，而实际上一行 PG 代码都没执行 —— 等到真接 PG 那天，所有以为验过的
-路径都得从头再验一遍，且没有任何东西提示你该重验。宁可现在响。
+P1 留的是空壳（五个方法全 `raise NotImplementedError`），本模块把它填成真实现，
+并在本机 `pgvector/pgvector:pg16` 上实测跑通。实测输出与 PolarDB 的迁移口径见
+`deploy/polardb.md`；那份文档**分「已实测 / 未实测」两栏**，PolarDB 实例本身没连过。
 
 连接串只从环境变量 `MAOS_PG_DSN` 读（铁律 6：密钥不落文件）。DSN 里通常带口令，
-所以 `__repr__` 只报「配了 / 没配」，不回显内容 —— 免得它顺着某份 traceback 或
-某个 evidence 文件漏出去。
+所以 `__repr__` 只报「配了 / 没配」，且**任何一条错误信息里都不插 `self.dsn`** ——
+免得它顺着某份 traceback 或某个 evidence 文件漏出去。
+
+## 为什么「后端不可用」抛的是 `NotImplementedError` 的子类
+
+`maos/tests/test_store_port.py::test_postgres_shell_raises_on_every_operation` 是
+冻结的 28 条之一，它拿一个**连不上的** DSN 构造本类，断言四个方法全抛
+`NotImplementedError`。那条测试守的是契约甲 —— **不许静默回落 sqlite**：PG 后端
+拿不到库时必须当场响，绝不能悄悄给一个能用的 sqlite，否则「PG 验过了」是假的，
+而没有任何东西提示你该重验。
+
+填实之后「拿不到库」仍然是常态（驱动没装、DSN 没配、库没起），所以这里定义
+`PgBackendUnavailable(NotImplementedError)`：既让那条冻结测试在**有驱动和无驱动
+两种环境下都绿**，又把契约甲的语义原样保住 —— 抛，不回落。它是 `NotImplementedError`
+不是因为「代码没写」，而是因为**这个后端此刻确实提供不了这项能力**，两者对调用方
+是同一件事：别把结果当真。
+
+## 与 SQLite 后端的已知差异（`deploy/polardb.md` 有完整清单）
+
+1. **占位符方言不同**：SQLite 用 `?`，PG 用 `%s`。这条没法在本层安全地自动翻译
+   （`?` 也是 PG 的 jsonb 算子，字符串字面量里的 `?` 更不能动），所以**不翻译**，
+   只在检测到「传了参数、SQL 里有 `?` 却没有 `%s`」时抛一条说人话的 ValueError。
+2. **标识符大小写**：PG 把不加引号的标识符折成小写，SQLite 不折。本层沿用 sqlite
+   适配器的做法**不加引号**（加了引号 `"KB_Doc"` 就要求精确匹配，反而更容易踩），
+   校验形状后直接拼。
+3. **向量维度不匹配**：SQLite 侧逐行比对、能点名是哪一行；PG 侧由 pgvector 在查询
+   层一次性报错，**报不出行号**。两边都抛 `ValueError`、都不跳过，但信息量不同。
+4. **中文全文**：见下。
+
+## 中文全文检索的口径（本轨的选择，理由记在 docs/DECISIONS.md）
+
+PG 不自带中文分词。缺省配置 `simple` 对 `to_tsvector` 而言把一整串汉字当**一个
+token**，「退款政策超时未到账」整条是一个词 —— 查「退款政策」一条都命不中，
+**而且不报错**。这跟 SQLite 侧缺省 unicode61 的毛病是同一个，`maos/kb/schema.sql`
+第 41 行起记着同一条坑。
+
+本层的处理是**照 F-2 原话办：「后端没准备好」不许伪装成「没命中」**。所以：
+
+- 查询串含 CJK 字符、而当前文本检索配置是 PG 的内置配置（内置的一个都没有中文
+  分词器）→ **抛 `LookupError`**，报错里写清怎么修。检索器 `maos/kb/retriever.py`
+  的 `_port_search` 捕获异常即把该通道判定为不可用、退化为本模块的本地实现 ——
+  中文召回因此仍然是好的，只是不经过 PG。
+- 非 CJK 查询照常走 `to_tsvector` / `ts_rank`，是真跑通的 PG 全文通道。
+- 装了 `zhparser` / `pg_jieba` 的部署，把 `MAOS_PG_FTS_CONFIG` 指向那个配置即可，
+  本层立刻把 CJK 查询也交给 PG。**升级路径是一个环境变量，不用改代码。**
+
+⚠️ 一条必须知道的连带后果：`_port_search` 是「探一次记一次」，一次 CJK 查询抛错就
+把该 store 的全文通道**永久**标记为不可用，之后连非 CJK 查询也走本地实现。在本仓库
+这种中文语料上，等于 PG 全文通道基本不会被用上 —— 这是如实的结果，不是缺陷伪装。
 """
 
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 #: `dialect()` 的返回值，F-2 只认 "sqlite" | "postgres" 两个字面量。
@@ -24,17 +68,109 @@ DIALECT = "postgres"
 #: 连接串的唯一来源。禁止写进任何文件，禁止出现在 evidence/ 里。
 DSN_ENV = "MAOS_PG_DSN"
 
-_TODO = (
-    "PG 后端归 P5：全文走 tsvector、向量走 pgvector，本 Phase 只留空壳。"
-    " 需要现在跑通请用 MAOS_STORE_BACKEND=sqlite（缺省值）。"
+#: 连接超时（秒）。给缺省值是为了让「连不上」快速响而不是挂住整个测试。
+CONNECT_TIMEOUT_ENV = "MAOS_PG_CONNECT_TIMEOUT"
+DEFAULT_CONNECT_TIMEOUT = 5
+
+#: 文本检索配置。缺省 `simple`；装了中文分词扩展的部署把它指过去即可。
+FTS_CONFIG_ENV = "MAOS_PG_FTS_CONFIG"
+DEFAULT_FTS_CONFIG = "simple"
+
+#: PG 16 自带的全部文本检索配置。**一个都没有中文分词器** —— 所以「配置在这张表里」
+#: 等价于「这个部署没装中文分词」。不在表里的配置是运维自己装的，本层信任它。
+_PG_BUILTIN_FTS_CONFIGS = frozenset({
+    "arabic", "armenian", "basque", "catalan", "danish", "dutch", "english",
+    "finnish", "french", "german", "greek", "hindi", "hungarian", "indonesian",
+    "irish", "italian", "lithuanian", "nepali", "norwegian", "portuguese",
+    "romanian", "russian", "serbian", "simple", "spanish", "swedish", "tamil",
+    "turkish", "yiddish",
+})
+
+#: 表名 / 列名要拼进 SQL（标识符没法用占位符绑定），所以拼之前先卡死形状。
+#: 参数一律走 `%s`，一个都不拼 —— 这两条合起来才算「不拼 SQL」。
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+#: CJK 表意文字 + 假名 + 谚文。用来判断「这条查询需不需要中文分词器」。
+_CJK = re.compile(
+    r"[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]"
+)
+
+#: 错误信息里可能夹带凭证的两种形状：`password=xxx` 与 `scheme://user:pass@host`。
+_SECRETISH = (
+    re.compile(r"(password\s*=\s*)\S+", re.IGNORECASE),
+    re.compile(r"(://)[^/@\s]*@"),
+)
+
+_INSTALL_HINT = (
+    "PG 后端的驱动是**可选依赖**（核心零运行时依赖，见 pyproject.toml 的"
+    " dependencies = []）：`pip install -e '.[pg]'`（或直接 `pip install"
+    " 'psycopg[binary]'`）再试。"
 )
 
 
+class PgBackendUnavailable(NotImplementedError):
+    """PG 后端此刻服务不了这次调用：驱动没装 / DSN 没配 / 连不上库。
+
+    继承 `NotImplementedError` 是**有意的**，理由见模块开头那一节：契约甲要求
+    选了 postgres 就当场响、绝不回落 sqlite，而冻结的 28 条正是拿
+    `NotImplementedError` 钉住这条。别改成别的基类 —— 改了 28 条里那条当场红，
+    而且是在「有驱动」和「无驱动」两种环境下红得不一样，最难查。
+    """
+
+
+def _redact(text: str) -> str:
+    """把驱动报错里可能夹带的凭证抹掉再往上带（铁律 6）。"""
+    out = str(text)
+    for pattern in _SECRETISH:
+        out = pattern.sub(r"\1<已脱敏>", out)
+    return out
+
+
+def _ident(kind: str, name: str) -> str:
+    if not isinstance(name, str) or not _IDENT.match(name):
+        raise ValueError(
+            f"非法的{kind}名 {name!r}：只允许字母、数字、下划线，且不以数字开头。"
+            " 标识符是拼进 SQL 的，这里不卡形状就等于开了一条注入路径。"
+        )
+    return name
+
+
+def _driver() -> Any:
+    """惰性 import psycopg。**模块级不许 import** —— 核心是零运行时依赖。"""
+    try:
+        import psycopg  # noqa: PLC0415 —— 惰性 import 是本模块的硬要求
+    except ImportError as exc:
+        raise PgBackendUnavailable(
+            f"没装 PostgreSQL 驱动，PG 后端起不来。{_INSTALL_HINT}"
+            " 这里显式抛错而不是回落 sqlite：回落的话你会以为 PG 验过了，"
+            " 而实际上一行 PG 代码都没执行。"
+        ) from exc
+    return psycopg
+
+
+def _dict_row() -> Any:
+    from psycopg.rows import dict_row  # noqa: PLC0415
+
+    return dict_row
+
+
+def _check_placeholders(sql: str, params: tuple) -> None:
+    """SQLite 用 `?`、PG 用 `%s`。撞上了就说人话，别让 psycopg 报语法错。"""
+    if params and "?" in sql and "%s" not in sql:
+        raise ValueError(
+            "这条 SQL 用的是 SQLite 的 `?` 占位符，PG 的占位符是 `%s`。"
+            " 本层**不做自动翻译**：`?` 同时是 PG 的 jsonb 算子，字符串字面量里的"
+            " `?` 更不能动，机器改写迟早改错一条而且没有症状。换后端时这条 SQL"
+            " 要自己改，`deploy/polardb.md` 的「已知差异」栏列了全部这类差异。"
+        )
+
+
 class PgStorePort:
-    """空壳。五个方法的形状照 F-2 摆好，P5 往里填实现。"""
+    """StorePort 的 PG 实现。F-2 五个签名逐字未动，只往里填实现。"""
 
     def __init__(self, dsn: str | None = None) -> None:
         self.dsn = dsn if dsn is not None else os.environ.get(DSN_ENV, "")
+        self._conn: Any = None
 
     def __repr__(self) -> str:
         # 只报有没有，不报是什么 —— DSN 里通常带口令。
@@ -42,25 +178,169 @@ class PgStorePort:
 
     # -- StorePort 五方法（F-2 冻结签名）---------------------------------------
     def execute(self, sql: str, params: tuple) -> None:
-        raise NotImplementedError(_TODO)
+        _check_placeholders(sql, params)
+        conn = self.connect()
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
 
     def query(self, sql: str, params: tuple) -> list[dict]:
-        raise NotImplementedError(_TODO)
+        _check_placeholders(sql, params)
+        conn = self.connect()
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            if cur.description is None:
+                return []
+            return [dict(row) for row in cur.fetchall()]
 
     def fts_search(self, table: str, field: str, q: str, limit: int) -> list[tuple[str, float]]:
-        raise NotImplementedError(f"{_TODO} 全文这条到时用 to_tsvector / ts_rank。")
+        _ident("表", table)
+        _ident("字段", field)
+        limit = int(limit)
+        if limit <= 0 or not (q or "").strip():
+            return []
+
+        config = self.fts_config()
+        if _CJK.search(q) and config.lower() in _PG_BUILTIN_FTS_CONFIGS:
+            raise LookupError(
+                f"查询串含中日韩字符，而当前文本检索配置是 PG 内置的 {config!r} ——"
+                " 内置配置一个都没有中文分词器，`to_tsvector` 会把整串汉字当成一个"
+                " token，子串查询恒不命中**且不报错**。这里抛错而不是返回空集：F-2"
+                " 原话「『后端没准备好』不许伪装成『没命中』」。"
+                f" 修法：给库装 zhparser 或 pg_jieba，再把 {FTS_CONFIG_ENV} 指向那个"
+                " 配置（比如 zhcfg / jiebacfg），本层立刻把中文查询也交给 PG；"
+                " 不装就让检索器退化为本地实现，中文召回照常。"
+            )
+
+        sql = (
+            f"SELECT id, ts_rank(to_tsvector(%s, {field}),"
+            f" plainto_tsquery(%s, %s)) AS score"
+            f" FROM {table}"
+            f" WHERE to_tsvector(%s, {field}) @@ plainto_tsquery(%s, %s)"
+            f" ORDER BY score DESC, id ASC LIMIT %s"
+        )
+        rows = self._search_query(
+            sql, (config, config, q, config, config, q, limit), table=table, field=field
+        )
+        return [(str(r["id"]), float(r["score"])) for r in rows]
 
     def vector_search(
         self, table: str, field: str, vec: list[float], limit: int
     ) -> list[tuple[str, float]]:
-        raise NotImplementedError(f"{_TODO} 向量这条到时用 pgvector 的 <=> 算子。")
+        _ident("表", table)
+        _ident("字段", field)
+        limit = int(limit)
+        if limit <= 0:
+            return []
+        try:
+            probe = [float(x) for x in vec]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"查询向量不是一串数值：{exc}") from exc
+        if not probe:
+            raise ValueError("查询向量是空的，没法算相似度")
+        if not any(probe):
+            # SQLite 侧同样抛。零向量的余弦无定义，pgvector 会安静地返回 NaN，
+            # 排序于是变成随机 —— 两边都必须响，否则「换后端不换语义」是空话。
+            raise ValueError("查询向量是零向量，余弦相似度无定义 —— 上游的嵌入多半出错了")
+
+        # pgvector 的 `<=>` 是**余弦距离**（0 最近），而 F-2 要求分数「越大越相关」，
+        # SQLite 侧返回的是余弦**相似度**。所以取 1 - 距离，两边同一把尺子。
+        # 这一步搞反的症状是排序整个倒过来，且看上去仍然「有结果」。
+        sql = (
+            f"SELECT id, 1 - ({field} <=> %s::vector) AS score"
+            f" FROM {table} WHERE {field} IS NOT NULL"
+            f" ORDER BY score DESC, id ASC LIMIT %s"
+        )
+        literal = "[" + ",".join(repr(x) for x in probe) + "]"
+        rows = self._search_query(sql, (literal, limit), table=table, field=field)
+        return [(str(r["id"]), float(r["score"])) for r in rows]
 
     def dialect(self) -> str:
-        # 这一个可以答：方言是静态事实，不是「还没实现的操作」。检索器要按方言
-        # 分支时（PG 走 tsvector、SQLite 走 FTS5），至少得先问得出自己在哪边。
+        # 方言是静态事实，不是「还没实现的操作」：即使连不上库也答得出。检索器要按
+        # 方言分支时（PG 走 tsvector、SQLite 走 FTS5），至少得先问得出自己在哪边。
         return DIALECT
 
+    # -- 连接与配置 ------------------------------------------------------------
     def connect(self) -> Any:
-        raise NotImplementedError(
-            f"{_TODO} 连接串读环境变量 {DSN_ENV}（当前{'已' if self.dsn else '未'}配置）。"
-        )
+        """拿一条可用连接。驱动缺失 / DSN 未配 / 连不上 → 抛，**绝不回落 sqlite**。"""
+        if self._conn is not None and not self._conn.closed:
+            return self._conn
+
+        psycopg = _driver()
+        if not self.dsn:
+            raise PgBackendUnavailable(
+                f"没有连接串：PG 后端只从环境变量 {DSN_ENV} 读 DSN（铁律 6：密钥不落"
+                " 文件），当前未配置。形如"
+                " postgresql://<user>:<pass>@<host>:<port>/<db>。"
+            )
+        try:
+            self._conn = psycopg.connect(
+                self.dsn,
+                autocommit=True,
+                connect_timeout=self.connect_timeout(),
+                row_factory=_dict_row(),
+            )
+        except Exception as exc:  # noqa: BLE001 —— 驱动的异常树不该漏给调用方
+            # 不插 self.dsn，只带驱动的原话并过一遍脱敏（铁律 6）。
+            raise PgBackendUnavailable(
+                f"连不上 PG（{DSN_ENV} 已配置）：{_redact(exc)}。"
+                " 这里抛错而不是回落 sqlite —— 契约甲：选了 postgres 就必须是"
+                " postgres，回落的后果是你以为验过了 PG，其实一行都没跑。"
+            ) from exc
+        return self._conn
+
+    def close(self) -> None:
+        """关掉缓存的连接。不在 F-2 里，给测试和一次性脚本收尾用。"""
+        if self._conn is not None and not self._conn.closed:
+            self._conn.close()
+        self._conn = None
+
+    def connect_timeout(self) -> int:
+        raw = os.environ.get(CONNECT_TIMEOUT_ENV, "")
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_CONNECT_TIMEOUT
+        return value if value > 0 else DEFAULT_CONNECT_TIMEOUT
+
+    def fts_config(self) -> str:
+        """当前文本检索配置。标识符要拼进 `to_tsvector` 的参数位，照样卡形状。"""
+        raw = (os.environ.get(FTS_CONFIG_ENV, "") or DEFAULT_FTS_CONFIG).strip()
+        return _ident("文本检索配置", raw)
+
+    # -- 内部 ------------------------------------------------------------------
+    def _search_query(
+        self, sql: str, params: tuple, *, table: str, field: str
+    ) -> list[dict]:
+        """两条检索通道共用的收口：把 PG 的异常翻成 F-2 约定的那两类。
+
+        - 表/列不存在、`vector` 扩展没建 → `LookupError`：这是「后端没准备好」，
+          检索器据此退化为本地实现（`maos/kb/retriever.py::_port_search`）。
+        - 数据形状不对（维度不匹配等）→ `ValueError`，与 SQLite 侧同类。
+        """
+        psycopg = _driver()
+        try:
+            return self.query(sql, params)
+        except psycopg.errors.UndefinedFunction as exc:
+            raise LookupError(
+                f"{table}.{field} 的检索通道走不通：{exc}。向量通道需要先在这个库上"
+                " 建扩展：CREATE EXTENSION IF NOT EXISTS vector; 建表 DDL 见"
+                " maos/store/pg_schema.sql。这里不回落别的实现：静默降级的症状是"
+                "「检索看起来通了，召回却一直是空」。"
+            ) from exc
+        except (
+            psycopg.errors.UndefinedTable,
+            psycopg.errors.UndefinedColumn,
+            psycopg.errors.UndefinedObject,
+        ) as exc:
+            raise LookupError(
+                f"{table}.{field} 的检索通道走不通：{exc}。F-2 约定源表主键列名固定"
+                f" 为 id、{field} 列存对应类型（全文是 text，向量是 vector(N)）。"
+                " 建表与索引 DDL 见 maos/store/pg_schema.sql。"
+            ) from exc
+        except psycopg.errors.DataError as exc:
+            raise ValueError(
+                f"{table}.{field} 上的检索被数据形状挡下：{exc}。最常见的是向量维度"
+                " 对不上（换了嵌入模型没重算）。注意 PG 侧由 pgvector 在查询层一次性"
+                " 报错，**报不出是哪一行**，SQLite 侧才逐行点名 —— 这是两个后端的"
+                " 已知差异，见 deploy/polardb.md。"
+            ) from exc

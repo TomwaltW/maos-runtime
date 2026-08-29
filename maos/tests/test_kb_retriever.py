@@ -14,11 +14,17 @@
     不许压成告警 —— 静默丢弃的后果是同一条知识下次照样被同样地用上。
   · `kb.retrieve` 的零模型 / 空结果不阻塞 / `store is None` 不抛，
     破一条就炸别人（Coding Agent 在产补丁之前调它）。
+
+第 8、9 两节是 X-3 轨补的，守的是两类**不报错**的失效：SQLite FTS5 自身的两条
+静默行为（BACKLOG `## task-W2` 第 1、2 条），以及 StorePort 那条从未被走过的分支
+（`## task-W3` 第 6 条）。两节都先钉「现在到底是什么行为」，再钉「为什么是这个行为」——
+不写清楚为什么，下一个人换掉分词器或对齐了列名时，只会看到一条莫名其妙变红的测试。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -29,6 +35,7 @@ from maos.kb import guardrails, retriever
 from maos.model.client import ScriptedModelClient
 from maos.skills.contract import SkillContext
 from maos.skills.invoker import SkillInvoker
+from maos.store.sqlite_store import SqliteStorePort
 
 TENANT_A = "tnt-a"
 TENANT_B = "tnt-b"
@@ -405,3 +412,239 @@ def _lookup_kb_skill():
     cls = registry.get("kb.retrieve")
     assert cls is not None
     return cls()
+
+
+# ---------------------------------------------------------------------------
+# 8. FTS5 的两条静默行为 —— 实测踩没踩，把结论钉成回归断言
+#    出处：docs/BACKLOG.md 的 `## task-W2` 第 1、2 条。两条都不报错。
+# ---------------------------------------------------------------------------
+def test_fts_shadow_table_is_not_trigram_so_short_queries_still_work(store):
+    """本层**没踩** trigram 那个坑，这条钉住它为什么没踩。
+
+    W-2 实测：`tokenize='trigram'` 的影子表对 <3 字符的查询切不出任何 token，
+    「退款」这类两字词恒返回空集且不报错。本层走的是另一条路 —— 影子表用缺省的
+    unicode61，中文由写入侧的 `kb.fts_text()` 先切成单字（见 `kb/schema.sql` 的注释），
+    查询侧走同一个 `kb.tokenize`，所以 1 字 / 2 字都照常命中。
+
+    **把影子表改成 trigram 会让这条红**：那不是测试写错了，是那一改会让所有两字
+    中文查询的全文通道当场哑掉，而检索器只会把它读成「库里没有这条知识」。
+    """
+    ddl = kb.query(
+        store, "SELECT sql FROM sqlite_master WHERE name='kb_doc_fts'")[0]["sql"]
+    assert "trigram" not in ddl.lower(), (
+        "影子表被改成 trigram 了 —— 两字中文查询会恒返回空集，且不报错")
+
+    _doc(store, "doc-refund", title="退款政策", body="退款政策超时未到账，按 AS-002 全额退款")
+    _doc(store, "doc-timeout", title="订单超时", body="订单支付超时自动关闭")
+
+    for keyword, expected in (("退款", "doc-refund"), ("超时", "doc-timeout"),
+                              ("退", "doc-refund"), ("退款政策", "doc-refund")):
+        hits = retriever.retrieve(store, {"tenant_id": TENANT_A, "keyword": keyword})
+        ids = [h["doc_id"] for h in hits]
+        assert expected in ids, f"keyword={keyword!r}（{len(keyword)} 字）一条都没召回"
+        assert hits[0]["channels"]["fts"] > 0, f"keyword={keyword!r} 的全文通道记了 0 分"
+
+
+def test_fts_channel_normalizes_by_rank_not_by_value(store):
+    """全文通道按**名次**归一，不按分值 —— 同分同名次，弱命中仍是正分。
+
+    按分值归一有两处会把命中压成 0：bm25 对弱相关文档给出的 `-rank <= 0`，
+    以及 IDF 塌陷时整批分数挤在一起。压成 0 之后 `score_candidates` 又丢掉总分
+    <= 0 的文档，「明明命中了」就变成「一条没召回」。
+    """
+    _doc(store, "doc-a", title="退款政策", body="退款 政策 全额")
+    _doc(store, "doc-b", title="退款政策", body="退款 政策 全额")
+    _doc(store, "doc-c", title="退款说明",
+         body="退款 说明 另有 若干 与 本 条 无关 的 词 用 来 拉 长 文 档")
+
+    hits = {h["doc_id"]: h["channels"]["fts"]
+            for h in retriever.retrieve(store, {"tenant_id": TENANT_A,
+                                                "keyword": "退款政策"}, limit=10)}
+
+    assert set(hits) == {"doc-a", "doc-b", "doc-c"}
+    assert hits["doc-a"] == hits["doc-b"] == 1.0, "文本完全相同却排出了先后 —— 名次没有考虑并列"
+    assert 0.0 < hits["doc-c"] < 1.0, "弱命中被压成 0 分 —— 那正是「按分值做阈值」的症状"
+
+
+def test_bm25_idf_collapse_degrades_order_but_never_drops_hits(store):
+    """「退款」出现在过半文档里 -> IDF 塌陷，同批命中的原始分挤成一团。
+
+    这一档必须仍然全是正分：拿分值做绝对阈值的检索器会在小库上把**全部**命中
+    过滤掉，而演示库正是小库。这里把 fts 之外三个通道的权重清零，让本通道单独
+    决定结果 —— 有任何一条被丢掉，返回的就是空列表。
+    """
+    for idx in range(4):
+        _doc(store, f"doc-{idx}", title=f"退款条目{idx}", body="退款 说明 条款")
+    _doc(store, "doc-other", title="包装破损", body="运输箱 压瘪")
+
+    only_fts = {"rule_no": 0.0, "gateway_code": 0.0, "fts": 1.0, "vector": 0.0}
+    hits = retriever.retrieve(store, {"tenant_id": TENANT_A, "keyword": "退款"},
+                              limit=10, weights=only_fts)
+
+    ids = [h["doc_id"] for h in hits]
+    assert ids == ["doc-0", "doc-1", "doc-2", "doc-3"], "IDF 塌陷时有命中被整条丢掉"
+    assert all(h["score"] > 0 for h in hits), "命中被压成 0 分"
+    # 排序退化成按 doc_id 是 BM25 本身的性质，不是排序坏了 —— 但必须是**确定**的退化。
+    assert ids == sorted(ids)
+
+
+# ---------------------------------------------------------------------------
+# 9. StorePort 能力探测分支（`## task-W3` 第 6 条）—— 这条分支从未被真正走过
+# ---------------------------------------------------------------------------
+class _PortBackedStore(SqliteStore):
+    """既能被 `kb.query` 用（有 `_conn`），又实现了 F-2 两条通道的 store。
+
+    真链路上**没有**这样的对象，这正是那条分支从未被走过的原因：核心 `SqliteStore`
+    没有 `fts_search` / `vector_search`（能力探测恒不成立），而 `SqliteStorePort`
+    故意不叫 `_conn`（传进来 `kb.query` 当场 TypeError）。本类按 F-2 的口径把两条
+    通道实现在 `kb_doc` 上，把那条分支跑起来。
+    """
+
+    def fts_search(self, table: str, field: str, q: str, limit: int) -> list[tuple[str, float]]:
+        match = " OR ".join('"' + t + '"' for t in kb.tokenize(q))
+        if not match or int(limit) <= 0:
+            return []
+        rows = kb.query(
+            self,
+            f"SELECT doc_id, bm25({table}_fts) AS rank FROM {table}_fts"
+            f" WHERE {table}_fts MATCH ? ORDER BY rank, doc_id LIMIT ?",
+            (match, int(limit)))
+        return [(str(r["doc_id"]), -float(r["rank"])) for r in rows]
+
+    def vector_search(self, table: str, field: str, vec: list[float],
+                      limit: int) -> list[tuple[str, float]]:
+        rows = kb.query(self, f"SELECT doc_id, {field} AS vec FROM {table}"
+                              f" WHERE {field} IS NOT NULL", ())
+        scored = [(str(r["doc_id"]), retriever.cosine(vec, json.loads(r["vec"])))
+                  for r in rows]
+        scored.sort(key=lambda pair: (-pair[1], pair[0]))
+        return scored[:int(limit)]
+
+
+CORPUS = [
+    ("doc-rust", "轴承锈蚀退款", "外圈锈蚀，按质量问题全额退款", "AS-002"),
+    ("doc-policy", "退款政策", "退款政策超时未到账，全额退款", "AS-002"),
+    ("doc-box", "包装破损", "运输箱压瘪，不涉及退款金额", "AS-001"),
+    ("doc-late", "签收超时", "签收后超过窗口，按无理由退货处理", "AS-001"),
+]
+
+
+def _seed_corpus(target):
+    """两个 store 装**同一份**语料，且都存好向量 —— 向量列缺失时两条通道没法比。"""
+    kb.ensure_schema(target)
+    for doc_id, title, body, rule_no in CORPUS:
+        kb.upsert_doc(target, {
+            "tenant_id": TENANT_A, "doc_id": doc_id, "kind": kb.KIND_POLICY,
+            "biz_type": "refund", "rule_no": rule_no, "title": title, "body": body,
+            "embedding": retriever.embed(f"{title} {body}")})
+    return target
+
+
+def _fresh(cls):
+    s = cls()
+    s.init_schema()
+    return _seed_corpus(s)
+
+
+QUERY = {"tenant_id": TENANT_A, "biz_type": "refund",
+         "rule_no": "AS-002", "keyword": "锈蚀 退款"}
+
+
+def test_capability_probe_never_fires_on_the_core_store(store):
+    """核心 `SqliteStore` 上探不到那两个方法 —— 这条分支在真链路上一次都没走过。"""
+    assert not hasattr(store, "fts_search")
+    assert not hasattr(store, "vector_search")
+    _seed_corpus(store)
+    assert retriever.retrieve(store, QUERY), "本地实现自己得先能召回，否则下面没得比"
+    assert retriever.port_channel_state(store) == {}, "没有方法却记下了探测结论"
+
+
+def test_store_port_branch_hits_the_same_docs_as_the_local_implementation():
+    """走 StorePort 分支 vs 走本地实现：**命中集合必须一致**（分数可以不同）。"""
+    local = _fresh(SqliteStore)
+    ported = _fresh(_PortBackedStore)
+
+    local_hits = retriever.retrieve(local, QUERY, limit=10)
+    port_hits = retriever.retrieve(ported, QUERY, limit=10)
+
+    assert retriever.port_channel_state(ported) == {"fts_search": True,
+                                                    "vector_search": True}, \
+        "分支没被走到 —— 这条测试就白写了"
+    assert {h["doc_id"] for h in local_hits} == {h["doc_id"] for h in port_hits}
+    assert [h["doc_id"] for h in local_hits] == [h["doc_id"] for h in port_hits], \
+        "命中一致但次序不同 —— 两条通道的排序口径漂了"
+    for local_hit, port_hit in zip(local_hits, port_hits):
+        for channel in ("fts", "vector"):
+            assert (local_hit["channels"][channel] > 0) == (port_hit["channels"][channel] > 0), \
+                f"{channel} 通道在一边有信号、另一边没有"
+
+
+def test_store_port_branch_never_leaks_across_tenants():
+    """F-2 的 `fts_search` 没有租户参数，端口是**全表**查的。
+
+    跨租户不召回因此只能由阶段一的候选集兜住 —— 这条守的正是那一层：
+    哪天有人把 `d in candidates` 那句优化掉，本条当场红。
+    """
+    ported = _fresh(_PortBackedStore)
+    kb.upsert_doc(ported, {
+        "tenant_id": TENANT_B, "doc_id": "doc-b-rust", "kind": kb.KIND_POLICY,
+        "biz_type": "refund", "rule_no": "AS-002", "title": "轴承锈蚀退款",
+        "body": "外圈锈蚀，按质量问题全额退款",
+        "embedding": retriever.embed("轴承锈蚀退款 外圈锈蚀，按质量问题全额退款")})
+
+    raw = ported.fts_search("kb_doc", "body", "锈蚀", 10)
+    assert "doc-b-rust" in {doc_id for doc_id, _ in raw}, "端口本来就该查得到它（全表）"
+
+    got = {h["doc_id"] for h in retriever.retrieve(ported, QUERY, limit=10)}
+    assert "doc-b-rust" not in got, "跨租户召回 —— 这是事故，不是效果问题"
+
+
+def test_real_sqlite_store_port_diverges_from_kb_schema_on_the_key_column(store):
+    """真 `SqliteStorePort` 在本层这份 schema 上两条通道**都抛**，这条钉住原因。
+
+    F-2 约定源表主键列名固定为 `id`；`kb_doc` 的主键是 `(tenant_id, doc_id)`，
+    影子表存的也是 `doc_id`。两边都是各自文档里写明的口径，谁也没写错 ——
+    是两条口径没有对齐，而对齐要动 `maos/store/**` 或 `kb/schema.sql`，
+    两处都在本轨禁改面外，账记在 BACKLOG `## task-X3`。
+
+    哪天这条不抛了，说明有人把列名对齐了，那时本条该跟着改，而不是删。
+    """
+    _seed_corpus(store)
+    port = SqliteStorePort(store)
+
+    with pytest.raises(LookupError, match="id"):
+        port.fts_search("kb_doc", "body", "退款政策", 5)
+    with pytest.raises(LookupError, match="id"):
+        port.vector_search("kb_doc", "embedding", retriever.embed("退款政策"), 5)
+
+    # 反向也钉一下：适配器故意不叫 `_conn`，所以它也不能反过来当 store 传进检索器。
+    with pytest.raises(TypeError, match="没有暴露 sqlite 连接"):
+        kb.query(port, "SELECT 1 AS one", ())
+
+
+def test_unusable_port_degrades_once_and_keeps_returning_hits(caplog):
+    """通道走不通时：降级到本地实现、结果照常，且**只告警一次**。
+
+    每次检索都抛一遍再吞掉，日志会被刷满，而没有人看得出这条通道其实一直没通 ——
+    这正是本轨要拆的那类「有症状但没人读得懂」的失效。
+    """
+    class _BrokenPortStore(SqliteStore):
+        def fts_search(self, table, field, q, limit):
+            raise LookupError("no such column: id")
+
+        def vector_search(self, table, field, vec, limit):
+            raise LookupError("no such column: id")
+
+    broken = _fresh(_BrokenPortStore)
+    with caplog.at_level(logging.WARNING, logger="maos.kb"):
+        first = retriever.retrieve(broken, QUERY, limit=10)
+        second = retriever.retrieve(broken, QUERY, limit=10)
+
+    assert first and [h["doc_id"] for h in first] == [h["doc_id"] for h in second]
+    assert retriever.port_channel_state(broken) == {"fts_search": False,
+                                                    "vector_search": False}
+    warned = [r for r in caplog.records if "StorePort." in r.getMessage()]
+    assert len(warned) == 2, f"两条通道各该只告警一次，实际 {len(warned)} 条"
+    assert {h["doc_id"] for h in first} == {
+        h["doc_id"] for h in retriever.retrieve(_fresh(SqliteStore), QUERY, limit=10)}, \
+        "降级之后的结果与本地实现不一致 —— 降级把召回改小了"

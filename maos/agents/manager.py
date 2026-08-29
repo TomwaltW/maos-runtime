@@ -46,8 +46,10 @@ class ManagerAgent(BaseAgent):
         """规划前先检索历史知识，命中的结果作为「建议任务」并进 DAG。
 
         `context` 是**可选**的结构化检索上下文（tenant_id / biz_type / channel_id /
-        sku / rule_no / …）。不传就退化成纯规划，prompt 与 1.0 逐字节一致 ——
-        场景 1-6 的 `mgr.plan(GOAL)` 一行不用改，输出也一个字节不变。
+        sku / rule_no / …，外加只用来给事件定归属的 plan_id / trace_id）。不传就
+        退化成纯规划，prompt 与 1.0 逐字节一致 —— 不带 context 的场景
+        （1 / 2 / 3 / 4 / 5 / 7）`mgr.plan(GOAL)` 一行不用改，输出也一个字节不变。
+        演示主线上唯一接了 context 的是场景 6（`flows/scenario_6.py`）。
 
         检索到的东西**只能增加任务**，且不许替代订单事实、不许跳过人工审批：
         三条护栏在 `kb/guardrails.py` 里写成断言，违反抛 GuardrailViolation。
@@ -76,9 +78,13 @@ class ManagerAgent(BaseAgent):
         """规划前检索。没 store / 没 tenant_id / KB 关掉 -> 空清单，不抛。
 
         走 `kb.retrieve`（白名单已含），由它落 SkillInvoked 与 KbRetrieved 两条事件。
-        这次检索发生在 `create_plan` **之前**，所以事件的 plan_id 是空串 ——
-        与 `flows/scenario_5.py` 里 create_plan 前的 issue.aggregate 同一情形，
-        trace 把它们列进 stray_events 单独点名，不假装它们属于某棵树。
+        这次检索发生在 `create_plan` **之前**：调用方若在规划前先生成好 plan_id
+        并放进 `context`（`ControlPlane.create_plan` 收得下预生成的 id），两条事件
+        就挂在它们真正属于的那棵树上；不给就仍落空串，由 trace 列进 stray_events
+        单独点名，不假装它们属于某棵树。
+
+        `plan_id` / `trace_id` 不是检索维度 —— `_KB_QUERY_FIELDS` 不收它们，
+        它们只用来给事件定归属，进不了检索查询。
         """
         store = getattr(self.skills, "store", None)
         if store is None or not context.get("tenant_id") or not kb.kb_enabled():
@@ -88,7 +94,8 @@ class ManagerAgent(BaseAgent):
         payload["keyword"] = context.get("keyword") or goal
         try:
             res = self.skills.invoke(SKILL_KB, payload, extras={
-                "plan_id": "", "trace_id": str(context.get("trace_id") or ""),
+                "plan_id": str(context.get("plan_id") or ""),
+                "trace_id": str(context.get("trace_id") or ""),
                 "tier": self.identity.model_tier,
             })
         except Exception as exc:                       # noqa: BLE001 —— 检索不阻塞规划

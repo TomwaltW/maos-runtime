@@ -15,6 +15,12 @@
 **C 档达成，房间是本机自建 Synapse 上的真房间，收发已自证。** 没有动用「真起不来退
 matrix.org 私密房间」那条后路。
 
+> **T 轮（`27c9e18`）复核：档位不变，仍是 C 档，且已从「地基自证」推进到「全链路实测」。**
+> C 轮本文件证明的是「房间这层地基能收发」（§4.6 的 `smoke_send.py`，不 import `hiclaw`）；
+> T 轮把 `hiclaw` 的镜像 / 审批 / 越权三条假设也在同一间房里跑通了 ——
+> 两轮 `room_demo` 共 41 条房间消息，五张 Element 截图与逐字副本落
+> `evidence/room/`。选档的理由（时间盒）与「三档对五项映射表零影响」的判断都不受影响。
+
 自建这条路上唯一真正的阻力不是 Synapse 本身（起停 + 建房 + 注册全程可脚本化，十几分钟的
 事），而是**本机 docker daemon 拉不到境外镜像**。这一条解决之后，其余步骤没有一处需要人类
 点 GUI。
@@ -44,7 +50,9 @@ matrix.org 私密房间」那条后路。
 | Synapse 端口 | `8008`（容器 `maos-synapse`） |
 | Element 端口 | `8080`（容器 `maos-element`） |
 | 数据卷 | `maos_synapse` |
-| 房间 | `!xfRqhNYVNyuOMitWVs:maos.local`（名「MAOS 审批」，**非加密**） |
+| 房间（C 轮建，**现已弃用**） | `!xfRqhNYVNyuOMitWVs:maos.local`（名「MAOS 审批」，**非加密**）—— 整合轮 7 的验证脚手架往里灌了 11 条测试消息，不适合再当演示房，保留未删 |
+| 房间（**当前演示房**） | 另建的一间同名「MAOS 审批」非加密房，id 见 `~/.maos-matrix/room.env` 的 `MATRIX_ROOM_ID`。T 轮的五张截图与逐字副本都取自它 |
+| 房间（加密对照房） | `MATRIX_ROOM_ID_ENCRYPTED`，**特意开了 E2EE**，用来验「撞加密房会当场降级」。🔴 别拿它跑演示 |
 | 账号 | `@maos-bot:maos.local` / `@boss:maos.local`（审批人）/ `@intern:maos.local`（越权用例） |
 
 两个镜像的 label 都指向 element-hq 官方仓库：
@@ -259,6 +267,13 @@ $ docker run -d --name maos-element -p 8080:80 \
 > Element 连得上 homeserver、crypto/IndexedDB 正常），只差填表单。本轨不做交互式登录是
 > 为了不让账号口令出现在会话记录与终端回显里（铁律 6）。口令在
 > `~/.maos-matrix/creds.txt`，C-4 直接取用。
+>
+> **T 轮已完成这一步，且没有用口令。** 走的是「先用 client-server API 的
+> `/login` 换一个 access token，再把 token 写进 Element 的 `localStorage`
+> （`mx_hs_url` / `mx_user_id` / `mx_access_token` / `mx_device_id` / `mx_is_guest`）
+> 后 reload」——Element 认这套会话，直接进已登录态。
+> 这么绕一圈的理由与 C 轮一样是铁律 6，只是更进一步：**口令连浏览器都不进**，
+> 而 token 是可撤销、可换发的。截图见 `evidence/room/`。
 
 ### 4.6 房间收发自证
 
@@ -329,21 +344,34 @@ Synapse 默认 `rc_login.failed_attempts/account` 的 `burst_count` 是 3，第�
 ## 7. 交给下游的握手件
 
 ```
-~/.maos-matrix/room.env     chmod 600，7 个键，可 source
-~/.maos-matrix/creds.txt    chmod 600，三个账号口令（供 C-4 登 Element）
-~/.maos-matrix/STATUS       READY <ISO8601>
+~/.maos-matrix/room.env     chmod 600，8 个键，可 source
+~/.maos-matrix/creds.txt    chmod 600，三个账号口令（*_USER / *_PASSWORD 成对）
+~/.maos-matrix/STATUS       READY <ISO8601>     ← T 轮实读 READY 2026-08-29T05:52:11Z
+~/.maos-matrix/venv/        matrix-nio 0.26.0 装在这里，**不在系统 python3 里**
 ```
 
-`room.env` 的键名（值一律不入库）：
+`room.env` 的键名（值一律不入库）。⚠️ 本节原写「7 个键」，T 轮实读是 **8 个** ——
+后来补了 `MATRIX_ROOM_ID_ENCRYPTED`：
 
 ```sh
-export MATRIX_HOMESERVER=<redacted>   # http://localhost:8008，宿主机口径
-export MATRIX_USER=<redacted>         # @maos-bot:maos.local
-export MATRIX_TOKEN=<redacted>        # bot 的 access_token
-export MATRIX_ROOM_ID=<redacted>      # !xfRqhNYVNyuOMitWVs:maos.local
-export MAOS_APPROVERS=<redacted>      # @boss:maos.local
-export MAOS_MATRIX_OUTSIDER=<redacted># @intern:maos.local，越权用例用的非审批人
-export MAOS_ELEMENT_URL=<redacted>    # http://localhost:8080
+export MATRIX_HOMESERVER=<redacted>        # http://localhost:8008，宿主机口径
+export MATRIX_USER=<redacted>              # @maos-bot:maos.local
+export MATRIX_TOKEN=<redacted>             # bot 的 access_token
+export MATRIX_ROOM_ID=<redacted>           # 当前演示房（非加密）。**不再是** !xfRqhNYVNyuOMitWVs
+export MAOS_APPROVERS=<redacted>           # @boss:maos.local
+export MAOS_MATRIX_OUTSIDER=<redacted>     # @intern:maos.local，越权用例用的非审批人
+export MAOS_ELEMENT_URL=<redacted>         # http://localhost:8080
+export MATRIX_ROOM_ID_ENCRYPTED=<redacted> # 特意开了 E2EE 的对照房，🔴 别拿它跑演示
 ```
+
+🔴 **跑 `hiclaw` 必须用 `~/.maos-matrix/venv/bin/python`。** 系统 `python3` 实测
+`pip show matrix-nio` → `Package(s) not found`，拿它跑 `room_demo` 会
+`ImportError` → 静默降级 log-only：终端照常刷「房间消息」，房间里一条都没有。
+这是本套握手件里最容易被误用的一条，逐条症状见
+`docs/matrix-room-runbook.md` 抬头与 §0。
+
+> **口径差说明**：本文件对房间 id 写明文（它是基建记录，`!xfRqhNYVNyuOMitWVs`
+> 上文已明文出现），而 `evidence/room/**` 一律 `<redacted>`。这不是不一致，是有意的 ——
+> `evidence/` 是交出去给评委看的面，能少一个内网标识就少一个。
 
 起停见 `deploy/synapse/README.md`。

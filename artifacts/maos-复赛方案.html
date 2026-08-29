@@ -215,7 +215,7 @@ python3 scripts/verify.py          <span class="d"># ② 七项证据逐项重�
       ①② 两条缺一不可、顺序不能换。<span class="k">*.db</span> 不入 git，直接跑 ② 会报「缺数据库」并退出 2 —— 这是设计行为。
     </div>
     <div class="facts">
-      <div class="fact"><div class="n">749</div><div class="l">pytest 全绿</div></div>
+      <div class="fact"><div class="n">802</div><div class="l">pytest 全绿</div></div>
       <div class="fact"><div class="n">7/7</div><div class="l">证据核验项</div></div>
       <div class="fact"><div class="n">8</div><div class="l">证据束 / 50 个证据文件</div></div>
       <div class="fact"><div class="n">10</div><div class="l">Agent Identity（9 个可派单）</div></div>
@@ -442,7 +442,7 @@ python3 scripts/verify.py          <span class="d"># ② 七项证据逐项重�
     <p class="claim">全系统<em>只有一个出口</em>能改状态，非法迁移抛异常；产物过<em>七道闸</em>，任何一道有 blocker 就返工。</p>
     <div class="grid2 wide-l">
       <div>
-        <div class="term" style="font-size:13.5px; line-height:1.75;"><span class="d"># maos/core/control_plane.py:172-176</span>
+        <div class="term" style="font-size:13.5px; line-height:1.75;"><span class="d"># maos/core/control_plane.py:188-192</span>
 <span class="d">    # 内部：唯一的状态迁移出口</span>
     def _transit(self, task, dst, *, event_id="", …):
         reason = <span class="y">assert_transition</span>(task["state"], dst)
@@ -492,7 +492,7 @@ python3 scripts/verify.py          <span class="d"># ② 七项证据逐项重�
   </div>
   <div class="foot">
     <span class="lbl">可核验证据</span>
-    <span class="refs"><code>maos/contracts/states.py:26</code><span class="sep">·</span><code>maos/core/control_plane.py:172-176</code><span class="sep">·</span><code>maos/runtime/gate.py:254-260</code>（七道闸元组，顺序即执行顺序）<span class="sep">·</span>评委要求 4 / 10</span>
+    <span class="refs"><code>maos/contracts/states.py:26</code><span class="sep">·</span><code>maos/core/control_plane.py:188-192</code><span class="sep">·</span><code>maos/runtime/gate.py:254-260</code>（七道闸元组，顺序即执行顺序）<span class="sep">·</span>评委要求 4 / 10</span>
     <span class="pageno">P5 / 15</span>
   </div>
 </section>
@@ -1075,7 +1075,7 @@ agents/ skills/ tools/ domain/
       <div>
         <div class="term" style="font-size:14px; line-height:1.75;">git clone &lt;repo&gt; maos &amp;&amp; cd maos
 
-python3 -m pytest maos/tests -q   <span class="g"># 749 passed</span>
+python3 -m pytest maos/tests -q   <span class="g"># 802 passed</span>
 python3 run.py                    <span class="g"># 场景 1-7，exit=0</span>
 python3 run.py --scenario 7       <span class="g"># 单跑失败路径</span>
 

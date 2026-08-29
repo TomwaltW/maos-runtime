@@ -350,7 +350,7 @@ exit=0
 ### 补偿：跑了，但你**看不见**它跑没跑
 
 `human_decision(approved=False)` 确实先调 `_execute_compensation` 再改状态
-（`maos/core/control_plane.py:654-657`，「先回滚再改状态」）。它也确实往 `event_log`
+（`maos/core/control_plane.py:728-731`，「先回滚再改状态」）。它也确实往 `event_log`
 写了一条 `CompensationExecuted`。但是：
 
 - **终端不打。** 成功路径上一行日志都没有，只有 `sandbox_unavailable` 那条老分支会 warn。

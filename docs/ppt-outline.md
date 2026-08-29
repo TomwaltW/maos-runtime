@@ -156,7 +156,7 @@ DONE / BLOCKED / FAILED`），右半张七道闸竖排列表，第六第七道�
 
 **可核验证据**
 - `maos/contracts/states.py:26`（`TASK_TRANSITIONS` 迁移表）
-- `maos/core/control_plane.py:172-176`（注释「唯一的状态迁移出口」+ `_transit`，
+- `maos/core/control_plane.py:188-192`（注释「唯一的状态迁移出口」+ `_transit`，
   首行即 `assert_transition`）
 - `maos/runtime/gate.py:254-260`（七道闸的元组，顺序即执行顺序）
 
@@ -511,7 +511,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 ```bash
 git clone <repo> maos && cd maos
-python3 -m pytest maos/tests -q     # 749 passed
+python3 -m pytest maos/tests -q     # 802 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/ 与 -R5/（缺省一并产 R5）
@@ -531,7 +531,7 @@ python3 scripts/verify.py           # ② 七项逐条重放校验 → RESULT: 7
 - `README.md:161-177`（§4 5 分钟快速开始：pytest + run.py + 证据链两条 + `exit=0`）
 - `README.md:96-98`（①② 两条命令原文）
 - `README.md:119`（**①② 两条缺一不可，顺序不能换**；直接跑 ② 会报缺数据库并退出 2）
-- 编排侧整合轮 9 实跑：`python3 -m pytest maos/tests -q` → **749 passed**；
+- 编排侧整合轮 10 实跑：`python3 -m pytest maos/tests -q` → **802 passed**；
   `python3 run.py` → **exit=0**，跑完 `git status --porcelain` 仍 0 行；
   全新克隆 + 无任何 API key，`clone → ① → ②` **5.4 秒**到 `RESULT: 7/7 PASS`
 
@@ -609,9 +609,9 @@ Y-1 / Y-2 / Y-3 已并入，下面四条**已按实跑回填**：
 | 3 | **P8a / P8b** | 未提 `plan_id` 归属 | Y-2 修好归属，场景 6 的 `KbRetrieved` 已挂到实 plan 上（此前 `plan_id=''`），`kb-hits.json` 可读性变好 —— **若 P8b 用到该文件的截图，录制前重截一张** | Y-2 |
 | 4 | **P11 / P14** | 「①②③ 三条命令缺一不可」 | 收敛成 **①② 两条**；P11 第三条禁语与 P14 讲稿、证据锚、禁语全部改写。全新克隆实测 **5.4 秒**到 7/7 | Y-3 |
 
-**数字口径**：本文件所有数字（749 passed / 7 项 / 35 / 7 / 86 / 19 / 10 / 1 / +62−4 / +273−7）
-都来自**整合轮 9 合入 H-1…H-8 八轨后**的真实输出（实测于 `627cce6`），不是基线 `42822fc` 的旧值。
-pytest 条数由 703 涨到 749（H-1 +9 / H-2 +4 / H-3 +12 / H-4 +15 / H-7 +6，加法自洽）；
+**数字口径**：本文件所有数字（802 passed / 7 项 / 35 / 7 / 86 / 19 / 10 / 1 / +62−4 / +273−7）
+都来自**整合轮 10 合入 T-1…T-6 六轨后**的真实输出（实测于 `16563ef`），不是基线 `42822fc` 的旧值。
+pytest 条数由 749 涨到 802（T-1 +21 / T-2 +11 / T-3 +21，加法自洽；T-4/T-5/T-6 不改源码，0 条）；
 verify 七项分子分母（35 / 7 / 86 / 19 / 10 / 1）与 warn 12 行 3 类**连续两轮一个没变**。
 ⚠️ 末尾两组 diff 统计（`+62−4` / `+273−7`）本轮**没有重算** —— D-2 给 `maos/runtime/gate.py`
 加了约 +200 行，这两个数多半已偏小。已记进 `docs/BACKLOG.md` 的 `## integrate-round-6`。
@@ -707,7 +707,7 @@ Y 轮四轨与 Z 轮五轨全部合入，本文件的断言**本轮已全部对�
 
 | 数字 | 跑的命令 | 实测 | 大纲原值 |
 | :-- | :-- | :-- | :-- |
-| 测试条数 | `python3 -m pytest maos/tests -q` | **749 passed**，exit=0 | 749 ✅ 一致 |
+| 测试条数 | `python3 -m pytest maos/tests -q` | **802 passed**，exit=0 | 802 ✅ 一致 |
 | 证据束 | `ls evidence/` | **8 束**（`scenario-1..7` + `-R5`）／**50** 个证据文件 | 8 ✅ 一致 |
 | Skill 数 | `docs/skill-catalog.md:7` | **13** | 13 ✅ 一致 |
 | ToolPort 数 | `docs/toolport-contract.md:7` | **4** 个已实现 | 4 ✅ 一致 |

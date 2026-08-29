@@ -14,7 +14,7 @@
 
 | skill | 版本 | 域 | 归属角色 | 失败策略 | 依赖工具 | 声明位置 |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:82` |
+| `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:146` |
 | `finance.settle` | `1.0.0` | 制造售后退款域 | `refund_finance` | escalate | （空） | `maos/skills/builtin/refund/finance.py:55` |
 | `issue.aggregate` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/issue_aggregate.py:66` |
 | `kb.retrieve` | `1.1.0` | 软件交付域 | `manager`、`coding` | escalate | （空） | `maos/skills/builtin/kb_retrieve.py:73` |
@@ -32,7 +32,7 @@
 
 ### code.repo-patch @ 1.0.0
 
-实现：`CodeRepoPatchSkill` @ `maos/skills/builtin/code_repo_patch.py:82`
+实现：`CodeRepoPatchSkill` @ `maos/skills/builtin/code_repo_patch.py:146`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

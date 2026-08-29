@@ -798,6 +798,18 @@ H 轮八轨（H-1…H-8）合入时，编排侧**实跑核验**发现下面几�
 | 2026-08-29 | P7 | **`docs/clone-smoke-report.md` 的读数连续两轮没改**，占位仍挂 `PENDING-R9`。理由同 `## integrate-round-8`：它每个数都归因于「仓库外全新 clone 的冒烟实跑」，整合轮 9 同样没做第四遍冒烟 | 报告里的 `521 passed` / `4/74` 与当前的 `749 passed` 差了两百多条，而它是 A-1「新克隆冒烟 ≤ 15 分钟」那条的执行记录 | 仍需**单独一轨**做第四遍冒烟。这是目前唯一一条跨两轮没动的待办 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题仍然过期**。`## integrate-round-8` 已记过一次，本轮没接 | 一节挂着「待整合轮 6」的清单出现在整合轮 9 的交付里 | 下一轮顺手改标题并清掉已完成项 |
 
+## integrate-round-10
+
+T 轮六轨（T-1…T-6）合入时，编排侧**实跑核验**发现下面几条。均**不在整合轮可改面内**
+（整合轮只做合并 + 验证 + 本轮数字回填），按铁律 4 记账不当场改。
+基线 `27c9e18`，合并后 HEAD `16563ef`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`_advance` 新增的「无活任务 → FAILED」分支，对已经是 FAILED 的计划再调一次就抛 `IllegalTransition: FAILED -> FAILED`**。本轮实跑复现：空规格重规划让计划收敛为 FAILED 之后，再手工调一次 `cp._advance(plan_id)` 当场抛。修复前这条路径是静默 no-op（`if tasks and all(...)` 的短路） | **今天够不到**：`_advance` 的两个调用点（`on_task_result` / `human_decision`）都要先走一次合法的任务迁移，而全冻结后的任务停在 PENDING+frozen，迟到的 TaskResult 会先在状态机上被拦掉。但它把一个「重复调用无害」的方法变成了「重复调用抛异常」，下一个接线的人踩得到 | 下一轮持有 `control_plane.py` 的那一轨。收法与 T-2 自己记的那条同源（把收敛判定并进 `start_plan` 的返回路径），顺带让 `_fail_plan` 对已是终态的计划短路 |
+| 2026-08-29 | P7 | **`docs/domain-portability.md:23` 的锚 `maos/core/control_plane.py:380` 在基线上就是错的**，不是本轮改坏的。正文说的是「判据 `_should_replan`」，而 `27c9e18` 的 `:380` 指向 `_attach_compensation` 尾部的 `CompensationAttached` 日志行；该函数现在在 `:533` | 评委照锚点跳过去看到的是另一件事。同类锚本轮已修两处（`ppt-outline.md` / `matrix-room-runbook.md`，那两处是本轮 T-2 加行改坏的，属数字回填），这一处属**既有缺陷**，按整合轮口径只记不改 | 下一轮任何持有 `docs/domain-portability.md` 的轨顺手改。真要根治得给行号锚做一次全仓校验器 —— `gen_docs.py` 只管它自己生成的那 3 份 |
+| 2026-08-29 | P7 | **`scripts/gen_docs.py --check` 在合入 T-1 后由绿转红**（`docs/skill-catalog.md`、`docs/toolport-contract.md` 落后于代码）。原因是这两份文档带 `.py:<行号>` 锚，而 T-1 往 `sandbox.py` / `code_repo_patch.py` 各插了几十行 | 本轮已跑 `python3 scripts/gen_docs.py` 重生成，改动是纯行号（4 处）。记下来是因为**它不在任何一轨的验收项里**：六轨各自的派单都没有这条，只有整合轮会撞上 | 流程项，不是缺陷：下一轮派单模板里，凡改 `maos/**` 源码的轨都该把 `gen_docs.py --check` 写进 §6 |
+
 ## task-T1
 
 修 P0-1（C-quoted 路径绕过）时实测撞到的，均**不在本轨白名单内或不属派单范围**，按铁律 4 记账不当场改。

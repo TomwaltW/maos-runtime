@@ -890,3 +890,13 @@ T5 轨把 `docs/ppt-outline.md` 渲染成 `artifacts/` 下的演示稿（HTML �
 | 2026-08-29 | P7 | **`scripts/verify.py` 的 `business-outcome` warn 单行过长**（实测一条 200+ 字，含完整归因段落），录制镜 8 时在 100 列窗口里要折成 3 行，4 条就吃掉十几行画面 | 镜 8 的镜头要往下滚到 `RESULT: 7/7 PASS` 才停，warn 越长滚得越久，占的是念词时间。不影响判定，纯粹是**上镜体验** | 归 `verify.py` 持有轨。可选改法：warn 正文只留一句，长归因收进 `--verbose`。**不急** —— 分镜里已写明「往下滚到 RESULT 行再停住」，当前富余 +3.1s 够用 |
 | 2026-08-29 | P7 | **`scripts/make_evidence.py` 产出的 `business-objects.json` 里，两个 plan 的对象块先后顺序不稳定**。实测连跑三次，场景 7 的 `amount_paid: 6800.0`（`task-s7-*` 组）落在**第 41 → 152 → 152 行**，`task-s7-*` 与 `task-s7b-*` 两组整体换位；git 里 `27c9e18` 提交的那份是 s7 组在前 | ①**任何引用该文件行号的文档都会周期性失效**，而录制前置必然重跑一次证据束 —— 分镜镜 2 原来写的「第 4–22 行附近」就是这么烂掉的（T 轮已改成按 `task_id` 现场 grep，不再依赖行号）；②证据束的**逐字节可复现性**因此不成立：同一份代码同一份数据，两次跑出来的 `business-objects.json` 不是同一个字节序列，只是内容等价。这不影响 `verify.py`（它按对象读，不按行读），但会让「重跑证据束 → 只有出处头变」这个直觉失效 | 归 `make_evidence.py` 持有轨。改法应该很小：落盘前按稳定键排序（如 `(plan_id, task_id, object_type, object_id)`）。**做之前先确认 `verify.py` 的哈希校验不依赖当前顺序** —— 第 1 项 `hash-integrity` 校的是 `event_log` 里的 digest，与本文件的排布无关，但值得跑一遍确认 |
 | 2026-08-29 | P7 | **`maos/kb/experiment.py` 的一条 `logging` 输出打到 stderr，让 `python3 -m maos.kb.experiment` 的屏幕输出从 2 行变 3 行**（多出 `[task-nokb-intake] plan_defect —— 机器返工修不好，一次转人工，不再重发`） | 不是 bug（那行本身是真实且有信息量的），但上一版分镜写死了「屏幕上只打两行」，实测已不符 —— T 轮已在镜 3 改正并标注「别把它当成报错」。留档是因为**下一个改这个模块的人可能又把行数改掉** | 不建议改代码。若将来要让这一镜更干净，可考虑把该日志降级到 DEBUG；改之前先看 `docs/demo-script.md` 镜 3 —— 那里写死了 3 行 |
+
+## task-T14
+
+本轨（真连一次 PolarDB）只持有 `scripts/polardb_smoke.py`（新建）、`deploy/polardb-live.md`（新建）
+外加两份账本，**零 `maos/**` 源码改动**。下面两条都是**白名单外**发现的，按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P5 | **`deploy/docker-compose.yml` 的 pgvector 在多轨并行下是共享单例**：固定 project name（`name: maos`）+ 固定容器名 + 写死 `${POSTGRES_PORT:-5432}` + 共享 `pgdata` 卷。任一轨跑 `docker compose --profile pg down` 都会掐掉别轨正在用的库 | **本轮双向都真实发生了**：①开工后发现 T10 已把它起在 5432 上，照派单字面跑 `down` 就会打断 T10（本轨因此改为复用，见 `docs/DECISIONS.md ## task-T14`）；②随后 T10 自己跑完 `down`，把本轨正在用的容器**整个删掉**（`docker ps -a` 里 `maos-pgvector-1` 连 Exited 记录都不剩），本轨的本机对照组当场失去库 —— 所幸数据已经拿到。只要有两轨的派单都写了这条 up/down，就是一次静默互踩，**而两边各自的验收都是绿的**，谁都不会发现 | 归 T9（`docker-compose.yml` 持有轨）。可选改法：允许覆盖 project name（`docker compose -p maos-t14 ...`），或在 `deploy/README.md` 写明「多轨并行时只复用、不 down」。**不急** —— 眼下靠派单里的口头约定也能绕开，但下一轮多轨还会踩 |
+| 2026-08-29 | P5 | **派单模板 §1 的 DSN 自检只验「非空」**（`print("已配置" if os.environ.get("MAOS_PG_DSN") else "未配置")`）。把 §1 自己给出的占位符模板原样 export 进来时，它照样报「已配置」 | 本轮真实发生：开场自检报「已配置」，实际是 `postgresql://<user>:<pass>@<host>:<port>/<db>` 一字未改，直到第一次连接失败才暴露。开场自检的作用是**在开工前**把前置状态钉死，这一条钉反了方向 —— 它给出的是一个假的通过信号 | 归后续写派单的人（编排侧）。改法一行：判据从「非空」改成「非空且不含 `<` 尖括号占位符」。本轨已把等价检测内建进 `scripts/polardb_smoke.py`，脚本这一侧已经堵上；漏的是**派单自检那一行** |

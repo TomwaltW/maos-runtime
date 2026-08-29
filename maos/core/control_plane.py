@@ -147,6 +147,22 @@ def _finding_ref(finding: dict) -> dict:
             if finding.get(k) is not None}
 
 
+def _comp_order(art: dict) -> tuple[int, str]:
+    """compensation 的确定性排序键：先看它指向第几次 attempt，再拿 artifact_id 兜全序。
+
+    ``attempt`` 相同只发生在同一次 TaskResult 交回多份 patch_set 时，那几条
+    compensation 的 content 本就一模一样，选哪条都等价 —— 补 artifact_id 是为了让
+    「选中哪条」这件事完全不依赖 ``list_artifacts`` 的返回顺序，而不是为了分优劣。
+
+    缺 patch_ref 的排到最末位（attempt=-1）而不在这里炸：形状校验归
+    ``_execute_compensation``，它对**选中的**那条硬失败（C-5 反例：补偿绝不兜底成静默
+    不执行）。排序阶段就炸会让一条坏数据连累掉本来选得对的那次回滚。
+    """
+    ref = art["content"].get("patch_ref") or {}
+    attempt = ref.get("attempt")
+    return (attempt if isinstance(attempt, int) else -1, art["artifact_id"])
+
+
 class ControlPlane:
     def __init__(self, store: Store, bus: EventBus, *,
                  replanner: Replanner | None = None) -> None:
@@ -290,13 +306,24 @@ class ControlPlane:
     # Worker 认领任务
     # ------------------------------------------------------------------
     def claim(self, task_id: str, worker_id: str, attempt: int) -> dict | None:
-        key = f"claim:{task_id}:{attempt}"
-        if self.store.claim_idempotency(key, "claim", task_id) is not None:
-            log.info("[%s] 重复认领，忽略", task_id)
-            return None
+        """认领一次派发。**状态校验在幂等闸之前**，顺序反了任务会永久卡死。
+
+        幂等键一旦消费就不回滚（store 只有 claim/finish，没有撤销口）。所以校验必须
+        先跑：Worker 抢在 dispatch 之前认领一次，任务尚为 PENDING，认领理应失败 ——
+        可若失败前 key 已被烧掉，等 dispatch 真发出来，**同一 attempt 的合法认领**
+        会被当成重复投递拒掉，任务停在 DISPATCHED 再没人能领走它。
+
+        与本模块铁律 3（先过幂等闸）不冲突：闸门仍挡在**状态变更**前面，挪到它前面的
+        只是一次不消费任何东西的只读前置校验。并发安全也没丢 —— 两个 Worker 同时过了
+        状态校验后，仍要争同一个 key 的原子写入，只有一个拿得到 None。
+        """
         task = self.store.get_task(task_id)
         if task["state"] != TaskState.DISPATCHED:
             log.warning("[%s] 状态是 %s，不可认领", task_id, task["state"])
+            return None
+        key = f"claim:{task_id}:{attempt}"
+        if self.store.claim_idempotency(key, "claim", task_id) is not None:
+            log.info("[%s] 重复认领，忽略", task_id)
             return None
         return self._transit(task, TaskState.RUNNING, worker_id=worker_id)
 
@@ -604,6 +631,15 @@ class ControlPlane:
 
         # 4. 重启：PENDING -> RUNNING 并派发
         self.start_plan(plan_id)
+        if not specs:
+            # 重规划一个规格都没给出（模型输出空、或调用异常被上游吞成了空列表）——
+            # open_tasks 已被 _apply_replan 全部冻结，此刻没有任何任务会再往前走。
+            # 放弃不是完成：哪怕此前有别的任务做完了，这个计划的目标也没达成，
+            # 收成 DONE 就是拿「Agent 都回完话」冒充业务成功。
+            # 必须先 start_plan 再落 FAILED —— PENDING->FAILED 不在迁移表里，
+            # 只有 RUNNING->FAILED 有（铁律 1：不许为这条路新增迁移）。
+            log.warning("[%s] 重规划未产出任何新规格，计划收敛为 FAILED", plan_id)
+            self._fail_plan(plan_id)
 
     def _apply_replan(self, plan_id: str, open_tasks: list[dict], specs: list[dict]) -> None:
         """新规格接管未完成的任务；接管不下的旧任务冻结，多出来的新规格建新任务。
@@ -614,14 +650,23 @@ class ControlPlane:
 
         **findings 保留不清**：新规格加上「上一版为什么不行」一起喂给下一轮，
         比只给新规格更有信息量（dispatch_ready 会把它作为 rework_findings 发出去）。
+        它靠**不出现在下面这次 update_task 里**来保留，别把它补进去。
+
+        **缺省一律保留原值**，整个覆写分支一个口径。原先 title/risk_level 保留原值而
+        inputs/acceptance/depends_on 缺省成空，同一次调用里混了两套语义：重规划只想
+        换个标题，任务就被清成空输入重新派发，depends_on 被清空还会让它抢在依赖项前面
+        跑。规格没提到的字段就是「这块不改」，不是「这块清空」。
         """
         for task, spec in zip(open_tasks, specs):
             self.store.update_task(
                 task["task_id"],
+                # role 原先根本不在覆写里，于是「重规划换角色」做不到 —— reviewer 的
+                # 规格被安在 coding 任务上，照旧交给 coding 去做。
+                role=spec.get("role", task["role"]),
                 title=spec.get("title", task["title"]),
-                inputs=spec.get("inputs", {}),
-                acceptance=spec.get("acceptance", []),
-                depends_on=spec.get("depends_on", []),
+                inputs=spec.get("inputs", task["inputs"]),
+                acceptance=spec.get("acceptance", task["acceptance"]),
+                depends_on=spec.get("depends_on", task["depends_on"]),
                 risk_level=spec.get("risk_level", task["risk_level"]),
                 effect_risk=spec.get("effect_risk", task["effect_risk"]),
                 last_error=None,
@@ -650,13 +695,42 @@ class ControlPlane:
     # 人工审批
     # ------------------------------------------------------------------
     def human_decision(self, task_id: str, approved: bool, operator: str, note: str = "") -> None:
+        """人工审批。补偿是**有外部副作用**的动作，两道闸都必须挡在它前面。
+
+        原先 ``_execute_compensation()`` 直接跑在 ``_transit()`` 之前，而状态机守卫在
+        ``_transit()`` 里 —— 重复投递一次驳回，补偿先完整执行完，异常才抛出：
+        守卫拦得住状态，拦不住副作用。``git apply -R`` 对同一份补丁反着打两遍，
+        是实打实的重复外部动作（铁律 8）。on_task_result / on_review_verdict 都过了
+        幂等闸，唯独人工决策这条路没过。
+
+        补偿仍在 ``_transit`` **之前**执行（phase-4.md:20 的顺序不动）：往前挪的是守卫，
+        不是把补偿往后挪 —— 状态一旦落 FAILED，「产物还在外面」就没人记得了。
+
+        两道闸的分工：
+          · ``assert_transition`` 挡**顺序**重复 —— 任务已是终态，第二次驳回当场抛，
+            一行副作用都没发生。放在幂等闸前面同 claim()：非法调用不该烧掉 key，
+            烧了会让这个任务此后再也审批不了。
+          · 幂等键挡**并发** —— 两个操作员同时驳回，都过了状态校验，仍要争同一个 key。
+
+        key 取 ``human:<task_id>`` 而不带决策：一个任务只可能被人工决策一次
+        （DONE / FAILED 都是终态）。带上决策的话，「先批准后驳回」会拿到一个没被消费过
+        的新 key，补偿照跑一遍，非法迁移才在后面抛 —— 同一个 bug 换扇门进来。
+        """
         task = self.store.get_task(task_id)
+        dst = TaskState.DONE if approved else TaskState.FAILED
+        assert_transition(task["state"], dst)
+
+        key = f"human:{task_id}"
+        if self.store.claim_idempotency(key, "human", task_id) is not None:
+            log.info("[%s] 重复人工决策，短路", task_id)
+            return
+
         if not approved:
             # 先回滚再改状态（phase-4.md:20 的顺序）：状态一旦落 FAILED，
             # 「这个任务的产物还在外面」这件事就没人记得了。
             self._execute_compensation(task, operator=operator, note=note)
-        dst = TaskState.DONE if approved else TaskState.FAILED
         self._transit(task, dst, detail={"operator": operator, "note": note})
+        self.store.finish_idempotency(key, {"approved": approved, "operator": operator})
         if approved:
             self._advance(task["plan_id"])
         else:
@@ -692,7 +766,13 @@ class ControlPlane:
             log.info("[%s] 无补偿引用，跳过回滚", task["task_id"])
             return None
 
-        content = comps[-1]["content"]              # 多轮 attempt 取最后附着的那条
+        # 多轮 attempt 会附着多条 compensation，语义是「回滚最近一次落地的那份补丁」。
+        # 不能写 comps[-1]：COMPENSATION_VERSION 恒为 0，而 list_artifacts 只
+        # ORDER BY version —— 同值行的相对顺序 SQL 不保证。现在拿到的顺序是 SQLite
+        # 隐式 rowid 的副产品，换后端或加索引就可能翻转，而翻转的后果是**回滚了错误
+        # attempt 的补丁**。改按 patch_ref.attempt 选：排序依据来自内容本身，与
+        # list_artifacts 的返回顺序无关（排序口径归 store，那是另一轨的面，不去动它）。
+        content = max(comps, key=_comp_order)["content"]
         errs = validate_artifact(KIND_COMPENSATION, content)
         if errs:
             raise ValueError(
@@ -741,7 +821,15 @@ class ControlPlane:
             # 冻结任务被重规划取代了，永远不会 DONE —— 计入完成判定会让 Plan
             # 卡在 RUNNING 上再也出不来。
             tasks = [t for t in self.store.list_tasks(plan_id) if not _is_frozen(t)]
-            if tasks and all(t["state"] == TaskState.DONE for t in tasks):
+            if not tasks:
+                # 一条活任务都不剩：全冻结了，而新方案一个都没接手（重规划返回空规格）。
+                # 这不是完成，是没做成 —— 收 DONE 正好撞上本项目最核心的那句话
+                # 「所有 Agent 都回复完成 ≠ 业务成功」。走既有迁移
+                # RUNNING->FAILED("task_failed")，不加状态、不加迁移（铁律 1）。
+                log.warning("[%s] 已无可推进的任务（全部被重规划冻结），收敛为 FAILED",
+                            plan_id)
+                self._fail_plan(plan_id)
+            elif all(t["state"] == TaskState.DONE for t in tasks):
                 self._transit_plan(plan_id, PlanState.DONE)
 
     def _fail_plan(self, plan_id: str) -> None:

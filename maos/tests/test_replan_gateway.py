@@ -690,3 +690,45 @@ def test_a_known_query_or_human_code_reaches_the_third_exit_on_its_own():
     assert detail["reason"] == HUMAN_EXIT_GATEWAY
     assert detail["await"] == AWAIT_HUMAN_DECISION
     assert [t["task_id"] for t in HumanApprovalQueue(store, cp).pending(plan_id)] == [task_id]
+
+
+def test_replan_spec_that_omits_inputs_keeps_the_original_ones():
+    """换渠道的规格只说「换个标题」，原来的 inputs / acceptance 必须还在（T2 · P1-3）。
+
+    本文件既有的三个 replanner 都**显式**写了 ``"inputs": {}, "acceptance": []``，
+    于是「规格没提到的字段会不会被清空」这件事一次都没被问到 —— 它们恰好绕开了
+    ``_apply_replan`` 里的缺省清空。真实的 Manager 没有义务把每个字段都重申一遍：
+    它只回答「这次改什么」，没提到的就是不改。
+
+    这条补的是**那一步之差**：规格里去掉 inputs / acceptance，别的一律照旧。
+    修复前这里会拿到 ``inputs == {}`` —— 换了渠道的任务带着空输入被重新派发出去，
+    而闸和 Worker 都不会因为「输入是空的」而报错，故障要到执行时才现形。
+
+    既有用例一行不改：它们绕开 bug 是历史事实，留着才看得出这条补的是哪一步。
+    """
+    store, bus, cp, gate = _build()
+    plan_id = cp.create_plan(goal="退款走网关", trace_id=TRACE, tasks=[{
+        "role": "payment", "title": "走主渠道退款",
+        "inputs": {"case_id": "C-9", "amount": 6800},
+        "acceptance": ["回执码必须落库"],
+        "effect_risk": "L", "max_attempts": 9,
+    }])
+    cp.start_plan(plan_id)
+    task_id = store.list_tasks(plan_id)[0]["task_id"]
+    before = store.get_task(task_id)
+    assert before["inputs"] and before["acceptance"], \
+        "前提没成立：原任务的 inputs/acceptance 必须非空，否则清没清空看不出来"
+
+    # 只给 role 和 title，别的字段一个不提 —— 与本文件其余 replanner 的区别只在这里。
+    cp.set_replanner(lambda *, goal, findings, open_tasks: [
+        {"role": "payment", "title": "改走备用渠道"}])
+
+    _gateway_round(bus, gate, cp, plan_id, task_id, 1, CODE_RETRIABLE_FAILED)
+
+    assert cp._replan_used(plan_id) == 1, "前提没成立：40005 那一格本该触发换渠道重规划"
+    task = store.get_task(task_id)
+    assert task["title"] == "改走备用渠道", "规格提到的字段照常覆写"
+    assert task["inputs"] == before["inputs"], \
+        "修复前这里是 {} —— 换了渠道的任务带着空输入被重新派发"
+    assert task["acceptance"] == before["acceptance"], "修复前这里是 []"
+    assert task["state"] == TaskState.DISPATCHED, "重规划后本就该重新派发出去"

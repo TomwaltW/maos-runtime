@@ -797,3 +797,14 @@ H 轮八轨（H-1…H-8）合入时，编排侧**实跑核验**发现下面几�
 | 2026-08-29 | P7 | **`evidence/scenario-R1/` 那颗地雷只拆了手册一侧，`verify.py` 一侧还在**。H-8 把 `docs/EXECUTION.md:499/502` 的截图落点从 `evidence/scenario-R1/` 改到了 `evidence/room/`，但 `verify.py` 仍按 `d.startswith("scenario-")` 收目录 —— 编排侧本轮当场复现：`mkdir evidence/scenario-R1 && python3 scripts/verify.py` → **exit=2**，七项一项都跑不到 | 手册不再教人踩，但任何人手工建一个 `scenario-*` 目录仍会把核验器打死，且报错说的是「缺数据库」，指不到真正的原因 | 下一轮给 `verify.py` 加一条：遇到 `scenario-*` 目录但里面没有证据束文件时，报「这不是证据束目录」而不是「缺数据库」。归 `verify.py` 持有轨 |
 | 2026-08-29 | P7 | **`docs/clone-smoke-report.md` 的读数连续两轮没改**，占位仍挂 `PENDING-R9`。理由同 `## integrate-round-8`：它每个数都归因于「仓库外全新 clone 的冒烟实跑」，整合轮 9 同样没做第四遍冒烟 | 报告里的 `521 passed` / `4/74` 与当前的 `749 passed` 差了两百多条，而它是 A-1「新克隆冒烟 ≤ 15 分钟」那条的执行记录 | 仍需**单独一轨**做第四遍冒烟。这是目前唯一一条跨两轮没动的待办 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题仍然过期**。`## integrate-round-8` 已记过一次，本轮没接 | 一节挂着「待整合轮 6」的清单出现在整合轮 9 的交付里 | 下一轮顺手改标题并清掉已完成项 |
+
+## task-T2
+
+修 P1-2 / P1-3 / P1-4 / P1-5 / P2-9 时在**白名单外**撞见的三条，按铁律 4 记账不当场改。
+基线 `27c9e18`，三条都在本轨实跑复现过，不是读代码推的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **一次 `TaskResult` 交回多份 `patch_set` 时，补偿指向哪一份是未定义的**。`on_task_result` 对 `p["artifacts"]` 里的**每一份** `patch_set` 各调一次 `_attach_compensation`，它们的 `patch_ref` 只写 `(task_id, kind, attempt)` —— 同一次结果里的多份补丁 attempt 相同，引用彼此无法区分；解析侧 `resolve_patch_ref` 又是「取第一条 `kind==patch_set` 且 `version==attempt` 的」，取到哪一条同样没有排序依据 | 与 P2-9 同源但**不是同一条**：P2-9 是「多条 compensation 选哪条」（本轨已在 `control_plane.py` 侧修死），这条是「一条 compensation 指向的 patch_set 有多份」。真出现时的后果一样 —— 反向应用了错误的那份补丁。目前所有场景每次结果只交一份 patch_set，所以没暴露 | 解析口径在 `maos/artifacts.py`（冻结面，可读不可写），修它要人类先定「一次结果多份补丁该不该各附一条补偿」这个语义问题。**归整合轮，本轨不碰** |
+| 2026-08-29 | P7 | **零任务计划 / 全冻结计划在 `start_plan` 之后不会自行收敛**。本轨实测：`create_plan(tasks=[])` + `start_plan()` → 计划停在 `RUNNING`；再手工调一次 `_advance()` 才落 `FAILED`（本轨新加的收敛判定） | 理论边界，**当前没有调用点**会这么用：唯一产生冻结任务的路径 `_replan` 已由本轨在出口处兜住。留着是因为 `start_plan` 是公开方法，下一个接线的人可能踩 | 下一轮持有 `control_plane.py` 的那一轨，把收敛判定并进 `start_plan` 的返回路径（`dispatch_ready == 0` 时顺带问一次）。本轨不做 —— 派单范围是那五条，改 `start_plan` 会波及所有场景的启动路径 |
+| 2026-08-29 | P7 | **`human_decision` 重复投递抛 `IllegalTransition` 而不是短路返回**，这是本轨**有意保留**的既有行为（见 `docs/DECISIONS.md` 的 `## task-T2`），但它对 UI 不友好 | 接上真实审批界面后，操作员双击「驳回」会拿到一个异常而不是一次无害的重复提交。副作用已经挡住了（补偿只跑一次），剩下的纯粹是交互口径问题 | 等真做审批 UI 时由人类定：要么在调用侧吞掉这个异常，要么把控制面改成短路返回。现在改属于「为假想的调用方放宽守卫」，不做 |

@@ -67,25 +67,28 @@ verify = _load_script("verify")
 #: 「哪一项出几行 warn」。**这就是 submission-checklist.md §A-2 那张表的机器版**，
 #: 改这里就要同步改那张表，反之亦然。
 #:
-#: * `trace-tree` 4 行 = A 类残余：`agents/reviewer.py::review_after_gate` 直接
-#:   `insert_artifact` 落 review_note，是三条旁路里唯一还没自报来源的一条
-#:   （scenario-1 / 2 / 6 / 7 各一份）。它在 `docs/BACKLOG.md ## task-T12` 有案。
+#: * `trace-tree` 0 行 —— A 类**已归零**：最后一条旁路
+#:   `agents/reviewer.py::review_after_gate`（scenario-1 / 2 / 6 / 7 各一份 review_note）
+#:   已补上 `ArtifactSeeded`，三条旁路现在全部自报来源。该项因此不再出现在本表里，
+#:   并进了下面的 `RETIRED_WARN_MARKERS` —— 再出现就是回归。
 #: * `authoritative-fact` 1 行 = E 类残余：`scenario-7 case-s7-0002` 停在中间态
 #:   `gateway_accepted` —— 有回执、案子却既没到 settled 也没收口，那是真该看一眼的。
 #:   同场景的 `case-s7-0001` 收口在 `compensated`，是**预期**，出 info 不出 warn。
 #:
-#: T12 之前是 12 行 / 3 类（A 6 / D 4 / E 2）。D 类（外部判据来源未审计）随 A 类的
-#: 前两条旁路补上来源事件一起归零 —— 它数的就是那批产物，从 `business-outcome` 看过去。
+#: T12 之前是 12 行 / 3 类（A 6 / D 4 / E 2）；T12 首轮收口到 5 行 / 2 类（A 4 / E 1）。
+#: D 类（外部判据来源未审计）随 A 类的前两条旁路补上来源事件一起归零 —— 它数的就是
+#: 那批产物，从 `business-outcome` 看过去。A 类剩下的 4 行由 T12 收尾轮补掉（授权改
+#: `maos/agents/reviewer.py`，见 `docs/DECISIONS.md`），至此 **1 行 / 1 类**。
 WARN_BASELINE = {
-    "trace-tree": 4,
     "authoritative-fact": 1,
 }
 
-#: 已归零、**回来就是回归**的两类（整合轮 5 由 Y-1 / Y-2 补掉）。
+#: 已归零、**回来就是回归**的三类（B / C 由整合轮 5 的 Y-1 / Y-2 补掉，A 由 T12 收尾轮补掉）。
 #: 按 warn 正文里的稳定字样认，不按行数认 —— 这两类的期望值恒为 0。
 RETIRED_WARN_MARKERS = {
     "B 类（test_report 缺 sandbox_mode）": "执行路径不可审计",
     "C 类（事件不在任何一棵树内）": "不在任何一棵树内",
+    "A 类（产物没有来源事件）": "没有来源事件",
 }
 
 

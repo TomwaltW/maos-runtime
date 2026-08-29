@@ -20,8 +20,8 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `coding` | `coding` | 软件交付域 | 是 | `maos/agents/coding.py:26` |
 | `manager` | `manager` | 软件交付域 | **否** | `maos/agents/manager.py:33` |
 | `requirement` | `requirement` | 软件交付域 | 是 | `maos/agents/requirement.py:29` |
-| `reviewer` | `reviewer` | 软件交付域 | 是 | `maos/agents/reviewer.py:32` |
-| `testing` | `testing` | 软件交付域 | 是 | `maos/agents/testing.py:107` |
+| `reviewer` | `reviewer` | 软件交付域 | 是 | `maos/agents/reviewer.py:33` |
+| `testing` | `testing` | 软件交付域 | 是 | `maos/agents/testing.py:158` |
 | `refund_finance` | `refund-finance` | 制造售后退款域 | 是 | `maos/agents/refund/finance_agent.py:26` |
 | `refund_intake` | `refund-intake` | 制造售后退款域 | 是 | `maos/agents/refund/intake_agent.py:26` |
 | `refund_payment` | `refund-payment` | 制造售后退款域 | 是 | `maos/agents/refund/payment_agent.py:58` |
@@ -97,7 +97,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 
 ### reviewer — ReviewerAgent
 
-声明位置：`maos/agents/reviewer.py:32`
+声明位置：`maos/agents/reviewer.py:33`
 
 | 字段 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -113,7 +113,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 
 ### testing — TestingAgent
 
-声明位置：`maos/agents/testing.py:107`
+声明位置：`maos/agents/testing.py:158`
 
 | 字段 | 含义 | 值 |
 | :-- | :-- | :-- |

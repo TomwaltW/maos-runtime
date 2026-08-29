@@ -18,13 +18,14 @@ attributes``。**不做真 OTel 导出**：没有 SDK 依赖、没有 collector�
 2. 场景 1 / 2 的 ``flows/common.py::patch_verifier`` —— 现跑沙箱回归的真报告。
    同样补 ``ArtifactSeeded``。
 3. ``agents/reviewer.py::review_after_gate()`` 直接 ``store.insert_artifact``
-   落 review_note（场景 1 / 2 / 6 / 7），**至今不补** —— 那份 review_note 仍然
-   没有来源事件。这一条在 ``docs/BACKLOG.md`` 的 ``## task-T12`` 有案。
+   落 review_note（场景 1 / 2 / 6 / 7）。同样补 ``ArtifactSeeded``。
 
-前两条经 ``_seeded_index()`` **点名**认领，标 ``provenance="artifact_seeded"``、
-计进 ``summary.seeded_artifacts``；第 3 条仍标 ``provenance="unknown"``、
-计进 ``summary.unsourced_artifacts``。两个数分开，是因为两件事分得开：
-一个是「审计链指得到，只是没走正路」，一个是「审计链指不到」。
+三条**都**经 ``_seeded_index()`` **点名**认领，标 ``provenance="artifact_seeded"``、
+计进 ``summary.seeded_artifacts``。``summary.unsourced_artifacts`` 因此在当前四个
+场景上恒为 0 —— 这个计数**不删**：它是留给下一条旁路的哨兵，谁再绕开
+``on_task_result`` 又不补事件，它就从 0 变回非 0，A 类 warn 当场回来。
+两个数始终分开，是因为两件事分得开：一个是「审计链指得到，只是没走正路」，
+一个是「审计链指不到」。
 
 ``artifact_seeded`` **绝不能压成** ``task_result``：这些产物确实没走
 ``on_task_result``，冒充正路等于把洞抹掉而不是补上。旁路那件事照旧写在脸上

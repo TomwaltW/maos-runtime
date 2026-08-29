@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 
 from maos.agents.base import AgentIdentity, AgentOutput, BaseAgent, TaskContext, register
+from maos.agents.testing import record_seeded_artifact
 from maos.artifacts import KIND_REVIEW_NOTE
 from maos.contracts.events import new_id
 from maos.model.client import Tier
@@ -119,6 +120,11 @@ def review_after_gate(reviewer: ReviewerAgent, cp, plan_id: str, *, host_task: d
     不经 Worker 队列（与 ManagerAgent 同理：它不是被派发的任务角色，
     而是流程里一个明确位置上的调用），所以 review_note 由这里直接落库，
     挂在 ``host_task`` 名下、版本取该任务当前 attempt。
+
+    落库之后补一条 ``ArtifactSeeded``（``record_seeded_artifact``）—— 这是三条
+    绕开 ``on_task_result`` 的旁路里最后一条补上来源的。补的是**审计链**不是成色：
+    ``provenance`` 照旧标 ``artifact_seeded`` 而不是 ``task_result``，这份 review_note
+    确实没走正路，冒充正路就是撒谎；补上的只是「指得到是哪一步产的」。
     """
     snap = cp.snapshot(plan_id)
     artifacts = []
@@ -134,9 +140,24 @@ def review_after_gate(reviewer: ReviewerAgent, cp, plan_id: str, *, host_task: d
     )
     out = reviewer.run(ctx)
     for art in out.artifacts:
+        artifact_id = new_id("art")
         cp.store.insert_artifact({
-            "artifact_id": new_id("art"), "task_id": host_task["task_id"],
+            "artifact_id": artifact_id, "task_id": host_task["task_id"],
             "plan_id": plan_id, "kind": art["kind"],
             "version": host_task["attempt"], "content": art["content"],
         })
+        record_seeded_artifact(
+            cp.store, plan_id=plan_id, task_id=host_task["task_id"],
+            artifact_id=artifact_id, kind=art["kind"],
+            version=host_task["attempt"],
+            trace_id=host_task.get("trace_id") or "",
+            source="maos.agents.reviewer.review_after_gate",
+            reason=("Gate 之后、审批之前的那一次语义审查：Reviewer 不经 Worker 队列"
+                    "（与 ManagerAgent 同理，它是流程里一个明确位置上的调用，不是被"
+                    "派发的任务角色），review_note 因此由本函数直接落库 —— 没有一次"
+                    "on_task_result 能带回它。"),
+            # 不带 sandbox_mode / scripted：那两个键是 test_report 的分水岭
+            # （预置件 vs 现跑沙箱）。review_note 不经沙箱，编一个值进去就是往
+            # 审计链里塞假事实。
+        )
     return out

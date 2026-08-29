@@ -31,7 +31,7 @@ python3 scripts/gen_docs.py --check      # □ exit=0，打印「3 份文档与�
 # ⑤
 python3 scripts/make_evidence.py         # □ 「8 场景落盘，0 场景缺模块」（含 R5）；⚠️ 之后工作区 50 行脏
 # ⑥
-python3 scripts/verify.py                # □ 7/7 PASS，exit=0，另有 5 行 warn（2 类，见 A-2）
+python3 scripts/verify.py                # □ 7/7 PASS，exit=0，另有 1 行 warn（1 类，见 A-2）
 # ⑦
 git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动过）
 ```
@@ -58,22 +58,22 @@ git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动
 - [ ] 证据束里 grep 不到任何真密钥（生成脚本已做出口脱敏 + 哨兵反查，
       但**提交前再人肉扫一遍** `MAOS_LLM_API_KEY` / `MATRIX_TOKEN` 的值）。
 
-#### verify.py 的 5 行 warn 是**已知缺口，不是回归**
+#### verify.py 的 1 行 warn 是**已知缺口，不是回归**
 
-`verify.py` 报 7/7 PASS 的同时会打印 5 行 `· warn:`，分 2 类（**T12 收口后**实测）。
+`verify.py` 报 7/7 PASS 的同时会打印 1 行 `· warn:`，只此 1 类（**T12 收尾轮后**实测）。
 **第一次看到的人会以为是回归 —— 不是。** 逐类对照：
 
 | 类 | 行数 | 内容 | 出处 |
 | :-- | :-- | :-- | :-- |
-| A | 4 | 产物没有来源事件（`provenance=unknown`）—— scenario-1/2/6/7 各 1 份 **review_note** | `docs/BACKLOG.md ## task-T12` 第 1 条 |
 | E | 1 | `authoritative-fact` 项下：`scenario-7 case=case-s7-0002` 有回执但案子**停在中间态** `gateway_accepted` | **D-1** 带来的：第二笔撞终态失败码后走第三出口转人工、被主管驳回 |
 
-**A 类剩下的 4 行是同一条根因**：`maos/agents/reviewer.py::review_after_gate` 直接
-`insert_artifact` 落 review_note，是三条旁路里唯一还没自报来源的一条。另外两条
-（`flows/common.py::patch_verifier`、`agents/testing.py::seed_scripted_report`）已由 T12
-补上 `ArtifactSeeded` 事件，标 `provenance="artifact_seeded"`、计进
-`trace.summary.seeded_artifacts` —— 旁路仍是旁路（**不冒充 `task_result`**），
-但审计链指得到是哪一步产的了。这批产物在 `trace-tree` 项下出的是 `info:` 不是 `warn:`。
+**A 类（产物没有来源事件）已归零**：三条绕开 `on_task_result` 的旁路
+（`flows/common.py::patch_verifier`、`agents/testing.py::seed_scripted_report`、
+`agents/reviewer.py::review_after_gate`）现在**全部**补上了 `ArtifactSeeded` 事件，
+标 `provenance="artifact_seeded"`、计进 `trace.summary.seeded_artifacts` —— 旁路仍是
+旁路（**不冒充 `task_result`**），但审计链指得到是哪一步产的了。这批产物在
+`trace-tree` 项下出的是 `info:` 不是 `warn:`。最后那条 review_note 的收口需要人类
+授权改白名单外的 `maos/agents/reviewer.py`，2026-08-29 收尾时已授权并做掉。
 
 **E 类由 2 行降到 1 行，是判据细化不是判据放宽**：从前「有回执但 `biz_status` 不是
 settled」一句话报完，把两种正相反的情况说成同一件事。收口在**别的终态**上
@@ -91,11 +91,12 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 17 行 / 4 类（整合轮 5 之前）、10 行 / 2 类（合 Y-4 之前）、11 行 / 3 类（合 D 轮之前）
 与 12 行 / 3 类（T12 之前）都是旧读数，别照抄旧材料。
 
-- [ ] 跑出来的 warn 是 **5 行 / 2 类**（A 4 行 / E 1 行），B 类、C 类与 **D 类**都
+- [ ] 跑出来的 warn 是 **1 行 / 1 类**（E 1 行），A 类、B 类、C 类与 **D 类**都
       **不该再出现**（出现了就是回归）。
-      🔴 **这两个数各自随哪一轨变**：A 类每多一份**没有来源事件**的产物 +1（补了
-      `ArtifactSeeded` 的不算，那些走 `info:`）；**E 类按「未 settled 且停在中间态的退款
-      case 数」走** —— 收口在 `compensated` / `rejected` 上的**不再计数**。数字对不上先照
+      🔴 **这个数随哪一轨变**：**E 类按「未 settled 且停在中间态的退款 case 数」走**
+      —— 收口在 `compensated` / `rejected` 上的**不再计数**。已归零的 A 类同理：每多一份
+      **没有来源事件**的产物 +1（补了 `ArtifactSeeded` 的不算，那些走 `info:`），
+      所以新开一条绕开 `on_task_result` 的入库路径而不补事件，它会立刻回来。数字对不上先照
       这两条查成因，别直接当回归报 —— 前几轮就是把当前实测值写死成判据，Y-4 一合入
       就自己变成了假警报源（见本文件末尾那条教训）。
       ✅ **这一条现在有机器判据兜底**：`maos/tests/test_verify_warn.py` 把上面这张表

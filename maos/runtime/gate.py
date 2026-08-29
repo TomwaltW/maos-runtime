@@ -573,15 +573,44 @@ class ReviewerGate:
 
 
 class HumanApprovalQueue:
-    """人工审批队列。高风险任务 Gate 过了也停在 BLOCKED，等这里放行。"""
+    """人工审批队列。停在 BLOCKED 等人的任务从这里捞，捞不到的就是没人知道。"""
 
     def __init__(self, store: Store, cp: ControlPlane) -> None:
         self.store = store
         self.cp = cp
 
     def pending(self, plan_id: str) -> list[dict]:
+        """捞出所有在等人的 BLOCKED 任务。两类，缺一不可。
+
+        · ``effect_risk=H`` —— 产物落地是不可逆动作，Gate 过了也要人放行（既有语义）。
+        · 控制面在那一跳的 ``detail`` 里明说 ``await == "human_decision"`` 的
+          —— 控制面判定「机器已经没有别的招了」，这一类与 ``effect_risk`` 无关。
+
+        为什么第二类非加不可：控制面的第三出口（``HUMAN_EXIT_*``）判的是
+        「机器返工修不好」，判据是 finding 的 disposition 与 scope，两者都不看
+        ``effect_risk``。plan 级缺陷尤其可能落在一个 ``effect_risk=L`` 的任务上。
+        只按 H 捞，这类任务会停在 BLOCKED 且**没有任何人捞得到** —— 静默挂起，
+        比改造前那个明确的 FAILED 更糟。理由与取舍见 docs/DECISIONS.md 的
+        ## task-D1 设计点 3。
+
+        判据取自 event_log 而不是任务行上的某个字段：``detail`` 只落在迁移那一条
+        事件上，而 event_log 是 Trace 与审计的唯一来源（control_plane 铁律 4）。
+        为此在任务行上另开一个字段，就有了第二份事实。
+
+        历史上等过人、后来 ``human_resume`` 回去、这次因**别的**原因再次 BLOCKED
+        的任务也会被捞出来 —— 这是刻意的宽：BLOCKED 的三条出边
+        （``human_resume`` / ``human_approve`` / ``human_reject``，states.py:40-42）
+        全是人的动作，任何一个 BLOCKED 都在等人，多捞不会错，漏捞才会。
+        """
+        awaiting = {
+            e["task_id"] for e in self.store.list_event_log(plan_id)
+            if e.get("to_state") == TaskState.BLOCKED
+            and isinstance(e.get("detail"), dict)
+            and e["detail"].get("await") == "human_decision"
+        }
         return [t for t in self.store.list_tasks(plan_id)
-                if t["state"] == TaskState.BLOCKED and t["effect_risk"] == Risk.HIGH]
+                if t["state"] == TaskState.BLOCKED
+                and (t["effect_risk"] == Risk.HIGH or t["task_id"] in awaiting)]
 
     def decide(self, task_id: str, approved: bool, operator: str, note: str = "") -> None:
         self.cp.human_decision(task_id, approved, operator, note)

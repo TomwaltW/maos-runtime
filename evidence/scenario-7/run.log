@@ -1,4 +1,4 @@
-# generated at 2026-08-29T04:33:43.319097+00:00 from caf45d28b5d4c0541ecd94f01e14e560030c8f69
+# generated at 2026-08-29T05:28:52.126093+00:00 from d867d43325f739e87cac860a52d57b81ab710d8d
 场景 7：制造企业售后退款（失败路径），无 key 确定性复现
 
 [1] 待主管审批: 核算退款金额并写财务分录
@@ -58,8 +58,54 @@ Plan: FAILED  |  处理客户对轴承订单的退款诉求：政策与金额均
   补偿事件  : 1 条 CompensationExecuted
   Plan 终态 : FAILED（主管驳回，业务确实没成功）
   换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）
+
+--------------------------------------------------------------------
+第二笔退款：网关判定「交易不存在」—— 一次干净的转人工
+--------------------------------------------------------------------
+
+[6] 待主管审批: 核算第二笔退款金额并写财务分录（既有的 effect_risk=H 入口，未改动）
+
+[7] 第七道闸认出网关回执: code=ACQ.TRADE_NOT_EXIST retriable=False outcome=failed
+    官方处置: 检查交易号或商户订单号是否正确
+    出处    : https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-refund.html#业务错误码
+    → 终态失败，机器返工修不好：原样重发一次，交易还是不存在。控制面第三出口把它路由到人
+
+[8] BLOCKED  reason=gateway_needs_human  await=human_decision  attempt=1
+    无谓返工 0 次 —— 改造前这里是 2 次，屏幕上会出现三条一模一样的失败日志
+    证据: [{'gate': 'gateway', 'id': 'ACQ.TRADE_NOT_EXIST', 'code': 'ACQ.TRADE_NOT_EXIST', 'severity': 'blocker', 'disposition': 'human_terminal'}]
+    人工队列捞到: ['task-s7b-payment'] —— BLOCKED 而没人捞得到就是静默挂起，比 FAILED 更糟
+
+[9] 主管处置: 网关判定该交易不存在，交易号有误，本单作废改单重来 —— 人决定改单，MAOS 不替他决定
+
+====================================================================
+场景 7 第二段：终态失败码一次干净转人工
+====================================================================
+Plan: FAILED  |  处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在
+  · 受理第二笔退款诉求                            DONE             attempt=1 risk=L
+  · 按下单锁定的政策版本裁定退款资格                     DONE             attempt=1 risk=L
+  · 核算第二笔退款金额并写财务分录                      DONE             attempt=1 risk=M
+  · 发起第二笔退款并观察网关终态                       FAILED           attempt=1 risk=M
+  状态迁移轨迹:
+    task-s7b-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s7b-policy  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-policy  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-policy  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-policy  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s7b-finance  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-finance  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-finance  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-finance  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s7b-finance  BLOCKED          -> DONE             [human_approve]
+    task-s7b-payment  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-payment  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-payment  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-payment  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s7b-payment  BLOCKED          -> FAILED           [human_reject]
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['architecture', 'coding', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'requirement', 'reviewer', 'testing']
-INFO  maos.cp      创建计划 plan_e68b9aab5152，共 4 个任务
+INFO  maos.cp      创建计划 plan_c6360698b31b，共 4 个任务
 INFO  maos.cp      [task-s7-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -90,3 +136,28 @@ INFO  maos.gate    [task-s7-payment] Gate {'schema': 'pass', 'acceptance': 'pass
 INFO  maos.cp      [task-s7-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s7-payment] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s7-payment] BLOCKED -> FAILED (human_reject)
+INFO  maos.cp      创建计划 plan_cdedb01ceaef，共 4 个任务
+INFO  maos.cp      [task-s7b-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s7b-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s7b-policy] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-policy] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-policy] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-policy] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s7b-policy] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s7b-finance] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-finance] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-finance] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s7b-finance] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s7b-finance] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s7b-payment] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-payment] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-payment] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-payment] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'fail'} -> rework
+WARNING maos.cp      [task-s7b-payment] gateway_needs_human —— 机器返工修不好，一次转人工，不再重发
+INFO  maos.cp      [task-s7b-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s7b-payment] 无补偿引用，跳过回滚
+INFO  maos.cp      [task-s7b-payment] BLOCKED -> FAILED (human_reject)

@@ -70,6 +70,17 @@ AUTHORITATIVE_WRITER = "payment.observe"
 #: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要在退款域缺席时照跑。
 AUTHORITATIVE_RECEIPT_STATE = {"settled": frozenset({"settled"})}
 
+#: 业务状态机里**没有出边**的状态 —— 案子走到这里就收口了，不会再动。
+#: 与 maos/domain/refund/guard.py::BIZ_STATUS_FLOW 同源（那张表里出边为空的三个：
+#: settled / rejected / compensated）。照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同。
+#:
+#: 这三个之外的（submitted / approved / gateway_accepted / processing）都是**中间态**：
+#: 案子还在路上。「有回执但不是 settled」这句话对两边的含义天差地别 ——
+#: 收口在 compensated 上是**正确行为**（场景 7 的题眼就是「全程没有经过 settled」，
+#: 补偿收口的案子本来就一条 settled 观察都不该有），停在 gateway_accepted 上才是
+#: 「观察到了但没收口」，那才值得点名。加一个新终态就往这里加，别散在判断里。
+BIZ_TERMINAL_STATES = frozenset({"settled", "rejected", "compensated"})
+
 #: 外部判据的取值域。与 ``make_evidence.py::derive_business_outcome`` 里两处
 #: ``evidence.append`` 的 ``kind`` 同源 —— 生成侧装得进什么，核验侧才认什么。
 #: Agent 对自己的评价（``patch_set`` 里的 ``self_check``）不在其中，README §3 写死了这条。
@@ -124,6 +135,16 @@ class Check:
     def warn(self, note: str) -> None:
         """记一笔但不判负 —— 印给评委看，不改判定。"""
         self.notes.append(f"warn: {note}")
+
+    def info(self, note: str) -> None:
+        """照旧印出来，但不是 warn —— 「查过了，是预期」与「值得看一眼」不是一回事。
+
+        分开是因为 warn 在这个仓库里是**有基线的**（``maos/tests/test_verify_warn.py``
+        钉住行数与类别，多一行就红）。把「已确认符合设计」的观察也塞进 warn，基线
+        就永远在漂，真出现的那一行反而淹没在里面；而直接不印，等于把「这件事我们
+        看过、结论是预期」这句话从证据里抹掉 —— 那是评委最该看到的一句。
+        """
+        self.notes.append(f"info: {note}")
 
 
 class VerifyError(RuntimeError):
@@ -428,13 +449,32 @@ def check_authoritative_fact(cases: list[Case]) -> Check:
             if not bad:
                 chk.ok()
 
-        # 反面：有回执、案子却没到 settled，属于观察到了但没收口，点名但不判负。
+        # 反面：有回执、案子却没到 settled。原先这里一句话报完，把两种正相反的
+        # 情况说成同一件事：
+        #
+        #   * 收口在**别的终态**上（rejected / compensated）—— 那是正确行为，不是洞。
+        #     场景 7 的题眼恰恰是「业务状态 compensated，全程没有经过 settled，
+        #     settled 观察 0 条」；对着它报 warn，等于把设计意图报成可疑。
+        #   * 停在**中间态**上（submitted / approved / gateway_accepted / processing）
+        #     —— 观察到了但没收口，那才是该看一眼的。
+        #
+        # 细化的是措辞与分流，不是牙齿：中间态照旧 warn，而 settled 那三道判负
+        # （没回执 / 回执来源不对 / 回执没说到账）一条没动 —— 那三条才是这一项的牙。
         orphan = case.conn.execute(
-            "SELECT o.case_id FROM payment_observation o JOIN refund_case r"
+            "SELECT o.case_id, r.biz_status FROM payment_observation o JOIN refund_case r"
             " ON o.tenant_id=r.tenant_id AND o.case_id=r.case_id"
-            " WHERE r.biz_status!='settled'").fetchall()
+            " WHERE r.biz_status!='settled' GROUP BY o.case_id, r.biz_status").fetchall()
         for o in orphan:
-            chk.warn(f"{case.name} case={o['case_id']}: 有回执但 biz_status 不是 settled")
+            status = str(o["biz_status"])
+            label = f"{case.name} case={o['case_id']}"
+            if status in BIZ_TERMINAL_STATES:
+                chk.info(f"{label}: 有回执且案子收口在 biz_status={status}（非 settled 终态）"
+                         f" —— 预期行为：settled 是权威终态，收口在别处的案子本来就"
+                         f"不该有 settled 观察")
+                continue
+            chk.warn(f"{label}: 有回执但案子停在中间态 biz_status={status} —— 观察到了"
+                     f"但没收口（既没到 settled，也没落到 "
+                     f"{sorted(BIZ_TERMINAL_STATES - {'settled'})} 任何一个终态）")
     return chk
 
 
@@ -468,8 +508,68 @@ def check_trace_tree(cases: list[Case]) -> Check:
         unsourced = case.trace.get("summary", {}).get("unsourced_artifacts", 0)
         if unsourced:
             chk.warn(f"{case.name}: {unsourced} 份产物没有来源事件（provenance=unknown）")
+        _check_seeded_provenance(chk, case)
         _warn_sandbox_path(chk, case)
     return chk
+
+
+#: ``ArtifactSeeded`` 事件在 span 树里的名字前缀，出处
+#: ``maos/obs/trace.py::_EVENT_NAME``（``f"artifact-seeded:{kind}"``）。
+_SEEDED_SPAN_PREFIX = "artifact-seeded:"
+
+
+def _check_seeded_provenance(chk: Check, case: Case) -> None:
+    """``provenance="artifact_seeded"`` 得**兑现**它自称的那条来源，不能只是个标签。
+
+    这一条是随「补上审计链」一起长出来的判据，不补它就是拿一条 warn 换一个新洞：
+    从前旁路产物在证据里是 ``unknown``，谁也骗不了谁；现在它可以自称
+    ``artifact_seeded``，于是必须有人查「那条来源事件真的在吗、真的是它吗」。
+    否则给任意一份来路不明的产物贴上这个标签，warn 就消失了，而这一项照旧满分。
+
+    三问，任何一问不过都判负（不是 warn —— 自称有来源却指不出来，是伪造）：
+
+    1. ``provenance.event_span`` 非空，且在同一棵树里找得到那条 span；
+    2. 那条 span 确实是一条 ``ArtifactSeeded`` 事件，不是随手指的别的 span；
+    3. ``provenance.source`` 非空 —— 「谁产的」是这条事件存在的全部理由，
+       缺了它审计链等于只补了一半。
+
+    span 树与库重放逐字节一致由上面那条 replay 比对保证，所以这里读 trace.json
+    就够了：能改到这里的人也改得了库，而那会先在 replay 那一关不等。
+    """
+    for trace in case.trace.get("traces", []):
+        by_id = {s["span_id"]: s for s in trace["spans"]}
+        seeded = [s for s in trace["spans"]
+                  if (s["attributes"].get("maos.artifact.provenance") == "artifact_seeded")]
+        for s in seeded:
+            attrs = s["attributes"]
+            label = (f"{case.name} plan={trace['plan_id']} "
+                     f"artifact={attrs.get('maos.artifact.id')}")
+            ref = attrs.get("maos.artifact.provenance.event_span")
+            src = attrs.get("maos.artifact.provenance.source")
+            if not ref or ref not in by_id:
+                chk.bad(f"{label}: 自称 provenance=artifact_seeded，却指不到来源 span"
+                        f"（event_span={ref!r}）—— 标签是贴上去的，来源事件并不存在")
+                continue
+            if not str(by_id[ref].get("name", "")).startswith(_SEEDED_SPAN_PREFIX):
+                chk.bad(f"{label}: 来源 span {ref} 不是 ArtifactSeeded 事件"
+                        f"（name={by_id[ref].get('name')!r}）—— 随手指了棵别的树")
+                continue
+            if not src:
+                chk.bad(f"{label}: 有来源事件却没说是谁产的（provenance.source 为空）"
+                        f" —— 审计链只补了一半")
+                continue
+            chk.ok()
+
+    # 旁路本身仍要一眼看得见：洞补上了，「这些没走 on_task_result」这件事没变。
+    count = case.trace.get("summary", {}).get("seeded_artifacts", 0)
+    if count:
+        sources = sorted({
+            s["attributes"].get("maos.artifact.provenance.source") or "?"
+            for t in case.trace.get("traces", []) for s in t["spans"]
+            if s["attributes"].get("maos.artifact.provenance") == "artifact_seeded"})
+        chk.info(f"{case.name}: {count} 份产物走旁路入库（未经 on_task_result），"
+                 f"来源已由 ArtifactSeeded 事件点名：{'；'.join(sources)}。"
+                 f"这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode")
 
 
 def _warn_stray_events(chk: Check, case: Case) -> None:

@@ -890,3 +890,17 @@ T5 轨把 `docs/ppt-outline.md` 渲染成 `artifacts/` 下的演示稿（HTML �
 | 2026-08-29 | P7 | **`scripts/verify.py` 的 `business-outcome` warn 单行过长**（实测一条 200+ 字，含完整归因段落），录制镜 8 时在 100 列窗口里要折成 3 行，4 条就吃掉十几行画面 | 镜 8 的镜头要往下滚到 `RESULT: 7/7 PASS` 才停，warn 越长滚得越久，占的是念词时间。不影响判定，纯粹是**上镜体验** | 归 `verify.py` 持有轨。可选改法：warn 正文只留一句，长归因收进 `--verbose`。**不急** —— 分镜里已写明「往下滚到 RESULT 行再停住」，当前富余 +3.1s 够用 |
 | 2026-08-29 | P7 | **`scripts/make_evidence.py` 产出的 `business-objects.json` 里，两个 plan 的对象块先后顺序不稳定**。实测连跑三次，场景 7 的 `amount_paid: 6800.0`（`task-s7-*` 组）落在**第 41 → 152 → 152 行**，`task-s7-*` 与 `task-s7b-*` 两组整体换位；git 里 `27c9e18` 提交的那份是 s7 组在前 | ①**任何引用该文件行号的文档都会周期性失效**，而录制前置必然重跑一次证据束 —— 分镜镜 2 原来写的「第 4–22 行附近」就是这么烂掉的（T 轮已改成按 `task_id` 现场 grep，不再依赖行号）；②证据束的**逐字节可复现性**因此不成立：同一份代码同一份数据，两次跑出来的 `business-objects.json` 不是同一个字节序列，只是内容等价。这不影响 `verify.py`（它按对象读，不按行读），但会让「重跑证据束 → 只有出处头变」这个直觉失效 | 归 `make_evidence.py` 持有轨。改法应该很小：落盘前按稳定键排序（如 `(plan_id, task_id, object_type, object_id)`）。**做之前先确认 `verify.py` 的哈希校验不依赖当前顺序** —— 第 1 项 `hash-integrity` 校的是 `event_log` 里的 digest，与本文件的排布无关，但值得跑一遍确认 |
 | 2026-08-29 | P7 | **`maos/kb/experiment.py` 的一条 `logging` 输出打到 stderr，让 `python3 -m maos.kb.experiment` 的屏幕输出从 2 行变 3 行**（多出 `[task-nokb-intake] plan_defect —— 机器返工修不好，一次转人工，不再重发`） | 不是 bug（那行本身是真实且有信息量的），但上一版分镜写死了「屏幕上只打两行」，实测已不符 —— T 轮已在镜 3 改正并标注「别把它当成报错」。留档是因为**下一个改这个模块的人可能又把行数改掉** | 不建议改代码。若将来要让这一镜更干净，可考虑把该日志降级到 DEBUG；改之前先看 `docs/demo-script.md` 镜 3 —— 那里写死了 3 行 |
+
+## task-T12
+
+本轨（`verify.py` 12 行 warn 收口）只持有 `maos/flows/common.py`、
+`maos/flows/scenario_{1,2,3,5}.py`、`maos/agents/testing.py`、`maos/obs/trace.py`、
+`scripts/verify.py`、`maos/tests/test_verify_warn.py`（新建）、
+`docs/submission-checklist.md` 的 §A-2 一段，外加两份账本。基线 `4cfef38`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P6 | **第三条旁路 `maos/agents/reviewer.py::review_after_gate` 仍不自报来源**：它直接 `store.insert_artifact` 落 review_note（scenario-1/2/6/7 各一份），是三条绕开 `on_task_result` 的入库路径里唯一没补 `ArtifactSeeded` 的一条。本轨补掉的是另外两条（`flows/common.py::patch_verifier`、`agents/testing.py::seed_scripted_report`） | A 类 warn 因此从 6 行只降到 4 行，剩下的 4 行全是同一条根因。审计链上这 4 份 review_note 仍然指不到是哪一步产的 | **归持有 `maos/agents/reviewer.py` 的轨**（该文件在 T12 白名单外，本轨按铁律 4 不当场改）。改法已经现成：调 `maos.agents.testing.record_seeded_artifact`，与另两条旁路同一个写法，四行代码。做完之后 A 类归零，同步改 `docs/submission-checklist.md` §A-2 与 `maos/tests/test_verify_warn.py::WARN_BASELINE` |
+| 2026-08-29 | P6 | **`docs/submission-checklist.md:24` 的 `802 passed` 已过期**：本轨新增 17 条（`test_verify_warn.py`）后是 819，而 T 轮其余五轨也各自在加测试 | 照自查单跑第 ① 条会对不上数，被当成回归报 | **归整合轮统一刷**，与 `scripts/demo_preflight.sh` 的 `EXPECT_TESTS`（同样写死 802）同批改 —— 那两处必须同时改，否则前置脚本与自查单互相矛盾。本轨自测一律用 `MAOS_EXPECT_TESTS=819` 覆盖，没有动这两个文件 |
+| 2026-08-29 | P6 | **`scripts/verify.py --json` 的 stdout 不是纯 JSON**：`render()` 打完 JSON 之后照旧会追加人类可读的 `RESULT: …` 与「证据来源：…」两行（`--json` 分支只管前半段） | 任何用 `json.loads(stdout)` 读它的下游都会 `JSONDecodeError: Extra data`。本轨的 `test_verify_warn.py` 已改用 `raw_decode` 只取前缀绕过，但下一个写 CI/脚本的人会再踩一次 | 归 `verify.py` 持有轨。改法二选一：`--json` 时不打那两行，或把它们打到 stderr。**不急**（当前没有别的下游），但值得在改 `render()` 时顺手做掉 |
+

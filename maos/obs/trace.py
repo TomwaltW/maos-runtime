@@ -10,20 +10,31 @@ attributes``。**不做真 OTel 导出**：没有 SDK 依赖、没有 collector�
 **不会**被悄悄挂到某个 span 下面充数，而是显式标成 ``provenance="unknown"`` ——
 审计链有洞就要让洞看得见；把洞填平是上游的事，不是导出器的事。
 
-已知的三处洞（都在 ``docs/BACKLOG.md`` 有案，本模块只负责让它们可见）：
+绕开 ``on_task_result`` 落库的旁路有三条。它们**都还在**（每一条都有非走不可的
+理由，见各自的 docstring），区别只在会不会自报来源：
 
-1. ``review_after_gate()`` 直接 ``store.insert_artifact`` 落 review_note，不经
-   ``on_task_result``，因此没有 StateTransition 可挂 —— trace 里会凭空多出一份产物。
-2. 场景 3 / 5 的 ``seed_scripted_report()`` 同理：预置的 test_report 没有来源事件。
-3. 场景 1 / 2 的 ``flows/common.py::patch_verifier`` 也走同一条旁路入库。
+1. 场景 3 / 5 的 ``agents/testing.py::seed_scripted_report()`` —— 预置的
+   test_report。落库后补一条 ``ArtifactSeeded``。
+2. 场景 1 / 2 的 ``flows/common.py::patch_verifier`` —— 现跑沙箱回归的真报告。
+   同样补 ``ArtifactSeeded``。
+3. ``agents/reviewer.py::review_after_gate()`` 直接 ``store.insert_artifact``
+   落 review_note（场景 1 / 2 / 6 / 7），**至今不补** —— 那份 review_note 仍然
+   没有来源事件。这一条在 ``docs/BACKLOG.md`` 的 ``## task-T12`` 有案。
 
-三者都会被标成 ``provenance="unknown"`` 并计进 ``summary.unsourced_artifacts``。
+前两条经 ``_seeded_index()`` **点名**认领，标 ``provenance="artifact_seeded"``、
+计进 ``summary.seeded_artifacts``；第 3 条仍标 ``provenance="unknown"``、
+计进 ``summary.unsourced_artifacts``。两个数分开，是因为两件事分得开：
+一个是「审计链指得到，只是没走正路」，一个是「审计链指不到」。
 
-**``provenance="unknown"`` 说的是入库路径，不是内容真伪。** 第 3 类是**真跑**
-沙箱回归的产物（真 workdir、真 ``git apply``、真 pytest），只是插入时绕开了
-``on_task_result``，于是没有事件可指。把这三类一律读成「预置的假报告」，会把已经
-兑现的外部判据重新贬成脚手架 —— 判「这份报告是不是真跑的」要看下面那条
-``maos.artifact.sandbox.mode``，不是看 provenance。
+``artifact_seeded`` **绝不能压成** ``task_result``：这些产物确实没走
+``on_task_result``，冒充正路等于把洞抹掉而不是补上。旁路那件事照旧写在脸上
+（``provenance.note`` / ``provenance.source``），补上的只是「指不到是谁产的」。
+
+**provenance 说的是入库路径，不是内容真伪。** 第 2 类是**真跑**沙箱回归的产物
+（真 workdir、真 ``git apply``、真 pytest），第 1 类是一次都没跑过的预置件 ——
+两者的 provenance 一样，差别在 ``maos.artifact.sandbox.mode``（container /
+subprocess / not-run）和 ``provenance.source`` 点的那个函数名。把它们一律读成
+「预置的假报告」，会把已经兑现的外部判据重新贬成脚手架。
 
 依赖方向：``maos/obs`` 只 import ``maos.core.store``，不 import 任何业务域
 （铁律 9）。换域时本文件一行不改。
@@ -46,11 +57,19 @@ KIND_TASK = "task"
 KIND_EVENT = "event"
 KIND_ARTIFACT = "artifact"
 
-# 产物来源。只有 task_result / compensation 两种能在 event_log 里指到具体一行；
-# 其余一律 unknown —— 不猜，也不因为「看着像」就给它安一个来源。
+# 产物来源。前三种都能在 event_log 里指到具体一行；指不到的一律 unknown ——
+# 不猜，也不因为「看着像」就给它安一个来源。
 PROV_TASK_RESULT = "task_result"
 PROV_COMPENSATION = "compensation_attached"
+#: 绕开 ``on_task_result`` 落库、但**自报了来源**的产物（``ArtifactSeeded``）。
+#: 与 ``task_result`` 分开是要紧的：它记的是审计链指得到了，不是这份产物走了正路。
+#: 压成 task_result 就等于让旁路冒充正路 —— 那是把洞抹掉，不是把洞补上。
+PROV_ARTIFACT_SEEDED = "artifact_seeded"
 PROV_UNKNOWN = "unknown"
+
+#: 旁路产物自报来源的事件类型。与 ``maos/agents/testing.py::SEEDED_EVENT`` 同值，
+#: 照抄而不 import：本模块只 import ``maos.core.store``（见模块 docstring）。
+SEEDED_EVENT = "ArtifactSeeded"
 
 # 与 ``maos/artifacts.py::KIND_TEST_REPORT`` 同值。不 import 是为了守住本模块
 # 「只 import maos.core.store」那条依赖纪律（见模块 docstring）。
@@ -81,6 +100,7 @@ _EVENT_NAME = {
     "RefundBizStatusChanged": lambda e: (
         f"biz:{e.get('from_state')}->{e.get('to_state')}"),
     "AuthoritativeFactViolation": lambda e: "biz:authoritative-violation",
+    SEEDED_EVENT: lambda e: f"artifact-seeded:{(e.get('detail') or {}).get('kind', '?')}",
 }
 
 
@@ -202,6 +222,11 @@ def _submit_index(events: list[dict], tasks: list[dict]) -> dict[str, list[dict]
     test_report，它排在真产物**前面**。只按顺序取名额的话，预置件会顶掉真产物的
     位置，于是「有来源」和「无来源」两顶帽子正好戴反 —— 而两边计数都对得上，
     看输出根本发现不了。
+
+    如今旁路产物先被 ``_seeded_index()`` 点名认走，不再进这里竞争名额，上面那记
+    暗坑因此打不着了。窗口照旧留着：``ArtifactSeeded`` 是**上游自愿**补的，
+    哪天有第四条旁路忘了补，这套判定要能照旧把它判成无来源，而不是靠「没人抢名额」
+    蒙对。判据不能建立在别人一定会守规矩上。
     """
     prev_time = {t["task_id"]: t.get("created_at") for t in tasks}
     out: dict[str, list[dict]] = {}
@@ -224,6 +249,30 @@ def _submit_index(events: list[dict], tasks: list[dict]) -> dict[str, list[dict]
                 "hi": e.get("created_at"),
             })
         prev_time[tid] = e.get("created_at")
+    return out
+
+
+def _seeded_index(events: list[dict]) -> dict[str, dict]:
+    """``artifact_id -> 声明它来源的 ``ArtifactSeeded`` 事件``。
+
+    与 ``_submit_index`` 那套时间窗不同，这里是**点名**：事件的
+    ``detail.artifact_id`` 写死了认领哪一份，不靠「落库时间在窗口内」去猜。
+    旁路入库本来就没有窗口可言（``patch_verifier`` 跑在 AWAITING_REVIEW 之后，
+    ``seed_scripted_report`` 跑在 Plan 开跑之前），拿窗口去套只会套空。
+
+    同一个 artifact_id 出现两条时取**第一条**：来源是一次性的事实，后来的重复
+    声明不该改写它，也不该让认领结果依赖遍历顺序。
+    """
+    out: dict[str, dict] = {}
+    for e in events:
+        if e.get("event_type") != SEEDED_EVENT:
+            continue
+        detail = e.get("detail") or {}
+        aid = detail.get("artifact_id")
+        if aid and str(aid) not in out:
+            out[str(aid)] = {"span_id": _sid("event", e.get("seq")),
+                             "source": detail.get("source"),
+                             "scripted": detail.get("scripted")}
     return out
 
 
@@ -311,7 +360,10 @@ def export_trace(store: Any, plan_id: str) -> dict:
             comp_spans.setdefault(e["task_id"], []).append(
                 (_sid("event", e.get("seq")), (e.get("detail") or {}).get("patch_ref")))
 
+    seeded = _seeded_index(events)
+
     unsourced = 0
+    seeded_artifacts = 0
     degraded_reports = 0
     unrecorded_reports = 0
     for t in tasks:
@@ -323,12 +375,18 @@ def export_trace(store: Any, plan_id: str) -> dict:
         for art in store.list_artifacts(tid):
             kind, version, born = art.get("kind"), art.get("version"), art.get("created_at")
             prov, parent, ref_span = PROV_UNKNOWN, task_span[tid], None
+            seed = seeded.get(str(art.get("artifact_id")))
 
             if kind == "compensation":
                 for sid, patch_ref in comp_spans.get(tid, []):
                     if patch_ref == (art.get("content") or {}).get("patch_ref"):
                         prov, parent, ref_span = PROV_COMPENSATION, sid, sid
                         break
+            elif seed is not None:
+                # 点名的来源优先于时间窗猜测：``ArtifactSeeded`` 指名道姓说了
+                # 这份是它落的，没有哪个窗口比这更有资格认领它。
+                prov = PROV_ARTIFACT_SEEDED
+                parent = ref_span = seed["span_id"]
             else:
                 for sub in submits.get(tid, []):
                     if sub["attempt"] != version:
@@ -343,6 +401,8 @@ def export_trace(store: Any, plan_id: str) -> dict:
 
             if prov == PROV_UNKNOWN:
                 unsourced += 1
+            elif prov == PROV_ARTIFACT_SEEDED:
+                seeded_artifacts += 1
 
             # 测试报告额外带一条「这一次到底在哪儿跑的」。非 test_report 一律 None，
             # 不给别的产物安一个它本来就没有的字段。
@@ -367,10 +427,18 @@ def export_trace(store: Any, plan_id: str) -> dict:
                     "maos.task_id": tid,
                     "maos.artifact.provenance": prov,
                     "maos.artifact.provenance.event_span": ref_span,
+                    # 产它的那个函数，原样搬自 ``ArtifactSeeded`` 的 detail.source。
+                    # 只有旁路产物有；正路产物的来源就是那条 submit 事件本身。
+                    "maos.artifact.provenance.source": (
+                        (seed or {}).get("source") if prov == PROV_ARTIFACT_SEEDED else None),
                     "maos.artifact.provenance.note": (
-                        None if prov != PROV_UNKNOWN else
                         "无来源事件：该产物未经 on_task_result 入库，"
                         "审计链上查不到是谁在哪一步产的（docs/BACKLOG.md task-C 第 5 条）"
+                        if prov == PROV_UNKNOWN else
+                        "旁路入库：未经 on_task_result，但来源由 ArtifactSeeded 事件"
+                        "点名声明（见 event_span / source）。这说的是入库路径，"
+                        "不是内容真伪 —— 判真伪看下面的 sandbox.mode"
+                        if prov == PROV_ARTIFACT_SEEDED else None
                     ),
                     "maos.artifact.sandbox.mode": sandbox_mode,
                     "maos.artifact.sandbox.degraded_reason": sandbox_reason,
@@ -399,6 +467,10 @@ def export_trace(store: Any, plan_id: str) -> dict:
             "event_count": len(events),
             "artifact_count": sum(1 for s in spans if s["kind"] == KIND_ARTIFACT),
             "unsourced_artifacts": unsourced,
+            # 走旁路入库、但自报了来源的份数。与 unsourced 分开数：审计链补上了，
+            # 「这些没走 on_task_result」这件事仍然要一眼看得见，不许随着洞被补上
+            # 一起消失 —— 那样等于用一次修复换掉一条判据。
+            "seeded_artifacts": seeded_artifacts,
             "unresolved_task_events": unknown_task_events,
             # 「跑了但没真跑」的两种形态，分开计数：前者是知道降级了，
             # 后者是连有没有降级都查不到 —— 后者比前者更糟，不能合并成一个数。
@@ -470,6 +542,7 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
             "span_count": sum(t["summary"]["span_count"] for t in traces),
             "event_count": sum(t["summary"]["event_count"] for t in traces),
             "unsourced_artifacts": sum(t["summary"]["unsourced_artifacts"] for t in traces),
+            "seeded_artifacts": sum(t["summary"]["seeded_artifacts"] for t in traces),
             "degraded_sandbox_reports": sum(
                 t["summary"]["degraded_sandbox_reports"] for t in traces),
             "unrecorded_sandbox_reports": sum(

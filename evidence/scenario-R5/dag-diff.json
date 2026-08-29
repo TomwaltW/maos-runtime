@@ -1,4 +1,4 @@
-# generated at 2026-08-29T05:28:17.578013+00:00 from 956e6afb1f48770330908f9ab78d2cb295b87a8b-dirty
+# generated at 2026-08-29T06:14:19.780213+00:00 from 9c7483b059b92cc7237b197b26a47e064771dce5-dirty
 {
   "experiment": "R5 · RAG 有无对照",
   "variable": "MAOS_KB_ENABLED=0 / 1，两段的计划脚本逐字节相同",
@@ -14,7 +14,7 @@
   },
   "history_case": {
     "case_id": "case-r5-hist",
-    "plan_id": "plan_a525b1199a01",
+    "plan_id": "plan_4b21e5dd4131",
     "biz_status": "settled",
     "acked_notifications": 1,
     "promoted_doc": {
@@ -25,7 +25,7 @@
     }
   },
   "without_kb": {
-    "plan_id": "plan_5fae67bbc730",
+    "plan_id": "plan_7c9435120cc8",
     "plan_state": "FAILED",
     "tasks": [
       "受理多源退款诉求并聚合证据",
@@ -41,23 +41,25 @@
     ],
     "gate_result": "blocker",
     "finance_gate": "blocker",
-    "rework_count": 1,
+    "rework_count": 0,
     "kb_retrieved_events": 0,
     "kb_candidate_count": 0,
     "human_approval_stops": [],
-    "biz_status": "submitted",
-    "failed_tasks": [
+    "human_dispositions": [
       {
         "title": "受理多源退款诉求并聚合证据",
-        "error": "IntegrityError: UNIQUE constraint failed: refund_case.tenant_id, refund_case.case_id"
+        "await": "human_decision",
+        "approved": false
       }
     ],
+    "biz_status": "submitted",
+    "failed_tasks": [],
     "finance_entries": 0,
     "settled": false,
     "plan_done": false
   },
   "with_kb": {
-    "plan_id": "plan_fa6c20f8df25",
+    "plan_id": "plan_96dc81f5459a",
     "plan_state": "DONE",
     "tasks": [
       "受理多源退款诉求并聚合证据",
@@ -80,6 +82,13 @@
     "kb_candidate_count": 5,
     "human_approval_stops": [
       "核算退款金额并写财务分录"
+    ],
+    "human_dispositions": [
+      {
+        "title": "核算退款金额并写财务分录",
+        "await": "human_approval",
+        "approved": true
+      }
     ],
     "biz_status": "settled",
     "failed_tasks": [],

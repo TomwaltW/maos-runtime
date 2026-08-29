@@ -32,7 +32,11 @@ P1 留的是空壳（五个方法全 `raise NotImplementedError`），本模块�
    校验形状后直接拼。
 3. **向量维度不匹配**：SQLite 侧逐行比对、能点名是哪一行；PG 侧由 pgvector 在查询
    层一次性报错，**报不出行号**。两边都抛 `ValueError`、都不跳过，但信息量不同。
-4. **中文全文**：见下。
+4. **全文分数不是同一把尺子**：`ts_rank` 缺省不做文档长度归一，`bm25` 做。本层因此
+   给 `ts_rank` 传了 normalization（见 `FTS_RANK_NORMALIZATION`），让两边的**名次**
+   一致 —— 检索器按名次归一，名次不一致等于「换后端悄悄改排序」。**分数本身仍然
+   不可跨后端比较**，别去比绝对值。
+5. **中文全文**：见下。
 
 ## 中文全文检索的口径（本轨的选择，理由记在 docs/DECISIONS.md）
 
@@ -75,6 +79,27 @@ DEFAULT_CONNECT_TIMEOUT = 5
 #: 文本检索配置。缺省 `simple`；装了中文分词扩展的部署把它指过去即可。
 FTS_CONFIG_ENV = "MAOS_PG_FTS_CONFIG"
 DEFAULT_FTS_CONFIG = "simple"
+
+#: `ts_rank` 的 normalization 位掩码。**必须传** —— 缺省的 0 不做文档长度归一。
+#:
+#: 症状（实测，T10 记在 BACKLOG、T18 在自己的库上复跑确认）：同一条查询 `timeout`、
+#: 同一份语料，PG 侧 `d1`(6 词) 与 `d2`(1 词) **同分 0.06079271**，并列后按 id 升序
+#: 排成 `['d1', 'd2']`；而 SQLite 侧 `-bm25` 给 `d2` 严格高于 `d1`，排成 `['d2', 'd1']`。
+#: 两边都满足 F-2 的「越大越相关、降序、同分按 id 升序」，所以**谁都不报错**，
+#: 但**名次不同** —— 而 `maos/kb/retriever.py` 的 `_rank_normalize` 正是按名次归一的，
+#: 于是「换个后端，混合召回的最终排序悄悄变了」。铁律 8 要防的正是这类无症状假象。
+#:
+#: 取 2 =「除以文档长度」，与 bm25 的长度惩罚同向。**口径是以本地 `-bm25` 为准**：
+#: 本地是缺省路径、是全部现有测试与演示的基准，让 PG 向它对齐影响面最小
+#: （docs/DECISIONS.md 有这一行）。
+#:
+#: 为什么不取 8 / 16（「除以唯一词数」）：实测在长度差异大的语料上它们与本地**对不上**
+#: —— 一篇 61 词、但只有 3 个唯一词的文档会被判得比 9 词 9 个唯一词的更相关，PG 排
+#: `['e1', 'e3', 'e2']`，本地排 `['e1', 'e2', 'e3']`。1 与 2 在实测语料上都对得上，
+#: 取 2 是因为它归的是真·文档长度，8/16 归的是词表大小。见 maos/tests/test_pg_rank_parity.py。
+#:
+#: ⚠️ 这只对齐**名次**，不对齐**分数**。两边的分数仍然不可跨后端比较。
+FTS_RANK_NORMALIZATION = 2
 
 #: PG 16 自带的全部文本检索配置。**一个都没有中文分词器** —— 所以「配置在这张表里」
 #: 等价于「这个部署没装中文分词」。不在表里的配置是运维自己装的，本层信任它。
@@ -211,9 +236,13 @@ class PgStorePort:
                 " 不装就让检索器退化为本地实现，中文召回照常。"
             )
 
+        # normalization 直接拼进 SQL 而不走 `%s`：它是本模块的 int 常量、不是调用方
+        # 传进来的值（`int()` 再拼，形状卡死），而 `ts_rank` 的第三个参数要求解析成
+        # `integer` —— 走占位符时驱动会按 Python int 自己挑类型，挑成 numeric 就报
+        # 「function ts_rank(tsvector, tsquery, numeric) does not exist」。
         sql = (
             f"SELECT id, ts_rank(to_tsvector(%s, {field}),"
-            f" plainto_tsquery(%s, %s)) AS score"
+            f" plainto_tsquery(%s, %s), {int(FTS_RANK_NORMALIZATION)}) AS score"
             f" FROM {table}"
             f" WHERE to_tsvector(%s, {field}) @@ plainto_tsquery(%s, %s)"
             f" ORDER BY score DESC, id ASC LIMIT %s"

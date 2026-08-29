@@ -1,4 +1,4 @@
-# generated at 2026-08-28T10:49:05.922993+00:00 from fa57c97def5a20f1b171bfc412a5d6a3e2f82b0b
+# generated at 2026-08-29T03:09:37.208958+00:00 from df96fa8f2b66564f9fd77f6f78437d723f3ebb93
 场景 6：制造企业售后退款（顺利路径），无 key 确定性复现
 
 待主管审批: 核算退款金额并写财务分录
@@ -38,34 +38,34 @@ Plan: DONE  |  处理客户对轴承订单的退款诉求：多源诉求已到�
 
   业务状态: settled（settled 只可能由 payment.observe 写入）
   核准金额: 6800.00（政策 v1，依据 ["AS-01@v1"]）
-  支付观察: 1 条，终态 settled，actor=926f67ec…
+  支付观察: 1 条，终态 settled，actor=7ad1069f…
   业务引用: 5 条（DAG -> 业务对象，只存引用不存副本）
   客户通知: 1 条，ack=未确认（needs_followup，不阻塞）
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['architecture', 'coding', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'requirement', 'reviewer', 'testing']
-INFO  maos.cp      创建计划 plan_ad1de032feb0，共 5 个任务
+INFO  maos.cp      创建计划 plan_58a2c68e8879，共 5 个任务
 INFO  maos.cp      [task-s6-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s6-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s6-intake] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s6-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s6-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s6-intake] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [task-s6-policy] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s6-policy] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s6-policy] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s6-policy] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s6-policy] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s6-policy] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [task-s6-finance] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s6-finance] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s6-finance] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s6-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s6-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s6-finance] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s6-finance] BLOCKED -> DONE (human_approve)
 INFO  maos.cp      [task-s6-payment] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s6-payment] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s6-payment] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s6-payment] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s6-payment] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s6-payment] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [task-s6-notify] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s6-notify] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s6-notify] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s6-notify] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s6-notify] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s6-notify] AWAITING_REVIEW -> DONE (gate_pass)

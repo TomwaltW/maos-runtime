@@ -49,6 +49,20 @@ git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动
 > 逐步耗时与卡点见 [`docs/clone-smoke-report.md`](clone-smoke-report.md)。
 > 原来那个「只跑 ⑤ 不跑 ⑥ 会 `exit=2`」的坑已由 Y-3 消解（⑤ 缺省一并产 R5）。
 
+- [ ] 冒烟用的是**评委最可能敲的那条 clone 命令**（不带 `-b`），而不是自己补了分支的那条。
+
+> ✅ **整合轮 10 已在 `4cfef38` 上重跑**（T8 轨，本地源 + 远端 URL 各一遍）：
+> 两个源逐条对齐 —— `802 passed`、七项 `7/7 PASS`、跑完 50 行脏、八个场景 sha 全干净，
+> 掐表 **6.97s**（本地）/ **8.69s**（远端），全序列 23.9s / 26.3s。
+> 见 [`docs/clone-smoke-report.md`](clone-smoke-report.md) 的**第五遍**一节。
+>
+> 🔴 **但上面那条新可勾项当前是红的**：仓库的 GitHub **默认分支是 `main`，
+> 而 `main` 上是已封存的 TypeScript 骨架**（44 个文件，没有 `maos/` 包）。
+> 裸 `git clone <地址>` 拿到的是它，README 里此后每一条命令都跑不了。
+> 前四遍冒烟每次都自己带了 `-b`，这个条件一直是隐含的，从没被写出来过。
+> 修法两条（甲：GitHub 上改默认分支；乙：README §4 那行写死 `-b goai-restructure`），
+> 都不在任何单轨的可改面内 —— 见 `docs/BACKLOG.md ## task-T8` 第 1 条。
+
 ### A-2 证据束
 
 - [ ] `evidence/` 下每个文件首行都是 `# generated at <ISO8601> from <git sha>`（实测 50 个文件）。
@@ -295,6 +309,30 @@ grep -rh "^# generated at" evidence/ | sed 's/.* from //' | sed 's/-dirty//' | s
       都能在 [`docs/ppt-outline.md`](ppt-outline.md) 或 [`docs/demo-script.md`](demo-script.md)
       里找到**产出它的那条命令**。找不到命令的数字就是没有出处的数字，删掉或补命令。
 - [ ] **改了代码就要回来重录那一镜、重生成那三份文档**（`gen_docs.py --check` 会告诉你哪份漂了）。
+
+### D-5 提交压缩包（规则要「可执行代码仓库，含源码/压缩包」）
+
+**在最后一个 commit 之后现打**，不要提前打 —— 包名带 sha7，sha 一变包就过期了。
+
+```bash
+bash scripts/make_release.sh          # 产出 dist/maos-runtime-<sha7>.zip
+echo "exit=$?"                        # □ 0
+```
+
+脚本自己会做完打包 → 解压 → 跑 `pytest` + `make_evidence.py` + `verify.py` →
+排除项自查 → 密钥自查这一整串，**任一不过就非 0 退出**，不产出跑不起来的交付物。
+
+- [ ] `bash scripts/make_release.sh` **exit=0**，末行是「✅ 打包 + 解压验证 + 密钥自查 全过」。
+- [ ] 包名里的 sha7 == `git rev-parse --short=7 HEAD`（打包之后没有再 commit）。
+- [ ] `dist/` 下那个 zip 是要上传的那份；**它不入 git**（`.gitignore` 第 7 行挡着，这是有意的：
+      sha 一变就要重打，二进制进版本库只会让每轮整合多一坨没法 review 的 diff）。
+
+> 🔴 **包里必须带 `.git`**，脚本用的是 `git clone --depth 1` 而不是 `git archive`。
+> 原因实测过：`git archive` 产出的目录没有 `.git`，而 `scripts/make_evidence.py`
+> 取不到 git sha 就按铁律 3（证据必须有出处）**拒绝生成** —— `exit=2`，
+> 连带 `maos/tests/test_repro_path.py` 的 5 条也红。也就是说 archive 出来的包
+> **跑不了 README 的 ①②**，等于交了一个不可复现的「可执行代码仓库」。
+> 脚本里有一条正向检查专门守着这件事。
 
 ---
 

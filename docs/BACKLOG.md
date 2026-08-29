@@ -571,3 +571,14 @@ E-2 轨（交付面文档失真）执行中发现，**均不在本轨白名单�
 | 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
 |---|---|---|---|---|
 | 2026-08-29 | P7 | **`docs/clone-smoke-report.md` §5 结论段的 🔴 已失真**：仍写着「Y-3 合并后，本轨的冒烟结论必须重跑一遍……**在 Y-3 合并前，不要把本报告当作最终版引用**」。但 Y-3 早已合入，同文件 §2「第三遍（整合轮 5，基线 `5ea6890`）—— Y-3 收敛成两条命令之后」就是那次重跑的记录 | 一份交付面报告在正文里演示了重跑结果、却在结论里拦着读者「别把我当最终版」，自相矛盾。该文件「待整合轮 5 回填」表第 2 行本来就写明「§5 结论段的『Y-3 合并后必须重跑』一句届时删除」，这条**回填动作漏做了** | 派单 §5.2 只列了三处（本机路径 / 时效声明 / 第一遍 ❌ 交代），这条不在其中，本轨不擅自扩面。交整合轮 6，与该文件的条数、耗时读数一起收口：把 🔴 改成「Y-3 已合入，重跑见 §2 第三遍」，并把「待整合轮 5 回填」表第 2 行标为已解 |
+
+## task-G2
+
+G-2 轨（verify 第 6 项：外部判据只验列表非空）执行中发现，**均不在本轨白名单可改面内**，
+按铁律 4 记账不当场改。本轨只做了派单点名的那一件事：`external_evidence` 里的每一条
+必须在库里回查得到。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **FAILED 的 plan 可以自称 `status: "succeeded"` 而第 6 项照过。** `check_business_outcome` 对终态的判据是：`state not in ("DONE","FAILED")` 就跳过，否则只要 `business_outcome` 是个 dict 且 `status` 非空就 `chk.ok()` —— 只有 `state == "DONE"` 的分支才继续查判据。于是库里 FAILED、result.json 也老实记 FAILED（躲开了 state 比对）、`business_outcome.status` 却写 `succeeded`，第 6 项一声不吭 | 与本轨修的是**同一个模式**：只验字段在不在，不验说的是不是真的。危害比本轨那条小一档（要骗过的是「读 json 的人」而不是「跑核验器的人」，且 `basis`/`plan_state` 两个字段会自相矛盾），但它就在同一个函数里，隔着五行 | 建议下一轮顺手做，判据是现成的：FAILED 分支加一句 `status` 必须是 `failed`（生成侧 `derive_business_outcome` 就是这么写死的，`plan_state == "FAILED"` -> `status, basis = "failed", "plan_failed"`），一行的事。本轨不擅自扩面 |
+| 2026-08-29 | P7 | **`business_outcome` 的 `basis` / `plan_state` / `source` / `unaudited_evidence_count` 四个字段仍是「写什么就是什么」。** 本轨回查的是 `external_evidence` 里**指得到的东西**（产物、回执），这四个字段本身没有任何一层校验 | `unaudited_evidence_count` 尤其值得点名：把它改成 0 就能让第 6 项那条 warn 凭空消失，而那条 warn 是评委判断「这份报告是不是脚手架」的唯一线索。warn 不判负，所以这不是「伪造成功」，是**伪造干净** —— 一屏没有 warn 的 7/7，比有 warn 的 7/7 更容易被当成没问题 | 不急，但修法很便宜：`unaudited_evidence_count` 应当等于列表里 `provenance == "unknown"` 的条数，`plan_state` 应当等于库里的 `state`，`basis` 与 `status` 的对应关系在 `derive_business_outcome` 里是死的。四条都能在同一个 for 循环里就地比对，不需要新查库 |

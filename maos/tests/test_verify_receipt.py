@@ -1,4 +1,4 @@
-"""核验器的两个盲区，钉成回归测试（E-1）。
+"""核验器的三个盲区，钉成回归测试（E-1 两个 + G-2 一个）。
 
 这个项目最核心的那句话是「退款到没到账，权威在支付网关，不在我们库里」。
 但直到 E-1 之前，系统持有的其实是「**有一张回执**」——回执的**内容**从头到尾
@@ -10,11 +10,17 @@ A. 库里把 ``compensated`` 直接 ``UPDATE`` 成 ``settled``，复用那条现
 B. 把某个证据文件首行换成 ``# generated at 2020-01-01… from deadbeef``。格式合法，
    而它自称出自的代码根本不是这次核验的对象 —— 从前 ``load_evidence_json`` 只查
    前缀，sha 是什么完全不看，7/7 PASS。
+C. 把 DONE 那个 plan 的 ``external_evidence`` 整条换成
+   ``{"kind": "test_report", "ref": "完全编造的"}``，不动库、不动 trace.json。
+   第 6 项从前只做两件事 —— 列表非空、``status == "succeeded"``，列表里装什么
+   一个字都不验，7/7 PASS。同一个模式的第三个实例。（G-2）
 
 为什么非得在这一层堵：``refund_case`` / ``payment_observation`` 两张表**不参与**
 第 4 项 trace 重放（那一项比对 span 树与事件链），所以对这两张表的直接篡改，
-全核验器只有第 3 项拦得住；而出处注释根本不在任何一项的判据里。
-没有这两组测试，这个洞会再回来一次。
+全核验器只有第 3 项拦得住；出处注释根本不在任何一项的判据里；而第 4 项**不看
+result.json**，于是外部判据那个列表成了整束证据里唯一一处「写什么就是什么」的
+地方 —— 偏偏它就是用来证明「这单业务真的成了」的那一处。
+三处都没有第二道兜底，没有这三组测试，这些洞会再回来一次。
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 import sqlite3
 import subprocess
 import sys
@@ -55,11 +62,15 @@ verify = _load_script("verify")
 # ---------------------------------------------------------------------------
 # 造件
 # ---------------------------------------------------------------------------
-def _build_db(path: pathlib.Path, *, cases=(), observations=(), observer_ids=()) -> None:
+def _build_db(path: pathlib.Path, *, cases=(), observations=(), observer_ids=(),
+              plans=(), artifacts=()) -> None:
     """一个只放退款两张表的最小库。
 
     `observer_ids` 落成 SkillInvoked 事件 —— 第 3 项就是从这里认「哪些
     invocation_id 是真的 payment.observe 调用」。
+
+    `plans` / `artifacts` 是 G-2 加的：第 6 项要拿 `plan` 表当遍历面、
+    拿 `artifact` 表回查外部判据，光有退款两张表不够。
     """
     store = SqliteStore(str(path))
     store.init_schema()
@@ -68,6 +79,11 @@ def _build_db(path: pathlib.Path, *, cases=(), observations=(), observer_ids=())
         store.append_event_log({
             "plan_id": PLAN, "trace_id": "tr-e1", "event_type": "SkillInvoked",
             "detail": {"skill": "payment.observe", "invocation_id": inv}})
+    for plan_id, state in plans:
+        store.insert_plan({"plan_id": plan_id, "trace_id": "tr-e1",
+                           "goal": "回执得说得出内容", "state": state})
+    for artifact in artifacts:
+        store.insert_artifact(artifact)
 
     conn = sqlite3.connect(str(path))
     try:
@@ -287,3 +303,247 @@ def test_bundle_without_index_falls_back_to_shape_only(bundle):
     finally:
         for c in cases:
             c.conn.close()
+
+
+# ===========================================================================
+# 盲区 C：外部判据整条编造（G-2）
+#
+# 与上面 A/E 同一个模式的第三个实例：**只验有没有，不验说的是不是真的**。
+# 第 6 项从前只做两件事 —— `external_evidence` 列表非空、`status == "succeeded"`，
+# 列表里装什么一个字都不看。而第 4 项 trace-tree 的牙齿是「trace.json 与库重放
+# 逐字节一致」，它**不看 result.json**。于是这个列表成了整束证据里唯一一处
+# 「写什么就是什么」的地方，偏偏它就是用来证明「这单业务真的成了」的那一处：
+# 把两条真判据换成 `{"kind": "test_report", "ref": "完全编造的"}`，不动库、
+# 不动 trace.json，`verify.py` 照印 RESULT: 7/7 PASS、exit=0。
+# ===========================================================================
+def _report_artifact(artifact_id: str, *, plan_id: str = PLAN, task_id: str = "t-g2",
+                     version: int = 1, kind: str = "test_report",
+                     passed: int = 5, failed: int = 0) -> dict:
+    """库里那份真产物。"""
+    return {"artifact_id": artifact_id, "task_id": task_id, "plan_id": plan_id,
+            "kind": kind, "version": version,
+            "content": {"passed": passed, "failed": failed, "errors": 0}}
+
+
+def _report_evidence(artifact_id: str, *, task_id: str = "t-g2", version: int = 1,
+                     passed: int = 5, provenance: str = "task_result") -> dict:
+    """result.json 里记的那条判据。字段形状抄自
+    `make_evidence.py::derive_business_outcome` 判据一。
+    """
+    return {"kind": "test_report", "artifact_id": artifact_id, "task_id": task_id,
+            "version": version, "passed": passed, "provenance": provenance}
+
+
+def _observation_evidence(case_id: str, *, request_id: str | None = None,
+                          observed_state: str = "settled", gateway_code: str = "10000",
+                          actor: str = "inv-real") -> dict:
+    """判据二的形状 —— 它指的不是产物，**没有 artifact_id**。
+    `request_id` 的默认值跟着 `_build_db` 里 `f"req-{case_id}"` 那条走。
+    """
+    return {"kind": "payment_observation", "case_id": case_id, "tenant_id": TENANT,
+            "request_id": request_id or f"req-{case_id}", "gateway_code": gateway_code,
+            "observed_state": observed_state, "actor_invocation_id": actor,
+            "provenance": "payment_observation"}
+
+
+def _recorded(*, plan_id: str = PLAN, state: str = "DONE", evidence=(),
+              unaudited: int = 0) -> dict:
+    """result.json 里的一条 plan 记录（只留第 6 项读的那几个字段）。"""
+    return {
+        "plan_id": plan_id,
+        "state": state,
+        "business_outcome": {
+            "status": "succeeded" if evidence else "undetermined",
+            "basis": "external_evidence" if evidence else "no_external_evidence",
+            "plan_state": state,
+            "external_evidence": list(evidence),
+            "unaudited_evidence_count": unaudited,
+            "source": "derived-from-db-at-export-time",
+        },
+    }
+
+
+@pytest.fixture
+def outcome_case(tmp_path):
+    """造一个能跑第 6 项的 `verify.Case`：库里的 plan/artifact + result.json 的 plans。"""
+    opened = []
+
+    def _make(*, recorded=(), name: str = "scenario-g2", **kw) -> "verify.Case":
+        db = tmp_path / f"{name}.db"
+        _build_db(db, **kw)
+        conn = verify.connect_ro(str(db))
+        opened.append(conn)
+        return verify.Case(name=name, directory=str(tmp_path), db_path=str(db), conn=conn,
+                           tables=verify.table_names(conn), trace={},
+                           result={"plans": list(recorded)})
+
+    yield _make
+    for c in opened:
+        c.close()
+
+
+def test_backed_evidence_passes_and_unaudited_stays_a_warn(outcome_case):
+    """正面对照，同时钉死**两个维度不许混**。
+
+    这条判据「来源未审计」（provenance=unknown，入库时绕开 on_task_result）
+    却**回查得到** —— scenario 1/2/3/5 现在就是这个样子：真产物，只是没走事件。
+    新判据管的是内容对不对得上库；把那条 warn 顺手升级成 FAIL，就是把已经
+    兑现的真产物贬回脚手架，正是那条 warn 想防的事情的反面。
+    """
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real")],
+        recorded=[_recorded(evidence=[_report_evidence("art-real", provenance="unknown")],
+                            unaudited=1)])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.PASS and (chk.passed, chk.total) == (1, 1)
+    assert any("来源未审计" in n for n in chk.notes), "warn 不许被新判据吃掉"
+
+
+def test_fabricated_external_evidence_is_caught(outcome_case):
+    """攻击 G 的回归钉：整条判据是编的 —— 不动库、不动 trace.json，只改 result.json。
+
+    这就是派单 §2 那次实测：修前 `RESULT: 7/7 PASS`、exit=0。
+    """
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real")],
+        recorded=[_recorded(evidence=[{"kind": "test_report", "ref": "完全编造的",
+                                       "note": "没有这份产物"}], unaudited=1)])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL, "外部判据整条编造却过关 —— 业务成功是自封的"
+    assert (chk.passed, chk.total) == (0, 1)
+    note = " ".join(chk.notes)
+    assert "回查不到" in note and "artifact_id" in note, f"报错得说清缺什么，实际：{note}"
+
+
+def test_evidence_pointing_at_a_missing_artifact_is_caught(outcome_case):
+    """字段齐全、形状合法，指的那份产物库里没有 —— 比整条编造更像真的。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real")],
+        recorded=[_recorded(evidence=[_report_evidence("art_0000deadbeef")])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "查无此物" in " ".join(chk.notes)
+
+
+def test_evidence_borrowed_from_another_plan_is_caught(outcome_case):
+    """产物是**真的**，只是属于另一个 plan —— 不许 A 计划的产物给 B 计划背书。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-别家的", plan_id="plan-g2-other")],
+        recorded=[_recorded(evidence=[_report_evidence("art-别家的")])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "不能给本 plan 背书" in " ".join(chk.notes)
+
+
+def test_self_check_artifact_cannot_back_the_outcome(outcome_case):
+    """产物在、也属于本 plan，但它是 Agent 对自己的评价 —— README §3 写死了不算。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-自评", kind="patch_set")],
+        recorded=[_recorded(evidence=[_report_evidence("art-自评")])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "不是外部判据类" in " ".join(chk.notes)
+
+
+def test_unknown_evidence_kind_is_refused(outcome_case):
+    """取值域之外的 kind 一律判负：认不出来的东西回查不了，不能默认放行。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real")],
+        recorded=[_recorded(evidence=[{"kind": "self_check", "artifact_id": "art-real"}])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "不是外部判据类" in " ".join(chk.notes)
+
+
+def test_failing_report_cannot_back_the_outcome(outcome_case):
+    """产物真、归属对、kind 也对，但这份报告自己就是红的 —— 背不了书。
+
+    生成侧只把 `failed==0 and errors==0` 的报告装进判据
+    （make_evidence.py::derive_business_outcome 判据一），核验侧照着倒推。
+    """
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-红的", failed=2)],
+        recorded=[_recorded(evidence=[_report_evidence("art-红的")])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "自己就没过" in " ".join(chk.notes)
+
+
+def test_report_evidence_with_doctored_version_is_caught(outcome_case):
+    """指对了产物，却把 task/version 改成别的 —— 生成侧是逐个抄库里的，对不上就是改过。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real", version=1)],
+        recorded=[_recorded(evidence=[_report_evidence("art-real", version=7)])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "与库里不符" in " ".join(chk.notes)
+
+
+def test_payment_observation_evidence_is_backed_by_the_db(outcome_case):
+    """判据二的正面对照：它没有 artifact_id，回查的是退款两张表。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        cases=[("case-g2", "settled")],
+        observations=[("case-g2", "settled", "10000", "inv-real")],
+        recorded=[_recorded(evidence=[_observation_evidence("case-g2")])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.PASS and (chk.passed, chk.total) == (1, 1)
+
+
+def test_forged_payment_observation_evidence_is_caught(outcome_case):
+    """回执是编的：case 真、状态真，`request_id` 库里没有这一行。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        cases=[("case-g2", "settled")],
+        observations=[("case-g2", "settled", "10000", "inv-real")],
+        recorded=[_recorded(evidence=[_observation_evidence("case-g2",
+                                                            request_id="req-编造的")])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "查无此回执" in " ".join(chk.notes)
+
+
+def test_payment_observation_evidence_with_doctored_receipt_is_caught(outcome_case):
+    """行在、request_id 也对，回执**说的内容**被改了 —— 与攻击 A 同一个理。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        cases=[("case-g2", "settled")],
+        observations=[("case-g2", "processing", "10000", "inv-real")],
+        recorded=[_recorded(evidence=[_observation_evidence("case-g2",
+                                                            observed_state="settled")])])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "没有一行对得上" in " ".join(chk.notes)
+
+
+def test_evidence_kinds_match_the_generator_side():
+    """取值域在 verify 与 make_evidence 各存一份（核验器不 import 生成脚本），
+    那就得有人守着它们别分叉 —— 与 E-1 那条 `test_criterion_matches_the_guard_side_table`
+    同一个套路。生成侧新增一类判据而这里没跟上，新那类会被一律判负。
+    """
+    source = (ROOT / "scripts" / "make_evidence.py").read_text(encoding="utf-8")
+    body = source.split("def derive_business_outcome")[1].split("\ndef ")[0]
+    appended = set(re.findall(r'"kind":\s*"([a-z_]+)"', body))
+
+    assert appended == set(verify.EXTERNAL_EVIDENCE_KINDS), (
+        f"两边的外部判据取值域分叉了：生成侧装 {sorted(appended)}，"
+        f"核验侧认 {sorted(verify.EXTERNAL_EVIDENCE_KINDS)}")

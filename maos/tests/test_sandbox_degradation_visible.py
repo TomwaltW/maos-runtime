@@ -308,11 +308,17 @@ def test_unaudited_warn_no_longer_calls_a_real_report_fake():
     绕开 ``on_task_result``。把「入库路径证不了」印成「内容是假的」，会让评委把
     已经兑现的外部判据重新读成脚手架。
     """
+    # 判据必须是「来源未审计**但回查得到**」的那一种 —— 这条测试要钉的是措辞，
+    # 不是回查（回查的正负例在 test_verify_receipt.py 的盲区 C 一节）。
     chk = verify.check_business_outcome([_case(
-        conn=_FakeConn([{"plan_id": PLAN_ID, "state": "DONE"}]),
+        conn=_FakeConn([{"plan_id": PLAN_ID, "state": "DONE"}],
+                       artifacts=[{"plan_id": PLAN_ID, "task_id": "t",
+                                   "kind": "test_report", "version": 1,
+                                   "content": '{"passed": 5, "failed": 0, "errors": 0}'}]),
         result={"plans": [{"plan_id": PLAN_ID, "state": "DONE", "business_outcome": {
             "status": "succeeded",
-            "external_evidence": [{"kind": "test_report"}],
+            "external_evidence": [{"kind": "test_report", "artifact_id": "art-1",
+                                   "task_id": "t", "version": 1, "passed": 5}],
             "unaudited_evidence_count": 1,
         }}]},
     )])
@@ -365,11 +371,32 @@ def test_clean_case_stays_quiet():
     assert chk.notes == []
 
 
-class _FakeConn:
-    """只需要 ``execute`` 返回 plan 行 —— 第 6 项对 conn 的用法就这一处。"""
+class _FakeCursor:
+    """只需要 ``fetchone`` —— 第 6 项回查一份产物就用这一个方法。"""
 
     def __init__(self, rows: list[dict]):
+        self._rows = list(rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _FakeConn:
+    """``execute`` 要认两种查询：plan 行，以及回查外部判据的那行 artifact。
+
+    原先只需要返回 plan 行（那时 docstring 写着「第 6 项对 conn 的用法就这一处」）。
+    G-2 给第 6 项加了「外部判据必须在库里回查得到」之后就多了一处 —— 造件跟着走，
+    否则下面那条测试走不到 ``chk.ok()``，它要钉的 warn 措辞反而钉不住。
+    """
+
+    def __init__(self, rows: list[dict], artifacts: list[dict] = ()):
         self._rows = rows
+        self._artifacts = list(artifacts)
 
     def execute(self, sql, *args):
+        if "FROM artifact" in sql:
+            return _FakeCursor(self._artifacts)
         return list(self._rows)

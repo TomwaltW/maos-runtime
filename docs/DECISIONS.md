@@ -655,6 +655,13 @@ rework 的第三出口：终态失败一次干净转人工（分支 `task/d1-hum
 | 2026-08-29 | P7 | `maos/kb/experiment.py:27` 那句红线原文是「两版的 `finance_gate` 字段如实记 `not_triggered` / `pass`，不硬凑成 blocker」 | **改写这句红线的措辞，保留它的意思**：改成「一律如实记闸真的说了什么，不硬凑」 | 原措辞把两个具体值写死了，而闸现在真的判出了 blocker —— 照原字面执行反而变成「明明判了 blocker 却要记成 not_triggered」，正好反过来违反它自己要守的东西。同理 `_finance_gate()` 的判定顺序改成**先读 `gate_results["finance"]`、再谈触没触发**：照旧逻辑（按顶层 `amount_claimed` 反推触发集）会把一条真的 plan 级 blocker 记成 `not_triggered` |
 | 2026-08-29 | P7 | 本分支里 without_kb 段的实测拦点是 `IntegrityError: UNIQUE constraint failed: refund_case`，不是那条 plan 级 finding 的文案 | **如实落盘、不修饰**，并在三处写明它是过渡态：`experiment.py` 模块 docstring、`## task-D2` 的 BACKLOG、本轨回执 | 按跨轨冻结契约，`scope="plan"` 的 blocker 该由控制面直接 `AWAITING_REVIEW -> BLOCKED` 转人工、**不返工**；那条路由在 D-1 轨，本分支没有（派单 §4.4 明写端到端留整合轮）。于是 blocker 走了普通返工路径，受理那一步被重跑，撞上 `refund_case` 的唯一键。**D-1 合并后证据束必须重跑** —— 这一条如果没人接，复赛材料里就留着一句 UNIQUE 报错当拦点 |
 
+## task-F1
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | `manager.py:132` 的注释写「动了它场景 1-6 全部改判」，实测既漏了场景 7 又多算了 3、4。改准时口径有两种：写死场景号区间（「1-7」），还是写实际调用集合 | **写实际调用集合**：`_user_message` 注释改成「走 ManagerAgent 规划的场景（1 / 2 / 5 / 6 / 7）」，`plan()` docstring 的「不带 context 的场景」同步从 `(1/2/3/4/5/7)` 收窄为 `(1/2/5/7)`。两处一次编辑改完 | 复跑 `grep -rn "\.plan(\|ManagerAgent" maos/flows/` 实测：调 `mgr.plan()` 的只有场景 1（`scenario_1.py:123`）/ 2（`:121`）/ 5（`:174`、`:186`）/ 6（`:290`）/ 7（`:387`），**场景 3、4 根本不构造 `ManagerAgent`**。写「1-7」会把 3、4 重新算进来，等于把旧错误换个方向再犯一次；而区间写法每加一个场景都要重判一次，集合写法照着 grep 就能复核。带 context 的仍只有场景 6，故 `plan()` 那句的补充说明不动 |
+| 2026-08-29 | P7 | `docs/agentteams-mapping.md:21` 把「10 个角色」直接挂在 `AGENT_POOL` / `@register` 的代码位置后面，而 `AGENT_POOL` 实际只有 9 个（`ManagerAgent` 不打 `@register`）。`docs/BACKLOG.md:304` 给了两条路：①给 Manager 加 `@register`；②统一措辞 | **选 ② 只改措辞**，改成「10 个 Agent 身份，其中 9 个可被派单」。不给 `ManagerAgent` 加 `@register` | ① 要动 `maos/agents/**` 与 `maos/runtime/**`，且会让 Worker 白构造一个从不接 `TaskAssignment` 的实例 —— `test_registry_autodiscovery.py:187` 正用 `assert ManagerAgent.identity.role not in AGENT_POOL` 把这件事钉死，语义是「规划者不是可派发角色」，不该为了两个数字好看去让它。② 成本只有措辞，且把两个数都说出来比抹平其中一个更准。改后全仓复扫「个角色」，再无把计数直接挂在 `AGENT_POOL` 语境下的写法（`refund/__init__.py:5` 的「四个角色就进 `AGENT_POOL`」是对的，四个退款域角色确实都注册了） |
+
 ## integrate-round-6
 
 D-1 + D-2 并入 `integrate/round-6`（基线 `c1049c2`）。以下是派单没覆盖、或我自行判断的地方。

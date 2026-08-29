@@ -477,6 +477,18 @@ rework 第三出口（分支 `task/d1-human-exit`，基线 `956e6af`）。设计
 | 2026-08-29 | P7 | **`maos/kb/guardrails.py:204-219` 的 `_shared_inputs` 只扫顶层 `inputs`**，取不到嵌在 `case_seed` 里的 `amount_claimed`。它的 docstring 明写「`amount_claimed` 取自当前计划已有的任务 …… 抄错一位数就是把闸绕过去」 | 当前无症状：with_kb 段的 baseline 里 finance 那一步带着顶层 `amount_claimed`，拿得到。但**漏排财务核算的 baseline 拿不到** —— 知识建议若在那种 baseline 上补步骤，补出来的任务会缺申报金额，第六道闸对它恒不触发。这与本轨修的是同一类坑（触发面只看顶层），只是在检索侧 | `kb/guardrails.py` 不在本轨白名单。本轨已把「按字段名任意深度扫」抽成 `gate.py` 的 `_claimed_amounts`，检索侧若要修可以照同一口径走，但**不要跨轨共用实现** —— 内核与知识层之间不该新增依赖方向。交后续轨 |
 | 2026-08-29 | P7 | **`docs/domain-portability.md` §2 的行数与 diff 统计没跟着本轨刷**（§2.2 表里 `maos/runtime/` 的 `+126 / −4`、正文 `:116` 与 `:251` 的「+126」、§2.3 的 `+150 / −6`） | 本轨给 `gate.py` 加了约 +200 行（plan 级判据 + 两个模块级辅助函数 + docstring），这几处数字全部偏小。不影响论证方向（「这些行领域无关」照旧由两条 AST 守卫钉着），只是数字不准 | 那几个数字按定义是 `git diff --shortstat` 的区间统计，**必须实跑才能填**，且区间端点会随整合轮的合并提交变。本轨只刷了 §5 与收口台账里**与本轨改动直接相关**的行号（`gate.py:454 -> :522`，新增 `:578`），没有代刷区间统计。交整合轮 |
 
+## task-F1
+
+口径统一轨（分支 `task/f1-role-count`，基线 `c1049c2`）：只改两处措辞
+（`maos/agents/manager.py` 的场景集合、`docs/agentteams-mapping.md:21` 的角色数），
+零行为变更。以下三条是本轨看见但**按铁律 4 不当场改**的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`maos/kb/experiment.py:678` 的 `write_evidence()` docstring 写「与场景 1-6 走同一套落盘与脱敏口径」，应为 1-7**。本轨实测判定：**确认该改**。依据是这句话自称的复用关系确实覆盖到了场景 7 —— `write_bundle` 全仓唯一实现在 `scripts/make_evidence.py:409`，`:481` 在 `for n in wanted` 循环里对每个场景调它，而 `wanted` 缺省取 `maos/main.py:26` 的 `ALL_SCENARIOS = (1,2,3,4,5,6,7)`；R5 自己在 `experiment.py:711` 调的是同一个 `write_bundle`。所以场景 7 与 R5 同源这件事成立，只是数字没跟着 Y-4 走 | 不改判定、不改行为，纯文档失真。但它恰好是在解释「为什么不另立第二份落盘口径」，把 7 漏在外面会让读者以为场景 7 走的是别的路径 —— 而场景 7 正是唯一走失败路径的那个，最容易被当成特例 | **`maos/kb/experiment.py` 是 D-2 全文件独占，本轨一个字节没碰。** 交 D-2 顺手改，或 D-2 合并后另开一单 |
+| 2026-08-29 | P7 | **`docs/EXECUTION.md:710` 说 `agent-identity.md` 是「十角色清单（软件域 6 + 退款域 4）」，与 `AGENT_POOL` 的 9 个对不上**，是 `docs/BACKLOG.md:304` 那条账的第三处表述。本轨判定：**建议不改** | 严格说这句没错 —— 它描述的是 `agent-identity.md` 这份生成物的**内容清单**（确实列了 10 个 Identity），不是在描述可派单数；且生成物自己 `:7` 已如实印出「10 个 / 9 个 / 1 个」并解释差在哪，顺着链接就能数平。真正会误导的是把 10 直接挂在 `AGENT_POOL` 后面那种写法，那处已由本轨在 `agentteams-mapping.md:21` 修掉 | **手册是事实源，改它历来要人类当场授权（先例 `docs/DECISIONS.md:322`），本轨不动。** 若人类仍想把三处表述统一，最小改法是在该行末尾追加「其中 9 个可被派单」—— 那是措辞增强，不是纠错，可与 `## task-X4` 那批文档一起做 |
+| 2026-08-29 | P7 | **`mgr.plan()` 还有一个「场景」以外的调用点：`maos/kb/experiment.py:344`（R5 RAG 对照实验，传 context）**。本轨把 `_user_message` 的注释改成「走 ManagerAgent 规划的场景（1 / 2 / 5 / 6 / 7）全部改判」，措辞限定在**场景**，未提这一处 | 「用户请求」前缀一旦动，R5 实验同样改判，而 R5 不在 `ALL_SCENARIOS` 里、也不在场景编号体系内，照注释复核的人可能漏掉它。影响只在「改这个前缀之前要复核哪些出口」这一件事上 | 与上面第 1 条同属 `maos/kb/experiment.py` 面。若 D-2 处理那条时顺手，可在 `experiment.py:338-344` 附近加一句「本处与场景共用 `_user_message` 的『用户请求』前缀」的反向指路；不做也不影响任何判定 |
+
 ## integrate-round-6
 
 D-1（rework 第三出口）与 D-2（第六道闸 plan 级判据）并入 `integrate/round-6`，

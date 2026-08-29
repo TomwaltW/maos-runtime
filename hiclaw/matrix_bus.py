@@ -14,10 +14,16 @@
    落盘 —— 而 ``evidence/`` 是要入库的（铁律 6），且出口脱敏管不到 ``__repr__``
    这个入口。演示当天不炸、但密钥已经进了 git 历史，比当天炸更难收拾。
 
-真房间联通（Synapse / Element 截图）属 Phase 4，不在本模块的交付范围。本模块只
-保证「降级永远可用、接上就能镜像」：``_NioChannel`` 那条活路径在本机走不到
-（matrix-nio 未安装，恒 ImportError 降级），未经真房间实测，见
-``docs/BACKLOG.md`` 的 ``## task-E`` 小节。
+``_NioChannel`` 那条活路径在系统 python3 上走不到（matrix-nio 未安装，构造即
+ImportError，上游降级 log-only），所以它的三条关键判据全部另行验过 —— 用真
+matrix-nio 0.26.0 客户端栈打真 HTTP 到一个本地 stub homeserver，逐条撞出来的
+结论写在 ``docs/DECISIONS.md`` 的 ``## task-C2``，回归钉在
+``maos/tests/test_matrix_bus.py`` 第 7 节。**尚未在真 Synapse / Element 上跑过**
+（等 C-1 的房间），仍未验的部分记在 ``docs/BACKLOG.md`` 的 ``## task-C2``。
+
+这三处判错了的症状都是「降级」而不是「崩」，所以它们不会自己暴露 —— 这也是为什么
+判据要抽成模块级纯函数（:func:`encryption_verdict` / :func:`should_deliver`）
+而不是埋在 ``_NioChannel`` 的方法里：埋着就只能靠读代码相信。
 """
 
 from __future__ import annotations
@@ -164,15 +170,89 @@ def render_mirror(topic: str, env: Envelope) -> tuple[str, str]:
 # 房间通道
 # --------------------------------------------------------------------------
 class MirrorChannel(Protocol):
-    """镜像通道。抽出来是为了能在测试里塞一个「必炸」的实现验证旁路语义。"""
+    """镜像通道。抽出来是为了能在测试里塞一个「必炸」的实现验证旁路语义。
+
+    ``listen`` 声明在这里而不是只留在 ``_NioChannel`` 上：下游（C-3 的 room_demo）
+    拿到的是 :attr:`MatrixEventBus.channel`，形状写进 Protocol 才有一处可读的出处。
+    否则换一个通道实现时漏掉 listen，症状是「房间里发命令没反应」—— 离原因很远。
+    """
 
     def send(self, plain: str, html: str) -> None: ...
+
+    def listen(self, on_message: Callable[[str, str], None]) -> None: ...
 
     def close(self) -> None: ...
 
 
 class RoomEncrypted(RuntimeError):
     """房间开了端到端加密。不装 ``matrix-nio[e2e]``，遇加密房直接降级（phase-3.md:14/20）。"""
+
+
+# --------------------------------------------------------------------------
+# 两个纯判据
+# --------------------------------------------------------------------------
+# 抽成模块级纯函数，是为了能在**没装 matrix-nio、也没有 Synapse** 的解释器里直接
+# 断言 —— 本机 python3 与 CI 正是这种环境，而这两处恰好是整个模块里判错了也不会
+# 崩、只会静默降级的地方。不抽出来，它们就只能靠读代码相信。
+ENC_CLEAR = "clear"
+ENC_ENCRYPTED = "encrypted"
+ENC_ERROR = "error"
+
+#: Synapse 对「状态事件不存在」回的 errcode。matrix-nio 把响应体里的 ``errcode``
+#: 原样放进 ``status_code``（实测：是这个字符串，不是 HTTP 404 那个数字）。
+ERRCODE_NOT_FOUND = "M_NOT_FOUND"
+
+#: 首次 sync 用的过滤器：一条 timeline 消息都不要，只为把 ``next_batch`` 推到「现在」。
+NO_HISTORY_FILTER = {"room": {"timeline": {"limit": 0}}}
+
+
+def encryption_verdict(resp: Any) -> tuple[str, str]:
+    """把 ``room_get_state_event("m.room.encryption")`` 的返回判成 ``(档位, 说明)``。
+
+    **不按返回类型判，按内容判** —— 这是 matrix-nio 0.26.0 实测逼出来的
+    （见 ``docs/DECISIONS.md`` 的 ``## task-C2``）：
+
+    ``AsyncClient.create_matrix_response`` 里只有 **HTTP 404** 那一条分支会把响应体
+    转成 ``RoomGetStateEventError``；其余非 200（403 机器人不在房间、401 token 失效）
+    统统落进 ``else`` 走 ``RoomGetStateEventResponse.from_dict``，而它的实现就是一句
+    ``return cls(parsed_dict, ...)`` —— **把错误体原样包成一个「成功」响应**。
+    于是「返回的不是 Error 就是已加密」这个判据，会把「机器人没进房间」和
+    「token 过期」一起念成「房间开了加密」，然后降级，日志里留一个假原因。
+
+    用 ``getattr`` 而不是 ``isinstance``，同样是为了能在没装 matrix-nio 的解释器里
+    被直接调用。两个类的字段本就互斥：Error 有 ``status_code`` 没 ``content``，
+    Response 有 ``content`` 没 ``status_code``。
+    """
+    status_code = getattr(resp, "status_code", None)
+    if status_code is not None:
+        if status_code == ERRCODE_NOT_FOUND:
+            return ENC_CLEAR, ERRCODE_NOT_FOUND      # 状态事件查不到 = 房间未加密
+        return ENC_ERROR, f"{status_code} {getattr(resp, 'message', '')}".strip()
+
+    content = getattr(resp, "content", None)
+    if not isinstance(content, dict):
+        return ENC_ERROR, f"无法识别的状态查询响应：{type(resp).__name__}"
+    if content.get("errcode"):
+        # 非 404 的错误体，被 from_dict 包成了「成功」响应。别念成加密房。
+        return ENC_ERROR, f"{content['errcode']} {content.get('error', '')}".strip()
+    algorithm = content.get("algorithm")
+    return ENC_ENCRYPTED, str(algorithm) if algorithm else "m.room.encryption 已设置"
+
+
+def should_deliver(room_id: str, self_user_id: str, room: Any, event: Any) -> bool:
+    """这条房间事件该不该喂给 ``on_message``。两条否决都不能省。
+
+    · **不是本房间的** —— ``sync`` 是全量的，一个 client 可能同时在多个房间里。
+    · **sender 是自己** —— 比的是服务器给的权威 mxid（``whoami`` 回填的
+      ``user_id``），不是 ``MATRIX_USER`` 原文。实测：``AsyncClient(hs, user)``
+      只把 user 原样存进 ``.user``，``.user_id`` 在 login/whoami 之前恒为空串；
+      ``MATRIX_USER`` 若写成 localpart（``maos-bot``），它和 ``event.sender``
+      （``@maos-bot:maos.local``）永远不相等 —— 回声过滤就成了摆设。
+    """
+    if getattr(room, "room_id", None) != room_id:
+        return False
+    sender = getattr(event, "sender", None)
+    return not (sender and sender == self_user_id)
 
 
 class _NioChannel:
@@ -183,9 +263,10 @@ class _NioChannel:
     ``run_coroutine_threadsafe`` 同步等结果。不用 ``asyncio.run``：``AsyncClient``
     要跨调用保持会话状态，每次新建循环等于每次重登。
 
-    **本机 matrix-nio 未安装，这条路径在测试与 CI 里永远走不到**（构造即
-    ImportError，上游降级 log-only）。真房间联通属 Phase 4 的活，届时按
-    docs/BACKLOG.md 的 ``## task-E`` 逐条实测。
+    构造顺序是 **whoami -> 查加密**，``listen`` 里再接 **先同步 -> 后挂回调**。
+    三步都不能换序，理由分别写在 :meth:`_verify_identity`、:func:`encryption_verdict`
+    与 :meth:`listen` 上。系统 python3 未装 matrix-nio，构造即 ImportError 由上游
+    降级 log-only；测试用 ``sys.modules["nio"]`` 注入假模块走完整条路径。
     """
 
     def __init__(self, config: MatrixBusConfig, *, timeout: float = 10.0) -> None:
@@ -195,6 +276,7 @@ class _NioChannel:
 
         self._timeout = timeout
         self._room_id = config.room_id
+        self._sync_task: Any = None
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop, name="matrix-bus", daemon=True)
@@ -203,7 +285,17 @@ class _NioChannel:
         self._client = AsyncClient(config.homeserver, config.user)
         # 用 access token 直接鉴权，不走 password login：演示机上不该出现口令。
         self._client.access_token = config.token
-        self._await(self._verify_room())
+        #: 权威 mxid。先拿 config.user 兜底，_verify_identity 用服务器的回答覆盖它。
+        self._user_id = config.user
+        try:
+            self._await(self._verify_identity())
+            self._await(self._verify_room())
+        except BaseException:
+            # 构造失败要把私有循环收干净。降级是**常态路径**（连不上 / 加密房 /
+            # token 失效都走这里），每失败一次漏一条守护线程加一个事件循环，
+            # 进程里就多一份永不退出的后台 —— 而它不报错，只是慢慢堆。
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            raise
 
     # -- 事件循环管线 -----------------------------------------------------
     def _run_loop(self) -> None:
@@ -218,21 +310,37 @@ class _NioChannel:
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(self._timeout)
 
     # -- 房间动作 ---------------------------------------------------------
+    async def _verify_identity(self) -> None:
+        """先问服务器「我是谁」。一次调用办两件事，缺哪件都会在别处变成哑故障。
+
+        ① **验 token**。赋 ``client.access_token`` 只让 nio 本地的 ``logged_in``
+           变 True（它的实现就是 ``bool(self.access_token)``），服务器认不认要等
+           第一次真请求。放在开工这一刻，token 失效的症状是一句
+           ``M_UNKNOWN_TOKEN``；不放，症状是演示到一半才降级、且原因指向房间。
+        ② **拿权威 mxid**。``AsyncClient(hs, user)`` 只把 user 原样存进 ``.user``，
+           ``.user_id`` 在此之前恒为空串 —— 而回声过滤要比的正是这个。
+        """
+        from nio import WhoamiError
+
+        resp = await self._client.whoami()
+        if isinstance(resp, WhoamiError):
+            raise RuntimeError(
+                f"access_token 未通过服务器校验：{resp.status_code} {resp.message}")
+        self._user_id = getattr(resp, "user_id", "") or self._user_id
+
     async def _verify_room(self) -> None:
         """开工前先确认房间没开 E2EE。加密房必须**当场**降级，不能等 send 失败。
 
-        ``m.room.encryption`` 状态事件存在 = 房间已加密。查不到（M_NOT_FOUND）才是
-        未加密；其余错误（房间不存在、token 失效）一律当连接失败抛出去降级。
+        判据本身在 :func:`encryption_verdict`，那里解释了为什么不能按返回类型判。
         """
-        from nio import RoomGetStateEventError
-
         resp = await self._client.room_get_state_event(self._room_id, "m.room.encryption")
-        if isinstance(resp, RoomGetStateEventError):
-            if getattr(resp, "status_code", "") == "M_NOT_FOUND":
-                return
-            raise RuntimeError(f"房间状态查询失败：{getattr(resp, 'message', resp)}")
-        raise RoomEncrypted(
-            "房间开启了端到端加密；本轨不装 matrix-nio[e2e]，直接降级 log-only")
+        verdict, detail = encryption_verdict(resp)
+        if verdict == ENC_CLEAR:
+            return
+        if verdict == ENC_ENCRYPTED:
+            raise RoomEncrypted(
+                f"房间开启了端到端加密（{detail}）；本轨不装 matrix-nio[e2e]，降级 log-only")
+        raise RuntimeError(f"房间状态查询失败：{detail}")
 
     def send(self, plain: str, html: str) -> None:
         self._await(self._send(plain, html))
@@ -256,23 +364,42 @@ class _NioChannel:
             raise RuntimeError(f"房间发送失败：{getattr(resp, 'message', resp)}")
 
     def listen(self, on_message: Callable[[str, str], None]) -> None:
-        """在私有事件循环里常驻 ``sync_forever``，房间消息喂给 ``on_message(sender, body)``。"""
+        """在私有事件循环里常驻 ``sync_forever``，房间消息喂给 ``on_message(sender, body)``。
+
+        **先同步、后挂回调** —— 这个顺序是本方法的全部要点，反过来写会出真事故。
+        Matrix 的首次 ``/sync``（不带 ``since``）会把每个房间 timeline 的最近若干条
+        **历史**一并返回，nio 照样把它们派发给 ``add_event_callback``（已实测：喂一份
+        带历史 timeline 的 SyncResponse 进去，回调当场被触发）。于是半小时前有人在
+        房间里打过的一句 ``/approve task-x``，bot 一起来就当成新指令重放 ——
+        而审批是不可逆动作。所以先空跑一次 ``sync`` 把 ``next_batch`` 推到「现在」，
+        再挂回调；此后 ``sync_forever`` 从 ``next_batch`` 续，只看得见新消息。
+
+        守护线程里的私有循环在主线程阻塞时照常转（已实测），C-3 的 ``room_demo``
+        正是「主线程等人、后台收消息」这个用法。
+        """
         from nio import RoomMessageText
 
         async def _cb(room: Any, event: Any) -> None:
-            if getattr(room, "room_id", None) != self._room_id:
-                return
-            if getattr(event, "sender", None) == self._client.user:
-                return                                  # 不听自己的回声
-            on_message(event.sender, event.body)
+            if should_deliver(self._room_id, self._user_id, room, event):
+                on_message(event.sender, event.body)
 
+        self._await(self._skip_history())
         self._client.add_event_callback(_cb, RoomMessageText)
+
         import asyncio
 
-        asyncio.run_coroutine_threadsafe(
+        self._sync_task = asyncio.run_coroutine_threadsafe(
             self._client.sync_forever(timeout=30_000), self._loop)
 
+    async def _skip_history(self) -> None:
+        """空跑一次 sync，只为把 ``next_batch`` 推到「现在」；过滤器把 timeline 压到 0 条。"""
+        await self._client.sync(timeout=0, sync_filter=NO_HISTORY_FILTER)
+
     def close(self) -> None:
+        try:
+            self._client.stop_sync_forever()
+        except Exception as exc:                        # noqa: BLE001 —— 没在 sync 也无所谓
+            log.debug("停止 sync_forever 异常（已忽略）：%s", exc)
         try:
             self._await(self._client.close())
         except Exception as exc:                        # noqa: BLE001 —— 关闭失败无所谓
@@ -316,6 +443,16 @@ class MatrixEventBus(EventBus):
         except Exception as exc:                        # noqa: BLE001 —— 见不变量 2
             log.warning("Matrix 房间连接失败（%s），降级 log-only", exc)
             self.config = replace(config, log_only=True)
+
+    @property
+    def channel(self) -> "MirrorChannel | None":
+        """当前镜像通道；降级或未接通时为 None。C-3 的 room_demo 靠它起监听。
+
+        只读是刻意的：``_channel`` 的唯一写入方是本类的降级逻辑（连续镜像失败
+        ``MAX_MIRROR_FAILURES`` 次后置 None）。开一个 setter 就多一条绕过降级的路 ——
+        外部把通道塞回来，永久降级就失效了，而症状是告警墙，不是崩。
+        """
+        return self._channel
 
     # -- EventBus 三方法（签名逐字对齐 maos/core/eventbus.py:26-34）---------
     def publish(self, topic: str, env: Envelope) -> None:

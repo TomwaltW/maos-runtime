@@ -797,3 +797,14 @@ H 轮八轨（H-1…H-8）合入时，编排侧**实跑核验**发现下面几�
 | 2026-08-29 | P7 | **`evidence/scenario-R1/` 那颗地雷只拆了手册一侧，`verify.py` 一侧还在**。H-8 把 `docs/EXECUTION.md:499/502` 的截图落点从 `evidence/scenario-R1/` 改到了 `evidence/room/`，但 `verify.py` 仍按 `d.startswith("scenario-")` 收目录 —— 编排侧本轮当场复现：`mkdir evidence/scenario-R1 && python3 scripts/verify.py` → **exit=2**，七项一项都跑不到 | 手册不再教人踩，但任何人手工建一个 `scenario-*` 目录仍会把核验器打死，且报错说的是「缺数据库」，指不到真正的原因 | 下一轮给 `verify.py` 加一条：遇到 `scenario-*` 目录但里面没有证据束文件时，报「这不是证据束目录」而不是「缺数据库」。归 `verify.py` 持有轨 |
 | 2026-08-29 | P7 | **`docs/clone-smoke-report.md` 的读数连续两轮没改**，占位仍挂 `PENDING-R9`。理由同 `## integrate-round-8`：它每个数都归因于「仓库外全新 clone 的冒烟实跑」，整合轮 9 同样没做第四遍冒烟 | 报告里的 `521 passed` / `4/74` 与当前的 `749 passed` 差了两百多条，而它是 A-1「新克隆冒烟 ≤ 15 分钟」那条的执行记录 | 仍需**单独一轨**做第四遍冒烟。这是目前唯一一条跨两轮没动的待办 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题仍然过期**。`## integrate-round-8` 已记过一次，本轮没接 | 一节挂着「待整合轮 6」的清单出现在整合轮 9 的交付里 | 下一轮顺手改标题并清掉已完成项 |
+
+## task-T1
+
+修 P0-1（C-quoted 路径绕过）时实测撞到的，均**不在本轨白名单内或不属派单范围**，按铁律 4 记账不当场改。
+基线 `27c9e18`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`maos/tools/sandbox.py::_diff_targets` 对含空格的路径切分不正确**：`diff --git` 行用的是 `line.split()`，而 git **不**给含空格（但无特殊字节）的路径加引号。本轨实测 git 产出 `diff --git a/tests/my file.py b/tests/my file.py`，`parts[2:4]` 切成 `['a/tests/my', 'file.py']`，`_diff_targets` 返回 `['tests/my', 'file.py', 'tests/my file.py', 'tests/my file.py']` | **不是绕过，是错报**。本轨逐条实跑确认拦截仍然成立 —— 碎片保留了原路径的 `/` 分段，`tests` 照样命中 `PROTECTED_SEGMENTS`（含空格的 rename in / rename out 两种形态都实测被拦、文件未变）。真正的损害在结构化错误的 `path` 字段：实测报 `tests/my` 而不是 `tests/my file.py`，Gate 拿它转 findings 会把一个**不存在的路径**喂回 Coding，返工时改不到正确的文件 | 下一轮持有 `sandbox.py` 的那一轨改。`diff --git` 行的路径切分本身在 git 里就是有歧义的（`a/x b/y` 与 `a/x b` + `/y` 无法区分），可行的收敛是优先信 `---`/`+++` 行与本轨新增的 `_numstat_targets`（后者走 `-z`，路径不 quote 也不按空格切，实测报的是完整的 `tests/my file.py`），把 `diff --git` 行降级成兜底来源 |
+| 2026-08-29 | P7 | **本轨给 `sandbox_git_apply` 加的同源校验让每次 apply 多跑一次 git 子进程**（`--numstat -z` 一次 + 真正 apply 一次），`_GIT_TIMEOUT` 也因此变成两段各 120s | 场景 1-7 端到端实测无感（`python3 run.py` 仍 `exit=0`，全量 `pytest` 从 749 条 10.24s 到 770 条 12.70s，增量主要是新增的 21 条用例自己建靶场），但它确实把这个热路径的子进程数翻了倍 | 只在有人量到 apply 变慢时再处理。真要省，可让 `--numstat` 的结果复用到 `--check` 那一路（两者都不落盘），但那会把「干跑」和「取路径清单」两件事耦合起来，收益不值 |
+| 2026-08-29 | P7 | **`_path_segments` 的解码结果与「反斜杠 → 斜杠」那一步在语义上有残余冲突**：一个真实文件名里就带反斜杠的路径（`"a\\b.py"`，git 编码成 `"a\\\\b.py"`），解码后是 `a\b.py`，下一步会被切成 `a` / `b.py` 两段 | 方向是**保守**的（更容易命中受保护段，不会更松），且本轨已在 `unquote_c_style` 的 docstring 里写明取舍，故未改。但它意味着「解码后的段」与「git 眼里的真实段」在这一种输入上仍不完全相等 | 优先级低。真要修，得让 `_path_segments` 区分「解码前的转义反斜杠」和「解码后的真实反斜杠」，代价是签名要从 `str` 变成带标记的结构。POSIX 靶场上文件名带反斜杠本就罕见，等真出现再说 |

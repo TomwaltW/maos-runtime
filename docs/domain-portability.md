@@ -40,11 +40,11 @@ MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内�
 > 两道闸**都不 import 业务域**，都被 §3 的两条守卫钉着。逐个端点实测闸数：
 >
 > ```bash
-> for c in 90251b3 4a70cb0 42822fc; do \
+> for c in 90251b3 4a70cb0 147df03; do \
 >   printf '%s: ' "$c"; git show $c:maos/runtime/gate.py | grep -c 'def _gate_'; done
 > # 90251b3: 5   ← 退款域上线前
 > # 4a70cb0: 6   ← 区间 A 之后，多了 _gate_finance
-> # 42822fc: 7   ← 区间 B 之后，多了 _gate_gateway
+> # 147df03: 7   ← 区间 B 之后，多了 _gate_gateway（Y-4 复用它，没有再加闸）
 > ```
 
 ---
@@ -57,14 +57,14 @@ MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内�
 | 区间 | 端点 | 装的是什么 |
 | :-- | :-- | :-- |
 | **A** | `90251b3` → `4a70cb0` | **上退款域**：六 Skill / 四 Agent / 第六道闸 / 场景 6+7 / RAG 语料 |
-| **B** | `4a70cb0` → `42822fc` | **X 轮之后的内核增量**：网关码四象限、第七道闸、沙箱降级可见化 |
+| **B** | `4a70cb0` → `147df03` | **X/Y 轮之后的增量**：内核侧是网关码四象限、第七道闸、沙箱降级可见化；域侧是 Y-4 把场景 7 的换渠道演出来（见 §2.3 分两类读）|
 
 端点是什么，自己核：
 
 ```bash
 git log --oneline -1 90251b3   # fix(p2): 补偿 workdir 缺省值改必填 —— 退款域上线前
 git log --oneline -1 4a70cb0   # docs(ops): 看板补 W 轮七行与整合轮 3 —— 整合轮 3 收口，X 轮一行未开工
-git log --oneline -1 42822fc   # chore: 移除 CLAUDE.md 的「回答结尾规范」一节 —— 当前主干
+git log --oneline -1 147df03   # docs(p7): BACKLOG 记整合轮 5 三条 —— 整合轮 5 的 HEAD
 ```
 
 ### 2.1 区间 A：上退款域的真实代价
@@ -141,32 +141,39 @@ python3 -m pytest maos/tests -q -k "not_import_refund_domain or does_not_know_th
 
 ### 2.3 区间 B：X 轮之后的内核增量（**不是**上退款域的代价）
 
-**以下数字全部按整合轮 5 的 `33924d1` 实测**；右端点是主干 HEAD，会随后续轮次变化，
+**以下数字全部按整合轮 5 的 `147df03` 实测**；右端点是主干 HEAD，会随后续轮次变化，
 复算见文末台账。
 
 ```bash
-git diff --shortstat 4a70cb0 33924d1 -- <path>
+git diff --shortstat 4a70cb0 147df03 -- <path>
 for p in contracts core runtime agents skills tools domain flows kb; do \
-  printf '%-10s ' "$p"; git diff --shortstat 4a70cb0 33924d1 -- maos/$p/; echo; done
+  printf '%-10s ' "$p"; git diff --shortstat 4a70cb0 147df03 -- maos/$p/; echo; done
 ```
 
-| 面 | 改动（按 `33924d1` 实测） | 是什么 |
+| 面 | 改动（按 `147df03` 实测） | 是什么 |
 | :-- | :-- | :-- |
 | `maos/contracts/` | **（空）** | 契约面在两个区间下都是零 |
 | `maos/core/` | 1 file, +62 / −4 | `control_plane.py`：网关码四象限的重规划否决判据（X-2）＋ 规划期调用的 `plan_id` 归属（Y-2） |
 | `maos/runtime/` | 1 file, +150 / −6 | `gate.py`：第七道闸 `_gate_gateway`（X-2） |
-| `maos/agents/` | 2 files, +62 / −10 | `testing.py`：`test_report` 透传 `sandbox_mode`（Y-1）；`manager.py`：规划期检索归属（Y-2）。**两处都是软件交付域/通用侧，不是退款角色** |
-| `maos/skills/` | **（空）** | — |
+| `maos/agents/` | 3 files, +112 / −19 | `testing.py` 透传 `sandbox_mode`（Y-1）、`manager.py` 规划期检索归属（Y-2）—— 这两处是**软件交付域/通用侧**；`refund/payment_agent.py` 换渠道重发（Y-4）—— 这一处是**退款域侧** |
+| `maos/skills/` | 2 files, +32 / −4 | `refund/compensate.py`、`refund/payment_execute.py`（Y-4），**退款域侧** |
 | `maos/tools/` | 1 file, +111 / −13 | `sandbox.py`：沙箱降级可见化（X-4） |
-| `maos/domain/` | **（空）** | 退款业务对象在区间 B 一行没动 |
-| `maos/flows/` | 3 files, +94 / −9 | `scenario_6.py` 接上规划期检索（X-1/Y-2）、`scenario_5.py`（Y-2）、`common.py` 透传执行路径（Y-1） |
+| `maos/domain/` | **（空）** | 退款**业务对象与表**在区间 B 一行没动（改的是 skill / agent 行为，不是对象定义） |
+| `maos/flows/` | 4 files, +232 / −29 | `scenario_6.py`（X-1/Y-2）、`scenario_5.py`（Y-2）、`common.py`（Y-1）、`scenario_7.py` 演换渠道（Y-4） |
 | `maos/kb/` | 2 files, +325 / −83 | `experiment.py` / `retriever.py`：对照实验与检索（X-3/Y-2） |
 
-区间 B 里 `agents/` / `flows/` 不再是空 —— 那是整合轮 5 并入的 Y-1/Y-2 落点。
-**这不推翻本节的主张**：`agents/testing.py` 与 `flows/common.py` 是软件交付域那一侧的
-测试报告装配，`manager.py` / `scenario_5,6.py` 是规划期检索的归属修复，
-**没有一处新增 `maos.domain.refund` 的知识**（§3 的两条守卫对它们同样生效，且仍绿）。
-下面三块（网关码四象限、第七道闸、沙箱降级可见化）是**通用能力**，不是上退款域的代价：
+区间 B 里 `agents/` / `skills/` / `flows/` 都不是空。**要分两类读，别混着算**：
+
+- **通用侧**（`agents/testing.py`、`agents/manager.py`、`flows/common.py`、
+  `flows/scenario_5,6.py`、`kb/**`）：测试报告装配、规划期检索归属、检索质量。
+- **退款域侧**（`agents/refund/payment_agent.py`、`skills/builtin/refund/*.py`、
+  `flows/scenario_7.py`）：Y-4 让场景 7 演换渠道重试，**这些本来就是按域实现的面**
+  （见 §1 表里标 ❌ 的那几行），落在这里完全合规。
+
+关键是**内核三个子包（`contracts/` / `core/` / `runtime/`）里一行退款域知识都没有**：
+区间 B 对它们的改动只有下面三块通用能力，且 §3 的两条守卫对区间 B 新增的每一行同样
+生效、复跑仍 **2 passed**。下面三块（网关码四象限、第七道闸、沙箱降级可见化）
+是**通用能力**，不是上退款域的代价：
 
 - **网关码四象限**（`core/` 的 +46 中的主体）判的是「外部系统回了什么码，该不该重规划」。
   判据落在 `GW_REPLAN_CHANNEL` / `GW_QUERY_FIRST` / `GW_HUMAN_TERMINAL` /
@@ -186,17 +193,18 @@ for p in contracts core runtime agents skills tools domain flows kb; do \
 
 ```bash
 for p in contracts core runtime agents tools flows kb; do \
-  printf '%-10s ' "$p"; git diff --shortstat 90251b3 33924d1 -- maos/$p/; echo; done
+  printf '%-10s ' "$p"; git diff --shortstat 90251b3 147df03 -- maos/$p/; echo; done
 ```
 
-| 面 | 区间 A | 区间 B | **合计（`90251b3..33924d1`）** |
+| 面 | 区间 A | 区间 B | **合计（`90251b3..147df03`）** |
 | :-- | :-- | :-- | :-- |
 | `maos/contracts/` | 空 | 空 | **空** |
 | `maos/core/` | 空 | +62 / −4 | 1 file, +62 / −4 |
 | `maos/runtime/` | +126 / −4 | +150 / −6 | 1 file, **+273 / −7**（≠ 276 / −10） |
-| `maos/agents/` | 8 files, +604 / −27 | 2 files, +62 / −10 | 8 files, **+662 / −33** |
+| `maos/agents/` | 8 files, +604 / −27 | 3 files, +112 / −19 | 8 files, **+703 / −33** |
+| `maos/skills/` | 11 files, +1536 / −25 | 2 files, +32 / −4 | 11 files, **+1564 / −25** |
 | `maos/tools/` | 2 files, +752 | 1 file, +111 / −13 | 3 files, +863 / −13 |
-| `maos/flows/` | 5 files, +1023 / −123 | 3 files, +94 / −9 | 6 files, **+1112 / −127** |
+| `maos/flows/` | 5 files, +1023 / −123 | 4 files, +232 / −29 | 6 files, **+1230 / −127** |
 | `maos/kb/` | 5 files, +1568 | 2 files, +325 / −83 | 5 files, **+1810** |
 
 ---
@@ -261,9 +269,10 @@ grep -c 'CREATE TABLE' maos/domain/refund/schema.sql
 - **`flows/` 与 `kb/` 的改动量很大**（**按区间 A**：`flows/` +1023 / −123、
   `kb/` +1568），这两处**本来就是按域写的**（演示流程与知识语料），不在「内核零改动」
   的主张范围内。把它们算进内核会让数字好看，但那是偷换。
-  **当前主干（`33924d1`）下这两个数字更大** —— `flows/` 6 files +1112 / −127、`kb/` +1810，
-  因为 X-1 接了场景 6 的规划期检索、X-3 扩了对照实验与语料，
-  整合轮 5 的 Y-1/Y-2 又动了 `flows/common.py` 与 `kb/experiment.py`（见 §2.4 合计表）。
+  **当前 HEAD（`147df03`）下这两个数字更大** —— `flows/` 6 files +1230 / −127、`kb/` +1810，
+  因为 X-1 接了场景 6 的规划期检索、X-3 扩了对照实验与语料，整合轮 5 的 Y-1/Y-2
+  又动了 `flows/common.py` 与 `kb/experiment.py`、Y-4 又把场景 7 的换渠道演出来
+  （`scenario_7.py` 一处就 +138 级别，见 §2.4 合计表）。
 
 ---
 
@@ -301,16 +310,29 @@ does_not_know_the_refund_domain"` 仍 **2 passed**。该节已相应改写，不
 
 ---
 
+## 补合 Y-4 后的第二批回填（2026-08-29）
+
+Y-4 已并入（`783d9dd`），**区间 A 仍然一个数字都没动**（端点在过去，钉死了）。
+区间 B 右端点推到 `147df03`，四行变了、两行新出现：
+
+| 面 | 合 Y-4 前 | 合 Y-4 后 | 变化来自 |
+| :-- | :-- | :-- | :-- |
+| `maos/agents/` | 2 files, +62 / −10 | **3 files, +112 / −19** | Y-4 的 `refund/payment_agent.py` |
+| `maos/skills/` | （空） | **2 files, +32 / −4** | Y-4 的 `refund/compensate.py`、`refund/payment_execute.py` |
+| `maos/flows/` | 3 files, +94 / −9 | **4 files, +232 / −29** | Y-4 的 `scenario_7.py` |
+| `maos/core/`／`runtime/`／`tools/`／`kb/` | — | **未变** | Y-4 没碰内核与工具 |
+| `contracts/`／`domain/` | 空 | **仍空** | — |
+
+🔴 **§2.3 那句「两处都是软件交付域/通用侧」已经失真，本轮改写。** Y-4 往
+`agents/refund/` 与 `skills/builtin/refund/` 里加了行 —— 区间 B 现在**既有通用侧也有退款域侧**。
+该节已改成分两类读，并把主张收紧到它真正证得了的那句：
+**内核三个子包里一行退款域知识都没有**（§3 两条守卫复跑仍 2 passed）。
+把「区间 B 只有内核通用能力」这句留着才是错的 —— 它现在不成立。
+
+---
+
 ## 待整合轮 6 回填
 
-**Y-4 尚未合并。** 它只动 `flows/scenario_7.py` 与 `agents/refund/payment_agent.py`
-（后者在 `maos/agents/refund/**`，属**退款域侧**）。合并后要复跑的：
-
-| # | 位置 | 复跑命令 |
-| :-- | :-- | :-- |
-| 1 | §2.3 `agents/`／`flows/` 两行 | `git diff --shortstat 4a70cb0 <HEAD> -- maos/agents/ maos/flows/` |
-| 2 | §2.4 合计表 `agents/`／`flows/` 两行 | `git diff --shortstat 90251b3 <HEAD> -- maos/agents/ maos/flows/` |
-| 3 | §2.3 那句「两处都是软件交付域/通用侧」 | Y-4 会往 `agents/refund/` 里加行，**该句要改口**：区间 B 的 `agents/` 届时既有通用侧也有退款域侧 |
-| 4 | §1 ★ 脚注闸数 | `grep -c 'def _gate_' maos/runtime/gate.py`（当前 **7**，Y-4 不应改变它） |
-
-**区间 A 依旧不用回填。**
+九轨已全部合入，本文件的数字与断言**本轮已全部对齐 `147df03` 实测**。后续要复跑的只有一种情况：
+**主干再前进**。届时区间 B 与合计表按文中给的 `git diff --shortstat` 命令逐行重跑即可，
+**区间 A 永远不用回填。**

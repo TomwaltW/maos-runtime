@@ -21,7 +21,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `manager` | `manager` | 软件交付域 | **否** | `maos/agents/manager.py:33` |
 | `requirement` | `requirement` | 软件交付域 | 是 | `maos/agents/requirement.py:29` |
 | `reviewer` | `reviewer` | 软件交付域 | 是 | `maos/agents/reviewer.py:32` |
-| `testing` | `testing` | 软件交付域 | 是 | `maos/agents/testing.py:86` |
+| `testing` | `testing` | 软件交付域 | 是 | `maos/agents/testing.py:107` |
 | `refund_finance` | `refund-finance` | 制造售后退款域 | 是 | `maos/agents/refund/finance_agent.py:26` |
 | `refund_intake` | `refund-intake` | 制造售后退款域 | 是 | `maos/agents/refund/intake_agent.py:26` |
 | `refund_payment` | `refund-payment` | 制造售后退款域 | 是 | `maos/agents/refund/payment_agent.py:35` |
@@ -113,7 +113,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 
 ### testing — TestingAgent
 
-声明位置：`maos/agents/testing.py:86`
+声明位置：`maos/agents/testing.py:107`
 
 | 字段 | 含义 | 值 |
 | :-- | :-- | :-- |

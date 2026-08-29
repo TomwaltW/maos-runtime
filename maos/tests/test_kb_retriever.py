@@ -600,26 +600,39 @@ def test_store_port_branch_never_leaks_across_tenants():
 
 
 def test_real_sqlite_store_port_diverges_from_kb_schema_on_the_key_column(store):
-    """真 `SqliteStorePort` 在本层这份 schema 上两条通道**都抛**，这条钉住原因。
+    """真 `SqliteStorePort` 在本层这份 schema 上两条通道**都不再抛**。
 
-    F-2 约定源表主键列名固定为 `id`；`kb_doc` 的主键是 `(tenant_id, doc_id)`，
-    影子表存的也是 `doc_id`。两边都是各自文档里写明的口径，谁也没写错 ——
-    是两条口径没有对齐，而对齐要动 `maos/store/**` 或 `kb/schema.sql`，
-    两处都在本轨禁改面外，账记在 BACKLOG `## task-X3`。
+    **本条的性质变过一次，名字留着是为了让 git blame 指得回去。** 原先它钉的是
+    「现状」：F-2 约定源表主键列名固定为 `id`，而 `kb_doc` 的主键是
+    `(tenant_id, doc_id)`、影子表存的也是 `doc_id`，两条口径都没写错，只是没对齐，
+    于是两条通道双双抛 `LookupError: no such column: id`，端口分支恒退化。
+    当时的 docstring 写着「哪天这条不抛了，说明有人把列名对齐了，那时本条该跟着
+    改，而不是删」。T13 轨对齐了（`kb_doc.id` 生成列 + 影子表同名列），所以这条
+    从**钉现状**变成了**守回归**：谁再把 `id` 列拿掉，本条当场红。
 
-    哪天这条不抛了，说明有人把列名对齐了，那时本条该跟着改，而不是删。
+    第三段同理 —— 适配器故意不叫 `_conn`，以前传进 `kb.query` 当场 TypeError；
+    现在知识层认 StorePort（`kb.port_of`），它就是一个合法的 store。
     """
     _seed_corpus(store)
     port = SqliteStorePort(store)
 
-    with pytest.raises(LookupError, match="id"):
-        port.fts_search("kb_doc", "body", "退款政策", 5)
-    with pytest.raises(LookupError, match="id"):
-        port.vector_search("kb_doc", "embedding", retriever.embed("退款政策"), 5)
+    # 全文：查询串必须先过 kb.fts_text()，影子表里存的就是它切过的形态。
+    fts = port.fts_search("kb_doc", "body", kb.fts_text("退款政策"), 5)
+    assert fts, "全文通道一条都没召回 —— 影子表的 id 列或分词口径又漂了"
+    assert all(row_id.startswith(f"{TENANT_A}{kb.DOC_ROW_ID_SEP}") for row_id, _ in fts), \
+        f"端口返回的不是 F-2 口径的源表主键：{fts}"
 
-    # 反向也钉一下：适配器故意不叫 `_conn`，所以它也不能反过来当 store 传进检索器。
-    with pytest.raises(TypeError, match="没有暴露 sqlite 连接"):
-        kb.query(port, "SELECT 1 AS one", ())
+    vectors = port.vector_search("kb_doc", "embedding", retriever.embed("退款政策"), 5)
+    assert {row_id for row_id, _ in vectors} == {
+        kb.doc_row_id(TENANT_A, doc_id) for doc_id, *_ in CORPUS}, \
+        "向量通道没有覆盖整份语料 —— kb_doc.id 生成列又没了"
+    scores = [score for _, score in vectors]
+    assert scores == sorted(scores, reverse=True), "F-2 附则：分数必须降序（越大越相关）"
+
+    # 反过来也钉住：适配器现在是知识层认得的 store，不再撞 TypeError。
+    assert kb.query(port, "SELECT 1 AS one", ()) == [{"one": 1}]
+    assert kb.port_of(port) is port and kb.port_of(store) is None, \
+        "判据漂了 —— 核心 Store 必须仍走 _conn 那条老路径"
 
 
 def test_unusable_port_degrades_once_and_keeps_returning_hits(caplog):

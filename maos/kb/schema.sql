@@ -7,6 +7,14 @@
 
 -- kb_doc：知识文档。
 -- doc_id / kind / source_case_id 三个列名被 scripts/verify.py 第 5、7 项写死消费（F-4），不许改。
+--
+-- `id` 列是 F-2 对齐用的（T13 轨）：契约附则约定源表主键**列名固定为 id**，
+-- 而本表的主键是 (tenant_id, doc_id) —— 两条口径都没写错，是没对齐，
+-- 于是 StorePort 的 vector_search 在本表上恒抛 no such column: id，
+-- 检索器那条端口分支一次都走不到（BACKLOG `## task-X3` 第 1、2 条）。
+-- 做成 **GENERATED ... VIRTUAL** 而不是普通列，是为了避开「只加列不填值」那种
+-- 无症状故障：生成列不可写、也无从忘填，永远等于主键本身。
+-- 取值口径与 maos/kb/__init__.py 的 `doc_row_id()` 是同一份，改一处必须改两处。
 CREATE TABLE IF NOT EXISTS kb_doc (
     tenant_id        TEXT NOT NULL,
     doc_id           TEXT NOT NULL,
@@ -25,6 +33,7 @@ CREATE TABLE IF NOT EXISTS kb_doc (
     outcome          TEXT,
     source_case_id   TEXT,
     created_at       TEXT NOT NULL,
+    id               TEXT GENERATED ALWAYS AS (tenant_id || ':' || doc_id) VIRTUAL,
     PRIMARY KEY (tenant_id, doc_id),
     -- 取值域写进 CHECK 而不是只写在注释里：写错 kind 的条目查得出来但归不了类，
     -- 而错误发生在写入侧、暴露在几周后的检索侧，是最难回溯的一类脏数据。
@@ -45,7 +54,13 @@ CREATE INDEX IF NOT EXISTS idx_kb_doc_kind ON kb_doc(tenant_id, kind);
 -- 英数按词、中文按字，空格分隔。查询侧走同一个函数，两边口径必然一致。
 -- 内容由 upsert_doc() 显式同步（先删后插），不挂触发器：
 -- 写入口只有一个，逻辑集中在一处比散在触发器里好测也好查。
+--
+-- `id` 与源表那列同一口径（`doc_row_id()`），理由见上面 kb_doc 的注释。
+-- 这里只能是普通列：FTS5 虚表不支持生成列，所以它由 upsert_doc() 显式填 ——
+-- 影子表的写入口同样只有那一个，忘填会在建表期就被本文件的读者发现。
+-- UNINDEXED：它是回查用的键，不参与 BM25，进索引只会污染打分。
 CREATE VIRTUAL TABLE IF NOT EXISTS kb_doc_fts USING fts5(
+    id UNINDEXED,
     doc_id UNINDEXED,
     tenant_id UNINDEXED,
     title,

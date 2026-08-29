@@ -338,15 +338,69 @@ def check_trace_tree(cases: list[Case]) -> Check:
             chk.bad(f"{case.name}: trace.json 与库重放结果不一致（证据被改过或库已变）")
         else:
             chk.ok()
-        strays = case.trace.get("stray_events") or []
-        if strays:
-            kinds = sorted({s.get("event_type", "?") for s in strays})
-            chk.warn(f"{case.name}: {len(strays)} 条事件的 plan_id 指不到任何 plan，"
-                     f"不在任何一棵树内（类型 {kinds}）")
+        _warn_stray_events(chk, case)
         unsourced = case.trace.get("summary", {}).get("unsourced_artifacts", 0)
         if unsourced:
             chk.warn(f"{case.name}: {unsourced} 份产物没有来源事件（provenance=unknown）")
+        _warn_sandbox_path(chk, case)
     return chk
+
+
+def _warn_stray_events(chk: Check, case: Case) -> None:
+    """游离事件的 warn。**一个 case 仍然只出一条**，只是把两种形态分开说。
+
+    ``plan_id`` 是空串和 ``plan_id`` 非空却指不到 plan，看起来都是「不在任何一棵树
+    内」，但含义天差地别：
+
+    * 空串 = **规划期调用**。检索、需求归一这些发生在 ``create_plan`` 之前，
+      那一刻还没有 plan_id 可写。事件本身是完整的、哈希也对得上，没有丢。
+    * 非空却查不到 = 事件指向一个不存在的 Plan，那才是真的该查。
+
+    原措辞把两者一律说成「指不到任何 plan」，读起来像事件丢了。现在按形态分开报，
+    真出现第二种时不会被第一种的解释盖住 —— 判据没放宽，反而多认一种形态。
+    """
+    strays = case.trace.get("stray_events") or []
+    if not strays:
+        return
+    kinds = sorted({s.get("event_type", "?") for s in strays})
+    pre_plan = [s for s in strays if not (s.get("plan_id") or "").strip()]
+    dangling = [s for s in strays if (s.get("plan_id") or "").strip()]
+
+    parts = []
+    if pre_plan:
+        parts.append(f"{len(pre_plan)} 条是**建 Plan 之前**发生的调用（plan_id 为空串，"
+                     f"不是事件丢了）")
+    if dangling:
+        parts.append(f"{len(dangling)} 条 plan_id 非空却指不到任何 plan —— 这一种要查")
+    chk.warn(f"{case.name}: {len(strays)} 条事件不在任何一棵树内（类型 {kinds}）："
+             + "；".join(parts)
+             + "。根因：ControlPlane.create_plan 自己生成 plan_id、不接受外部传入"
+               "（docs/BACKLOG.md task-X4 第 2 条）")
+
+
+def _warn_sandbox_path(chk: Check, case: Case) -> None:
+    """test_report 到底在哪儿跑的。降级与不可审计分开报，谁都不许静静过去。
+
+    一份降级跑出来的报告和一份容器跑出来的报告，计数上长得一模一样 ——
+    差别只在 ``--network none`` 那条探针是 skipped 还是 passed，而 skipped
+    不进 passed/failed/errors 任何一个计数。不在这里点名，「容器隔离」这句话
+    当场不成立而屏幕上看不出任何差别。
+    """
+    summary = case.trace.get("summary", {})
+    degraded = summary.get("degraded_sandbox_reports", 0)
+    unrecorded = summary.get("unrecorded_sandbox_reports", 0)
+    if degraded:
+        reasons = sorted({
+            s["attributes"].get("maos.artifact.sandbox.degraded_reason") or "未记录"
+            for t in case.trace.get("traces", []) for s in t["spans"]
+            if s["attributes"].get("maos.artifact.sandbox.mode") == "subprocess"})
+        chk.warn(f"{case.name}: {degraded} 份 test_report 是**降级**跑出来的，"
+                 f"容器隔离（--network none / --read-only / --user 1000:1000）本次未生效；"
+                 f"原因：{'；'.join(reasons)}")
+    if unrecorded:
+        chk.warn(f"{case.name}: {unrecorded} 份 test_report **执行路径不可审计** —— "
+                 f"报告里没有 sandbox_mode，判不出这一次是真在容器里跑的还是降级跑的"
+                 f"（docs/BACKLOG.md task-X4 第 1 条）")
 
 
 # ---------------------------------------------------------------------------
@@ -413,8 +467,20 @@ def check_business_outcome(cases: list[Case]) -> Check:
                     continue
                 unaudited = outcome.get("unaudited_evidence_count") or 0
                 if unaudited:
+                    # 措辞只说这一项证得了的事：**入库路径**上没有来源事件。
+                    # 原措辞写的是「场景预置件，非实跑产出」—— 那是它证不了的断言，
+                    # 而且现在是错的：场景 1/2 的报告由 flows/common.py::patch_verifier
+                    # 真跑沙箱产出（真 workdir、真 git apply、真 pytest），只是插入时
+                    # 绕开 on_task_result，于是审计链指不到产出它的那一步。
+                    # 把「入库路径证不了」读成「内容是假的」，会把已经兑现的外部判据
+                    # 重新贬回脚手架 —— 那正是这条 warn 想防的事情的反面。
                     chk.warn(f"{label}: {unaudited} 条外部判据来源未审计"
-                             f"（场景预置件，非实跑产出）")
+                             f"（**无来源事件**：入库时绕开 on_task_result，"
+                             f"审计链指不到是哪一步产的）。"
+                             f"这说的是入库路径，不是内容真伪：可能是场景预置件"
+                             f"（scenario 3/5 的 seed_scripted_report），也可能是演示装配层"
+                             f"现跑的真产物（scenario 1/2 的 patch_verifier）。"
+                             f"判真伪看 trace.json 的 maos.artifact.sandbox.mode")
             chk.ok()
     return chk
 

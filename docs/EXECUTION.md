@@ -496,15 +496,30 @@ feat(p3): refund domain objects, 6 skills, gateway toolport, settled guard
 python -m pytest maos/tests -q
 
 MAOS_LLM_API_KEY=... python run.py --scenario R1 --matrix
-# Element 里看到全过程；发 /approve → DONE。截图存 evidence/scenario-R1/
+# Element 里看到全过程；发 /approve → DONE。截图存 evidence/room/（01–03，命名见该目录 README）
 
 MAOS_LLM_API_KEY=... python run.py --scenario R2 --matrix
-# 网关失败 → replan → 达上限 → /reject → 补偿。截图存 evidence/scenario-R2/
+# 网关失败 → replan → 达上限 → /reject → 补偿。截图存 evidence/room/（04-reject-compensation.png）
 
 sqlite3 <db> "select biz_status from refund_case where case_id='<R2 的 case>'"   # compensated
 sqlite3 <db> "select count(*) from payment_observation where observed_state='settled'"  # 0
 sqlite3 <db> "select count(*) from event_log where event_type='CompensationExecuted'"   # >0
 ```
+
+🔴 **截图落点不许写成 `evidence/scenario-R1/` / `evidence/scenario-R2/`（这两行原来就是那么写的，是错的）。**
+`scripts/verify.py::load_cases` 按 **`scenario-` 前缀**扫 `evidence/` 下的目录——只认前缀，不认场景号——
+凡是扫到的都当成一个证据束，逐个要求 `maos.db` + `trace.json` + `result.json`。截图目录这三样一样没有，
+于是**整个 verify 进不去核验**（不是某一项 FAIL，是七项一项都跑不到，「7/7 PASS」这条头号卖点当场没）。
+本仓库 `1131795` 实测，先 `python3 scripts/make_evidence.py` 再 `python3 scripts/verify.py`：
+
+```
+不建 scenario-R1/                    RESULT: 7/7 PASS                                    exit=0
+建 scenario-R1/ 只放一张截图         [FAIL] 无法开始核验：缺数据库: …/scenario-R1/maos.db   exit=2
+```
+
+`evidence/room/` 不以 `scenario-` 开头，对 `verify.py` 完全透明，所以房间侧人机交互证据走它。
+机器侧数据证据仍在 `evidence/scenario-6,7/`（R1→6、R2→7，见文件头「入库说明 §1」的编号映射），
+两者互补、缺一不可，对照关系见 `evidence/room/README.md` 的「命名对照」一节。
 
 ### 提交
 
@@ -707,7 +722,12 @@ feat(p6): otel-aligned trace, evidence generator, verify.py, docker-compose + po
 
 1. `scripts/gen_docs.py` 生成（保证文档和代码永不打架）：
 
-   - `docs/agent-identity.md`：**十角色**清单（软件域 6 + 退款域 4），从代码 Identity 生成，按参赛手册附录 A 字段顺序
+   - `docs/agent-identity.md`：**十角色**清单（软件域 6 + 退款域 4），从代码 Identity 生成，按参赛手册附录 A 字段顺序。
+     ⚠️ 「十」是**带 Identity 的角色总数**，与代码里 `len(AGENT_POOL) == 9` 不矛盾——这是两个数、两件事：
+     10 个角色都有 Identity（白名单同样被 `SkillInvoker` 强制），其中 **9 个注册进 `AGENT_POOL`**（Worker 收到
+     TaskAssignment 后按 role 找得到的执行者），`manager` 是规划者、由流程层直接构造并调 `plan()`、不接派单，
+     所以有 Identity 但不进池。软件域 6 = 5 个可派单（architecture / coding / requirement / reviewer / testing）+ manager。
+     生成物自己 `docs/agent-identity.md:7` 会如实印出「10 个 / 9 个 / 1 个」并解释差在哪，**引用时别把 10 直接挂在 `AGENT_POOL` 后面**
    - `docs/skill-catalog.md`：全部 Skill × 九要素，从 SkillContract 实例生成；末尾加"版本 / 发布 / 回滚 / 质量评估"一节
    - `docs/toolport-contract.md`：ToolPort 九要素 + 已实现工具契约表 + "迁移到 MCP = 换 entrypoint 传输层，schema 与审计不变"
 
@@ -787,10 +807,10 @@ docs(p7): domain portability, authoritative facts, mapping, demo script, README 
 
 | 评委要求 | v4 落点 | 可核验证据 |
 | :-- | :-- | :-- |
-| 用一条脱敏真实退款需求完成可执行纵向切片 | Phase 3–4，场景 R1 / R2 | `evidence/scenario-R1,R2/` |
+| 用一条脱敏真实退款需求完成可执行纵向切片 | Phase 3–4，场景 R1 / R2 | `evidence/scenario-6,7/`（R1→6、R2→7，见文件头「入库说明 §1」）+ `evidence/room/` |
 | AgentTeams 事件链 | Phase 4 MatrixEventBus 镜像 | Element 截图 + trace.json |
 | 关键 Skill 的真实调用 | 退款域 6 Skill 全部真调 | event_log 中 SkillInvoked |
-| 返工 / HITL Trace | Phase 4 replan + Matrix 审批 | `evidence/scenario-R2/trace.json` |
+| 返工 / HITL Trace | Phase 4 replan + Matrix 审批 | `evidence/scenario-7/trace.json`（R2 即场景 7） |
 | Evidence Bundle | Phase 6 | verify.py 7/7 PASS |
 | 业务对象关联到同一案例 | Phase 3 business_ref | verify.py 第 2 项 |
 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | Phase 3 settled guard + 三段 biz_status | verify.py 第 3 项 + 越权拒绝单测 |

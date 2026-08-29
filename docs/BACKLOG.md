@@ -766,3 +766,21 @@ H-5 轨（`scripts/matrix_probe.py` 的 ②a / ②c 两个假阴性，分支 `ta
 | 2026-08-29 | P7 | **`## task-C4` 第 4 条（本文件 `:552`）里「`evidence/scenario-R5/` 也同样不在 `INDEX.json` 里」这半句已过期**。本轨实测：`INDEX.json` 的 `produced` 当前含全部 8 条（`scenario-1..7` + `scenario-R5`），R5 是有登记的 | 该条前半句（不认识 `evidence/room/`）属实且本轨已修；后半句会让读者以为 R5 也漏登记，去修一个不存在的问题 | 无需处理，此条仅为改正记账。C-4 建议的「**建议后者**（在 README 里加一句说明，不改生成器语义）」本轨**没有采纳** —— 理由见 DECISIONS `## task-H7` |
 | 2026-08-29 | P7 | `docs/DECISIONS.md:596` 记的那条决策（「三条判据在双命令架构下无法同时满足、只能三选二」，认下「1..7 干净 + R5 带 dirty」）其前提已被本轨消除 | 按本仓库惯例，`DECISIONS.md` 是**历史台账、只追加不改**，那一行记的是当时的真实判断，不该改写 | **不改那一行**。本轨在 `## task-H7` 追加新行说明现状已变即可。此条只为让下一轮读到 `:596` 的人知道去看后面 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md:260-261` 的第 ③ 条判据「evidence 里出现过几个不同的 sha？（**应当只有一个**，忽略 `-dirty` 后缀）」在基线上就已经对不上**，与本轨改动无关。实测该命令输出**两行**：本次生成的 8 束一个 sha，`evidence/room/` 的两个文件一个 sha（`f42ea83`，C-4 轨落盘时的出处） | 判据写「应当只有一个」，而 `room/` 的出处**本来就该与 8 束不同** —— 它不由 `scripts/make_evidence.py` 产，每轮重跑证据束时不会跟着更新，保留原始出处才是正确的。所以这是判据本身没算上 `room/`，不是证据有问题。本轨已复核 `room/` 与基线 `1131795` 逐字节一致（`git diff 1131795 -- evidence/room/` 为空） | 下一轮把 ③ 的期望改成「`scenario-*` 系列只有一个 sha；`room/` 另有自己的出处，属正常」，或把命令的扫描范围限到 `evidence/scenario-*`。`docs/submission-checklist.md` 不在本轨可改面内 |
+
+## task-H8
+
+`docs/EXECUTION.md` 三处失真修订轨（分支 `task/h8-execution-doc`，基线 `1131795`）：
+只改派单点名的三处（`:499`/`:502` 截图落点、`:710` 角色数、`:790`/`:793` 证据列），零代码改动。
+以下是本轨看见但**按铁律 4 不当场改**的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P4 | **`docs/EXECUTION.md:669`（本轨改后行号）「场景 R1/R2 留 `SCREENSHOT-HERE.md` 提示放 Element 截图」与本轨修掉的 `:499`/`:502` 同源**，但不在派单点名的三处内，故未改。两个问题：①「场景 R1/R2 的目录」在 D-05 编号映射下应是 `evidence/scenario-6,7/`，可这句读起来仍像要另建 R1/R2 目录，下一个人照做就会建出 `evidence/scenario-R1/`，把 `verify.py` 再打死一次（死法见本轨在 `:509-522` 补的实测块）；②`SCREENSHOT-HERE.md` **全仓没有任何实现**——本轨实测 `grep -rn 'SCREENSHOT-HERE' --include='*.py' .` 零命中、`find evidence -name 'SCREENSHOT-HERE*'` 无结果，`scripts/make_evidence.py` 不产它 | 手册要求的一个产物根本不存在，且指路方式会诱发 `verify.py` 的整体失败。当前无实际损害（没人真去建过），但它是 `:499`/`:502` 那个雷的**同一个雷的第二处引信** | 下一轮改这一行：落点写 `evidence/room/`（人机交互证据）并去掉或补实 `SCREENSHOT-HERE.md`。本轨已在 `:509-522` 写清「为什么不能放 `scenario-*`」，改这行时直接引它即可 |
+| 2026-08-29 | P5 | **`docs/phases/phase-5.md:13` 是同一条未实现约定的第二处表述**，且场景号与 `EXECUTION.md` 互相打架：这里写「场景 3 目录留 SCREENSHOT-HERE.md」，`EXECUTION.md` 写「场景 R1/R2」 | 两份手册对同一个产物给出两个不同落点，且该产物两处都没实现。照哪份做都做不出来 | 与上一条同批处理，两处口径统一。`docs/phases/**` 不在本轨可改面内 |
+| 2026-08-29 | P4 | **`evidence/room/README.md:110` 的补图自检命令在干净检出上「空过」**：`python3 scripts/verify.py 2>&1 \| tail -2`，判据是「报错原文不许出现 scenario-R1 / scenario-R2 / room」。但干净检出没有 `*.db`（`.gitignore:40`），verify 在第一个证据束 `scenario-1` 就 `exit=2` 退出。本轨实测原文：`[FAIL] 无法开始核验：缺数据库: <…>/evidence/scenario-1/maos.db`、`exit=2` | 报错里当然不会出现那三个名字，于是这条判据**永远通过、却什么都没验到**。补完图的人跑一遍看着绿，实际上 verify 根本没进核验 —— 恰恰漏掉了这条自检唯一要防的那件事 | 一行改动：在该命令前补 `python3 scripts/make_evidence.py`（有库之后 `tail -2` 打的是 `RESULT: 7/7 PASS` + 证据来源行，判据才真正生效）。`evidence/room/**` 是 C-4 的面，本轨只读 |
+
+**本轨对既有账目的处置**（不改别人的条目，只在此登记结论）：
+
+- `## task-C4` 第 1 条（`:499`/`:502` 打死 verify）：**实测复现，已修**。见 `docs/DECISIONS.md ## task-H8` 第 1 行。
+- `## task-C4` 第 2 条（`:790`/`:793` 证据列指错目录）：**实测仍成立，已按其建议修**（`:790` → `evidence/scenario-6,7/`、`:793` → `evidence/scenario-7/trace.json`）。
+- `## task-F1` 第 2 条（`:710` 十角色与 `AGENT_POOL` 9 个对不上）：**本轨实测判定该条记账不成立** —— `docs/EXECUTION.md:710` 描述的是生成物 `docs/agent-identity.md` 的内容清单，那份生成物确实是 10 个 Identity、软件交付域确实 6 个（含 `manager`）、退款域 4 个，两个数都对。F-1 当时的判断（「严格说这句没错，建议不改」）是对的。本轨按派单授权只做了**措辞增强**：在该行下补出「10 = 带 Identity 的角色总数，9 = 可派单数，`manager` 有 Identity 不进池」，不是纠错。

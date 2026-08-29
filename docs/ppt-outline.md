@@ -511,7 +511,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 ```bash
 git clone <repo> maos && cd maos
-python3 -m pytest maos/tests -q     # 860 passed
+python3 -m pytest maos/tests -q     # 903 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/ 与 -R5/（缺省一并产 R5）
@@ -609,9 +609,12 @@ Y-1 / Y-2 / Y-3 已并入，下面四条**已按实跑回填**：
 | 3 | **P8a / P8b** | 未提 `plan_id` 归属 | Y-2 修好归属，场景 6 的 `KbRetrieved` 已挂到实 plan 上（此前 `plan_id=''`），`kb-hits.json` 可读性变好 —— **若 P8b 用到该文件的截图，录制前重截一张** | Y-2 |
 | 4 | **P11 / P14** | 「①②③ 三条命令缺一不可」 | 收敛成 **①② 两条**；P11 第三条禁语与 P14 讲稿、证据锚、禁语全部改写。全新克隆实测 **5.4 秒**到 7/7 | Y-3 |
 
-**数字口径**：本文件所有数字（860 passed / 7 项 / 35 / 7 / 86 / 29 / 10 / 1 / +62−4 / +273−7）
-都来自**整合轮 11 合入 T7…T14 八轨后**的真实输出，不是基线 `42822fc` 的旧值。
-pytest 条数由 802 涨到 860（T7 +15 / T11 +15 / T12 +17 / T13 +11，加法自洽；T8/T9/T14 不改源码，0 条）；
+**数字口径**：本文件所有数字（903 passed / 7 项 / 35 / 7 / 86 / 29 / 10 / 1 / +62−4 / +273−7）
+都来自**整合轮 12 合入 T15…T20 六轨后**的真实输出，不是基线 `42822fc` 的旧值。
+pytest 条数由 802 涨到 860（整合轮 11：T7 +15 / T11 +15 / T12 +17 / T13 +11，加法自洽；T8/T9/T14 不改源码，0 条），
+再由 860 涨到 **903**（整合轮 12：T15 +5 / T16 +10 / T17 +23 / T20 +5，加法自洽；T19 不改源码 0 条；
+T18 的 7 条是 PG live 测试，**无库时 skip 不计入 passed**，所以 `skipped` 同步由 22 涨到 29 ——
+配了 `MAOS_PG_DSN` 时全量是 `932 passed, 0 skipped`）；
 verify 七项里**六项一个没变**（86 / 35 / 3 / 7 / 10 / 1），只有 `trace-tree` 由 19/19 涨到
 **29/29** —— 那是判据**加强**了（T12 给三条旁路补审计链，同批加了 `_check_seeded_provenance`），
 不是分母放宽。warn 由 12 行 3 类收到 **1 行 1 类**。
@@ -709,7 +712,7 @@ Y 轮四轨与 Z 轮五轨全部合入，本文件的断言**本轮已全部对�
 
 | 数字 | 跑的命令 | 实测 | 大纲原值 |
 | :-- | :-- | :-- | :-- |
-| 测试条数 | `python3 -m pytest maos/tests -q` | **860 passed**，exit=0 | 802 ⚠️ 已刷为 860（T 轮八轨 +58）|
+| 测试条数 | `python3 -m pytest maos/tests -q` | **903 passed**，exit=0 | 860 ⚠️ 已刷为 903（整合轮 12 六轨 +43）|
 | 证据束 | `ls evidence/` | **8 束**（`scenario-1..7` + `-R5`）／**50** 个证据文件 | 8 ✅ 一致 |
 | Skill 数 | `docs/skill-catalog.md:7` | **13** | 13 ✅ 一致 |
 | ToolPort 数 | `docs/toolport-contract.md:7` | **4** 个已实现 | 4 ✅ 一致 |

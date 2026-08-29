@@ -11,7 +11,7 @@
 #    只会打印不会失败的前置脚本等于没写。
 #
 # 2. **期望值可用环境变量覆盖**，不必改文件：
-#      MAOS_EXPECT_TESTS=860         第 1 步的测试条数
+#      MAOS_EXPECT_TESTS=903         第 1 步的测试条数
 #      MAOS_EXPECT_BUNDLES=8         第 4 步落盘的证据束个数
 #      MAOS_EXPECT_VERIFY='RESULT: 7/7 PASS'   第 5 步的核验结论行
 #    负例自证就靠它：MAOS_EXPECT_TESTS=999 bash scripts/demo_preflight.sh
@@ -31,7 +31,7 @@ set -euo pipefail
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-EXPECT_TESTS="${MAOS_EXPECT_TESTS:-860}"
+EXPECT_TESTS="${MAOS_EXPECT_TESTS:-903}"
 EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
 EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 7/7 PASS}"
 

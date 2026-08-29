@@ -82,7 +82,7 @@ T 轮把原来那 5 条人肉命令收敛成了一条脚本。它**不是跑完�
 
 | 步 | 跑什么 | 断言 |
 | :-- | :-- | :-- |
-| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望（当前 860），且 0 failed |
+| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望（当前 903），且 0 failed |
 | 2 | `python3 run.py` | exit=0 |
 | 3 | `python3 run.py --scenario 7` | exit=0，且屏幕上**仍有**镜 5 的 `disposition=replan_channel` 与镜 6 的 `业务状态  : compensated` |
 | 4 | `python3 scripts/make_evidence.py` | 落盘 **8 束**（数出来的，不是假定的） |

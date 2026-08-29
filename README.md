@@ -175,7 +175,7 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 ```bash
 git clone -b goai-restructure <本仓库地址> maos && cd maos
 git rev-parse --abbrev-ref HEAD     # 必须回 goai-restructure；不是它就停下，别往下跑
-python3 -m pytest maos/tests -q     # 860 passed
+python3 -m pytest maos/tests -q     # 903 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 

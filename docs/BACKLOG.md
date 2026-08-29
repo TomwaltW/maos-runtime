@@ -474,3 +474,68 @@ pytest 就会撞上。
 | 2026-08-29 | P5 | **真 Synapse / Element 侧仍未验。** 本轨三条假设是拿真 matrix-nio 0.26.0 客户端栈打真 HTTP 到本地 stub homeserver 撞出来的，C-1 收工时仍是 `PENDING` | stub 能证明「给定这样的状态码与响应体，nio 会解析成什么、`_NioChannel` 会怎么判」，**证不了** Synapse 究竟回什么。具体三条待验：①Synapse 对未加密房的 `m.room.encryption` 是否确实回 **404 + `M_NOT_FOUND`**（判据的 clear 一侧全押在这上面）；②真加密房是否确实回 **200 + `algorithm`**；③Element 里人类发的消息，`event.sender` / `event.body` 原文形态，以及 bot 自己发的 `m.notice` 会不会进 `RoomMessageText` 回调（离线实测显示不会 —— `m.notice` 解析成 `RoomMessageNotice`，所以回声过滤对镜像流量其实是冗余的，但对将来改用 `m.text` 的回话不冗余） | C-1 的 `~/.maos-matrix/STATUS` 变 `READY` 后，`. ~/.maos-matrix/room.env` 再跑 `~/.maos-matrix/venv/bin/python scripts/matrix_probe.py`。探针已写好并自测过（缺 env exit=2、连不通 exit=3、都验到才 exit=0），三条假设各打「判据原文 / 实际请求 / 实际响应」三行。**另需 C-1 或人类再建一个默认加密的房间**，把 id 放进 `MATRIX_ROOM_ID_ENCRYPTED` —— 只验未加密那一侧等于没验 |
 | 2026-08-29 | P5 | **房间监听仍没有接进任何运行路径**（`## task-E` 第 5 条的延续，本轨未消除） | `run.py --matrix` 只装镜像，不起监听；`MatrixEventBus.channel` 已按 C-3 的需要放出来，但谁在什么时候调 `channel.listen()`、场景 3 怎么阻塞等人类回话，仍无归属。本轨只负责让 `listen()` 本身是对的 | C-3 的 `hiclaw/room_demo.py`。本轨已把它依赖的三处形状冻住：`MatrixEventBus.channel` 只读属性、`MirrorChannel.listen(on_message: Callable[[str, str], None]) -> None`、`RoomApprovalBridge.handle_message(sender: str, body: str) -> str` |
 | 2026-08-29 | P5 | `scripts/matrix_probe.py` 会往房间发一条 `[matrix_probe] 探针连通性自检 <时间>` 的 `m.notice`，用来验 `room_send` 这条路 | 演示房间里会多出探针消息。C-4 截图前若刚跑过探针，截图里可能带上它 | 不改（不发就验不了 `room_send`）。C-4 截图前若介意，人类在 Element 里删掉那几条即可；或跑探针时把 `MATRIX_ROOM_ID` 指向另一个测试房 |
+## task-C3
+
+落状态迁移镜像与房间审批入口时发现、按铁律 4 与派单边界不当场处理的五条
+（分支 `task/c3-room-wiring`，基线 `f42ea83`）。第 1 条是**下一轮直接可用的施工草案**，
+不是问题单。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P5 | **把房间决策口搬进 scenario_6 / scenario_7 的最小 diff 草案**（派单第 8 步 §5 要求「只写不改」）。现状：`scenario_6.py:260`、`scenario_7.py:318`、`scenario_7.py:351` 三处是硬编码的 `hq.decide(...)` 一行，没有可注入的决策口，房间里的人插不进去 | 没有这个口，「在 Element 里 `/approve` 放行正式场景」这条链路只能靠 `hiclaw/room_demo.py` 另起一个 plan 演示，演的不是场景 6/7 本身。房间演示与正式场景因此是两条路 | **下一轮，由 Y-2（`scenario_6.py`）与 Y-4（`scenario_7.py`）落**。草案见本条下方代码块，共 4 处 + `common.py` 1 处，逐字可用 |
+| 2026-08-29 | P5 | **派单里 scenario_6/7 的行号已过期**：派单写 `scenario_6.py:295/310`、`scenario_7.py:391/408/445`，基线 `f42ea83` 上实际是 `scenario_6.py:245`（构造）/`:260`（decide）、`scenario_7.py:301`（构造）/`:318`、`:351`（decide，两处不是三处）。构造与调用的**形状完全一致**，只有行号漂了 | 照派单行号去核对会看到不相干的代码，容易被当成「口径对不上」而误判成回归 | 下一轮刷派单模板时改成按 `grep -n "HumanApprovalQueue\|\.decide("` 定位，不写死行号 |
+| 2026-08-29 | P5 | `matrix_bus.summarize()` 对 event_log 行的 `attempt=` 只能 best-effort。它是给 Envelope 写的、硬编码 `attempt={env.attempt}`，而 event_log **没有 attempt 这一列**（`_transit` 把 attempt 当任务字段更新，没写进 detail） | 镜像出来的迁移摘要行里，`attempt=` 读的是**轮询那一刻**任务的当前值，不是迁移发生那一刻的值。返工多轮时这个数可能偏大。折叠 JSON 里是 event_log 原样，不受影响 | 优先级低（房间里没人按 attempt 做判断）。真要修有两条路：①`_transit` 把 attempt 写进 detail（要动 `control_plane.py`，Y-2 持有）；②`summarize` 对非 Envelope 来源省掉 attempt 段（要动 `matrix_bus.py`，C-2 持有）。两条都跨轨，故本轮只在 `render_transition` 的 docstring 里标注 |
+| 2026-08-29 | P5 | `matrix_bus.MirrorChannel` Protocol 只声明了 `send` / `close`，**没有 `listen`**，而真通道 `_NioChannel` 有 `listen(on_message)`，房间审批链路完全依赖它 | 类型上「能监听的通道」无处可表达，调用方只能 `getattr(channel, "listen", None)` 探测（`room_demo.py` 现在就是这么写的）。少了这层声明，某天有人给 Protocol 加实现却忘了 `listen`，症状是「房间里发命令没反应」——最难查的那种 | 归 C-2（`matrix_bus.py` 所有者）。见本轨回执「需要 C-2 改的东西」一节。不是现存故障：`_NioChannel` 与 `room_demo.StdoutChannel` 三方法签名本轮已实测逐字对齐 |
+| 2026-08-29 | P5 | **真房间未验**：本轨交付时 `~/.maos-matrix/STATUS` 仍是 `PENDING —— C-1 尚未交付房间凭证`，`_NioChannel` 那条活路径（`sync_forever` + `add_event_callback` + `room_send`）一次都没在真 Synapse 上跑过 | 与 `## task-E` 第 2 条同源。本轨全部判据建立在注入 fake channel 上，可复现、不依赖 Synapse；但「接上就能镜像 / 接上就能审批」仍是**推断而非观察** | C-1 交付房间后跑派单第 9 步末尾那两条真房间命令（`--case approve` / `--case reject`）。三处要重点看：①`listen` 回调拿到的 `(sender, body)` 是不是就是 Element 里打的那行；②`sender` 的形态与 `MAOS_APPROVERS` 里写的是否**逐字**一致（不一致的症状是「命令发了没反应」）；③折叠 JSON 在 Element 里是否真的折叠 |
+
+**最小 diff 草案（下一轮直接用，本轮一个字未改）**
+
+`maos/flows/common.py`（Y-1）——新增一个缺省决策口，3 行：
+
+```python
+def default_decider(hq, task, *, approved: bool, operator: str, note: str = "") -> None:
+    """缺省决策口：直接落 hq.decide。房间接线时换成等房间回话的那个。"""
+    hq.decide(task["task_id"], approved=approved, operator=operator, note=note)
+```
+
+`maos/flows/scenario_6.py`（Y-2）——2 处：
+
+```diff
+-def run(*, matrix: bool = False) -> int:
++def run(*, matrix: bool = False, decider=None) -> int:
++    decide = decider or default_decider
+@@
+-    hq.decide(blocked["task_id"], approved=True, operator=APPROVER, note="已核对金额与政策版本")
++    decide(hq, blocked, approved=True, operator=APPROVER, note="已核对金额与政策版本")
+```
+
+`maos/flows/scenario_7.py`（Y-4）——3 处（决策口要穿过 `drive()`，`run()` 只透传）：
+
+```diff
+-def drive(*, matrix: bool = False) -> dict:
++def drive(*, matrix: bool = False, decider=None) -> dict:
++    decide = decider or default_decider
+@@
+-    hq.decide(finance_task["task_id"], approved=True, operator=APPROVER,
+-              note="已核对金额与政策版本")
++    decide(hq, finance_task, approved=True, operator=APPROVER,
++           note="已核对金额与政策版本")
+@@
+-    hq.decide(payment_task["task_id"], approved=False, operator=APPROVER, note=REJECT_REASON)
++    decide(hq, payment_task, approved=False, operator=APPROVER, note=REJECT_REASON)
+@@
+-def run(*, matrix: bool = False) -> int:
+-    out = drive(matrix=matrix)
++def run(*, matrix: bool = False, decider=None) -> int:
++    out = drive(matrix=matrix, decider=decider)
+```
+
+三点注意：
+
+1. **缺省行为一字不变**（`decider=None` 时走 `default_decider`，即现在这一行），
+   所以 `run.py` 与全部存量测试不受影响 —— 这是这份草案能安全落地的全部前提。
+2. 决策口收的是 **task dict 而不是 task_id**：房间侧要拿 `title` / `effect_risk`
+   渲染审批卡，只给 id 就得再查一次库，而那次查询在超时路径上可能查到已变的状态。
+3. 房间侧的决策口由 `hiclaw` 提供（本轮 `room_demo.py` 里那套 listen -> bridge ->
+   `decided.wait(timeout)` 可原样搬），`flows/**` **不 import hiclaw** ——
+   由 `maos/main.py` 或入口层在 `--matrix` 时注入，保持 flows 对 hiclaw 零依赖。

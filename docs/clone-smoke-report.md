@@ -75,7 +75,37 @@ MATRIX_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY
 | | **掐表：clone → `RESULT: 7/7 PASS`** | **6.44s** | | | **一次通到 7/7，零卡点、零非零退出** |
 | | 全程（README §4 全部命令跑满） | 17.37s | | | |
 
-**对 15 分钟预算的结论**：两遍都远在预算内（6.57s / 6.44s，约占预算的 0.7%）。
+### 第三遍（整合轮 5，基线 `5ea6890`）—— Y-3 收敛成两条命令之后
+
+Y-3 合并后 `make_evidence.py` 缺省一并产出 `scenario-R5`，复现路径从三条命令变两条。
+**全新克隆 + 显式 unset 全部 `MAOS_*` / `MATRIX_*` / key 变量**，逐步实测：
+
+| # | 命令原文 | 耗时 | exit | 脏行 |
+| :-- | :-- | --: | --: | --: |
+| 1 | `git clone …` | 0.81s | 0 | 0 |
+| 2 | `python3 scripts/make_evidence.py`（①） | 6.15s | 0 | 50 |
+| 3 | `python3 scripts/verify.py`（②） | 0.10s | 0 | 50 |
+| 4 | `python3 -m pytest maos/tests -q` | 9.17s | 0 | 50 |
+| 5 | `python3 run.py` | 2.28s | 0 | 50 |
+| 6 | `python3 run.py --scenario 7` | 0.26s | 0 | 50 |
+| 7 | `python3 scripts/gen_docs.py --check` | 0.14s | 0 | 50 |
+| | **掐表：clone → `RESULT: 7/7 PASS`** | **5.4s**（另一次独立复跑） | | |
+| | 全程（七条跑满） | **18.3s** | | |
+
+三处与前两遍不同：
+
+- **少敲一条命令**。原来的 ②（`python3 -m maos.kb.experiment`）不再需要单独敲，
+  「只跑 ①③ 会卡在缺 `scenario-R5/maos.db`」那个坑随之消失。
+- **`pytest` 从 `521 passed` 变 `571 passed`**（Y 轮三轨各带新测试进来）。
+- **`make_evidence.py` 从 4.4s 涨到 6.2s** —— 它现在多跑一个 R5 场景，
+  原来那 0.5s 是单独敲第二条命令花的，账没变多，只是并到一条里了。
+
+**没变的**：`git status` 跑完仍是 **50 行 M**；`scenario-R5` 的 7 个文件首行 sha
+**仍带 `-dirty`**（见 §3 卡点 6 的补记）。
+
+---
+
+**对 15 分钟预算的结论**：三遍都远在预算内（6.57s / 6.44s / 5.4s，约占预算的 0.7%）。
 **但这个数字本身不说明 README 好用** —— 掐表只量机器时间，而第一遍真正的成本全部
 落在「照 README 走不通、要回头猜」上，那部分不体现在秒数里。见下一节。
 

@@ -674,3 +674,16 @@ F 轨两支的账各自记在 `## task-F1` / `## task-F2`，本节不重复；�
 | 2026-08-29 | P7 | **`docs/ppt-outline.md` 数字口径行末尾的两组 diff 统计（`+62−4` / `+273−7`）本轮仍没重算**。`## integrate-round-6` 已记，本轮没接 | 该行其余数字本轮全部刷成了 `4d691fc` 的实测值，唯独这两个仍是旧值，同一行里新旧混排 | 与下一轮材料面一起重算 |
 | 2026-08-29 | P7 | **`scenario-R5` 的 7 个文件首行出处 sha 仍带 `-dirty`**（`4d691fc-dirty`）。`## integrate-round-6` 已记，本轮按同一路径复现 | 不影响 verify（`verify.py` 显式容忍 R5 的这个后缀），但每轮都要向读者解释一次 | 修 `make_evidence.py` 的落盘顺序（先全算后全写），归下一轮 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题已过期**，且其中第 2 条「`integrate/round-5` 并回 `goai-restructure`」早已完成（主干 `c1049c2` 已含） | 一节挂着「待整合轮 6」的清单出现在整合轮 8 的交付里，读者会以为轮 6 没收口 | 下一轮顺手改标题并清掉已完成项。本轮不擅自扩面 |
+
+## task-H6
+
+本轨买的是「Matrix 那一组环境变量的起跑线」（`maos/tests/conftest.py`）。落地后顺手
+**逐个实测**了生产代码里其余的 `os.environ` 读取点，确认同一个根因还有哪几扇门开着。
+下面几条**都不在本单白名单内，一个字没改**，按铁律 4 记账。基线 `1131795`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`MAOS_STORE_BACKEND` 没有起跑线**：机器上 export 了它，全仓测试跟着换后端。本轮实测 `MAOS_STORE_BACKEND=postgres python3 -m pytest maos/tests -q` → **683 passed, 20 errors**（干净环境 703 passed），报 `NotImplementedError`，集中在 `maos/tests/test_store_port.py` | 与本轨修的 Matrix 洞**同一个根因**：`maos/store/__init__.py:60` 读进程真环境决定后端，而测试默认按 sqlite 写。谁的机器上留着这个变量，一次 pytest 就凭空多 20 个 error，且报错指向 store 实现而不是指向环境 —— 又一次「把机器状态念成代码缺陷」 | 归下一轮测试面。**最小修法**与本轨同形：在 `maos/tests/conftest.py` 的 `MATRIX_ENV_VARS` 之外再加一组 `MAOS_STORE_BACKEND` / `MAOS_PG_DSN` 的 autouse delenv。本轮没做，是因为它超出本单白名单语义，且要先确认 `test_store_port.py` 里有没有用例**故意**依赖这个变量选后端（本轮只实测了现象，没查这一层） |
+| 2026-08-29 | P7 | **`MAOS_MAX_REPLAN` 没有起跑线**：本轮实测 `MAOS_MAX_REPLAN=0 python3 -m pytest maos/tests -q` → **12 failed, 690 passed, 1 error**，散落在 `test_refund_failure.py`、`test_replan_gateway.py`、`test_kb_provenance.py` 三个文件 | 出处 `maos/core/control_plane.py:524`。重规划上限被外部拧到 0，多条场景用例的收敛路径当场变形。12 条红分布在三个互不相干的文件上，第一眼完全看不出是同一个原因 | 同上，归下一轮测试面一并处理 |
+| 2026-08-29 | P7 | **本轮实测排除的三组**（记在这里是为了下一轮不必重查）：`MAOS_LLM_API_KEY`/`MAOS_LLM_BASE_URL`/`MAOS_LLM_MODEL` 齐全 → **703 passed**；`MAOS_SANDBOX_WORKDIR`/`MAOS_SANDBOX_TIMEOUT`/`MAOS_SANDBOX_FORCE_SUBPROCESS` 齐全 → **703 passed**；单独 `MAOS_FINANCE_THRESHOLD=0` → **703 passed** | 无影响，**不是欠账**。尤其 `MAOS_LLM_*` 这组值得写明：带真 key 的机器跑 pytest **不会**去调真模型、不会出网花钱 —— 这是本轨最担心的一种后果，实测排除了 | 无需处理。下一轮若给 conftest 扩面，这三组**不要**顺手加进去：删掉不影响结果的变量只会增加维护面 |
+| 2026-08-29 | P7 | **`## task-C2` 第 1 条记的「真往房间发了 2 条消息」与当前实测不符**：本轮在 `1131795` 上按同一条件（四键齐全 + 一台连得通的 homeserver）复现，一次全量 pytest 是**连 homeserver 4 次、发 22 条**，其中 6 条带真实 task_id 的 TaskAssignment / TaskResult / ReviewVerdict | 差别不在结论（洞是真的、C-2 的修法也对），在**量级**：2 条像是「漏了个边角」，22 条 + 4 次连接是「一次 pytest 把演示房间灌了一屏」。C-2 当时大概只数了单文件那一处 `build(matrix=True)`；实际还有 `hiclaw/room_demo.py:209` 经 `test_room_wiring.py` 触发的 3 次 | **不改 `## task-C2` 那条**（不是本轨的账目，且它的结论没错）。记在这里供下一轮引用时以本条为准。复现手法：假 `nio` 模块经 `PYTHONPATH` 注入模拟一台连得通的 homeserver —— 本机系统 python3 未装 matrix-nio，直接 export 四个真键**复现不出来**，`open_channel` 会因 ImportError 立刻降级 |

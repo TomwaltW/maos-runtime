@@ -310,6 +310,10 @@ def test_unaudited_warn_no_longer_calls_a_real_report_fake():
     """
     # 判据必须是「来源未审计**但回查得到**」的那一种 —— 这条测试要钉的是措辞，
     # 不是回查（回查的正负例在 test_verify_receipt.py 的盲区 C 一节）。
+    # `business_outcome` 六个键写全、判据条目带上 `provenance`，是照
+    # `make_evidence.py::derive_business_outcome` 的真产出搭的：第 6 项自 H-1 起
+    # 会拿这几个字段与库/列表就地比对（盲区 D），缺键的 stub 会在那一层判负，
+    # 而这条测试要的是「判定不变、只看措辞」，得先让输入本身像真产出。
     chk = verify.check_business_outcome([_case(
         conn=_FakeConn([{"plan_id": PLAN_ID, "state": "DONE"}],
                        artifacts=[{"plan_id": PLAN_ID, "task_id": "t",
@@ -317,9 +321,13 @@ def test_unaudited_warn_no_longer_calls_a_real_report_fake():
                                    "content": '{"passed": 5, "failed": 0, "errors": 0}'}]),
         result={"plans": [{"plan_id": PLAN_ID, "state": "DONE", "business_outcome": {
             "status": "succeeded",
+            "basis": "external_evidence",
+            "plan_state": "DONE",
             "external_evidence": [{"kind": "test_report", "artifact_id": "art-1",
-                                   "task_id": "t", "version": 1, "passed": 5}],
+                                   "task_id": "t", "version": 1, "passed": 5,
+                                   "provenance": "unknown"}],
             "unaudited_evidence_count": 1,
+            "source": "derived-from-db-at-export-time",
         }}]},
     )])
     note = next(n for n in chk.notes if "无来源事件" in n)

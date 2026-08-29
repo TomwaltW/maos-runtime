@@ -674,3 +674,16 @@ F 轨两支的账各自记在 `## task-F1` / `## task-F2`，本节不重复；�
 | 2026-08-29 | P7 | **`docs/ppt-outline.md` 数字口径行末尾的两组 diff 统计（`+62−4` / `+273−7`）本轮仍没重算**。`## integrate-round-6` 已记，本轮没接 | 该行其余数字本轮全部刷成了 `4d691fc` 的实测值，唯独这两个仍是旧值，同一行里新旧混排 | 与下一轮材料面一起重算 |
 | 2026-08-29 | P7 | **`scenario-R5` 的 7 个文件首行出处 sha 仍带 `-dirty`**（`4d691fc-dirty`）。`## integrate-round-6` 已记，本轮按同一路径复现 | 不影响 verify（`verify.py` 显式容忍 R5 的这个后缀），但每轮都要向读者解释一次 | 修 `make_evidence.py` 的落盘顺序（先全算后全写），归下一轮 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题已过期**，且其中第 2 条「`integrate/round-5` 并回 `goai-restructure`」早已完成（主干 `c1049c2` 已含） | 一节挂着「待整合轮 6」的清单出现在整合轮 8 的交付里，读者会以为轮 6 没收口 | 下一轮顺手改标题并清掉已完成项。本轮不擅自扩面 |
+
+## task-H1
+
+verify 第 6 项的自述层收口（FAILED 自称成功 + 四个元数据字段无校验）。
+本轨白名单只有 `scripts/verify.py` / `maos/tests/test_verify_receipt.py` 与两份账本，
+下面三条都在白名单外或超出派单 §5.2 的「就地比对」口径，按铁律 4 记账不当场改。
+基线 `1131795`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`maos/tests/test_sandbox_degradation_visible.py::test_unaudited_warn_no_longer_calls_a_real_report_fake` 的 stub 与生成侧真产出不一致**：它手搭的 `business_outcome` 只有 `status` / `external_evidence` / `unaudited_evidence_count` 三个键，缺 `plan_state` / `basis` / `source`；且那条判据条目**不带 `provenance`**，却记 `unaudited_evidence_count: 1`。生成侧 `derive_business_outcome` 六个键恒全、每条判据必带 `provenance` | 本轨把这四个字段做进判据后，这条测试红（`StopIteration` + `chk.status == PASS` 两条断言都不成立）。它钉的是**warn 的措辞**，与自述层判据正交 | **已停手问人、经沈总批准后补齐**（补 `plan_state` / `basis` / `source` 三个键，判据条目补 `provenance="unknown"`，四处新增，断言与测试意图一个字未改）。**这是本轨唯一动过的白名单外文件，合并时留意**：它不在派单 §4 的独占表里，若同期有别的轨也改了 `maos/tests/test_sandbox_degradation_visible.py`，这一处会冲突。留这条不是欠账，是跨轨提示 |
+| 2026-08-29 | P7 | **`provenance` 这个值本身仍然没有任何回查**。本轨新加的 `outcome_selfclaim` 只保证「自述的 `unaudited_evidence_count`」等于「列表里 `provenance == "unknown"` 数得出来的条数」，两边都取自 `result.json` | 攻击者把每条判据的 `provenance` 从 `unknown` 改成 `task_result`、同时把 `unaudited_evidence_count` 改成 0，两边**自洽**，于是不判负、warn 也照样消失 —— §5.2 那个「伪造干净」的洞换个改法还在。实测口径：干净束 warn 12 行 3 类，这一手能打到 11 行 | 要堵得重算入库路径（从 `event_log` 回溯每份产物的产出事件，与生成侧 `provenance` 字典同源），属**新查库**，超出派单 §5.2 明写的「四条就地比对，不需要新查库」。归下一轮：与第 4 项 trace-tree 的产物来源判定合并做最省事，两处推的是同一件事 |
+| 2026-08-29 | P7 | **`git checkout -- evidence/` 还原出来的证据束内部不自洽**：`*.db` 按 `.gitignore:40` 不入库，还原只回滚了 json，库仍停在上一次 `make_evidence.py` 的产物上。两边 `plan_id` 随机且不同，于是 verify 报 `RESULT: 3/7 PASS`、exit=1 | 派单 §6 硬判据 1 写的复现收尾动作就是它。本轨第一次跑攻击复现时照做，四条判据全部报出**假红**，差点被当成回归。它只够让 `git status` 干净，不够让 verify 复绿 | 下一轮改派单模板：攻击复现的还原动作写成「重跑 `make_evidence.py`」或「先备份 `result.json` 再逐份复制回去」，`git checkout -- evidence/` 只留作 commit 前的清场步骤。本轨这次用的是备份复制法，实测还原后 `7/7 PASS`、exit=0、warn 12 行 |

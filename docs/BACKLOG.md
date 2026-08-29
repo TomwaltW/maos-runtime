@@ -674,3 +674,14 @@ F 轨两支的账各自记在 `## task-F1` / `## task-F2`，本节不重复；�
 | 2026-08-29 | P7 | **`docs/ppt-outline.md` 数字口径行末尾的两组 diff 统计（`+62−4` / `+273−7`）本轮仍没重算**。`## integrate-round-6` 已记，本轮没接 | 该行其余数字本轮全部刷成了 `4d691fc` 的实测值，唯独这两个仍是旧值，同一行里新旧混排 | 与下一轮材料面一起重算 |
 | 2026-08-29 | P7 | **`scenario-R5` 的 7 个文件首行出处 sha 仍带 `-dirty`**（`4d691fc-dirty`）。`## integrate-round-6` 已记，本轮按同一路径复现 | 不影响 verify（`verify.py` 显式容忍 R5 的这个后缀），但每轮都要向读者解释一次 | 修 `make_evidence.py` 的落盘顺序（先全算后全写），归下一轮 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题已过期**，且其中第 2 条「`integrate/round-5` 并回 `goai-restructure`」早已完成（主干 `c1049c2` 已含） | 一节挂着「待整合轮 6」的清单出现在整合轮 8 的交付里，读者会以为轮 6 没收口 | 下一轮顺手改标题并清掉已完成项。本轮不擅自扩面 |
+
+## task-H4
+
+本轨只做一件事：让 `guardrails._shared_inputs` 取得到嵌在 `case_seed` 之类载荷里的
+共享参数（基线 `1131795`）。下面几条是查这件事时**实测撞到、按铁律 4 不当场改**的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`suggested_tasks_from_docs` 会把历史文档里的 `amount_claimed` 原样抄到建议任务上**：它先抄历史 step 的 inputs，再用 `_shared_inputs` 的结果覆盖；而 `ORDER_FACT_FIELDS` 不含 `amount_claimed`（申报金额是客户诉求、不是订单事实，这个归类本身是对的），所以历史那份不会被丢弃。**本轨修的是「取得到就覆盖」**，`baseline` 顶层与嵌套**一份都没有**时，历史金额仍会原样留在建议任务上 | 第六道闸会按**历史那一单**的钱数判当前这一单 —— 正是 `_shared_inputs` 自己 docstring 里警告的「抄错一位数就是把闸绕过去」。现有测试 `test_kb_retriever.py::test_apply_suggestions_adds_step_without_carrying_facts` 的 baseline 恰好就是这个形状（历史 `9999.0` 被抄进建议任务），但那条测试没有断言金额，所以一直是绿的 | 改法有两条，都不在本轨白名单内：① 覆盖不到就**显式删掉** `amount_claimed`（宁可让闸的 plan 级判据接住，也不用别人的钱数放行）；② 把「知识层不许携带的触发量」单独立一份清单，与 `ORDER_FACT_FIELDS` 并列。①更省事但会改闸的触发面，需要与持 `gate.py` 的轨一起定 |
+| 2026-08-29 | P7 | **R5 对照实验的两个金额是同一个常量**（`kb.experiment.AMOUNT = 6800.00`，历史 case 与当前 case 共用），于是上面那条症状在证据束里**完全没有表象** | 本轨修前修后，R5 的 `dag-diff.json` 逐项相同（`finance_gate` 仍是 blocker/pass、`finance_entries` 仍是 0/1）——「建议任务的金额来自历史文档」这件事，靠 R5 一个字都看不出来。要靠回归测试把两个数拉开才显形（`test_kb_nested_inputs.py`：历史 3200 阈下 / 当前 9000 阈上） | 属 `maos/kb/experiment.py`（本轨只读）。建议把历史 case 的金额与当前 case **拉开**，让证据束自己就能证明「补出来的财务任务用的是这一单的钱」。改动会动 R5 证据束的读数，须与证据面一轨一起做 |
+| 2026-08-29 | P7 | **深度上限 `SHARED_SCAN_MAX_DEPTH = 4` 与 `runtime.gate.FINANCE_SCAN_MAX_DEPTH` 是两份各自写死的常量**，靠注释互相指认，没有任何机器守卫 | 两处扫的是同一片 `inputs` 树。哪天有人只改一边，症状是「闸看得见的金额，规划期取不到」—— 正是本轨修的这个 bug 的形状，只是换个深度重现一次，且不会有任何测试变红 | 加一条守卫测试断言两个常量相等即可（一行），但断言要落在哪个文件里、由谁持有，得等 `gate.py` 那轨收工后定。本轨不跨面加测试 |

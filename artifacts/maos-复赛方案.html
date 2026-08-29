@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAOS 复赛方案 · 多 Agent 协作运行时</title>
+<style>
+/* ============================================================
+   MAOS 复赛方案演示稿
+   自包含：无外链 CDN、无网络字体、无远程图片。
+   16:9 / 1280×720，一个 <section> 一页，打印即一页一张。
+   ============================================================ */
+
+:root{
+  --ink:#0f172a; --ink2:#334155; --ink3:#64748b; --ink4:#94a3b8;
+  --line:#e2e8f0; --line2:#cbd5e1;
+  --bg:#ffffff; --soft:#f8fafc; --soft2:#f1f5f9;
+  --brand:#1d4ed8; --brand-soft:#eff6ff;
+  --ok:#047857; --ok-soft:#ecfdf5;
+  --warn:#b45309; --warn-soft:#fffbeb;
+  --bad:#b91c1c; --bad-soft:#fef2f2;
+  --term-bg:#0f172a; --term-fg:#e2e8f0;
+  --d-scene:#4338ca; --d-agent:#7e22ce; --d-skill:#0e7490;
+  --d-eng:#047857;   --d-oss:#57534e;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
+  --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--soft2);
+  font-family:var(--sans);
+  color:var(--ink);
+  -webkit-font-smoothing:antialiased;
+  font-size:20px; line-height:1.55;
+}
+
+/* ---------- 页容器 ---------- */
+.deck{ display:flex; flex-direction:column; align-items:center; gap:28px; padding:28px 0 64px; }
+
+.slide{
+  position:relative;
+  width:1280px; height:720px;
+  background:var(--bg);
+  overflow:hidden;
+  display:flex; flex-direction:column;
+  box-shadow:0 2px 8px rgba(15,23,42,.10), 0 12px 32px rgba(15,23,42,.08);
+  border-radius:4px;
+}
+
+/* ---------- 页眉 ---------- */
+.head{
+  flex:0 0 auto;
+  display:flex; align-items:baseline; gap:14px;
+  padding:19px 52px 10px;
+  border-bottom:2px solid var(--ink);
+}
+.anchor{
+  font-family:var(--mono); font-size:17px; font-weight:700;
+  color:#fff; background:var(--ink);
+  padding:3px 10px; border-radius:3px; letter-spacing:.02em;
+  flex:0 0 auto; align-self:center;
+}
+.head h2{ margin:0; font-size:28px; font-weight:700; letter-spacing:-.01em; flex:1 1 auto; }
+.dim{
+  flex:0 0 auto; align-self:center;
+  font-size:14px; font-weight:600; color:#fff;
+  padding:4px 11px; border-radius:20px; white-space:nowrap;
+}
+.dim.scene{background:var(--d-scene);} .dim.agent{background:var(--d-agent);}
+.dim.skill{background:var(--d-skill);} .dim.eng{background:var(--d-eng);}
+.dim.oss{background:var(--d-oss);}
+.dim.plain{background:#fff;color:var(--ink3);border:1px solid var(--line2);}
+
+/* ---------- 正文 ---------- */
+.body{ flex:1 1 auto; padding:15px 52px 6px; overflow:hidden; min-height:0; }
+.claim{
+  font-size:21px; font-weight:600; line-height:1.4; color:var(--ink);
+  border-left:5px solid var(--brand); padding:1px 0 1px 15px; margin:0 0 12px;
+}
+.claim em{ font-style:normal; color:var(--brand); }
+
+/* ---------- 页脚：可核验证据 ---------- */
+.foot{
+  flex:0 0 auto;
+  padding:9px 52px 11px;
+  border-top:1px solid var(--line);
+  background:var(--soft);
+  font-size:15px; color:var(--ink3);
+  display:flex; align-items:flex-start; gap:11px; line-height:1.5;
+}
+.foot .lbl{ flex:0 0 auto; font-weight:700; color:var(--ink2); }
+.foot .refs{ flex:1 1 auto; }
+.foot code{ font-family:var(--mono); font-size:14px; color:var(--ink2);
+  background:#fff; border:1px solid var(--line2); border-radius:3px; padding:1px 5px; }
+.foot .sep{ color:var(--line2); margin:0 5px; }
+.pageno{ flex:0 0 auto; font-family:var(--mono); font-size:14px; color:var(--ink4); }
+
+/* ---------- 通用件 ---------- */
+code, .mono{ font-family:var(--mono); }
+.k{ font-family:var(--mono); font-size:.92em; background:var(--soft2);
+    border:1px solid var(--line); border-radius:3px; padding:1px 5px; color:var(--ink2); }
+.hl{ background:linear-gradient(transparent 62%, #fde68a 62%); font-weight:600; }
+
+table{ border-collapse:collapse; width:100%; font-size:15.5px; }
+th{ text-align:left; font-weight:700; color:var(--ink2); font-size:14px;
+    padding:5px 10px; border-bottom:2px solid var(--line2); background:var(--soft); }
+td{ padding:5px 10px; border-bottom:1px solid var(--line); vertical-align:top; line-height:1.4; }
+tr:last-child td{ border-bottom:none; }
+td.m, th.m{ font-family:var(--mono); font-size:14px; }
+
+.term{
+  background:var(--term-bg); color:var(--term-fg);
+  font-family:var(--mono); font-size:14px; line-height:1.5;
+  padding:11px 15px; border-radius:5px; white-space:pre; overflow:hidden;
+}
+.term .g{color:#4ade80;} .term .r{color:#f87171;} .term .y{color:#fbbf24;}
+.term .b{color:#60a5fa;} .term .d{color:#94a3b8;} .term .w{color:#fff;font-weight:600;}
+
+.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.grid2.wide-l{ grid-template-columns:1.35fr 1fr; }
+.grid2.wide-r{ grid-template-columns:1fr 1.35fr; }
+.grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+
+.card{ border:1px solid var(--line2); border-radius:6px; padding:10px 13px; background:var(--bg); }
+.card h4{ margin:0 0 5px; font-size:15.5px; font-weight:700; color:var(--ink); }
+.card p{ margin:0; font-size:14.5px; color:var(--ink2); line-height:1.45; }
+.card.ok{ border-color:#a7f3d0; background:var(--ok-soft); }
+.card.warn{ border-color:#fcd34d; background:var(--warn-soft); }
+.card.bad{ border-color:#fecaca; background:var(--bad-soft); }
+
+.tag{ display:inline-block; font-size:13px; font-weight:700; padding:2px 8px;
+      border-radius:3px; letter-spacing:.02em; }
+.tag.ok{ background:var(--ok-soft); color:var(--ok); border:1px solid #a7f3d0; }
+.tag.warn{ background:var(--warn-soft); color:var(--warn); border:1px solid #fcd34d; }
+.tag.bad{ background:var(--bad-soft); color:var(--bad); border:1px solid #fecaca; }
+.tag.info{ background:var(--brand-soft); color:var(--brand); border:1px solid #bfdbfe; }
+
+.note{ font-size:14px; color:var(--ink3); line-height:1.45; }
+.strike{ text-decoration:line-through; color:var(--ink4); }
+
+ul.tight{ margin:0; padding-left:1.15em; }
+ul.tight li{ margin:0 0 5px; font-size:14.5px; line-height:1.45; color:var(--ink2); }
+ul.tight li:last-child{ margin-bottom:0; }
+ul.tight li strong{ color:var(--ink); }
+
+/* ---------- P1 封面 ---------- */
+.cover{ display:flex; flex-direction:column; justify-content:center; height:100%;
+        padding:0 84px; background:var(--bg); }
+.cover .kicker{ font-family:var(--mono); font-size:16px; color:var(--brand);
+  letter-spacing:.14em; text-transform:uppercase; margin-bottom:20px; }
+.cover h1{ margin:0 0 20px; font-size:62px; font-weight:800; letter-spacing:-.025em; line-height:1.1; }
+.cover .sub{ font-size:25px; color:var(--ink2); line-height:1.55; margin-bottom:34px; max-width:960px; }
+.cover .sub b{ color:var(--ink); }
+.cover .facts{ display:flex; gap:36px; margin-top:30px; padding-top:24px; border-top:1px solid var(--line); }
+.cover .fact .n{ font-family:var(--mono); font-size:27px; font-weight:700; color:var(--ink); }
+.cover .fact .l{ font-size:14px; color:var(--ink3); margin-top:3px; }
+
+/* ---------- 架构图 ---------- */
+.arch{ width:100%; height:auto; display:block; }
+.arch text{ font-family:var(--sans); }
+.arch .mono{ font-family:var(--mono); }
+
+/* ---------- 占位 slot ---------- */
+.slot{
+  border:2.5px dashed var(--warn); border-radius:6px; background:var(--warn-soft);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; padding:16px; gap:6px;
+}
+.slot .t{ font-size:18px; font-weight:700; color:var(--warn); }
+.slot .s{ font-size:14px; color:var(--ink3); line-height:1.5; font-family:var(--mono); }
+
+/* ---------- 打印 ---------- */
+@page{ size:1280px 720px; margin:0; }
+@media print{
+  body{ background:#fff; font-size:20px; }
+  .deck{ display:block; padding:0; gap:0; }
+  .slide{
+    box-shadow:none; border-radius:0; margin:0;
+    width:1280px; height:720px;
+    page-break-after:always; break-after:page;
+    page-break-inside:avoid; break-inside:avoid;
+  }
+  .slide:last-child{ page-break-after:auto; break-after:auto; }
+  .navhint{ display:none !important; }
+  .term{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+}
+
+.navhint{
+  position:fixed; right:16px; bottom:14px; z-index:50;
+  font-family:var(--mono); font-size:12px; color:var(--ink4);
+  background:rgba(255,255,255,.92); border:1px solid var(--line);
+  border-radius:4px; padding:5px 10px;
+}
+</style>
+</head>
+<body>
+<div class="deck">
+
+<!-- ============================== P1 封面 ============================== -->
+<section class="slide" id="p1">
+  <div class="cover">
+    <div class="kicker">2026 复赛方案 · MAOS</div>
+    <h1>MAOS —— 多 Agent 协作运行时</h1>
+    <div class="sub">
+      领域无关的编排内核 + 可核验的运行证据 ——<br>
+      <b>换域零改动，每一步都能被外人重放。</b>
+    </div>
+    <div class="term" style="max-width:900px;">python3 scripts/make_evidence.py   <span class="d"># ① 跑 7 个场景 + RAG 对照，落成 evidence/</span>
+python3 scripts/verify.py          <span class="d"># ② 七项证据逐项重放校验</span>
+                                   <span class="g w">→ RESULT: 7/7 PASS，exit=0</span></div>
+    <div class="note" style="margin-top:14px;">
+      ①② 两条缺一不可、顺序不能换。<span class="k">*.db</span> 不入 git，直接跑 ② 会报「缺数据库」并退出 2 —— 这是设计行为。
+    </div>
+    <div class="facts">
+      <div class="fact"><div class="n">749</div><div class="l">pytest 全绿</div></div>
+      <div class="fact"><div class="n">7/7</div><div class="l">证据核验项</div></div>
+      <div class="fact"><div class="n">8</div><div class="l">证据束 / 50 个证据文件</div></div>
+      <div class="fact"><div class="n">10</div><div class="l">Agent Identity（9 个可派单）</div></div>
+      <div class="fact"><div class="n">13 / 4</div><div class="l">Skill / ToolPort</div></div>
+      <div class="fact"><div class="n">Apache-2.0</div><div class="l">开源许可</div></div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>README.md:1-18</code>（本页主张与两条命令逐字对应）<span class="sep">·</span><code>README.md:96-98</code><span class="sep">·</span><code>LICENSE</code></span>
+    <span class="pageno">P1 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P2 三段反馈 ============================== -->
+<section class="slide" id="p2">
+  <div class="head">
+    <span class="anchor">P2</span>
+    <h2>评委三段反馈，正面接住</h2>
+    <span class="dim plain">三段反馈诊断</span>
+  </div>
+  <div class="body">
+    <p class="claim">三条诊断我们没有绕开，每一条都指向<em>一页具体的、可核验的落点</em>。</p>
+    <table>
+      <thead><tr><th style="width:33%">评委诊断</th><th style="width:9%">落在</th><th>台上跑这条 → 看到什么</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>没有可执行制品和运行证据</td>
+          <td><strong>P11</strong></td>
+          <td class="m">python3 scripts/make_evidence.py &amp;&amp; python3 scripts/verify.py<br><span class="tag ok">RESULT: 7/7 PASS</span></td>
+        </tr>
+        <tr>
+          <td>现实业务锚点不足</td>
+          <td><strong>P3</strong> + P10</td>
+          <td class="m">python3 run.py --scenario 6<br><span class="note">制造售后退款域纵切，不是软件域自证式 demo</span></td>
+        </tr>
+        <tr>
+          <td>「所有 Agent 都回复完成」≠ 业务成功</td>
+          <td><strong>P10</strong></td>
+          <td class="m">python3 run.py --scenario 7<br><span class="note">Plan 终态 <span class="tag bad">FAILED</span> ·
+            <code>biz_status=compensated</code> · <code>settled</code> 观察 <b>0 条</b></span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="card warn" style="margin-top:20px;">
+      <h4>这一页只承诺「指得出落点」，不承诺「已全部解决」</h4>
+      <p>第二条、第三条有代码有证据；<b>第一条要评委自己跑了才算数</b> —— 所以我们把命令印在封面上，
+      而不是把结论印在封面上。</p>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>docs/submission-checklist.md:183-190</code>（三条诊断原文与回应落点）</span>
+    <span class="pageno">P2 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P3 从一条退款说起 ============================== -->
+<section class="slide" id="p3">
+  <div class="head">
+    <span class="anchor">P3</span>
+    <h2>从一条退款说起</h2>
+    <span class="dim scene">场景价值与复用性 20%</span>
+  </div>
+  <div class="body">
+    <p class="claim">一条真实形态的售后退款诉求，从三处来源进来，走完受理、裁定、核算、放行、支付、通知 ——
+      <em>每一步都往库里落一个真实业务对象</em>。</p>
+    <div class="note" style="margin:-6px 0 12px;">
+      客户报修一批轴承，说货有质量问题，要求退款 6800 元。诉求同时来自<b>工单系统、客服聊天记录、客户自拍照片</b>三处。
+    </div>
+    <table>
+      <thead><tr><th style="width:20%">谁</th><th style="width:46%">干了什么</th><th>留下了什么（落库对象）</th></tr></thead>
+      <tbody>
+        <tr><td><strong>受理 Agent</strong></td><td>把三处诉求去重聚合成一个 case</td><td class="m">refund_case（<code>submitted</code>）</td></tr>
+        <tr><td><strong>Manager</strong></td><td>规划 DAG —— <span class="hl">与软件交付域是同一个 Manager，零改动</span></td><td class="m">plan + 5 个 task</td></tr>
+        <tr><td><strong>政策 Agent</strong></td><td>按下单时锁定的政策版本裁定退款资格</td><td class="m">policy_decision</td></tr>
+        <tr><td><strong>财务 Agent</strong></td><td>核算退款金额并写财务分录（过第六道闸）</td><td class="m">finance_entry</td></tr>
+        <tr><td><strong>支付 Agent</strong></td><td>发起退款并<b>观察</b>网关回执</td><td class="m">refund_request + payment_observation</td></tr>
+      </tbody>
+    </table>
+    <div class="grid2" style="margin-top:16px;">
+      <div class="card"><h4>为什么是退款域</h4>
+        <p>它有 MAOS 需要的一切：多源输入、政策裁定、金额核算、<b>外部权威事实</b>（钱到没到账）、
+        以及一条走不通时的补偿路径。软件自证式 demo 给不出最后两样。</p></div>
+      <div class="card warn"><h4>数据口径（先说清楚）</h4>
+        <p>政策与历史案例是<b>按行业惯例构造的合成数据</b>，不是某家企业的真实政策；
+        支付网关是<b>对齐公开规范的模拟实现</b>。完整口径见 P13。</p></div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>python3 run.py --scenario 6</code><span class="sep">·</span><code>README.md:21-43</code>（本页叙事与表格原文）<span class="sep">·</span>评委要求 1 / 3 / 6</span>
+    <span class="pageno">P3 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P4 架构一眼 ============================== -->
+<section class="slide" id="p4">
+  <div class="head">
+    <span class="anchor">P4</span>
+    <h2>架构一眼</h2>
+    <span class="dim plain">地基页 · 支撑 P5–P12</span>
+  </div>
+  <div class="body" style="padding-bottom:0;">
+    <p class="claim" style="margin-bottom:10px;">四块：冻结契约、领域无关内核、按域实现、旁路 ——
+      <em>换域时只有第三块动</em>。</p>
+    <svg class="arch" viewBox="0 0 1176 462" role="img" aria-label="MAOS 分层架构：冻结契约 / 领域无关内核 / 按域实现 / 旁路">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+        </marker>
+        <marker id="ahd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+        </marker>
+      </defs>
+
+      <!-- FROZEN -->
+      <rect x="0" y="0" width="1176" height="76" rx="6" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="14" y="20" font-size="13.5" font-weight="700" fill="#475569">冻结契约（禁改 · maos/contracts/）</text>
+      <rect x="18" y="28" width="250" height="36" rx="4" fill="#fff" stroke="#94a3b8"/>
+      <text x="143" y="45" font-size="13" font-weight="700" fill="#334155" text-anchor="middle" class="mono">events.py</text>
+      <text x="143" y="59" font-size="11.5" fill="#64748b" text-anchor="middle">Envelope / Topic / EventType</text>
+      <rect x="282" y="28" width="250" height="36" rx="4" fill="#fff" stroke="#94a3b8"/>
+      <text x="407" y="45" font-size="13" font-weight="700" fill="#334155" text-anchor="middle" class="mono">states.py</text>
+      <text x="407" y="59" font-size="11.5" fill="#64748b" text-anchor="middle">TaskState / PlanState / 迁移表</text>
+      <text x="560" y="52" font-size="13.5" font-weight="700" fill="#047857">git diff 严格为零 →</text>
+
+      <!-- KERNEL -->
+      <rect x="0" y="94" width="1176" height="132" rx="6" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+      <text x="14" y="114" font-size="13.5" font-weight="700" fill="#1d4ed8">领域无关内核（换域不改；内核不 import 任何业务域）</text>
+      <g font-size="12.5" text-anchor="middle">
+        <rect x="18" y="122" width="222" height="44" rx="4" fill="#fff" stroke="#60a5fa"/>
+        <text x="129" y="139" font-weight="700" fill="#1e3a8a">Control Plane</text>
+        <text x="129" y="154" font-size="11" fill="#475569" class="mono">core/control_plane.py:172 唯一迁移出口</text>
+        <rect x="254" y="122" width="200" height="44" rx="4" fill="#fff" stroke="#60a5fa"/>
+        <text x="354" y="139" font-weight="700" fill="#1e3a8a">EventBus</text>
+        <text x="354" y="154" font-size="11" fill="#475569" class="mono">core/eventbus.py</text>
+        <rect x="468" y="122" width="212" height="44" rx="4" fill="#fff" stroke="#60a5fa"/>
+        <text x="574" y="139" font-weight="700" fill="#1e3a8a">Store</text>
+        <text x="574" y="154" font-size="11" fill="#475569" class="mono">plan/task/artifact/event_log/…</text>
+        <rect x="694" y="122" width="212" height="44" rx="4" fill="#fff" stroke="#60a5fa"/>
+        <text x="800" y="139" font-weight="700" fill="#1e3a8a">Worker Runtime</text>
+        <text x="800" y="154" font-size="11" fill="#475569" class="mono">runtime/worker.py · Identity 三查</text>
+        <rect x="920" y="122" width="238" height="44" rx="4" fill="#fff" stroke="#60a5fa"/>
+        <text x="1039" y="139" font-weight="700" fill="#1e3a8a">Reviewer Gate</text>
+        <text x="1039" y="154" font-size="11" fill="#475569" class="mono">runtime/gate.py:254 七道闸</text>
+        <rect x="18" y="176" width="222" height="38" rx="4" fill="#fff" stroke="#60a5fa"/>
+        <text x="129" y="199" font-weight="700" fill="#1e3a8a">Plan Finalizer</text>
+        <text x="380" y="194" font-size="13" fill="#1e3a8a" text-anchor="start" font-weight="600">
+          Agent 不改状态，只产出　·　Gate 不改状态，只出判定
+        </text>
+        <text x="380" y="211" font-size="13" fill="#1e3a8a" text-anchor="start" font-weight="600">
+          Skill 不碰外部世界，碰外部世界的一律经 ToolPort
+        </text>
+      </g>
+
+      <!-- PLUG -->
+      <rect x="0" y="244" width="1176" height="88" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="2.5"/>
+      <text x="14" y="264" font-size="13.5" font-weight="700" fill="#b45309">按域实现（换域时唯一动的一块 —— 新增文件，不改内核）</text>
+      <g font-size="12.5" text-anchor="middle">
+        <rect x="18" y="272" width="276" height="46" rx="4" fill="#fff" stroke="#f59e0b"/>
+        <text x="156" y="290" font-weight="700" fill="#92400e">Agents</text>
+        <text x="156" y="306" font-size="11" fill="#78350f" class="mono">agents/** · 软件域 6 + 退款域 4</text>
+        <rect x="308" y="272" width="276" height="46" rx="4" fill="#fff" stroke="#f59e0b"/>
+        <text x="446" y="290" font-weight="700" fill="#92400e">Skills</text>
+        <text x="446" y="306" font-size="11" fill="#78350f" class="mono">skills/builtin/** · 九要素契约 · 13 个</text>
+        <rect x="598" y="272" width="276" height="46" rx="4" fill="#fff" stroke="#f59e0b"/>
+        <text x="736" y="290" font-weight="700" fill="#92400e">ToolPorts</text>
+        <text x="736" y="306" font-size="11" fill="#78350f" class="mono">tools/** · sandbox · gateway · 4 个</text>
+        <rect x="888" y="272" width="270" height="46" rx="4" fill="#fff" stroke="#f59e0b"/>
+        <text x="1023" y="290" font-weight="700" fill="#92400e">业务对象</text>
+        <text x="1023" y="306" font-size="11" fill="#78350f" class="mono">domain/refund/** · settled guard</text>
+      </g>
+
+      <!-- SIDE -->
+      <rect x="0" y="350" width="1176" height="86" rx="6" fill="#fff" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6 4"/>
+      <text x="14" y="370" font-size="13.5" font-weight="700" fill="#64748b">旁路（可缺席，不阻塞主链路）</text>
+      <g font-size="12.5" text-anchor="middle">
+        <rect x="18" y="378" width="366" height="44" rx="4" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="201" y="395" font-weight="700" fill="#475569">MatrixEventBus</text>
+        <text x="201" y="410" font-size="11" fill="#64748b" class="mono">hiclaw/matrix_bus.py · 镜像 + 房间审批</text>
+        <rect x="398" y="378" width="366" height="44" rx="4" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="581" y="395" font-weight="700" fill="#475569">知识层 / RAG</text>
+        <text x="581" y="410" font-size="11" fill="#64748b" class="mono">maos/kb/** · 两阶段检索 + 三条护栏</text>
+        <rect x="778" y="378" width="380" height="44" rx="4" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="968" y="395" font-weight="700" fill="#475569">Trace</text>
+        <text x="968" y="410" font-size="11" fill="#64748b" class="mono">maos/obs/trace.py · OTel 对齐 span 树</text>
+      </g>
+
+      <!-- 连线 -->
+      <line x1="600" y1="76" x2="600" y2="92" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ahd)"/>
+      <line x1="800" y1="226" x2="156" y2="270" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+      <line x1="156" y1="318" x2="446" y2="318" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)" opacity="0"/>
+      <line x1="354" y1="226" x2="201" y2="376" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ahd)"/>
+      <line x1="156" y1="272" x2="581" y2="376" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ahd)"/>
+      <line x1="574" y1="226" x2="968" y2="376" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ahd)"/>
+      <text x="470" y="252" font-size="11" fill="#64748b" class="mono">Worker → Agent</text>
+      <text x="222" y="352" font-size="11" fill="#94a3b8" class="mono">装饰器包一层</text>
+      <text x="430" y="352" font-size="11" fill="#94a3b8" class="mono">规划期检索</text>
+      <text x="880" y="352" font-size="11" fill="#94a3b8" class="mono">重放</text>
+    </svg>
+    <div class="note" style="margin-top:6px;">
+      <b>读法</b>：<span class="k">FROZEN</span> 一块在退款域上线前后 <span class="k">git diff</span> <b>严格为零</b>；
+      <span class="k">KERNEL</span> 一块不是零，但改动全部是<b>领域无关</b>的判据（第六/第七道闸、重规划口径），
+      <b>不 import 任何业务域</b> —— 数字与读法见 P12。
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>docs/architecture.md:12-56</code>（本图即该 mermaid 分层图，四块与命名逐项对应）<span class="sep">·</span><code>README.md:61-88</code></span>
+    <span class="pageno">P4 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P5 状态机与七道闸 ============================== -->
+<section class="slide" id="p5">
+  <div class="head">
+    <span class="anchor">P5</span>
+    <h2>状态机与七道闸</h2>
+    <span class="dim agent">多 Agent 协同 25%</span>
+    <span class="dim eng">工程落地与安全审计 30%</span>
+  </div>
+  <div class="body">
+    <p class="claim">全系统<em>只有一个出口</em>能改状态，非法迁移抛异常；产物过<em>七道闸</em>，任何一道有 blocker 就返工。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <div class="term" style="font-size:13.5px; line-height:1.75;"><span class="d"># maos/core/control_plane.py:172-176</span>
+<span class="d">    # 内部：唯一的状态迁移出口</span>
+    def _transit(self, task, dst, *, event_id="", …):
+        reason = <span class="y">assert_transition</span>(task["state"], dst)
+        <span class="d"># ↑ 非法迁移抛异常，不静默改写</span>
+        <span class="d"># ↓ 每一次迁移都落一行 event_log</span></div>
+        <div style="margin-top:12px;">
+          <table style="font-size:15.5px;">
+            <tbody>
+              <tr><td colspan="2" style="padding:6px 0; border:none;" class="m">
+                PENDING → DISPATCHED → RUNNING → AWAITING_REVIEW<br>
+                <span style="padding-left:2.2em;">→ DONE ｜ BLOCKED ｜ REWORK ｜ FAILED</span>
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card" style="margin-top:10px;">
+          <h4>业务状态不进 Task 状态机</h4>
+          <p><span class="k">compensated</span> / <span class="k">settled</span> 是 <span class="k">refund_case</span>
+          自己的字段，不是 Task 状态 —— 上退款域<b>没加新状态、没加新迁移</b>（见 P12）。</p>
+        </div>
+      </div>
+      <div>
+        <table style="font-size:16px;">
+          <thead><tr><th style="width:14%">#</th><th>闸</th><th style="width:34%">判什么</th></tr></thead>
+          <tbody>
+            <tr><td class="m">1</td><td class="m">schema</td><td>产物形状</td></tr>
+            <tr><td class="m">2</td><td class="m">acceptance</td><td>验收证据（真跑的 test_report）</td></tr>
+            <tr><td class="m">3</td><td class="m">security</td><td>受保护路径</td></tr>
+            <tr><td class="m">4</td><td class="m">evidence</td><td>证据完整性</td></tr>
+            <tr><td class="m">5</td><td class="m">compensation</td><td>补偿可干跑</td></tr>
+            <tr style="background:var(--ok-soft);"><td class="m"><b>6</b></td><td class="m"><b>finance</b></td><td><b>财务凭据</b>（任务级 + plan 级）</td></tr>
+            <tr style="background:var(--ok-soft);"><td class="m"><b>7</b></td><td class="m"><b>gateway</b></td><td><b>网关回执四象限</b></td></tr>
+          </tbody>
+        </table>
+        <div class="card ok" style="margin-top:12px;">
+          <h4>第六、七道闸是退款域上线时新增的 —— 但仍领域无关</h4>
+          <p>两道闸<b>都不 import 业务域</b>，只认数据形状。任一道判 blocker，任务<b>回去返工</b>，
+          不是记个警告就放行。</p>
+        </div>
+      </div>
+    </div>
+    <div class="card warn" style="margin-top:14px;">
+      <h4>关于「无限重试」：场景 7 只 replan 了 <b>1 次</b>，不是打满上限</h4>
+      <p>撞 <span class="k">40005</span> 触发一次 replan 换备用渠道，再撞 <span class="k">ACQ.SYSTEM_ERROR</span>
+      <b>一票否决落人工</b>，全程没有自旋。<span class="k">MAOS_MAX_REPLAN</span> 默认 2，<b>这一镜根本没打满</b>。</p>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>maos/contracts/states.py:26</code><span class="sep">·</span><code>maos/core/control_plane.py:172-176</code><span class="sep">·</span><code>maos/runtime/gate.py:254-260</code>（七道闸元组，顺序即执行顺序）<span class="sep">·</span>评委要求 4 / 10</span>
+    <span class="pageno">P5 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P6 AgentTeams 事件链 ============================== -->
+<section class="slide" id="p6">
+  <div class="head">
+    <span class="anchor">P6</span>
+    <h2>AgentTeams 事件链</h2>
+    <span class="dim agent">多 Agent 协同 25%</span>
+  </div>
+  <div class="body">
+    <p class="claim">五个概念逐项落到代码位置；<em>事件链的权威记录不在房间里，在 <span class="k" style="font-size:.85em;">event_log</span> 表</em>。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <table style="font-size:15.5px;">
+          <thead><tr><th style="width:22%">AgentTeams 概念</th><th>MAOS 落点 · 代码位置</th><th style="width:20%">状态</th></tr></thead>
+          <tbody>
+            <tr><td><b>Team / 房间</b></td>
+              <td>一个 Matrix 房间 = 一条流水线的全部事件；四项配置走环境变量，缺一即降级<br>
+                <span class="m" style="font-size:13.5px;color:var(--ink3)">hiclaw/matrix_bus.py:55,70,85</span></td>
+              <td><span class="tag warn">代码就绪<br>真房间未接通</span></td></tr>
+            <tr><td><b>Member / Worker</b></td>
+              <td>可插拔 Agent 池：role → Agent 类，<b>投放一个文件即注册</b><br>
+                <span class="m" style="font-size:13.5px;color:var(--ink3)">maos/agents/base.py:101,104 · runtime/worker.py:34</span></td>
+              <td><span class="tag ok">✅ 已跑通<br>10 身份 / 9 可派单</span></td></tr>
+            <tr><td><b>事件链 / 消息流</b></td>
+              <td><span class="k">publish()</span> 先走 inner bus，再镜像进房间：一行人话摘要 + 折叠的 Envelope JSON<br>
+                <span class="m" style="font-size:13.5px;color:var(--ink3)">hiclaw/matrix_bus.py:132,147,321</span></td>
+              <td><span class="tag warn">代码就绪<br>降级路径有单测</span></td></tr>
+            <tr><td><b>人工介入 / HITL</b></td>
+              <td>房间里 <span class="k">/approve</span>、<span class="k">/reject</span> → <span class="k">HumanApprovalQueue.decide()</span>；
+                只认 <span class="k">MAOS_APPROVERS</span> 名单，<b>名单外回「无审批权限」并落一条 event_log</b><br>
+                <span class="m" style="font-size:13.5px;color:var(--ink3)">hiclaw/matrix_bus.py:420,435,452,483</span></td>
+              <td><span class="tag ok">代码就绪<br>合法/非法/越权三测</span></td></tr>
+            <tr><td><b>可观测 / 回放</b></td>
+              <td>权威记录在 <span class="k">event_log</span> 表；<span class="k">obs/trace.py</span> 转成 OTel 对齐 span 树，
+                verify 第 4 项重放校验「无孤儿、无环、与库逐字节一致」</td>
+              <td><span class="tag ok">✅ 已跑通<br>trace-tree 19/19</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div class="card bad">
+          <h4>当前真实状态（不吹）</h4>
+          <p><b>真房间未接通。</b> Synapse 账号需人类手工注册。<span class="k">matrix-nio</span> 未安装，
+          恒走 <span class="k">ImportError</span> → 降级 <span class="k">log_only</span>，该路径<b>未经真房间实测</b>。<br><br>
+          已被测试覆盖的是<b>降级路径的等价性</b>：同样的 publish 序列，降级模式与 inner bus 的
+          <span class="k">drain</span> 结果<b>必须完全一致</b>。</p>
+        </div>
+        <!-- SLOT: room-screenshot —— 整合轮把 T4 采到的 Element 房间实拍替换到这个 div 内，
+             替换方式见 artifacts/README.md 的「截图 slot」小节。替换前请勿删除本注释。 -->
+        <div class="slot" style="flex:1 1 auto; min-height:120px;">
+          <div class="t">房间实拍：待 T4 回填</div>
+          <div class="s">&lt;!-- SLOT: room-screenshot --&gt;<br>回填方式见 artifacts/README.md</div>
+        </div>
+        <div class="card">
+          <h4>为什么第 5 项要单列</h4>
+          <p>房间消息可被删、被编辑、被折叠。用它当审计链就等于<b>把权威放在聊天软件里</b>。
+          镜像失败不影响回放 —— <span class="k">_mirror()</span> 吞掉异常只记日志。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>docs/agentteams-mapping.md:16-24</code>（五项映射，每项带行号）<span class="sep">·</span><code>docs/agentteams-mapping.md:52-67</code>（「当前真实状态（不吹）」）<span class="sep">·</span>评委要求 2</span>
+    <span class="pageno">P6 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P7 Skill / ToolPort 九要素 ============================== -->
+<section class="slide" id="p7">
+  <div class="head">
+    <span class="anchor">P7</span>
+    <h2>Skill / ToolPort 九要素契约</h2>
+    <span class="dim skill">Skill 工程体系 20%</span>
+  </div>
+  <div class="body" style="zoom:.94">
+    <p class="claim">Skill 与 ToolPort 都是<em>九要素声明</em>，投放一个文件即注册；三份目录文档<em>由代码生成</em>，不是手写的。</p>
+    <div class="grid2">
+      <div class="card">
+        <h4><span class="k">SkillContract</span> · maos/skills/contract.py:23-34</h4>
+        <table style="font-size:15px; margin-top:8px;">
+          <tbody>
+            <tr><td class="m" style="width:44%">name + version</td><td>注册表主键</td></tr>
+            <tr><td class="m">purpose</td><td>① 用途</td></tr>
+            <tr><td class="m">input_schema / output_schema</td><td>② ③ 入出参</td></tr>
+            <tr><td class="m">preconditions</td><td>④ 前置条件</td></tr>
+            <tr><td class="m">depends_tools</td><td>⑤ 依赖工具</td></tr>
+            <tr style="background:var(--warn-soft);"><td class="m">failure_policy + max_retries</td><td><b>⑥ 失败策略</b>（合成一项）</td></tr>
+            <tr style="background:var(--warn-soft);"><td class="m">security_boundary</td><td><b>⑦ 安全边界</b></td></tr>
+            <tr><td class="m">reuse_note</td><td>⑧ 复用说明</td></tr>
+            <tr><td class="m">owner_roles</td><td>⑨ 归属角色</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h4><span class="k">ToolPort</span> · maos/tools/port.py:23-32</h4>
+        <table style="font-size:15px; margin-top:8px;">
+          <tbody>
+            <tr><td class="m" style="width:44%">name</td><td>① 名称（审计行按它归集）</td></tr>
+            <tr><td class="m">purpose</td><td>② 用途</td></tr>
+            <tr><td class="m">entry</td><td>③ 入口（<b>契约与实现不许分家</b>）</td></tr>
+            <tr><td class="m">params_schema</td><td>④ 入参</td></tr>
+            <tr><td class="m">returns_schema</td><td>⑤ 出参</td></tr>
+            <tr style="background:var(--warn-soft);"><td class="m">failure_modes</td><td><b>⑥ 失败形态</b> —— 失败被吞掉等于没有边界</td></tr>
+            <tr style="background:var(--warn-soft);"><td class="m">security_boundary</td><td><b>⑦ 安全边界</b> —— 「agent 干不了什么」的答案</td></tr>
+            <tr><td class="m">rate_limit</td><td>⑧ 限流（空 = 明确声明未设限）</td></tr>
+            <tr><td class="m">owner</td><td>⑨ 归属</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:14px; align-items:stretch;">
+      <div class="card ok">
+        <h4>注册：类装饰器，模块被 import 即注册</h4>
+        <p class="m" style="font-size:14.5px; line-height:1.6;">@register_skill<br>class RefundIntakeSkill(Skill):<br>&nbsp;&nbsp;&nbsp;&nbsp;contract = SkillContract(…)</p>
+        <p style="margin-top:8px;">—— <span class="k">maos/skills/registry.py:33-40</span>，docstring 明写「模块被 import 即注册」。
+        <b>投放即注册</b>，不改任何注册表文件。</p>
+      </div>
+      <div>
+        <div class="term" style="font-size:13.5px;">$ python3 scripts/gen_docs.py --check
+<span class="g">3 份文档与代码逐字节一致</span>   <span class="d">exit=0</span>
+<span class="d">skill-catalog.md · agent-identity.md · toolport-contract.md</span></div>
+        <p class="note" style="margin:9px 0 0;">
+          扫出 <b>13 个 Skill</b> · <b>4 个已实现 ToolPort</b> · <b>10 个 Agent Identity</b> ——
+          三份目录文档全部由运行时代码生成，<b>不一致即非零退出</b>，文档吹不了牛。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>python3 scripts/gen_docs.py --check</code> → exit=0<span class="sep">·</span><code>docs/skill-catalog.md:7</code>（13 skill · 九要素合成口径）<span class="sep">·</span><code>docs/toolport-contract.md:7</code>（4 个已实现工具）<span class="sep">·</span>评委要求 3</span>
+    <span class="pageno">P7 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P8a RAG 两阶段检索 ============================== -->
+<section class="slide" id="p8a">
+  <div class="head">
+    <span class="anchor">P8a</span>
+    <h2>RAG 面向 workflow 规划（一）：两阶段检索</h2>
+    <span class="dim skill">Skill 工程体系 20%</span>
+  </div>
+  <div class="body">
+    <p class="claim">阶段一是<em>硬约束不是打分项</em>，按评委给的字段顺序结构化预过滤；阶段二才是四通道混合召回。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <div style="font-size:15px; font-weight:700; color:var(--ink2); margin-bottom:8px;">阶段一 · 结构化预过滤（顺序即语义）</div>
+        <svg viewBox="0 0 620 168" style="width:100%;height:auto;display:block;">
+          <g font-family="ui-monospace, Menlo, monospace" font-size="13" text-anchor="middle">
+            <rect x="2" y="8" width="616" height="30" rx="4" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+            <text x="310" y="28" fill="#991b1b" font-weight="700">tenant_id　—— 租户永远先收窄；缺失一律返回空</text>
+            <rect x="46" y="44" width="528" height="26" rx="4" fill="#eff6ff" stroke="#93c5fd"/>
+            <text x="310" y="62" fill="#1e3a8a">biz_type</text>
+            <rect x="90" y="76" width="440" height="26" rx="4" fill="#eff6ff" stroke="#93c5fd"/>
+            <text x="310" y="94" fill="#1e3a8a">channel_id　→　region</text>
+            <rect x="134" y="108" width="352" height="26" rx="4" fill="#eff6ff" stroke="#93c5fd"/>
+            <text x="310" y="126" fill="#1e3a8a">sku</text>
+            <rect x="178" y="140" width="264" height="26" rx="4" fill="#eff6ff" stroke="#93c5fd"/>
+            <text x="310" y="158" fill="#1e3a8a">policy_version　→　workflow_version</text>
+          </g>
+        </svg>
+        <div class="card bad" style="margin-top:12px;">
+          <h4>为什么「不给租户就返回空」而不是回落成全租户检索</h4>
+          <p>回落是<b>最危险的一种默认值</b>：它在单租户的演示里看不出任何异常，<b>多租户上线当天泄漏</b>。</p>
+        </div>
+      </div>
+      <div>
+        <div class="term" style="font-size:13.5px;"><span class="d"># maos/kb/retriever.py:51-55</span>
+<span class="d">#: 阶段一的过滤顺序。**顺序即语义**</span>
+PREFILTER_FIELDS = (
+    <span class="y">"tenant_id"</span>, "biz_type", "channel_id",
+    "region", "sku",
+    "policy_version", "workflow_version",
+)
+
+<span class="d"># maos/kb/retriever.py:151-155</span>
+def <span class="b">prefilter</span>(store, query, *, limit=…):
+    <span class="g">"""阶段一。返回候选集；tenant_id 缺失一律返回空。</span>
+
+<span class="g">    这是硬约束不是打分项 —— 本函数**不产生</span>
+<span class="g">    任何分数**，只决定谁有资格进入阶段二。"""</span></div>
+        <div style="font-size:15px; font-weight:700; color:var(--ink2); margin:14px 0 8px;">阶段二 · 四通道混合召回（这里才打分）</div>
+        <div class="grid2" style="gap:10px;">
+          <div class="card" style="padding:9px 12px;"><p><b>规则编号</b> 精确匹配</p></div>
+          <div class="card" style="padding:9px 12px;"><p><b>错误码</b> 精确匹配</p></div>
+          <div class="card" style="padding:9px 12px;"><p><b>全文</b> 关键词</p></div>
+          <div class="card" style="padding:9px 12px;"><p><b>语义</b> 向量近邻</p></div>
+        </div>
+        <div class="note" style="margin-top:10px;">四路加权融合成一个分 —— <span class="k">maos/kb/retriever.py:179</span> 起。</div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>maos/kb/retriever.py:51-55</code>（字段顺序与评委原话逐字一致）<span class="sep">·</span><code>maos/kb/retriever.py:151-163</code><span class="sep">·</span>评委要求 8（机制侧）/ 9</span>
+    <span class="pageno">P8a / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P8b RAG 效果与护栏 ============================== -->
+<section class="slide" id="p8b">
+  <div class="head">
+    <span class="anchor">P8b</span>
+    <h2>RAG（二）：改变了计划，且被护栏挡住</h2>
+    <span class="dim skill">Skill 工程体系 20%</span>
+  </div>
+  <div class="body">
+    <p class="claim">RAG 的价值要用<em>有无对照</em>证明 —— 两版 DAG 的 diff；而检索结果<em>只能补任务，不能替代事实或跳审批</em>。</p>
+    <div class="grid2">
+      <div>
+        <div style="font-size:15px; font-weight:700; color:var(--ink2); margin-bottom:8px;">对照实验 · <span class="k">evidence/scenario-R5/dag-diff.json</span></div>
+        <table style="font-size:16px;">
+          <thead><tr><th style="width:34%">跑法</th><th>规划出的 DAG</th></tr></thead>
+          <tbody>
+            <tr><td><b>关掉检索</b><br><span class="note">baseline</span></td>
+              <td>计划里<b class="bad" style="color:var(--bad);">漏排了财务复核任务</b><br>
+                <span class="note">→ 被第六道闸拦下，返工</span></td></tr>
+            <tr style="background:var(--ok-soft);"><td><b>打开检索</b><br><span class="note">proposed</span></td>
+              <td>命中历史案例，<b>补上财务复核任务</b><br>
+                <span class="note">→ 差异就是 RAG 的价值，不靠形容词</span></td></tr>
+          </tbody>
+        </table>
+        <div class="card warn" style="margin-top:14px;">
+          <h4>场景 6 证明到什么，没证明到什么</h4>
+          <p>场景 6 实测 <span class="k">candidate_count=3</span> / <span class="k">hit_count=3</span> ——
+          证明到的是<b>链路通 + 确实召回到东西</b>，<b>证明不到「召回准」</b>。
+          「准」的证据<b>只在</b> <span class="k">scenario-R5</span> 的有无对照实验里。</p>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:15px; font-weight:700; color:var(--ink2); margin-bottom:8px;">
+          三条护栏 · <span class="k">maos/kb/guardrails.py:1-16</span>
+          <span class="note">（评委原话拆成的可执行断言，各带一条负例测试）</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <div class="card"><h4>① 只增不删</h4>
+            <p>可以往 DAG 里<b>补</b>任务，不能<b>删</b>任何一条既有任务。
+            <span class="note">历史案例里没出现过某一步，不等于这一步不必要 —— 可能只是当时没记全。</span></p></div>
+          <div class="card"><h4>② 不替代事实</h4>
+            <p>建议任务<b>不许携带订单事实字段</b>。当前订单事实只能从 <span class="k">order_snapshot</span> 读，
+            <b>一条都不许从知识层来</b>。</p></div>
+          <div class="card"><h4>③ 不跳审批</h4>
+            <p>不能移除高风险标记、不能把 <span class="k">effect_risk</span> 降下来、不能带「免审批」标记。
+            <span class="note">检索到「上次这类单直接放行了」也不行 —— 上次放行是<b>人</b>做的决定。</span></p></div>
+        </div>
+        <div class="note" style="margin-top:10px;">
+          四个 assert 函数，<span class="k">check_all</span> 在 <span class="k">guardrails.py:149</span> 一次跑完。
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>python3 -m maos.kb.experiment</code><span class="sep">·</span><code>maos/kb/guardrails.py:1-16</code> + <code>:149</code><span class="sep">·</span><code>maos/kb/experiment.py:788</code>（写出 dag-diff.json）<span class="sep">·</span>评委要求 8（效果侧）/ 11 / 13</span>
+    <span class="pageno">P8b / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P9 权威事实边界 ============================== -->
+<section class="slide" id="p9">
+  <div class="head">
+    <span class="anchor">P9</span>
+    <h2>权威事实边界</h2>
+    <span class="dim eng">工程落地与安全审计 30%</span>
+  </div>
+  <div class="body">
+    <p class="claim">MAOS <em>不持有</em>权威事实。全系统只有 <span class="k" style="font-size:.85em;">payment.observe</span>
+      写得进 <span class="k" style="font-size:.85em;">settled</span>，且必须<em>同事务附回执</em> —— 越权抛异常并落证据。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <svg viewBox="0 0 620 190" style="width:100%;height:auto;display:block;">
+          <g font-size="13.5">
+            <rect x="4" y="8" width="270" height="174" rx="6" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+            <text x="139" y="34" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">MAOS 持有的</text>
+            <text x="139" y="60" text-anchor="middle" fill="#334155">观察（observation）</text>
+            <text x="139" y="84" text-anchor="middle" fill="#334155">推断（inference）</text>
+            <text x="139" y="115" text-anchor="middle" font-size="12" fill="#64748b">submitted · approved</text>
+            <text x="139" y="134" text-anchor="middle" font-size="12" fill="#64748b">requested · compensated</text>
+            <text x="139" y="163" text-anchor="middle" font-size="12" fill="#1d4ed8" font-weight="600">这些是 MAOS 自己的字段</text>
+
+            <line x1="310" y1="8" x2="310" y2="72" stroke="#0f172a" stroke-width="3"/>
+            <line x1="310" y1="118" x2="310" y2="182" stroke="#0f172a" stroke-width="3"/>
+            <rect x="248" y="76" width="124" height="38" rx="19" fill="#fff" stroke="#b45309" stroke-width="2.5"/>
+            <text x="310" y="94" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b45309" font-family="ui-monospace, Menlo, monospace">payment.observe</text>
+            <text x="310" y="108" text-anchor="middle" font-size="10.5" fill="#92400e">唯一的口 · 必须带回执</text>
+
+            <rect x="346" y="8" width="270" height="174" rx="6" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+            <text x="481" y="34" text-anchor="middle" font-size="15" font-weight="700" fill="#334155">外部系统持有的</text>
+            <text x="481" y="60" text-anchor="middle" fill="#334155">订单 · 支付 · 库存</text>
+            <text x="481" y="84" text-anchor="middle" fill="#334155">的权威状态</text>
+            <text x="481" y="120" text-anchor="middle" font-size="14" font-weight="700" fill="#b91c1c" font-family="ui-monospace, Menlo, monospace">settled</text>
+            <text x="481" y="145" text-anchor="middle" font-size="12" fill="#64748b">钱到没到账，只有网关说了算</text>
+            <text x="481" y="167" text-anchor="middle" font-size="12" fill="#475569" font-weight="600">MAOS 不替它决定</text>
+          </g>
+        </svg>
+        <div class="term" style="margin-top:12px; font-size:13.5px;"><span class="d"># maos/domain/refund/guard.py:33</span>
+AUTHORITATIVE_STATES = frozenset({<span class="y">"settled"</span>})
+
+<span class="d"># maos/domain/refund/guard.py:307-315</span>
+<span class="d"># ③ 权威终态必须有回执。</span>
+<span class="d">#   没有回执的 settled 就是把外部状态写死为终态。</span>
+    _log_violation(store, …)          <span class="d"># ← 落库</span>
+    raise <span class="r">AuthoritativeFactViolation</span>(…)  <span class="d"># ← 抛</span></div>
+      </div>
+      <div>
+        <div class="card ok">
+          <h4>越权<b>不静默失败</b></h4>
+          <p>抛 <span class="k">AuthoritativeFactViolation</span> <b>并落一条事件</b>。
+          <span class="k">payment.observe</span> 之外的任何 skill 想写 <span class="k">settled</span>，或写
+          <span class="k">settled</span> 时没带 observation，两条路都不通。</p>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <h4>fail-closed：漏配判据也不放行</h4>
+          <p>加了权威终态却没给回执判据 → <b>第 ④ 道直接拒</b>。
+          宁可写不进去，也不许默认放行 —— 否则「有回执」会被当成默认真。</p>
+        </div>
+        <div class="card warn" style="margin-top:12px;">
+          <h4>🔴 实况：这个核验器<b>真的抓到过一次绕过</b></h4>
+          <p>不是「我们从没出过错」，而是 <b>核验器自己抓到了</b>：有一条路径绕过 guard 直接写 SQL，
+          两轨各自测试全绿、合并后才暴露。<br><br>
+          根因、为什么两轨都绿、以及那一行修法，<b>全部写在文档里没有删</b> ——
+          <span class="k">docs/authoritative-facts.md:113-145</span>。<br><br>
+          <b>一个能自己发现「边界被绕过」的核验器，比一句「我们划分了边界」有说服力得多。</b></p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>maos/domain/refund/guard.py:33</code><span class="sep">·</span><code>:307-315</code><span class="sep">·</span><code>docs/authoritative-facts.md:113-145</code>（实况：抓到的那一次）<span class="sep">·</span>verify 第 3 项 <code>authoritative-fact 3/3</code><span class="sep">·</span>评委要求 7</span>
+    <span class="pageno">P9 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P10 失败路径纵切 ============================== -->
+<section class="slide" id="p10">
+  <div class="head">
+    <span class="anchor">P10</span>
+    <h2>失败路径纵切（场景 7）</h2>
+    <span class="dim agent">多 Agent 协同 25%</span>
+    <span class="dim scene">场景价值 20%</span>
+  </div>
+  <div class="body">
+    <p class="claim">四个 Agent 全部回复「完成」，而这一单<em>没有成功</em> —— 系统如实这么记了。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <div class="term" style="font-size:13.5px; line-height:1.6;">$ python3 run.py --scenario 7
+
+<span class="d">[2] 第七道闸认出网关回执: code=40005 retriable=True</span>
+<span class="d">    outcome=failed -&gt; disposition=replan_channel</span>
+<span class="d">    → 触发 replan：付款任务换渠道 s7-primary -&gt; s7-backup</span>
+<span class="d">      幂等键由 (tenant, case) 定，换渠道不换键，不会造出第二笔</span>
+
+<span class="b">  task-s7-payment  AWAITING_REVIEW  -&gt; REWORK    [gate_rework]</span>
+<span class="b">  task-s7-payment  REWORK           -&gt; PENDING   [requeue]</span>
+<span class="y">  task-s7-payment  BLOCKED          -&gt; FAILED    [human_reject]</span>
+
+  业务状态  : <span class="w">compensated</span>（全程没有经过 settled）
+  settled 观察: <span class="w">0 条</span> —— 没问出终态就一条都不该有
+  补偿记录  : 2 行 ['manual_ticket', 'refund_request_revoked']
+  补偿事件  : 1 条 CompensationExecuted
+  Plan 终态 : <span class="r">FAILED</span>（主管驳回，业务确实没成功）
+  换渠道重试: <span class="w">1 次 replan</span>（40005 触发，ACQ.SYSTEM_ERROR
+              一票否决，<span class="w">没有自旋</span>）</div>
+      </div>
+      <div>
+        <div class="card bad">
+          <h4>这一页是全篇主线</h4>
+          <p>「所有 Agent 都回复完成」<b>≠</b> 业务成功。四个 Agent 的 <span class="k">TaskResult</span> 都是成功返回的，
+          但网关问不出终态 —— 于是<b>什么都不写</b>，走补偿 + 转人工。</p>
+        </div>
+        <div class="card ok" style="margin-top:12px;">
+          <h4>两条断言把这一页钉死</h4>
+          <p class="m" style="font-size:14px; line-height:1.7;">
+            assert case["biz_status"] == "compensated"<br>
+            assert settled_rows == 0</p>
+          <p style="margin-top:6px;">—— <span class="k">maos/flows/scenario_7.py:692-696</span>，
+          注释写着「<b>本场景存在的理由</b>」。跑不出这两条，测试就红。</p>
+        </div>
+        <div class="card warn" style="margin-top:12px;">
+          <h4>两句最容易说过头的话</h4>
+          <p>❌ <span class="strike">重试到上限才转人工</span> → 只 replan <b>1 次</b>，上限是 2，<b>没打满</b>。<br>
+             ❌ <span class="strike">换了渠道就成功了</span> → 换完仍未成功，业务状态收在 <span class="k">compensated</span>。<br>
+             ❌ <span class="strike">七个场景都跑成功了</span> → 场景 7 的 Plan 终态是 <b>FAILED</b>，<b>那正是它要演的</b>。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>python3 run.py --scenario 7</code>（上方为真实终端输出）<span class="sep">·</span><code>maos/flows/scenario_7.py:692-696</code><span class="sep">·</span><code>README.md:43</code><span class="sep">·</span>评委要求 1（失败路径侧）/ 12</span>
+    <span class="pageno">P10 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P11 一条命令核验 ============================== -->
+<section class="slide" id="p11">
+  <div class="head">
+    <span class="anchor">P11</span>
+    <h2>证据核验：七项逐条重放</h2>
+    <span class="dim eng">工程落地与安全审计 30%</span>
+  </div>
+  <div class="body">
+    <p class="claim">检索不准顶多说效果一般；<em>无法核验就是零分</em> —— 所以七项证据每一项都能被外人独立跑一遍。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <div class="term" style="font-size:14.5px; line-height:1.72;">$ python3 scripts/make_evidence.py   <span class="d"># ①</span>
+$ python3 scripts/verify.py          <span class="d"># ②</span>
+
+<span class="g">[PASS]</span> hash-integrity       <span class="w">86/86</span>
+<span class="g">[PASS]</span> business-ref         <span class="w">35/35</span>
+<span class="g">[PASS]</span> authoritative-fact   <span class="w">3/3</span>
+<span class="g">[PASS]</span> trace-tree          <span class="w">19/19</span>
+<span class="g">[PASS]</span> kb-hit               <span class="w">7/7</span>
+<span class="g">[PASS]</span> business-outcome     <span class="w">10/10</span>
+<span class="g">[PASS]</span> history-case         <span class="w">1/1</span>
+
+<span class="g w">RESULT: 7/7 PASS</span>   <span class="d">exit=0</span>
+<span class="d">证据来源：scenario-1..7, scenario-R5</span></div>
+        <div class="card bad" style="margin-top:12px;">
+          <h4>两条命令，缺一不可，顺序不能换</h4>
+          <p><span class="k">*.db</span> 不入 git（<span class="k">.gitignore</span> 挡着），核验器要的是<b>库</b>、不是快照。
+          新克隆<b>直接跑 ②</b> 会报 <span class="k">缺数据库: evidence/scenario-1/maos.db</span> 并<b>退出 2</b>。
+          <b>这是设计行为，不是故障。</b></p>
+        </div>
+      </div>
+      <div>
+        <table style="font-size:15.5px;">
+          <thead><tr><th style="width:36%">项</th><th>失败意味着</th></tr></thead>
+          <tbody>
+            <tr><td class="m">hash-integrity</td><td>证据被篡改过</td></tr>
+            <tr><td class="m">business-ref</td><td>业务对象引用悬空，锚点是假的</td></tr>
+            <tr><td class="m">authoritative-fact</td><td>权威边界被绕过</td></tr>
+            <tr><td class="m">trace-tree</td><td>事件链有孤儿 / 有环 / 与库不一致</td></tr>
+            <tr><td class="m">kb-hit</td><td>RAG 命中是编的</td></tr>
+            <tr><td class="m">business-outcome</td><td>Agent 完成被当成了业务成功</td></tr>
+            <tr><td class="m">history-case</td><td>知识层被污染（证据不全也进了）</td></tr>
+          </tbody>
+        </table>
+        <div class="card warn" style="margin-top:12px;">
+          <h4>warn 没有被藏起来：12 行 / 3 类</h4>
+          <p>三项会附 <span class="k">warn:</span> 行 —— <b>点名不判负</b>，不改判定但都是真的：<br>
+          <b>A 类 6 行</b> 产物没有来源事件　<b>D 类 4 行</b> 外部判据来源未审计（说的是入库路径，不是内容真伪）<br>
+          <b>E 类 2 行</b> scenario-7 有回执但 <span class="k">biz_status</span> 不是 settled —— <b>预期内</b>，正是 P10 要演的东西。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>scripts/verify.py:859-866</code>（CHECKS 七项，顺序即输出顺序）<span class="sep">·</span><code>README.md:89-159</code>（§3 全节）<span class="sep">·</span>评委要求 5 / 6 / 12</span>
+    <span class="pageno">P11 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P12 同一个内核，两个域 ============================== -->
+<section class="slide" id="p12">
+  <div class="head">
+    <span class="anchor">P12</span>
+    <h2>同一个内核，两个域</h2>
+    <span class="dim scene">场景价值与复用性 20%</span>
+  </div>
+  <div class="body" style="zoom:.93">
+    <p class="claim">两域共用同一份契约、Control Plane、Worker、Gate；换域<em>只换 Skill / ToolPort / 业务对象</em>。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <table style="font-size:15.5px;">
+          <thead><tr><th style="width:26%">层</th><th style="width:32%">软件交付域</th><th style="width:26%">制造售后退款域</th><th style="width:16%">共用</th></tr></thead>
+          <tbody>
+            <tr><td><b>事件契约</b></td><td class="m">Envelope / EventType</td><td>同左，<b>一个字段都没加</b></td><td><span class="tag ok">✅ 同一份</span></td></tr>
+            <tr><td><b>Task 状态机</b></td><td class="m">PENDING → … → DONE</td><td>同左，<b>没加新状态、没加新迁移</b></td><td><span class="tag ok">✅ 同一份</span></td></tr>
+            <tr><td><b>Control Plane</b></td><td>唯一迁移持有者、幂等去重</td><td>同左</td><td><span class="tag ok">✅ 同一份</span></td></tr>
+            <tr><td><b>Worker Runtime</b></td><td>按 role 取执行者 + Identity 三查</td><td>同左</td><td><span class="tag ok">✅ 同一份</span></td></tr>
+            <tr><td><b>Gate</b></td><td>七道闸；看 <span class="k">test_report</span></td><td>七道闸；第六看财务凭据、第七看网关回执</td><td><span class="tag ok">✅ 同一份</span></td></tr>
+            <tr><td><b>HITL 审批</b></td><td class="m">effect_risk=H → BLOCKED</td><td>同左，审批人换成退款主管</td><td><span class="tag ok">✅ 同一份</span></td></tr>
+            <tr><td><b>补偿</b></td><td>逆补丁 <span class="k">git_apply(reverse)</span></td><td>撤销 refund_request + 开人工工单</td><td><span class="tag warn">⚠️ 机制共用<br>手段按域</span></td></tr>
+            <tr><td><b>Skill / ToolPort</b></td><td class="m">code.repo-patch · sandbox.*</td><td class="m">refund.* · gateway.*</td><td><span class="tag bad">❌ 按域实现<br>（同一契约）</span></td></tr>
+            <tr><td><b>业务对象 / 角色</b></td><td>补丁集 / 测试报告 · 5 角色</td><td>refund_case / finance_entry · 4 角色</td><td><span class="tag bad">❌ 按域实现</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div style="font-size:15px; font-weight:700; color:var(--ink2); margin-bottom:8px;">上退款域的真实代价（区间 A 实测）</div>
+        <div class="term" style="font-size:13px; line-height:1.7;">$ git diff --shortstat 90251b3 4a70cb0 -- maos/&lt;面&gt;
+
+contracts/  <span class="g">（空，零改动）</span>
+core/       <span class="g">（空，零改动）</span>
+runtime/    1 file, +126/−4   <span class="d">← 只有 gate.py</span>
+agents/ skills/ tools/ domain/
+            26 files, +3548/−52  <span class="d">← 按域实现，多为纯新增</span></div>
+        <div class="card bad" style="margin-top:12px;">
+          <h4>🔴 不说「内核零改动」这个笼统说法</h4>
+          <p>严格为零的是 <span class="k">maos/contracts/</span>（<b>到当前 HEAD 仍为零</b>）与上退款域区间内的
+          <span class="k">maos/core/</span>。<br>
+          全区间到 HEAD：<span class="k">core/</span> <b>+194/−10</b>、<span class="k">runtime/</span> <b>+497/−9</b> ——
+          这些是<b>后来长出的通用能力</b>（第七道闸、网关码四象限、rework 第三出口、plan 级财务判据），
+          <b>不是退款域改的</b>，且都不 import 业务域。</p>
+        </div>
+        <div class="card ok" style="margin-top:10px;">
+          <h4>三条机器守卫钉着这个论证</h4>
+          <p>契约指纹锁 · 内核不识域（AST/import 守卫）· 权威事实边界。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>docs/domain-portability.md:16-29</code>（对照表）<span class="sep">·</span><code>:60-80</code>（两区间与逐面数字）<span class="sep">·</span><code>git diff --shortstat 90251b3 27c9e18 -- maos/contracts/</code> → 空输出</span>
+    <span class="pageno">P12 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P13 数据口径与边界 ============================== -->
+<section class="slide" id="p13">
+  <div class="head">
+    <span class="anchor">P13</span>
+    <h2>数据口径与风险边界</h2>
+    <span class="dim eng">工程落地与安全审计 30%</span>
+  </div>
+  <div class="body" style="zoom:.96">
+    <p class="claim">合成数据、公开规范、模拟实现 —— <em>三者分清楚</em>。这是全场唯一一页主动列自己<em>不能说什么</em>的页。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <table style="font-size:15.5px;">
+          <thead><tr><th style="width:20%">事实</th><th style="width:48%">✅ 只能这么说</th><th>❌ 不许这么说</th></tr></thead>
+          <tbody>
+            <tr><td><b>政策与历史案例</b></td><td>按行业惯例构造的<b>合成数据</b></td><td class="strike">真实企业政策</td></tr>
+            <tr><td><b>支付网关</b></td><td>错误码与异步时序<b>对齐支付宝开放平台公开规范</b>；演示用<b>模拟实现</b></td><td class="strike">接入了支付宝</td></tr>
+            <tr><td><b>Matrix 房间</b></td><td>镜像层已实现，<b>降级路径实测等价，真房间待接通</b></td><td class="strike">全过程在 Element 里跑通</td></tr>
+            <tr><td><b>StorePort / PolarDB</b></td><td><b>有地基、未接线</b>；PG 后端是空壳且<b>拒绝回落</b>（五个方法全 <span class="k">raise NotImplementedError</span>）</td><td class="strike">后端已可插拔切 PolarDB</td></tr>
+            <tr><td><b>AutoGen</b></td><td><b>可插拔内核之一，未在复赛演示中启用</b></td><td class="strike">基于 AutoGen 构建</td></tr>
+            <tr><td><b>replan 换渠道</b></td><td>场景 7 演到了：<b>1 次</b> replan 换渠道 → 再撞码<b>一票否决落人工</b></td><td class="strike">重试到上限才转人工</td></tr>
+            <tr><td><b>场景覆盖</b></td><td><span class="k">run.py</span> 无参跑全部七个场景，<b>含失败路径</b></td><td class="strike">七个场景都跑成功了</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div class="card">
+          <h4>安全边界：也证明 agent <b>干不了</b>什么</h4>
+          <table style="font-size:14.5px; margin-top:8px;">
+            <tbody>
+              <tr><td style="width:32%"><b>代码执行</b></td><td class="m" style="font-size:12.5px;">--network none --read-only --user 1000:1000 --memory 512m --pids-limit 128</td></tr>
+              <tr><td><b>降级路径</b></td><td>env <b>按白名单重建</b>（按名放行，不是按名拦截）</td></tr>
+              <tr><td><b>补丁落盘</b></td><td>三重路径校验，任一条不过即拒，<b>不重试不降级</b></td></tr>
+              <tr><td><b>工具 / Skill</b></td><td>Identity 白名单前置校验，越权抛 <span class="k">PermissionDenied</span></td></tr>
+              <tr><td><b>权威事实</b></td><td>越权抛异常 + 落 <span class="k">AuthoritativeFactViolation</span></td></tr>
+              <tr><td><b>密钥</b></td><td>只读环境变量；证据束出口脱敏 + <b>哨兵串反查</b>，命中即销毁目录并失败</td></tr>
+              <tr><td><b>人工授权</b></td><td>只认 <span class="k">MAOS_APPROVERS</span>，名单外<b>落一条 event_log</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card warn" style="margin-top:12px;">
+          <h4>这是复赛演示实现，不是生产系统</h4>
+          <p>不含客户数据、生产配置，<b>也不做任何不可逆的对外写入</b> —— 支付网关走对齐官方规范的模拟实现。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>docs/submission-checklist.md:119-137</code>（A-4 七行口径表，末列是逐条回代码的复核结论）<span class="sep">·</span><code>README.md:258-303</code>（§7 安全边界 + §8 数据口径）</span>
+    <span class="pageno">P13 / 15</span>
+  </div>
+</section>
+
+<!-- ============================== P14 复现指引 ============================== -->
+<section class="slide" id="p14">
+  <div class="head">
+    <span class="anchor">P14</span>
+    <h2>复现指引：从零到 7/7</h2>
+    <span class="dim eng">工程落地与安全审计 30%</span>
+    <span class="dim oss">开源贡献 5%</span>
+  </div>
+  <div class="body">
+    <p class="claim">克隆、跑测试、跑场景、生成证据、核验 —— <em>不需要任何 API key</em>，核心零依赖，只要 Python ≥ 3.10。</p>
+    <div class="grid2 wide-l">
+      <div>
+        <div class="term" style="font-size:14px; line-height:1.75;">git clone &lt;repo&gt; maos &amp;&amp; cd maos
+
+python3 -m pytest maos/tests -q   <span class="g"># 749 passed</span>
+python3 run.py                    <span class="g"># 场景 1-7，exit=0</span>
+python3 run.py --scenario 7       <span class="g"># 单跑失败路径</span>
+
+<span class="d"># 到这里只跑了代码；要看到评委关心的 7/7，</span>
+<span class="d"># 还差证据链这两条 ——</span>
+python3 scripts/make_evidence.py  <span class="y"># ① 产 8 个证据束</span>
+python3 scripts/verify.py         <span class="y"># ② RESULT: 7/7 PASS</span></div>
+        <div class="card bad" style="margin-top:14px;">
+          <h4>🔴 最容易漏的一步：① <span class="k">make_evidence.py</span></h4>
+          <p>跳过它直接跑 ②，会看到 <span class="k">缺数据库: evidence/scenario-1/maos.db</span> 并<b>退出 2</b>。
+          <b>这是设计行为</b> —— <span class="k">*.db</span> 不入 git，核验器要的是库、不是快照。</p>
+        </div>
+        <div class="card warn" style="margin-top:10px;">
+          <h4>跑完 <span class="k">git status</span> 会有 50 行改动 —— 预期，不是弄坏了</h4>
+          <p>证据文件首行带生成时间与 git sha，每次重跑都会变。
+          <b>但不要用</b> <span class="k">git checkout -- evidence/</span> 去「收拾干净」：json 会还原成旧版本，
+          而 <span class="k">maos.db</span> 不入 git 不会跟着还原 —— 新库配旧快照会掉到 <span class="k">3/7 PASS</span>，
+          <b>看上去像证据被伪造，其实只是两边不同步</b>。</p>
+        </div>
+      </div>
+      <div>
+        <div class="card ok">
+          <h4>全新克隆实测</h4>
+          <p><b>无任何 API key</b>，<span class="k">clone → ① → ②</span> 约 <b>5 秒</b>到
+          <span class="k">RESULT: 7/7 PASS</span>，退出码 0。缺省走 Scripted 模式，<b>一行网络都不走</b>，
+          状态迁移序列在任何机器上逐条一致。</p>
+        </div>
+        <div class="card" style="margin-top:12px;">
+          <h4>评委手上有什么可查</h4>
+          <ul class="tight" style="margin-top:6px;">
+            <li><b>8 个证据束 / 50 个证据文件</b>，每个首行都是
+              <span class="k" style="font-size:.8em;"># generated at &lt;ISO8601&gt; from &lt;git sha&gt;</span>，由脚本写入，不许手写</li>
+            <li><b>三份目录文档由代码生成</b> —— <span class="k">gen_docs.py --check</span> 不一致即非零退出，
+              文档吹不了牛</li>
+            <li><b>Apache-2.0 开源</b>：代码、文档、证据束、以及本页每一条命令，随仓库一起公开</li>
+            <li><b>失败与缺口没有删</b>：warn 12 行、真房间未接通、核验器抓到的那次绕过，全部留在文档里</li>
+          </ul>
+        </div>
+        <div class="card warn" style="margin-top:12px;">
+          <h4>可核验 = 这份材料的全部说服力</h4>
+          <p>本演示稿的<b>每一页页脚</b>都给了文件行号或一条能当场跑的命令。
+          <b>指不出证据的话，我们没有写。</b></p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="lbl">可核验证据</span>
+    <span class="refs"><code>README.md:161-177</code>（§4 5 分钟快速开始，逐条对应本页命令）<span class="sep">·</span><code>README.md:117-119</code>（①② 缺一不可）<span class="sep">·</span><code>LICENSE</code> Apache-2.0</span>
+    <span class="pageno">P14 / 15</span>
+  </div>
+</section>
+
+</div>
+
+<div class="navhint">← → 翻页　·　P 打印 / 导出 PDF</div>
+
+<script>
+(function(){
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var i = 0;
+  function go(n){
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides[i].scrollIntoView({behavior:'smooth', block:'center'});
+  }
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(i+1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(i-1); }
+    else if (e.key === 'Home') { e.preventDefault(); go(0); }
+    else if (e.key === 'End') { e.preventDefault(); go(slides.length-1); }
+    else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); window.print(); }
+  });
+  // 滚动时同步当前页索引，保证键盘接管后不跳回开头
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (en.isIntersecting) { i = slides.indexOf(en.target); }
+      });
+    }, {threshold: 0.55});
+    slides.forEach(function(s){ io.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>

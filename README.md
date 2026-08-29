@@ -101,7 +101,7 @@ echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
 
 ```
-[PASS] hash-integrity       77/77
+[PASS] hash-integrity       81/81
 [PASS] business-ref         33/33
 [PASS] authoritative-fact   3/3
 [PASS] trace-tree           18/18
@@ -113,7 +113,7 @@ RESULT: 7/7 PASS
 证据来源：scenario-1, scenario-2, scenario-3, scenario-4, scenario-5, scenario-6, scenario-7, scenario-R5
 ```
 
-（`trace-tree` 与 `business-outcome` 两项会附若干 `warn:` 行 —— 那是点名不判负的
+（`authoritative-fact`、`trace-tree` 与 `business-outcome` 三项会附若干 `warn:` 行 —— 那是点名不判负的
 提示，比如「某份产物没有来源事件」。warn 不改判定，但它们是真的，没有被藏起来。）
 
 **①② 两条缺一不可，顺序不能换。** `*.db` 不入库（`.gitignore` 挡着），
@@ -167,7 +167,7 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 
 ```bash
 git clone <本仓库地址> maos && cd maos
-python3 -m pytest maos/tests -q     # 571 passed
+python3 -m pytest maos/tests -q     # 596 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 

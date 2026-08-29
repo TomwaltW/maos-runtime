@@ -159,7 +159,7 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 | 政策数据与历史案例 | 「按行业惯例构造的合成数据」 | 「真实企业政策」 | ✅ 仍成立 |
 | 支付网关 | 「错误码与异步时序对齐支付宝开放平台公开规范；演示用模拟实现」 | 「接入了支付宝」 | ✅ `maos/tools/gateway.py` 明写字段对齐 `alipay.trade.refund`，未接通时 `raise NotImplementedError`，**不静默返回假数据** |
 | Matrix 房间 | 「镜像层已实现，降级路径实测等价，真房间待接通」 | 「全过程在 Element 里跑通」 | ✅ `hiclaw/matrix_bus.py` 在，真房间未接通 |
-| StorePort / PolarDB | 「有地基、未接线；PG 后端是空壳且拒绝回落」 | 「后端已可插拔切 PolarDB」 | ✅ `maos/store/pg_store.py` 五个方法全 `raise NotImplementedError`，确实拒绝回落 |
+| StorePort / PolarDB | 「PG 后端已在本机 Docker Postgres 16 + pgvector 上实测跑通；**PolarDB 实例本身未连过**，兼容性是推断」 | 「后端已可插拔切 PolarDB」 | ✅ `maos/store/pg_store.py` 五个方法已填实：全文走 `to_tsvector`/`ts_rank`，向量走 pgvector `<=>`；本机 Docker PostgreSQL 16.15 + pgvector 0.8.6 上 `maos/tests/test_pg_store_live.py` **22 条**实测绿（无库自动 skip）。PolarDB 实例未连过，差异见 `deploy/polardb-live.md`。后端不可用时抛 `PgBackendUnavailable(NotImplementedError)`，**仍不回落 sqlite** |
 | AutoGen | 「可插拔内核之一，未在复赛演示中启用」 | 「基于 AutoGen 构建」 | ✅ 全仓 `*.py` grep 不到 `autogen` 的实现，只在 `maos/runtime/worker.py` 注释里提及 |
 | replan 换渠道 | 「场景 7 演到了：撞 `40005` 触发一次 replan 换备用渠道，再撞 `ACQ.SYSTEM_ERROR` 一票否决落人工，全程没有自旋」 | 「重试到上限才转人工」（**只重试了一次**，不是打满上限）｜「换了渠道就成功了」 | ✅ 整合轮 5 合入 Y-4 后实测：`run.py --scenario 7` 屏幕上打出 `换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）`，状态轨迹里有 `AWAITING_REVIEW -> REWORK [gate_rework]` → `REWORK -> PENDING [requeue]`；`test_replan_gateway.py` 仍 **19 passed**，一条没少 |
 | 场景覆盖 | 「`run.py` 无参跑全部七个场景，含失败路径」 | 「七个场景都跑成功了」（场景 7 的 Plan 终态是 FAILED，那正是它要演的） | ✅ `maos/main.py:29` 实测 `DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)` |
@@ -296,13 +296,17 @@ diff /tmp/idx.sha /tmp/head.sha && echo ALIGNED
 # ② evidence 首行 sha 不带 -dirty？（整合轮 9 起应一个都列不出；H-7 修复前是 scenario-R5 的 7 个）
 grep -rl "^# generated at.*-dirty" evidence/
 
-# ③ evidence 里出现过几个不同的 sha？（应当只有一个，忽略 -dirty 后缀）
-grep -rh "^# generated at" evidence/ | sed 's/.* from //' | sed 's/-dirty//' | sort -u
+# ③ make_evidence.py 产的那些是不是同一个 sha？（忽略 -dirty 后缀）
+grep -rh "^# generated at" evidence/ --exclude-dir=room | sed 's/.* from //' | sed 's/-dirty//' | sort -u
+
+# ③' evidence/room/** 另算 —— 它不由 make_evidence.py 产，记的是真房间采集当时的 sha
+grep -rh "^# generated at" evidence/room/ | sed 's/.* from //' | sed 's/-dirty//' | sort -u
 ```
 
 - [ ] ① 打印 `ALIGNED`。
 - [ ] ② 只列出 `evidence/scenario-R5/` 下的 7 个文件（其余任何一个出现都要查）。
-- [ ] ③ 只输出**一个** sha，且等于 `git rev-parse HEAD`。
+- [ ] ③ 只输出**一个** sha（`make_evidence.py` 产的 50 个文件同源；当前 `3d504b1…`）。
+- [ ] ③' 输出另一个 sha，是采集当时的 HEAD（当前 `27c9e18…`，`evidence/room/` 下 `README.md` 与 `transcript.md` 两个文件）。**与 ③ 不同是设计如此**：这两份由 T4 轨真房间采集产出，`make_evidence.py` 自己把它们标为 `[AUX] 仅登记`（`scripts/make_evidence.py:897`），不参与重跑，所以不会跟着 ③ 一起前移。
 
 > 🔴 **① 是结构性红的，别指望它变绿 —— 要的是「红得可解释」。**
 > 证据束在整合轮 5 已按合并后的代码重跑过（`9964f17`，`git_sha=caf45d2`），

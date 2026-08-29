@@ -1046,3 +1046,20 @@ T7–T14 八轨并入 + 活数字回填 + 证据束全量重跑。基线 `4cfef3
 | 2026-08-30 | P5 | **端口全文通道走不通时的「本地退化路径」在 PG 后端上是死路。** `_local_fts_rows()` 发的是 `SELECT doc_id, bm25(kb_doc_fts) ... WHERE kb_doc_fts MATCH ?` —— `bm25()` 与影子表 `kb_doc_fts` 都是 SQLite FTS5 专有的，PG 上两样都没有 | 在 SQLite 上不咬人（影子表就在那儿），**PG 上是真问题**：端口通道一旦退化，本地这条也抛，被 `except` 吞掉记 0 分，于是 FTS 通道整条静默失效，检索只剩另外三个通道，不报错、召回悄悄变少。更难受的是这条 `log.warning` **每次检索都发一遍**（不像 `_port_search` 的探测只告警一次），PG 上退化之后日志会被刷满 | 归 T18 / `pg_store.py` 持有轨或整合轮。两条：①PG 侧把 `fts_search` 填实，让退化路径压根用不上（本来就该这样）；②给 `_local_fts_rows` 也加一次性的失败记账，别每次检索都刷一条。**①是正解，②是止血** |
 | 2026-08-30 | P5 | **`retriever.PORT_FTS_FIELDS` 与 `kb/schema.sql` 里影子表实际索引的列是两处口径，没有机器校验。** 本轨写死 `("title", "body")`，恰好等于影子表当前索引的两列（`id`/`doc_id`/`tenant_id` 都是 UNINDEXED） | 哪天有人给影子表加一个参与索引的列（比如 `tags`），**本地那条 MATCH 会自动跨到新列，端口这条不会** —— 跨列差异原样回归，而且两边都不报错，症状与本轨修掉的那个一模一样。这次的断言（`test_kb_port_link.py::test_both_columns_are_asked_and_the_count_is_a_constant`）守的是「问的列 == `PORT_FTS_FIELDS`」，守不住「`PORT_FTS_FIELDS` == 影子表的索引列」 | 归 T17（`schema.sql` 持有轨）或整合轮。改法：加一条测试，从 `PRAGMA table_info(kb_doc_fts)` 或建表语句里取出参与索引的列，与 `PORT_FTS_FIELDS` 对齐。成本一条测试，不动任何生产代码 |
 | 2026-08-30 | P5 | **`_kb_docs()` 的 `except Exception` 会把本轨新加的「sink 没接」`TypeError` 也吞成 `docs: []` + 一行 warning。** 那层兜底是有意的（「检索不阻塞」），本轨没去动它 | 配置错误（忘了传 sink）与业务空结果（真没检到）在 skill 出参上**长得一模一样**，都是 `docs: []`。本轨已把报错信息写得能指路，但它只出现在 warning 日志里，不出现在返回值里 | 归 skills 层持有轨。可选改法：兜底里对 `TypeError`（接线错误）与其余异常（运行期故障）分开处置 —— 前者是「这套系统装错了」，本就不该被「空结果不阻塞」这条覆盖。**不急**，眼下有报错文案兜着 |
+
+## task-T17
+
+本轨（kb schema 补迁移路径）只持有 `maos/kb/schema.sql`、`maos/kb/__init__.py`、
+`maos/tests/test_kb_schema_migration.py`（新建）外加两份账本，基线 `f15e5dd`。
+本轨已解掉 `## task-T13` 第 3 条：`kb` 层有了版本表 + 迁移，T13 之前建的老库
+现在能自己升到 `id` 列那一版（实测老库上 `SELECT id FROM kb_doc` 从
+`no such column: id` 变成可用，两条端口通道从恒退化变成 `{True, True}`）。
+那一条给的过渡办法「删掉旧的 `evidence/*/maos.db` 重跑」因此不再是唯一出路。
+
+下面三条都在白名单外，按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P5 | **`retriever._PORT_STATE` 是按 store 对象记的粘性判定，就地升级不会自愈**：它是「通道探过没有、通不通」的一次性结论（`_port_search` 的「只告警一次」就靠它），一旦在老库上探出 `False` 就一直是 `False` | 长跑进程里对一个已经退化过的 store **就地**跑 `ensure_schema()` 升级成功之后，检索仍旧走本地实现 —— 库已经好了，进程还认为它是坏的，而且不会再告警。必须重开进程或换一个端口对象才恢复。本轨的 `test_migration_restores_both_port_channels` 因此刻意新造端口对象，并在 docstring 里点破了这一点 | 归 `maos/kb/retriever.py` 持有轨（本轮是 T16）。改法二选一：①给 `port_channel_state` 加一个「忘掉这个 store 的判定」的入口，`ensure_schema()` 真跑了迁移之后调一次；②判定改成带 schema 版本号的键（`(store, applied_schema_version)`），版本一变自动重探。**②更省事且不需要调用方记得**。眼下不急 —— 现实里 `ensure_schema()` 总是在第一次检索之前跑 |
+| 2026-08-30 | P5 | **退款域的 18 张表有一模一样的坑**：`maos/domain/refund/schema.sql` 全是 `CREATE TABLE IF NOT EXISTS`（18 条 `CREATE`、18 条 `IF NOT EXISTS`），而 `objects.ensure_schema()` 只是 `executescript` 一把，没有版本表、没有迁移 | 退款域是**业务对象层**，它的列比 kb 层更可能要加（铁律 9 明说业务状态是业务对象自己的字段）。今天往那 18 张表里任何一张加一列，对已存在的库同样静默无效，症状同样是「跑起来一切正常，直到某条 SELECT 报 no such column」。PolarDB 上线后这是必然会撞的 | 归 `maos/domain/refund/objects.py` 持有轨。本轨在 `maos/kb/__init__.py` 里的做法可以整份照搬（版本表 + `_MIGRATIONS` + 每步自带探针 + `_atomic` 的显式 SAVEPOINT），四十来行。**建议在往退款域加第一列之前做**，不然那次加列会先静默失效一轮 |
+| 2026-08-30 | P5 | **迁移只管「补列」，不管「影子表与源表失步」**：一个只有 `kb_doc` 而没有 `kb_doc_fts` 的库（部分建表、或影子表被人手工删过），`ensure_schema()` 会把影子表按目标形状建成**空表**，随后 v1 的探针看到 `id` 列已经在，于是不重灌 | BM25 通道恒空，且不报错、不告警 —— 与本轨要买掉的那类失效同型，只是触发条件更窄（正常写入口不会造出这个状态） | 归知识层。改法：给 v1 之后新增一步 v2，判据是 `COUNT(*)` 两边对不上就整表重灌；或把「影子表重灌」抽成独立函数、由一条 `kb doctor` 式的自检命令调用。**不急**：本轨已确认正常路径（`upsert_doc` 是唯一写入口）造不出这个状态，它只来自手工改库 |

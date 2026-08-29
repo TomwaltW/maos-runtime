@@ -17,6 +17,12 @@
 `__init__` 一旦回 import 子模块，`skills/builtin/kb_retrieve.py` 那条 import 链就成环。
 使用方写 `from maos.kb.retriever import retrieve`，不要指望从包顶层拿到它。
 
+**建表与迁移是两件事**：`schema.sql` 只描述**目标形状**，整份都是 `IF NOT EXISTS`，
+所以它对**已经存在**的表一个字都改不动 —— 改列静默无效，直到某条 SELECT 报
+no such column。把老库搬到目标形状的是本模块的 `_MIGRATIONS`，记账落在
+`kb_schema_version` 表。演示期的库都是 `:memory:` 或每次新建，两者的区别看不出来；
+PolarDB 是持久库，区别就是「上线第一天端口通道恒退化，且只告警一次」。
+
 **开关**：`MAOS_KB_ENABLED` 是 RAG 有无对照实验（R5）的唯一变量。
 缺省**启用** —— 关掉检索是实验条件，不是缺省形态。
 """
@@ -57,6 +63,15 @@ KB_WEIGHTS_ENV = "MAOS_KB_WEIGHTS"
 
 #: `kb_doc.id` 的拼接分隔符。与 schema.sql 里那条生成列表达式是同一份口径。
 DOC_ROW_ID_SEP = ":"
+
+#: `kb_doc.id` 那条生成列的 SQL 表达式，与 schema.sql 里那句**逐字一致**。
+#:
+#: 为什么要在 Python 里也留一份：给老库补这列走的是 `ALTER TABLE ADD COLUMN`，
+#: 而 `schema.sql` 里那句被裹在 `CREATE TABLE` 的列定义中间，取不出来单用。
+#: 两处漂开的后果是新库与迁移后的老库拼法不同 —— 两边都不报错，只是 `id`
+#: 对不上号。`test_kb_schema_migration.py` 钉了一条断言：这串必须出现在
+#: schema.sql 里，改一处不改另一处会当场红。
+DOC_ROW_ID_EXPR = f"tenant_id || '{DOC_ROW_ID_SEP}' || doc_id"
 
 #: kb_doc 的全部列，落库与读取共用一份，免得两处漂。
 DOC_COLUMNS = (
@@ -202,22 +217,201 @@ def _schema_statements(script: str) -> list[str]:
     return statements
 
 
+def _fts_create_statement(script: str) -> str:
+    """schema.sql 里 `kb_doc_fts` 那条建表语句 —— 迁移要重建它，DDL 只留一份。
+
+    FTS5 是虚表，`ALTER TABLE` 加不了列（SQLite 硬限制，报
+    `virtual tables may not be altered`），补 `id` 只能删表重建。重建用的 DDL
+    从 schema.sql **现取**，不在这里另抄一份：抄一份的后果是哪天有人改了影子表的列，
+    老库重建出来的表和新库不是同一张表，而两边都不报错。
+    """
+    hits = [s for s in _schema_statements(script)
+            if "kb_doc_fts" in s and "CREATE VIRTUAL TABLE" in s.upper()]
+    if len(hits) != 1:
+        raise KbError(
+            f"schema.sql 里有 {len(hits)} 条 kb_doc_fts 的建表语句，期望恰好 1 条。"
+            " 迁移不敢猜该按哪一条重建影子表 —— 先把 schema.sql 改回一条。")
+    return hits[0]
+
+
+#: 迁移那组「同生共死」语句用的保存点名。
+_MIGRATE_SAVEPOINT = "kb_schema_migrate"
+
+
+def _atomic(store: Any, statements: list[tuple[str, tuple]]) -> None:
+    """一组语句同生共死，**DDL 也算在内**。
+
+    迁移非用它不可：影子表的重建是「删表 → 建表 → 重灌」三步，断在中间而前
+    两步已落盘的话，表在、列全、**一行数据都没有** —— 下一次跑迁移的探针看到
+    `id` 列已存在于是跳过，BM25 从此恒空且不报错。本轨要买掉的正是这类无症状
+    失效，不能自己再造一个。
+
+    **光靠 `rollback()` 撤不回 DDL**（这一条是被 `test_kb_schema_migration.py`
+    里那条回滚用例逼出来的，不是想当然）：Python 的 sqlite3 在传统模式下只为
+    DML 隐式开事务，`DROP TABLE` 是在自动提交下跑的，一发就落盘；端口的
+    `transaction()` 同理 —— 它只是延后 commit，没有开事务。显式发一句
+    `SAVEPOINT` 才能把 DDL 拉进事务，两条路径都认。
+
+    用 `SAVEPOINT` 而不是 `BEGIN`：外层已经在事务里时 `BEGIN` 会报
+    cannot start a transaction within a transaction，`SAVEPOINT` 开不开事务都能用。
+
+    端口没有 `transaction()` 时**直接抛**，不像 `upsert_doc` 那样退化成逐条提交：
+    那里退化的后果是「同步慢一拍」，这里是「持久库停在半成品上」，不是一回事。
+    """
+    port = port_of(store)
+    if port is not None:
+        transaction = getattr(port, "transaction", None)
+        if not callable(transaction):
+            raise KbError(
+                f"{type(port).__name__} 没有 transaction()，schema 迁移没法整块回滚。"
+                " 迁移中途失败会让库停在半成品上（表在、列全、数据空），"
+                " 那种失效没有症状 —— 宁可现在响。")
+        with transaction():
+            port.execute(f"SAVEPOINT {_MIGRATE_SAVEPOINT}", ())
+            try:
+                for sql, params in statements:
+                    port.execute(sql, params)
+            except BaseException:
+                port.execute(f"ROLLBACK TO {_MIGRATE_SAVEPOINT}", ())
+                port.execute(f"RELEASE {_MIGRATE_SAVEPOINT}", ())
+                raise
+            port.execute(f"RELEASE {_MIGRATE_SAVEPOINT}", ())
+        return
+    conn = _conn(store)
+    with lock_of(store):
+        conn.execute(f"SAVEPOINT {_MIGRATE_SAVEPOINT}")
+        try:
+            for sql, params in statements:
+                conn.execute(sql, params)
+        except BaseException:
+            conn.execute(f"ROLLBACK TO {_MIGRATE_SAVEPOINT}")
+            conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
+            conn.rollback()
+            raise
+        conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
+        conn.commit()
+
+
+def _has_column(store: Any, table: str, column: str) -> bool:
+    """探「这张表有没有这一列」。用一条 SELECT，**不用 PRAGMA**。
+
+    两条理由，第二条是坑：
+
+    · PRAGMA 是 SQLite 方言，端口路径上不保证有（PG 那边没有）。
+    · `PRAGMA table_info` **不列生成列** —— 生成列要 `table_xinfo` 才看得到
+      （hidden=2）。拿 table_info 判 `kb_doc.id` 在不在，新库上会答「不在」，
+      于是每次建表都去 ALTER 一次，每次都撞 duplicate column name: id。
+
+    表名列名都是本模块的字面量，不是外来输入，所以直接拼进 SQL。
+    异常一律当「没这列」：各后端抛的类型不一样，这里只关心选不选得出来；
+    真是连接坏了，紧随其后的 ALTER 会自己响，不会被这层吞掉。
+    """
+    try:
+        query(store, f"SELECT {column} FROM {table} LIMIT 1")
+        return True
+    except Exception:
+        return False
+
+
+def _migrate_v1_row_id(store: Any, script: str) -> None:
+    """v1：给 `kb_doc` / `kb_doc_fts` 补 F-2 口径的 `id` 列（T13 定的形状）。
+
+    没有这一步，T13 之前建的库上 `SELECT id FROM kb_doc` 恒抛 no such column，
+    检索器那条端口分支**每次都退化**成本地实现、且只告警一次；写入侧更直接 ——
+    `upsert_doc` 往影子表插 `id` 会当场报 no such column named id。
+
+    两张表补法不同，因为 SQLite 的限制不同：
+
+    · `kb_doc` 走 `ALTER TABLE ADD COLUMN`。VIRTUAL 生成列**可以**这么加
+      （只有 STORED 不行），所以老库补完的形状与 schema.sql 逐字相同 ——
+      不必「建新表→拷数据→换名」，也就不会在拷贝途中丢掉 CHECK 与主键。
+    · `kb_doc_fts` 是虚表，加不了列，只能删表→按 schema.sql 重建→从 kb_doc 重灌。
+      重灌从 `kb_doc` 取而不是从旧影子表取：`kb_doc` 才是权威，影子表是它的投影；
+      而且 title/body 进影子表前要过 `fts_text()`，旧表里存的已经是切过的文本，
+      再切一次不等幂。
+
+    每一步先探再做，所以新库上整条是 no-op：新库的两列本来就在，探针答「在」，
+    一条 ALTER 都不发。**判据在探针不在版本号** —— 新库刚建完时版本表同样是空的，
+    只看版本号会把新库也当老库去 ALTER。
+    """
+    if not _has_column(store, "kb_doc", "id"):
+        execute(store, "ALTER TABLE kb_doc ADD COLUMN id TEXT"
+                       f" GENERATED ALWAYS AS ({DOC_ROW_ID_EXPR}) VIRTUAL")
+    if not _has_column(store, "kb_doc_fts", "id"):
+        rows = query(store, "SELECT tenant_id, doc_id, title, body FROM kb_doc"
+                            " ORDER BY created_at, doc_id")
+        statements = [("DROP TABLE kb_doc_fts", ()),
+                      (_fts_create_statement(script), ())]
+        for row in rows:
+            statements.append((
+                "INSERT INTO kb_doc_fts (id, doc_id, tenant_id, title, body)"
+                " VALUES (?,?,?,?,?)",
+                (doc_row_id(row["tenant_id"], row["doc_id"]), row["doc_id"],
+                 row["tenant_id"], fts_text(row["title"]), fts_text(row["body"]))))
+        _atomic(store, statements)
+
+
+#: 迁移步骤表，**按版本号升序**。加一步就在末尾追加一条，不要改已有的那几条 ——
+#: 已经跑过的库不会再跑一遍它们，改了等于新老库形状分叉。
+#: 每一步都必须自带探针、在**已是目标形状**的库上是 no-op（新库要靠这条）。
+_MIGRATIONS: tuple[tuple[int, str, Any], ...] = (
+    (1, "kb_doc / kb_doc_fts 补 F-2 口径的 id 列", _migrate_v1_row_id),
+)
+
+#: 知识层 schema 的当前版本。跟着 `_MIGRATIONS` 算，不手写 —— 手写的那份
+#: 迟早和实际步骤对不上，而对不上的症状是「迁移悄悄不跑了」。
+KB_SCHEMA_VERSION = max((v for v, _label, _step in _MIGRATIONS), default=0)
+
+
+def applied_schema_version(store: Any) -> int:
+    """这库已经升到第几版。没有记账行就是 0（T13 之前建的老库都在这一档）。"""
+    rows = query(store, "SELECT MAX(version) AS version FROM kb_schema_version")
+    version = rows[0]["version"] if rows else None
+    return int(version) if version is not None else 0
+
+
+def _migrate(store: Any, script: str) -> None:
+    """把库升到 `KB_SCHEMA_VERSION`，并逐条记账。
+
+    版本号是**快路径**不是判据：已经记到最新就直接返回，省掉每次 `upsert_doc`
+    都发几条探针（`ensure_schema` 挂在写入口上，调用频次很高）。
+    真正决定做不做的是每一步自己的探针，见 `_migrate_v1_row_id`。
+
+    记账写在步骤之后：中途失败就不记，下次重跑同一步 —— 步骤是幂等的，重跑安全。
+    """
+    applied = applied_schema_version(store)
+    if applied >= KB_SCHEMA_VERSION:
+        return
+    for version, _label, step in _MIGRATIONS:
+        if version <= applied:
+            continue
+        step(store, script)
+        execute(store, "INSERT INTO kb_schema_version (version, applied_at)"
+                       " VALUES (?, ?)", (version, now_iso()))
+
+
 def ensure_schema(store: Any) -> None:
-    """读 schema.sql 建表。幂等（全部 IF NOT EXISTS），可连跑。
+    """建表 + 迁移到最新版本。幂等，可连跑。
 
     检索与写入两侧都先调它：知识层的表不属于 `init_schema()` 的五表，
     谁先用到谁负责建，不指望调用方记得。
+
+    **两段，缺一不可**：schema.sql 那段全是 `IF NOT EXISTS`，只管「表不在就建」，
+    对已经存在的表一个字都改不动；`_migrate()` 那段才管「表在但形状旧」。
+    只有第一段的时候，改列是静默无效的 —— 那正是 T13 补 `id` 列之后
+    老库仍旧 `no such column: id` 的原因。
     """
     script = _SCHEMA_PATH.read_text(encoding="utf-8")
     port = port_of(store)
     if port is not None:
         for statement in _schema_statements(script):
             port.execute(statement, ())
-        return
-    conn = _conn(store)
-    with lock_of(store):
-        conn.executescript(script)
-        conn.commit()
+    else:
+        conn = _conn(store)
+        with lock_of(store):
+            conn.executescript(script)
+            conn.commit()
+    _migrate(store, script)
 
 
 def has_kb_table(store: Any) -> bool:

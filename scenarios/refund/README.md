@@ -1,6 +1,9 @@
 # 退款域语料与对照数据集（task-W1）
 
-供 P5 的 RAG 对照实验（W-3 轨）与三组对照 case 使用。**本目录只有数据，没有代码，也没有任何 DDL。**
+供 P5 的 RAG 对照实验（W-3 轨）与三组对照 case 使用。**本目录只有数据，没有代码，也没有任何 DDL** ——
+这一条至今成立（本目录下仍然一个 `.py`、一行 `CREATE TABLE` 都没有）。**但「没有消费方」那一条已经不成立了**：
+T7 轨把五份 case 接上了 `maos/flows/contrast.py`，24 条历史案例接上了 `maos/domain/refund/fixtures.py`。
+详见文末的「谁在消费它」。
 
 ## 数据来源与口径
 
@@ -71,6 +74,32 @@ R6 是「错误套用政策」这条评委诉求的唯一证据，所以有一�
 
 R4 与 R6 的差异在**现有匹配器上直接成立**，不需要任何新代码（R4 靠 `channel_scope`，R6 靠 `version <= pinned`）。R3 的「通过 vs 驳回」需要一个评估 `no_reason_days` 窗口的判定器，当前 `policy.match` 还没有 —— 它的 approve/reject 只判「有没有命中 AS- 规则」。这一条已记进 `docs/BACKLOG.md` 的 `## task-W1`，数据侧已按窗口参数造好，`_expected` 里写明了预期结论。
 
+**T7 实跑结果（`python3 run.py --contrast`，exit=0）**：三组六个 case 全部与各自的 `_expected` 一致。
+
+| 组 | 实测 | 差异从哪来 |
+| :-- | :-- | :-- |
+| R3 | A（`tnt-mfg-a`）命中 `AS-001@v1` 窗口 30 天 → **approve**，DAG 4 个任务；B（`tnt-mfg-b`）同一条规则窗口 7 天 → **reject**，DAG 3 个任务（不排核算） | 两个租户各自 `AS-001` 的 `no_reason_days` 参数。除 `tenant_id` 外两侧输入逐字段相同，有测试守着 |
+| R4 | 自营 4 个任务、审批人 `supervisor`；经销 5 个任务、多出 `dealer_writeoff`（role `refund_channel`、标题「渠道商核销」）、审批人 `region_manager`。**核准金额两侧都是 6800.00** | `AS-004` 的 `channel_scope='ch-dealer'` 让自营侧压根取不到这条规则，于是它的 `extra_tasks` / `approver_role` 无从展开 |
+| R6 | 按快照锁定的 v1 → **approve**，核准 **1280.00**；按库里最新的 v2 → **reject**，核准 **0.00** | `order_snapshot.policy_version_at_order = 1`，`version <= pinned` 把 v2 挡在外面。错误路径由 `contrast.policy_view_latest` 真跑一遍，不是推断 |
+
+**窗口判定补在流程层**（`contrast.evaluate_eligibility`），不在 `policy.match` 里 —— `maos/skills/**` 不是 T7 的面。补的是**判定**不是**数据**：窗口天数逐字取自 `policy.match` 出参的 `matched_rules[].params`。两个裁定都如实报出（`contrast.json` 的 `policy_baseline` 是 skill 的原话，`decision` 是补上窗口之后的结论），搬回 skill 的改法记在 `docs/BACKLOG.md` 的 `## task-T7`。
+
+### 这三组比「换域」更强
+
+`docs/domain-portability.md` 的论证是「换域只换 Skill / ToolPort / 业务对象，`contracts/` 与 `runtime/` 零改动」。这三组换的是**同一个域内的三个维度**，于是那句话可以说得更硬：
+
+> 换租户、换渠道、换政策版本，**连 Skill 都不用换**。
+> `policy.match` / `finance.settle` / `refund.intake` 一个字节没动，
+> `maos/contracts/**` 与 `maos/core/**` 零改动，Control Plane / 状态机 / Gate / Worker
+> 从头到尾不认识「租户」「渠道」「版本」这三个词。
+
+差异全部落在**数据**上，代码里没有一处 `if tenant == …` / `if channel == …` / `if version == …`。这一条不是自述，有两条负例测试守着（`maos/tests/test_contrast_cases.py`）：
+
+- 把 `AS-004` 从政策表里删掉 → 核销任务当场消失、审批人退回缺省；
+- 把 `AS-004` 的 `channel_scope` 改成 `ch-online`、订单也改挂自营 → **核销任务原封不动地跑到自营那一侧**。
+
+第二条是更硬的那条：它证明代码里没有任何地方认得「经销」这个词。改数据就换结论，一行代码都不用动。
+
 ## 失败案例与错误码
 
 24 条里 8 条 `outcome='failed'`，覆盖派单点名的五类：
@@ -108,9 +137,26 @@ python3 -c "import json,glob; c=json.load(open('scenarios/refund/policy/policy_r
 
 第 3 条是防漂移的：五份 case 各自内联了自己用到的 `policy_rule` 行（`case_r1.json` 的形状要求自包含），而唯一的事实源是 `policy/policy_rules.json`。两处一旦分叉，对照实验的前提就悄悄变了，且不会有任何报错。
 
-## 目前没有消费方
+## 谁在消费它
 
-- 场景 6 把业务对象**内联写死**在 `maos/flows/scenario_6.py` 里，没有读 JSON 的通路，五份对照 case 因此暂时接不进演示。
-- `kb_doc` 表 P5 才建，24 条历史案例暂时无处入库。
+W-1 造完这批数据时**零消费方**（「字段分叉不会有任何报错」那条账记在 `docs/BACKLOG.md` 的 `## task-W1`）。现在每一份都有名有姓的消费方，改一个字段就有东西会红：
 
-两条都已记进 `docs/BACKLOG.md` 的 `## task-W1`；接入通路的建议写在 `docs/DECISIONS.md` 的 `## task-W1`。**本轨按派单只出数据，不改任何 `.py`。**
+| 文件 | 谁在读 | 读来干什么 | 分叉了会怎样 |
+| :-- | :-- | :-- | :-- |
+| `policy/policy_rules.json` | `maos/kb/experiment.py::_seed_domain_from_corpus` / `seed_kb_corpus` | R5 的靶场四张表 + 16 条政策投影进 `kb_doc` | `_checked_rows` 逐行校验列清单，多一列少一列当场抛 |
+| 同上 | `maos/domain/refund/fixtures.py::seed_policy_corpus` / `seed_policy_kb` | 三组对照的知识库底料（**跨租户召不回**那条约束要靠它，库里必须躺着两个租户的知识） | 同上，共用同一份列清单 |
+| `history/history_cases.json` | `maos/domain/refund/fixtures.py::seed_history_kb` | 24 条按**晋升规则分流**落进 `kb_doc`：`outcome='success'` → `history_case`（规划正例），8 条 `outcome='failed'` → `failure_hint`（**不作为规划正例**） | 列清单对齐 `kb.DOC_COLUMNS`，分叉即抛；条数与分流比例由 `test_contrast_cases.py` 守着 |
+| 同上 | `maos/tests/test_kb_corpus.py` | 全量装载 + 取值域 / 错误码守卫 | 同上 |
+| `cases/*.json` | `maos/flows/contrast.py`（经 `fixtures.load_case`） | 三组对照的靶场与**判据**：`case` 块当 `case_seed`、五张外部快照表灌库、`_expected` 块当唯一判据 | 判据不符时 `run.py --contrast` 直接抛、`make_evidence.py --contrast` 非零退出不留产物 |
+
+入口：
+
+```bash
+python3 run.py --contrast                      # 三组六个 case 跑一遍，屏幕上打对照结论
+python3 scripts/make_evidence.py --contrast    # 另产 evidence/contrast-R3/R4/R6
+python3 -m pytest maos/tests/test_contrast_cases.py -q
+```
+
+`kind` 的分流发生在**装载侧**不是检索侧：语料里 24 条的 `kind` 全是 `history_case`（数据侧只记「这是一条历史案例」），落库时按「外部结果明不明确」分流，口径与 `maos/kb/guardrails.py::classify_case` 同一份。写错 `kind` 的条目查得出来但归不了类，而错误发生在写入侧、暴露在几周后的检索侧，是最难回溯的一类脏数据。
+
+**本目录仍然只出数据**：接线全部在 `maos/` 与 `scripts/` 下，这里一个 `.py`、一行 DDL 都没有加。

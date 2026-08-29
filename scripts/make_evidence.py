@@ -3,6 +3,15 @@
 
     python3 scripts/make_evidence.py                    # 全部场景 + scenario-R5
     python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景（不含 R5）
+    python3 scripts/make_evidence.py --contrast         # 只产 contrast-R3/R4/R6
+
+``--contrast`` 是**另一条路**，不是第 9、10、11 束：缺省证据束恒为 8 束
+（``scenario-1..7`` + ``scenario-R5``）是跨轨冻结口径，``scripts/demo_preflight.sh``
+与复赛材料都写死了 8。所以三组对照 **①** 不进 ``maos.main.ALL_SCENARIOS``、
+**②** 目录名不叫 ``scenario-*``（``verify.py`` 按这个前缀挑核验对象，对照束由
+``scan_aux_bundles`` 登记在册即可）、**③** 带 ``--contrast`` 时**只**产对照束，
+不碰任何 ``scenario-*`` 目录、也不重写 ``INDEX.json``（那份索引由缺省全量跑重建，
+届时对照束会作为 aux 登记进去）。缺省行为因此一个字节不变。
 
 ``scenario-R5``（RAG 有无对照）不在 ``maos.main.ALL_SCENARIOS`` 里，由
 ``maos.kb.experiment`` 单独产，却是唯一带 ``kb_doc`` 的一束 —— ``verify.py``
@@ -234,6 +243,57 @@ def run_child(scenario: int, db_path: str) -> int:
     from maos.main import main as maos_main
 
     return maos_main(["--scenario", str(scenario)])
+
+
+#: 子进程把对照的观测与判据先落成这份**无出处首行**的原始 JSON，父进程读走后删掉，
+#: 再由 ``write_json`` 带着出处首行写进最终目录 —— 证据文件的首行规矩只有一个执行点。
+CONTRAST_RAW = "_contrast-raw.json"
+
+
+def run_child_contrast(group: str, db_path: str) -> int:
+    """在**本进程**里把一组对照跑进 ``db_path``。只由 ``--_contrast`` 入口调用。
+
+    注入手法与 ``run_child`` 同一套，理由也一样：``flows/common.py::build()`` 用的是
+    ``:memory:``，进程一退库就没了。**一组里的两个 case 共用同一个库文件** ——
+    对照的两侧躺在同一份证据里才比得了，分成两个库反而要读者自己去对。
+
+    R6 的「按最新版判」那条错误路径**不落这个库**：它由 ``contrast`` 在一个一次性的
+    内存库里算，只读政策、不建 case、不跑 DAG。错误路径是用来演示陷阱的，
+    把它的 plan 写进证据束等于在证据里留下一条本不该发生的执行。
+    """
+    import maos.flows.common as common
+    from maos.core.store import SqliteStore
+
+    common.SqliteStore = functools.partial(SqliteStore, db_path)
+    from maos.flows import contrast
+
+    rows = contrast.run_group(group)
+    doc = {
+        "group": group,
+        "dimension": rows[0]["expected"]["dimension"],
+        "cases": [{"file": r["file"], "expected": r["expected"],
+                   "observed": r["observed"], "mismatch": r["mismatch"]} for r in rows],
+        "variable": contrast._variable_of(rows),
+        "note": contrast._note_of(rows),
+    }
+    mismatch = [f"{r['file']}: {m}" for r in rows for m in r["mismatch"]]
+    if group == "R6":
+        wrong, wrong_bad = contrast._r6_wrong_path()
+        doc["wrong_if_latest_observed"] = wrong
+        mismatch += wrong_bad
+    doc["mismatch"] = mismatch
+
+    with open(os.path.join(os.path.dirname(db_path), CONTRAST_RAW), "w",
+              encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=2)
+
+    if mismatch:
+        # 判据不符就让子进程非零退出：父进程按「上游命令失败即报错退出」处理，
+        # 不留下半份看起来跑通了的证据束（铁律 3）。
+        print("对照结果与 case json 的 _expected 不符：\n  " + "\n  ".join(mismatch),
+              file=sys.stderr)
+        return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +627,64 @@ def _bundle_info(scenario, final: str, bundle: dict) -> dict:
     }
 
 
+def build_contrast(group: str, out_root: str, *, sha: str, secrets: dict[str, str],
+                   timeout: int) -> dict:
+    """跑一组对照并攒出 ``evidence/contrast-<组>/``。任何一步失败都不留下半份目录。
+
+    与 ``build_scenario`` 同一套「先在临时目录攒齐、脱敏反查过关、才 ``os.replace``
+    挪到位」的规矩，产物也走同一个 ``write_bundle`` —— 格式对齐现有证据束不是靠
+    照着抄一遍，是靠调同一个函数。对照束比场景束多一份 ``contrast.json``：
+    逐 case 的 `_expected` 与实际观测并排放，附不符项清单（空 = 全对）。
+    """
+    final = os.path.join(out_root, f"contrast-{group}")
+    tmp = os.path.join(out_root, f".tmp-contrast-{group}.{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+
+    try:
+        db_path = os.path.join(tmp, "maos.db")
+        started = time.perf_counter()
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--_contrast", group,
+             "--_db", db_path],
+            cwd=ROOT, capture_output=True, text=True, timeout=timeout,
+        )
+        wall_ms = int((time.perf_counter() - started) * 1000)
+        log = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode != 0:
+            raise EvidenceError(
+                f"对照组 {group} 退出码 {proc.returncode}，不生成任何产物。子进程输出尾部：\n"
+                + redact(log[-2000:], secrets))
+        if not os.path.exists(db_path):
+            raise EvidenceError(
+                f"对照组 {group} 退出码为 0 却没有落库（{db_path} 不存在）："
+                f"SqliteStore 注入点可能已失效，不生成任何产物")
+
+        raw_path = os.path.join(tmp, CONTRAST_RAW)
+        with open(raw_path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        os.remove(raw_path)      # 无出处首行的中间文件不许进最终目录
+
+        bundle = write_bundle(db_path, tmp, scenario=f"contrast-{group}",
+                              exit_code=proc.returncode, wall_ms=wall_ms, log=log,
+                              sha=sha, secrets=secrets)
+        write_json(os.path.join(tmp, "contrast.json"), doc, sha=sha, secrets=secrets)
+
+        leaks = scan_for_secrets(tmp, secrets)
+        if leaks:
+            raise EvidenceError(
+                f"对照组 {group} 的产物里查到敏感值明文，目录已销毁：\n  "
+                + "\n  ".join(leaks))
+
+        shutil.rmtree(final, ignore_errors=True)
+        os.replace(tmp, final)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+    return _bundle_info(f"contrast-{group}", final, bundle)
+
+
 def scan_aux_bundles(out_root: str) -> list[dict]:
     """登记 ``evidence/`` 下**不叫 scenario-\\* 的那些目录**，按目录名排序。
 
@@ -654,6 +772,36 @@ def build_r5(out_root: str, *, secrets: dict[str, str]) -> dict:
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
+def main_contrast(args) -> int:
+    """``--contrast`` 那一支：只产 ``contrast-R3/R4/R6``。
+
+    **不碰 ``scenario-*``，也不重写 ``INDEX.json``**。索引由缺省全量跑重建，
+    届时对照束会作为 ``aux_bundles`` 登记进去（它们不叫 ``scenario-*``，
+    ``verify.py`` 本来就不把它们当证据束扫）。在这里顺手重写索引会把上一次
+    全量跑的 ``produced`` 清单抹成三条，那份索引就开始说谎了。
+    """
+    from maos.flows.contrast import GROUPS
+
+    sha = pin_sha()
+    secrets = secret_values()
+    os.makedirs(args.out, exist_ok=True)
+    groups = [g for g, _dim, _title in GROUPS]
+    print(f"对照证据束生成 · sha={sha} · 组={groups} · 输出={args.out}")
+    if secrets:
+        print(f"脱敏哨兵：{sorted(secrets)}（值不打印）")
+
+    produced = []
+    for group in groups:
+        info = build_contrast(group, args.out, sha=sha, secrets=secrets,
+                              timeout=args.timeout)
+        produced.append(info)
+        print(f"  [OK] {info['dir']}  spans={info['span_count']} "
+              f"events={info['event_count']}{_flag_suffix(info)}")
+    print(f"\n完成：{len(produced)} 组对照落盘。scenario-* 与 INDEX.json 未被触碰；"
+          f"缺省证据束仍是 8 束。")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="make_evidence", description="生成 evidence/scenario-<N>/ 证据束")
@@ -668,7 +816,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="强制一并产出 scenario-R5（缺省：全量跑时产，指定 --scenarios 时不产）")
     parser.add_argument("--no-r5", dest="r5", action="store_false",
                         help="不产 scenario-R5；verify.py 的第 5、7 项会因此判 SKIP")
+    parser.add_argument("--contrast", action="store_true",
+                        help="只产三组对照束 contrast-R3/R4/R6；不碰 scenario-* 也不重写 INDEX.json")
     parser.add_argument("--_child", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--_contrast", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_db", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -676,6 +827,16 @@ def main(argv: list[str] | None = None) -> int:
         if not args._db:
             raise SystemExit("--_child 必须配 --_db")
         return run_child(args._child, args._db)
+
+    if args._contrast is not None:
+        if not args._db:
+            raise SystemExit("--_contrast 必须配 --_db")
+        return run_child_contrast(args._contrast, args._db)
+
+    # 对照束走一条**完全独立**的路径：缺省那一支（下面整段）一个字节不变，
+    # 缺省仍然恒为 8 束。两条路唯一共用的是 build_contrast 里的 write_bundle。
+    if args.contrast:
+        return main_contrast(args)
 
     from maos.main import ALL_SCENARIOS
 

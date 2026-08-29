@@ -20,6 +20,7 @@ from ._base import (  # noqa: F401 —— 对外导出 artifact kind 口径
     KIND_PAYMENT_REQUEST,
     KIND_POLICY_DECISION,
 )
+from .channel_agent import RefundChannelAgent  # noqa: F401 —— 政策驱动的核销分支
 from .finance_agent import RefundFinanceAgent  # noqa: F401 —— import 即注册
 from .intake_agent import RefundIntakeAgent  # noqa: F401
 from .payment_agent import RefundPaymentAgent  # noqa: F401

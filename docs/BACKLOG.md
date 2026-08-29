@@ -700,3 +700,17 @@ verify 第 6 项的自述层收口（FAILED 自称成功 + 四个元数据字段
 | 2026-08-29 | P4 | **`## task-D1` 第 1 条里有两处与本轮实测不符**：(a)「非 H 任务撞上限后没有任何人捞得到」在基线 `1131795` 上**已不成立** —— 探针实测 `pending()` 捞得到；(b)「`test_replan_gateway.py` 与场景 5/7 用的都是 H 任务，所以一直没露出来」不成立 —— 该文件 `_make_task` 写死的就是 `effect_risk: "L"` | 下一轮的人照抄这条会去修一个已经不存在的洞，或按「用的都是 H 任务」这个错前提去设计复现，两次都会白跑一遍 | 建议下一轮把该条改写成它**现在**的形态：「洞已被 `pending()` 顺带覆盖，本轨补了回归钉住；剩下的是消费侧字面量三份实现」（即上面第 1 条）。本轨不改别人的账本条目 |
 | 2026-08-29 | P4 | **`## task-D1` 第 4 条与 `## task-D2` 那条（`_gate_gateway` severity 不同源）已由本轨接走**，两处仍原样挂着 | 账本里三处（D1 第 4 条、D2 唯一一条、本节）说的是同一件事，其中两处的结论已经过时 | 下一轮收账时标记闭环，并把口径落到一句话：`GW_QUERY_OR_HUMAN` 已知码与未知码同为 blocker，两者都由第三出口兜 —— D-1 当时说「两种都行，但不能像现在这样没人写下来」，现在写下来了 |
 | 2026-08-29 | P4 | **`ACQ.DISCORDANT_REPEAT_REQUEST` 从本轮起会挡闸**（severity `info -> blocker`）。当前 `maos/flows/` 的场景 1-7 无一注入它，`run.py` 输出实测逐行无差异 | 但 `scenarios/refund/history/history_cases.json` 的语料里有这条码（`kb-rc-0021`），`maos/tools/gateway.py:256` 也会在同幂等键参数不一致时真的返回它。哪天有场景走到那条路径，任务会停在 BLOCKED 等人，而不是像改前那样直接 DONE | 这是**有意为之**的收严（见 `docs/DECISIONS.md` 的 `## task-H2` 第 2 行），不是回归。记在这里是为了让下一轮加演示场景的人知道这一格的出口变了；若届时演示需要它放行，那要改的是场景设计，不是把这一格再降回 info |
+
+## task-H3
+
+受理幂等轨（分支 `task/h3-intake-idempotent`，基线 `1131795`）：把 `guard.create_case`
+从裸 `INSERT` 改成幂等 upsert，只动 `maos/domain/refund/guard.py` 一个代码文件。
+`## task-D2` 第 1 条点名的坑本轨已修；按惯例不回改别人的既有条目，处置理由见
+`docs/DECISIONS.md` 的 `## task-H3`。以下三条是本轨看见但**在白名单外、按铁律 4
+不当场改**的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`maos/skills/builtin/refund/intake.py:79` 那条注释的前提已被本轨推翻**。原文「纯规则 + 一次库写入。重试会撞 refund_case 主键，没有可重试的失败形态」，而 `create_case` 现在幂等，重试不再撞主键 | 注释给的理由已不成立，这是纠错；但同处的 `max_retries=0` + `failure_policy="escalate"` 还对不对是**策略判断**，两件事要分开：受理的库写入之外全是入参校验，确实没有别的可重试失败形态，保持 0 也说得通 | `intake.py` 不在本轨白名单（派单 §4 只给了 `guard.py`）。建议下一轮连注释带 `max_retries` 一并定：要么只改注释，要么把「重跑安全」这条新事实兑现成允许一次重试 |
+| 2026-08-29 | P7 | **`maos/kb/experiment.py:41` 的模块 docstring 把 R5 without_kb 段那句 IntegrityError 归因于「受理 skill 在返工下不幂等」，本轨之后这个归因不再成立**。同段自己已声明是过渡态（「D-1 合并后这一段会变成『受理 BLOCKED，等人决策』」），而 D-1 早已并进主干 `1131795` | 纯文档失真，不改行为。本轨实跑 `make_evidence.py` + `verify.py` 仍 `RESULT: 7/7 PASS`、`business-ref 35/35`，与基线逐项相同 —— 恰好反证那条返工路径已不可达，这句归因描述的是一个现在跑不出来的现象 | `maos/kb/experiment.py` 是 D-2 的独占面，本轨一个字节没碰。`## task-F1` 第 1 条也在等同一个文件的另一处改动，建议一并处理 |
+| 2026-08-29 | P7 | **退款域内出现了两种「重跑安全」口径**：`refund_case` 走本轨这条「同则幂等、异则报错」，而 `business_ref` 与 `customer_evidence` 走 `INSERT OR REPLACE` 静默覆盖（`objects.attach_business_ref`、`intake.py:137`） | 当前无症状，且对那两张表说得通 —— 它们存的是引用与证据指针，重跑覆盖成同一份值本就幂等，没有「被推进过的状态」会被盖掉。问题在于同一个域里两种口径并存而没有一处说明，下一个人照着哪张表抄都不知道自己抄的对不对 | **不建议为统一而统一**：`refund_case` 那条口径的理由是 `biz_status` 会被推进、`amount_claimed` 是财务闸的量，那两张表两条都不占。建议在 `docs/` 补一句「按表说明为什么口径不同」，归下一轮文档面 |

@@ -317,3 +317,69 @@ X 轮四轨 + W-5 合并后的整体验收发现三条，均**不在整合轮可
 | 2026-08-29 | P4 | **`docs/domain-portability.md` 的「领域无关」论证，其证据区间 `90251b3..HEAD` 现在混进了非退款域的改动。** 该文档用「退款域上线前后 `git diff` 逐面为零」来论证内核领域无关，但本轮 X-2 给 `maos/core/control_plane.py` 加了 +46/−2（网关码四象限），X-4 给 `maos/tools/sandbox.py` 加了 +111/−13（降级可见化）—— 两者都**不是退款域上线带来的**，却落在同一个区间里 | 论证的**结论没塌**：`maos/contracts/` 仍严格为零，两条 AST/import 守卫（`test_runtime_and_core_do_not_import_refund_domain` / `test_kernel_does_not_know_the_refund_domain`）本轮实跑 2 passed，「内核不认识退款域」这件事仍被机器钉住。塌的是**数字的读法**：表格里 `maos/core/` 那一格从「（空，零改动）」变成非零，读者会以为是退款域把它改的 | 本轮已按真实值刷了数字，并在表格与「不是零 —— 如实说清楚」小节里点明这两笔的出处（整合轮 4 / X-2、X-4）。但更干净的做法是**把论证的区间端点从「当前主干」换成「退款域上线那一刻的 sha」**，让区间只包住退款域，非退款域的改动另起一段说。这要重新选 sha 并重跑全表数字，属文档结构调整，交下一轮 |
 | 2026-08-29 | P5 | **派单 §4 第四步写的「`python3 run.py` 重新生成 `evidence/`」与实际不符** —— `run.py` 跑完 `git status --porcelain` 只有 1 行（gen_docs 的产物），`evidence/` 一个文件都没动。真正产证据的是 README ①②③：`scripts/make_evidence.py`（产 scenario-1..7）+ `python3 -m maos.kb.experiment`（产 scenario-R5）+ `scripts/verify.py`（校验） | 照派单字面执行的会话会以为证据束已按新 HEAD 重跑，实际 `evidence/` 里仍是旧代码的产物 —— 正是派单自己要防的「假绿」。本轮已改跑实际生成器，见 DECISIONS `## integrate-round-4` 第 1 条 | 下一轮派单模板里把第四步的命令换成 `make_evidence.py` + `maos.kb.experiment` + `verify.py` 三条。README §3 的 ①②③ 就是正确版本，直接抄 |
 | 2026-08-29 | P4 | **`CLAUDE.md:75` 的常用命令注释仍写 `python3 run.py  # 场景 1-6 端到端`**，X-1 合并后实际跑 1-7 | 与 `## task-X1` 第 3 条是同一条（那条由 X-1 记下并建议「编排侧收口时一行改掉」）。`CLAUDE.md` 每个会话自动加载，是所有会话看到的第一份事实；留着它，下一个会话会照「1-6」去复核 `run.py` 输出，把多出来的场景 7 当成异常 | `CLAUDE.md` **不在整合轮派单的可改面内**（派单 §4 第三步只列 README.md 与 docs/\*.md），故本轮未改。README / demo-script / submission-checklist / architecture / domain-portability 里的同类措辞本轮已全部刷成 1-7，只剩 `CLAUDE.md` 这一处。**请人类一行改掉**，或在下一轮派单里把它列进可改面 |
+
+## task-C3
+
+落状态迁移镜像与房间审批入口时发现、按铁律 4 与派单边界不当场处理的五条
+（分支 `task/c3-room-wiring`，基线 `f42ea83`）。第 1 条是**下一轮直接可用的施工草案**，
+不是问题单。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P5 | **把房间决策口搬进 scenario_6 / scenario_7 的最小 diff 草案**（派单第 8 步 §5 要求「只写不改」）。现状：`scenario_6.py:260`、`scenario_7.py:318`、`scenario_7.py:351` 三处是硬编码的 `hq.decide(...)` 一行，没有可注入的决策口，房间里的人插不进去 | 没有这个口，「在 Element 里 `/approve` 放行正式场景」这条链路只能靠 `hiclaw/room_demo.py` 另起一个 plan 演示，演的不是场景 6/7 本身。房间演示与正式场景因此是两条路 | **下一轮，由 Y-2（`scenario_6.py`）与 Y-4（`scenario_7.py`）落**。草案见本条下方代码块，共 4 处 + `common.py` 1 处，逐字可用 |
+| 2026-08-29 | P5 | **派单里 scenario_6/7 的行号已过期**：派单写 `scenario_6.py:295/310`、`scenario_7.py:391/408/445`，基线 `f42ea83` 上实际是 `scenario_6.py:245`（构造）/`:260`（decide）、`scenario_7.py:301`（构造）/`:318`、`:351`（decide，两处不是三处）。构造与调用的**形状完全一致**，只有行号漂了 | 照派单行号去核对会看到不相干的代码，容易被当成「口径对不上」而误判成回归 | 下一轮刷派单模板时改成按 `grep -n "HumanApprovalQueue\|\.decide("` 定位，不写死行号 |
+| 2026-08-29 | P5 | `matrix_bus.summarize()` 对 event_log 行的 `attempt=` 只能 best-effort。它是给 Envelope 写的、硬编码 `attempt={env.attempt}`，而 event_log **没有 attempt 这一列**（`_transit` 把 attempt 当任务字段更新，没写进 detail） | 镜像出来的迁移摘要行里，`attempt=` 读的是**轮询那一刻**任务的当前值，不是迁移发生那一刻的值。返工多轮时这个数可能偏大。折叠 JSON 里是 event_log 原样，不受影响 | 优先级低（房间里没人按 attempt 做判断）。真要修有两条路：①`_transit` 把 attempt 写进 detail（要动 `control_plane.py`，Y-2 持有）；②`summarize` 对非 Envelope 来源省掉 attempt 段（要动 `matrix_bus.py`，C-2 持有）。两条都跨轨，故本轮只在 `render_transition` 的 docstring 里标注 |
+| 2026-08-29 | P5 | `matrix_bus.MirrorChannel` Protocol 只声明了 `send` / `close`，**没有 `listen`**，而真通道 `_NioChannel` 有 `listen(on_message)`，房间审批链路完全依赖它 | 类型上「能监听的通道」无处可表达，调用方只能 `getattr(channel, "listen", None)` 探测（`room_demo.py` 现在就是这么写的）。少了这层声明，某天有人给 Protocol 加实现却忘了 `listen`，症状是「房间里发命令没反应」——最难查的那种 | 归 C-2（`matrix_bus.py` 所有者）。见本轨回执「需要 C-2 改的东西」一节。不是现存故障：`_NioChannel` 与 `room_demo.StdoutChannel` 三方法签名本轮已实测逐字对齐 |
+| 2026-08-29 | P5 | **真房间未验**：本轨交付时 `~/.maos-matrix/STATUS` 仍是 `PENDING —— C-1 尚未交付房间凭证`，`_NioChannel` 那条活路径（`sync_forever` + `add_event_callback` + `room_send`）一次都没在真 Synapse 上跑过 | 与 `## task-E` 第 2 条同源。本轨全部判据建立在注入 fake channel 上，可复现、不依赖 Synapse；但「接上就能镜像 / 接上就能审批」仍是**推断而非观察** | C-1 交付房间后跑派单第 9 步末尾那两条真房间命令（`--case approve` / `--case reject`）。三处要重点看：①`listen` 回调拿到的 `(sender, body)` 是不是就是 Element 里打的那行；②`sender` 的形态与 `MAOS_APPROVERS` 里写的是否**逐字**一致（不一致的症状是「命令发了没反应」）；③折叠 JSON 在 Element 里是否真的折叠 |
+
+**最小 diff 草案（下一轮直接用，本轮一个字未改）**
+
+`maos/flows/common.py`（Y-1）——新增一个缺省决策口，3 行：
+
+```python
+def default_decider(hq, task, *, approved: bool, operator: str, note: str = "") -> None:
+    """缺省决策口：直接落 hq.decide。房间接线时换成等房间回话的那个。"""
+    hq.decide(task["task_id"], approved=approved, operator=operator, note=note)
+```
+
+`maos/flows/scenario_6.py`（Y-2）——2 处：
+
+```diff
+-def run(*, matrix: bool = False) -> int:
++def run(*, matrix: bool = False, decider=None) -> int:
++    decide = decider or default_decider
+@@
+-    hq.decide(blocked["task_id"], approved=True, operator=APPROVER, note="已核对金额与政策版本")
++    decide(hq, blocked, approved=True, operator=APPROVER, note="已核对金额与政策版本")
+```
+
+`maos/flows/scenario_7.py`（Y-4）——3 处（决策口要穿过 `drive()`，`run()` 只透传）：
+
+```diff
+-def drive(*, matrix: bool = False) -> dict:
++def drive(*, matrix: bool = False, decider=None) -> dict:
++    decide = decider or default_decider
+@@
+-    hq.decide(finance_task["task_id"], approved=True, operator=APPROVER,
+-              note="已核对金额与政策版本")
++    decide(hq, finance_task, approved=True, operator=APPROVER,
++           note="已核对金额与政策版本")
+@@
+-    hq.decide(payment_task["task_id"], approved=False, operator=APPROVER, note=REJECT_REASON)
++    decide(hq, payment_task, approved=False, operator=APPROVER, note=REJECT_REASON)
+@@
+-def run(*, matrix: bool = False) -> int:
+-    out = drive(matrix=matrix)
++def run(*, matrix: bool = False, decider=None) -> int:
++    out = drive(matrix=matrix, decider=decider)
+```
+
+三点注意：
+
+1. **缺省行为一字不变**（`decider=None` 时走 `default_decider`，即现在这一行），
+   所以 `run.py` 与全部存量测试不受影响 —— 这是这份草案能安全落地的全部前提。
+2. 决策口收的是 **task dict 而不是 task_id**：房间侧要拿 `title` / `effect_risk`
+   渲染审批卡，只给 id 就得再查一次库，而那次查询在超时路径上可能查到已变的状态。
+3. 房间侧的决策口由 `hiclaw` 提供（本轮 `room_demo.py` 里那套 listen -> bridge ->
+   `decided.wait(timeout)` 可原样搬），`flows/**` **不 import hiclaw** ——
+   由 `maos/main.py` 或入口层在 `--matrix` 时注入，保持 flows 对 hiclaw 零依赖。

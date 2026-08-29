@@ -30,6 +30,25 @@ AUTHORITATIVE_WRITER = "payment.observe"
 #: 现在只有 settled；将来若有第二个「外部说了才算」的终态，加进这里而不是散在判断里。
 AUTHORITATIVE_STATES = frozenset({"settled"})
 
+#: 权威终态 -> 该终态要求回执里的 `observed_state` 取值。
+#: 与 AUTHORITATIVE_STATES **同增同减**：加一个权威终态就必须在这里给出它的判据，
+#: 漏配不会放行（第 ④ 道见到没有判据的权威终态直接拒），否则「有回执」会被当成
+#: 「回执说成功了」—— 那正是这张表要堵的洞。
+#:
+#: 取值域的出处：`observed_state` 落的是网关回执的 `status` 字段
+#: （payment_observe.py 取 `str(receipt.get("status"))` 再写进 observation），
+#: 而 `status` 的四个取值由 maos/tools/gateway.py 的 STATUS_* 定死：
+#: processing / unknown / settled / failed，其中终态只有 settled 与 failed。
+#: 所以 settled 的判据集合只收 "settled" 一个值。
+#:
+#: 特别不要把 "success" 写进来：那是同一份回执里 `outcome` 字段的取值
+#: （success / failed / unknown，「那一笔的下落」），与 `status`（「这次观察看到什么」）
+#: 不是一回事 —— 一条 outcome=success 而 status=unknown 的非终态回执若被放行，
+#: 就等于拿「可能已经发生了」当成「确定到账了」。
+AUTHORITATIVE_RECEIPT_STATE: dict[str, frozenset[str]] = {
+    "settled": frozenset({"settled"}),
+}
+
 #: 业务状态机（**不是** Task 状态机）：主干三段 + 两个分支。
 BIZ_STATUS_FLOW: dict[str, tuple[str, ...]] = {
     "submitted":        ("approved", "rejected"),
@@ -185,6 +204,36 @@ def update_biz_status(
                            why=f"回执缺字段 {missing}")
             raise AuthoritativeFactViolation(
                 f"写 {new_status} 必须同事务附回执，缺字段：{missing}"
+            )
+
+        # ④ 回执还得**说的是这件事**。③ 只保证「有一张回执」，不保证那张回执说到账了 ——
+        #    一条 observed_state='failed'、gateway_code='40005' 的回执三个字段齐全，
+        #    在 ③ 眼里与成功回执无从分辨。放过它，系统持有的就只是「有一张回执」，
+        #    不是「网关说到账了」，而后者才是 settled 这个词的全部含义（铁律 8）。
+        #    从前挡住这条路的只有 payment.observe 里的 `if status == "failed"` 分支 ——
+        #    一条防线活在某个 skill 的控制流里，不在守卫里，改动分支顺序两层都不会响。
+        allowed = AUTHORITATIVE_RECEIPT_STATE.get(new_status)
+        if allowed is None:
+            # 加了权威终态却没给判据。fail-closed：宁可写不进去，也不许默认放行 ——
+            # 默认放行会让这个终态退回到「有回执就算数」，静默且没人会发现。
+            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, case_id=case_id,
+                           attempted=new_status, actor=actor_skill,
+                           invocation_id=invocation_id,
+                           why=f"{new_status} 没有在 AUTHORITATIVE_RECEIPT_STATE 里配回执判据")
+            raise AuthoritativeFactViolation(
+                f"{new_status} 在 AUTHORITATIVE_STATES 里，却没有在 "
+                f"AUTHORITATIVE_RECEIPT_STATE 里给出回执判据；两张表必须同增同减"
+            )
+        seen = str((observation or {}).get("observed_state"))
+        if seen not in allowed:
+            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, case_id=case_id,
+                           attempted=new_status, actor=actor_skill,
+                           invocation_id=invocation_id,
+                           why=f"回执 observed_state={seen!r}，不在 {new_status} 的判据 "
+                               f"{sorted(allowed)} 里")
+            raise AuthoritativeFactViolation(
+                f"写 {new_status} 的回执说的是 {seen!r}，不是 {sorted(allowed)}；"
+                f"「有一张回执」不等于「网关说到账了」，外部权威没这么说就不许收口"
             )
 
     conn = objects._conn(store)

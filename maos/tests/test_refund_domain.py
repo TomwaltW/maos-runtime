@@ -142,6 +142,71 @@ def test_settled_without_receipt_is_refused():
     assert len(_violations(store)) == 1, "缺回执同样要留证据"
 
 
+def test_settled_with_failed_receipt_is_refused():
+    """回执字段齐全、但网关说的是 failed —— 照样写不进 settled。
+
+    上一条查的是「有没有回执」，这一条查的是「回执说的是什么」。两者之差就是
+    「系统持有一张回执」与「网关说到账了」之差 —— 只有后者才配叫 settled（铁律 8）。
+    从前挡住这条路的只有 payment.observe 里那个 `if status == "failed"` 分支：
+    一条活在某个 skill 控制流里的防线，改动分支顺序时 guard 一声不响。
+    """
+    store, data = _seed()
+    _open_case(store, data)
+    _push_to_processing(store)
+
+    with pytest.raises(guard.AuthoritativeFactViolation) as exc:
+        guard.update_biz_status(
+            store, "acme", "RC-1", "settled", guard.AUTHORITATIVE_WRITER, "iv-observe",
+            observation={"request_id": "REQ-1", "gateway_code": "40005",
+                         "observed_state": "failed",
+                         "raw_receipt_json": json.dumps({"status": "failed"})})
+    assert "failed" in str(exc.value)
+
+    assert guard.get_case(store, "acme", "RC-1")["biz_status"] == "processing"
+    assert objects.query(store, "SELECT * FROM payment_observation WHERE case_id=?",
+                         ("RC-1",)) == [], "拒绝了就不许留下那条回执 —— 同事务一起回滚"
+
+    violations = _violations(store)
+    assert len(violations) == 1, "拒绝要留证据，不许静默失败"
+    assert "observed_state" in violations[0]["reason"], \
+        f"事件得说清拒的是什么，实际 reason={violations[0]['reason']!r}"
+
+
+def test_non_terminal_receipt_cannot_settle():
+    """processing / unknown 这类非终态回执也不许收口。
+
+    `unknown` 尤其要拦住：官方 remedy 是「重试**或查询执行结果**」，意思是那一笔
+    可能已经发生、也可能没有。把「可能」当成「到账了」就是在替外部系统下结论。
+    """
+    store, data = _seed()
+    _open_case(store, data)
+    _push_to_processing(store)
+
+    for state in ("processing", "unknown"):
+        with pytest.raises(guard.AuthoritativeFactViolation):
+            guard.update_biz_status(
+                store, "acme", "RC-1", "settled", guard.AUTHORITATIVE_WRITER,
+                f"iv-{state}",
+                observation={"request_id": "REQ-1", "gateway_code": "10000",
+                             "observed_state": state, "raw_receipt_json": "{}"})
+    assert guard.get_case(store, "acme", "RC-1")["biz_status"] == "processing"
+
+
+def test_every_authoritative_state_declares_its_receipt_criterion():
+    """两张表同增同减：加了权威终态却没配判据，就是把这道闸悄悄拆了。
+
+    漏配时 guard 是 fail-closed（第 ④ 道直接拒），但那要等到运行时才发现；
+    这条测试让它在提交前就响。
+    """
+    missing = guard.AUTHORITATIVE_STATES - set(guard.AUTHORITATIVE_RECEIPT_STATE)
+    assert not missing, \
+        f"{sorted(missing)} 是权威终态却没在 AUTHORITATIVE_RECEIPT_STATE 里给出回执判据"
+    extra = set(guard.AUTHORITATIVE_RECEIPT_STATE) - guard.AUTHORITATIVE_STATES
+    assert not extra, f"{sorted(extra)} 配了回执判据，却不是权威终态 —— 两张表已经分叉"
+    for state, allowed in guard.AUTHORITATIVE_RECEIPT_STATE.items():
+        assert allowed, f"{state} 的判据是空集合，那等于任何回执都写不进去"
+
+
 def test_settled_rolls_back_when_receipt_insert_fails():
     """同事务的反证：回执写不进去，状态也不许留在 settled。
 

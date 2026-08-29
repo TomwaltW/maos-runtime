@@ -551,3 +551,13 @@ def default_decider(hq, task, *, approved: bool, operator: str, note: str = "") 
 | 2026-08-29 | P5 | **`scripts/make_evidence.py::scan_for_secrets` 只扫文本，扫不到 PNG。** 本轨是全轮唯一往仓库里放二进制的一轨，而截图恰恰是最容易夹带 access token 的载体（终端 scrollback 里的 `Bearer <token>`、Element 的账号设置页） | 现有密钥守卫在本轨**完全不设防**，且是**静默**的 —— 扫过了、没报错，读起来像「已检查通过」。图一旦进 git 历史就取不出来，事后补救只能重写历史 | 两条路。①**成本最低**：`scan_for_secrets` 遇到非文本文件时不要静默跳过，输出一行「跳过 N 个二进制文件，未扫描」，让「没扫」和「扫了没问题」在输出里能分开 —— 一行改动，建议先做这条。②真要扫图得上 OCR，超出本仓库范围，不建议。本轨的对策是把脱敏前移到**按快门那一刻**（`docs/matrix-room-runbook.md` §7 逐条列出），并要求 `transcript.md` 作为可 grep 的文本镜像 —— 但那是流程约束，没有机器守卫。`scripts/make_evidence.py` 是 Y-3 的面，本轨只读 |
 | 2026-08-29 | P5 | `evidence/INDEX.json` 由 `make_evidence.py` 生成，只登记 `scenario-*` 系列（当前 7 条），**不认识 `evidence/room/`**；`evidence/scenario-R5/` 也同样不在 `INDEX.json` 里 | 评委若把 `INDEX.json` 当作证据总目录，会漏看 `room/` 与 `scenario-R5/` 两个目录。当前无功能影响（`verify.py` 不读 `INDEX.json`，走的是目录发现） | 下一轮由持有 `make_evidence.py` 的一轨决定：要么让 `INDEX.json` 登记全部证据目录（含非 `scenario-*` 的），要么在 `README.md` 的证据一节明写「`INDEX.json` 只覆盖 `scenario-1..7`，另有 `scenario-R5/` 与 `room/`」。**建议后者**，成本一行，且不用改生成器的语义 |
 | 2026-08-29 | P5 | runbook §1 让人跑一条 `curl` 探房间是否加密（`.../state/m.room.encryption`，期望 `M_NOT_FOUND`），该命令**必然**把 `Bearer <token>` 留在终端 scrollback 里 | 这是本轨脱敏规程里最容易漏的一步：人跑完探测、确认房间没加密、心情很好，直接开始截图 —— token 就在上面几行。runbook 已在该命令下方红字要求「跑完立刻 `clear` 再截图」，但那仍是**靠人记得** | C-1 落 `deploy/synapse/` 时，把这条探测包成一个不回显 token 的小脚本（token 从 `room.env` 读进变量，只打印判定结果 `encrypted: yes/no`），runbook 改为引用它。这样脱敏是**结构性**的而不是靠纪律。`deploy/**` 不在本轨可改面内 |
+
+## task-E1
+
+修 `settled` 回执内容不校验（分支 `task/e1-receipt-guard`，基线 `c1049c2`）时，
+撞到两处白名单外的文件需要跟着改。按铁律 4 记账，不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`docs/authoritative-facts.md` §2 的「四道拦截」表已经不全，且四个行号全部漂了。** 本轮在 `update_biz_status()` 里加了第五道（回执内容判据，`guard.py:215` 起）：③ 只保证「有一张回执」，不保证那张回执说到账了。表里四行的行号也全变了 —— 唯一写入路径 `guard.py:125 -> :144`，① `:150 -> :169`，② `:160 -> :179`，③ 迁移 `:172 -> :191`，④ 缺字段 `:179 -> :198`，同事务那段 `:190 -> :239` | 这份文档是「权威事实边界」这条主线论证的落点，README §3 与首页都指着它。表里少一道闸，等于把本轮补上的那道防线从对外叙述里抹掉了 —— 而它恰恰是「系统持有的是**网关说到账了**，不只是**有一张回执**」这句话的唯一代码依据。行号对不上则是评委按图索骥时第一眼就会撞到的 | 文档不在本轨白名单（派单 §3 只列了 guard.py / verify.py / 两个测试 / BACKLOG / DECISIONS）。建议下一轮连同 README:269 那行「必须同事务附回执」一起补成「附一张**说到账了**的回执」 |
+| 2026-08-29 | P7 | **`payment_observe.py:123` 的 `if status == "failed"` 分支从「唯一防线」降级成了「第一道」，但它仍然必要，不要当冗余删掉。** guard 现在会拦住任何非 `settled` 回执，而这个分支做的是另一件事：走 `_record_failure` 落观察行 + 返回 `needs_compensation=True`，把案子交给失败路径场景 | 后来者看到 guard 已经兜底，可能顺手把这个分支简化掉 —— 那会让「网关明确失败」这条观察不再留痕，且场景 7 的补偿路径拿不到 `needs_compensation` | 无需处理，记录性质。真要动的话，`test_refund_failure.py` 会先红 |

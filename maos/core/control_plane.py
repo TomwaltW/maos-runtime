@@ -76,6 +76,17 @@ GW_NO_REPLAN = frozenset({GW_QUERY_FIRST, GW_HUMAN_TERMINAL, GW_QUERY_OR_HUMAN})
 # 判据同样不在这里算：闸负责说「这条 finding 机器返工修不好」（产 disposition 与
 # scope），控制面只负责把它路由到人。口径同 GW_* 那一段，理由也同 —— 两处推断迟早分叉。
 
+#: 控制面声明「这一跳在等人裁决」的**唯一**标记，写进 ``detail["await"]``。
+#: 下游按它捞人（``HumanApprovalQueue.pending()``、``kb/experiment.py``），
+#: 与 ``effect_risk`` 无关 —— 理由见 docs/DECISIONS.md 的 ## task-D1 设计点 3。
+#:
+#: 为什么收成一个常量 + 一个出口（``_escalate_to_human``）：控制面有**两条**
+#: 「机器已经没有别的招了」的分支（第三出口 / replan 上限），改造前两条各自手写
+#: 一遍这个字面量。字面量各写一套，就是同一条保证有两份实现 —— 改一处漏一处时
+#: 不会报错，只会**静默漏捞**：任务停在 BLOCKED 而没有任何人捞得到，
+#: 比明确的 FAILED 更糟（docs/BACKLOG.md 的 ## task-D1 第 1 条预言的正是这件事）。
+AWAIT_HUMAN_DECISION = "human_decision"
+
 #: 网关回执判成终态失败 / 说不清且不可重发。机器把同一份产物再交一遍，
 #: 撞的还是同一个码（``ACQ.TRADE_NOT_EXIST`` 不会因为重发就变成存在）。
 HUMAN_EXIT_GATEWAY = "gateway_needs_human"
@@ -186,6 +197,24 @@ class ControlPlane:
             "trace_id": plan["trace_id"], "plan_id": plan_id,
             "event_type": "PlanTransition", "from_state": plan["state"], "to_state": dst,
         })
+
+    def _escalate_to_human(self, task: dict, *, event_id: str, findings: list[dict],
+                           detail: dict, reason: str, **extra) -> dict:
+        """「机器已经没有别的招了」的**唯一**出口：AWAITING_REVIEW -> BLOCKED。
+
+        两条分支共用它 —— 第三出口（``HUMAN_EXIT_*``）与 replan 上限
+        （``replan_limit_exceeded``）。两条都**不动 plan 状态**：plan 的死活由人的
+        决定说了算，闸当场把 plan 判死就是替人做了那个决定
+        （docs/DECISIONS.md 的 ## task-D1 设计点 4）。
+
+        ``reason`` 之外的差异走 ``**extra`` 各写各的（第三出口写 ``evidence``，
+        replan 上限写 ``replan_used``）—— 差异本就该差异，同源的是**转人工这件事
+        怎么声明**：``await`` 标记只在这里写一次，下游只需要认一个字面量。
+        """
+        return self._transit(task, TaskState.BLOCKED, event_id=event_id,
+                             findings=findings,
+                             detail={**detail, "await": AWAIT_HUMAN_DECISION,
+                                     "reason": reason, **extra})
 
     # ------------------------------------------------------------------
     # 计划与任务创建（Manager Agent 调用）
@@ -386,13 +415,12 @@ class ControlPlane:
                 # 仍然 FAILED，等于白改；而这一单买的正是「少重发那两次」。
                 # 姿势同下面的 replan_limit_exceeded：AWAITING_REVIEW -> BLOCKED，
                 # 不动 plan 状态（plan 的死活由人的决定说了算，不由闸说了算）。
+                # 「同姿势」不再靠两处各写一遍，而是共用 _escalate_to_human。
                 reason, evidence = human_exit
                 log.warning("[%s] %s —— 机器返工修不好，一次转人工，不再重发",
                             task["task_id"], reason)
-                self._transit(task, TaskState.BLOCKED, event_id=env.event_id,
-                              findings=findings,
-                              detail={**detail, "await": "human_decision",
-                                      "reason": reason, "evidence": evidence})
+                self._escalate_to_human(task, event_id=env.event_id, findings=findings,
+                                        detail=detail, reason=reason, evidence=evidence)
             elif env.attempt >= task["max_attempts"]:
                 self._transit(task, TaskState.FAILED, event_id=env.event_id,
                               last_error="返工次数耗尽")
@@ -406,11 +434,10 @@ class ControlPlane:
                     # （PENDING->BLOCKED 不在迁移表里），顺序不能倒。
                     log.warning("[%s] 重规划已达上限 %d，转人工处置",
                                 task["plan_id"], self._max_replan())
-                    self._transit(task, TaskState.BLOCKED, event_id=env.event_id,
-                                  findings=findings,
-                                  detail={**detail, "await": "human_decision",
-                                          "reason": "replan_limit_exceeded",
-                                          "replan_used": self._replan_used(task["plan_id"])})
+                    self._escalate_to_human(
+                        task, event_id=env.event_id, findings=findings, detail=detail,
+                        reason="replan_limit_exceeded",
+                        replan_used=self._replan_used(task["plan_id"]))
                 else:
                     self._replan(task, findings, env, detail)
             else:

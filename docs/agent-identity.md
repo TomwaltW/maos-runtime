@@ -24,7 +24,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `testing` | `testing` | 软件交付域 | 是 | `maos/agents/testing.py:107` |
 | `refund_finance` | `refund-finance` | 制造售后退款域 | 是 | `maos/agents/refund/finance_agent.py:26` |
 | `refund_intake` | `refund-intake` | 制造售后退款域 | 是 | `maos/agents/refund/intake_agent.py:26` |
-| `refund_payment` | `refund-payment` | 制造售后退款域 | 是 | `maos/agents/refund/payment_agent.py:35` |
+| `refund_payment` | `refund-payment` | 制造售后退款域 | 是 | `maos/agents/refund/payment_agent.py:58` |
 | `refund_policy` | `refund-policy` | 制造售后退款域 | 是 | `maos/agents/refund/policy_agent.py:22` |
 
 > **未注册的 1 个（`manager`）不是漏网**：`AGENT_POOL` 的语义是「Worker 收到 TaskAssignment 后按 role 找得到的执行者」（maos/runtime/worker.py:28 一行构造全池）。Manager 是规划者不是执行者，由流程层直接构造并调 `plan()`，不接派单 —— 所以它有 Identity（白名单同样被 `SkillInvoker` 强制），但不进池。手册写「十角色」指的是包含它在内的角色总数。
@@ -163,7 +163,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 
 ### refund_payment — RefundPaymentAgent
 
-声明位置：`maos/agents/refund/payment_agent.py:35`
+声明位置：`maos/agents/refund/payment_agent.py:58`
 
 | 字段 | 含义 | 值 |
 | :-- | :-- | :-- |

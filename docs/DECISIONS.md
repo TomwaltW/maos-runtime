@@ -420,3 +420,20 @@ KB/RAG 层（两阶段检索 + 三条护栏 + R5 对照实验）。派单把 R5 
 | 2026-08-28 | P5 | FTS5 分词器选型：`unicode61` 不切中文（整段一个 token，中文语料召回恒为空），`trigram` 查不了两字词（「锈蚀」够不到 3 字符） | 用默认 `unicode61`，**写入侧先切**：title/body 进影子表前过 `kb.fts_text()`（英数按词、中文按字，空格分隔），查询串走同一个函数再 OR 连接 | 两条备选各有一半场景失效，而失效形态都是「召回恒为空、日志一片正常」。写入与查询共用同一个分词函数是关键：各写一份的后果是索引里存「锈 蚀」、查询发「锈蚀」，一条都对不上，同样无症状。第一版按 trigram 写，单测 `test_fts_channel_hits` 当场抓出来 |
 | 2026-08-28 | P5 | 三条护栏之外，KB 补上的任务需要成为既有任务的**前置**（补了财务核算，付款要排在它后面），这动到了既有任务的 `depends_on` | 允许**只加边不删边**，并为此补第四条断言 `assert_no_dependency_removed` | 只补一步而不接边等于没补：新任务与后继并行跑，后继照样在前置还没产出时执行，症状与压根没补一模一样——而两版 DAG 的任务清单确实不同了，这是最容易骗过自己的一种「修好了」。加边是增约束，与护栏「只增不减」的精神一致；摘边是放松约束，与删任务同性质，故补一条断言把它禁死。历史依赖按**步骤**（task_key）存进知识库，不存 task_id：id 只在那一份计划里有意义 |
 | 2026-08-28 | P5 | W-1 轨的 `scenarios/refund/` 语料未到位（派单第 8 步允许用最小自造样本） | R5 的知识**不是自造语料**，而是准备段真跑出来的那一单的 DAG，经晋升规则（有 payment_observation + observed_state=settled + 客户 ack）沉淀成 `history_case`。靶场数据（订单快照、政策、客户 ack）是自造的最小集 | 手写一条知识文档丢进 kb_doc 也能让检索命中，但那样 `source_case_id` 指不到任何真实 case，核验器第 7 项要么 FAIL 要么只能空转。让知识来自本库的真实成功案例，第 5 项与第 7 项才都有真数据（各 1/1），而不是 0/0 的空 PASS。W-1 语料到位后换掉靶场那部分即可，晋升与检索链路不用动 |
+
+
+## task-X2
+
+replan 第三条触发线：网关错误码 -> 换渠道 -> 达上限 -> 转人工（分支 `task/x2-replan-gateway`，
+基线 `4a70cb0`）。派单把「产 finding」（`runtime/gate.py`）与「消费 finding」
+（`core/control_plane.py::_should_replan`）定义成同一个决策的两半，一起做。
+下面六条里，第 1、2、3、6 条是手册没覆盖、由本轨判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-29 | P4 | 派单只说「让某一道闸认识网关回执」，没说是哪一道 | **新增第七道闸 `_gate_gateway`**，不往既有六道里塞 | 既有六道各有自己的冻结口径（尤其 F-1 的 `_gate_finance`），把网关判据塞进任何一道都会污染那道闸的 `gate_results` 语义 —— 读证据的人再也分不清 `finance: fail` 是缺财务凭据还是网关回执有问题。新增一道的成本只有 `gate_results` 多一个键，而既有测试没有一条对闸的条数下断言（已核 `test_gate.py` / `test_agents_gate.py` / `test_governance.py`） |
+| 2026-08-29 | P4 | 四象限里 `outcome=unknown` 的两格若产出普通 finding，`_review` 会把 verdict 拉成 rework —— 而场景 7 注入的 `ACQ.SYSTEM_ERROR` 正在这一格，付款任务会从 `AWAITING_REVIEW->BLOCKED[gate_needs_human]` 变成 `->REWORK`，W-6 的收口断言全线改写 | 引入第三档严重度 **`SEVERITY_INFO`：只记录、不挡闸**。`_review` 的 verdict 只看非 info 的 finding；`gate_results` 相应从两态变三态（`pass` / `noted` / `fail`） | 这不是为了绕开场景 7 而设的例外，反过来才对：**「网关自己也说不清」本来就不是本轮产出的缺陷**，判它 rework 等于替网关下了它没下的结论，正是铁律 8 的正面违例。这一格的正确出口是 query 或转人工，而那条路由 `effect_risk=H` 的人工审批走 —— 场景 7 已经在走。但这条观察必须进 findings：控制面要靠它一票否决重规划。`gate_results` 不压成两态，是因为「这道闸没话说」和「有话说但没拦」必须分得开，压成 pass 就把后者藏起来了 |
+| 2026-08-29 | P4 | 派单只要求「其余三格不触发第三条线」，没说这三格要不要管既有的两条线（单轮 blocker >= 2、第 2 次 rework） | 三格中任一命中即**一票否决重规划，且否决先于那两条线判** | 重规划会把任务重新派发出去，那**等价于重发**。`outcome=unknown` 时重发可能造出第二笔退款，`retriable=False` 时重发纯属自旋 —— 两种后果都与「不许自旋」冲突。少了这条优先级，一轮里只要另外凑够两个 blocker（或者这个任务返工过一次），一笔下落不明的退款就会被重新发一次，而 finding 里明明写着「不许重发」。测试 `test_gateway_veto_beats_the_second_rework_line` 与四条 `test_quadrant_*` 里的 `+ _blockers(2)` 守这一条 |
+| 2026-08-29 | P4 | 四象限的常量（`GW_*`）该放哪个文件 —— 产它的是 `runtime/gate.py`，用它的是 `core/control_plane.py` | 定义在 **`control_plane.py`**，由 `gate.py` import 过去 | `gate.py` 已经 `from maos.core.control_plane import ControlPlane`，反过来 import 会成环。判据本身（查 `ALL_CODES`）只在 gate 里算一次，控制面只认 `disposition` 字段、自己一次 `lookup` 都不做 —— 判据两处算迟早分叉，而分叉那天的症状是「该转人工的自旋了」 |
+| 2026-08-29 | P4 | 未知错误码（不在 `gateway_codes.ALL_CODES` 里）没有对应象限 | 判 **blocker**，处置归到最危险的那一档 `query_or_human`，且 `retriable` / `outcome` 两个字段如实填 `None` | 照抄 `gateway_codes.lookup` 的规矩：未知码抛而不返回「默认可重试」的兜底 —— 兜底的后果不是报错，是把没核过出处的码当成已知码处理。填一个猜出来的 `retriable` 比不填更危险 |
+| 2026-08-29 | P4 | 验收项 `git diff --stat 4a70cb0 -- maos/contracts/ .contracts.lock maos/artifacts.py docs/parallel/contracts.md` 被 `scripts/guard_bash.py` 拦下（命令字面量里出现 `.contracts.lock` 即触发受保护面判定） | 改跑**全树** `git diff --stat 4a70cb0`，以「四个受保护路径一个都没出现」为合格判据，并把被拦这件事如实写进回执 | 被拦 = 守卫正常，不是故障，不该绕。全树 diff 覆盖面严格大于原命令：原命令只能证明那四个路径没变，全树 diff 还能证明**没有任何其它文件被顺手动过**。实测输出只有 `maos/core/control_plane.py` 与 `maos/runtime/gate.py` 两行 |

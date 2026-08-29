@@ -237,3 +237,17 @@ KB/RAG 层落地时发现，均**不在本轨可改面内**，按铁律 4 记账
 | 2026-08-28 | P5 | 知识晋升目前是**手动**的（`experiment.promote_history_case` 显式调用），自动晋升调度器按派单第 7 步「写进 BACKLOG，不实现」 | Plan 走到终态后没有任何东西会自动把够格的 case 沉淀进 `kb_doc`。`PlanFinalizer` 已经在轮询终态并调 `kb.sink`，但 `kb.sink` 写的是 `knowledge` 表（复盘条目），不是 `kb_doc`（结构化知识层）——两张表当前没有打通 | 最自然的落点是 `PlanFinalizer.poll()` 里在 `kb.sink` 之后加一步晋升判定，调用 `guardrails.classify_case`（已实现且有单测）。需要动 `maos/runtime/plan_finalizer.py` 与 `maos/skills/builtin/kb_sink.py`，两者都不在本轨可改面内 |
 | 2026-08-28 | P5 | W-1 轨的 `scenarios/refund/` 语料（政策 + 20-30 条历史案例 + 三组对照 case）尚未到位 | R5 的靶场数据（订单快照、政策 AS-01、客户 ack）是本轨自造的**最小集**，只够跑通链路。检索质量在这份语料上说明不了什么——候选集只有 1 条，四通道的融合排序在单测里验，不在 R5 里验 | W-1 合并后把 `experiment._seed()` 换成读 `scenarios/refund/` 的语料即可，晋升与检索链路不用动。届时 R5 的 `candidate_count` 会从 1 变成几十，融合排序才开始有话可说 |
 | 2026-08-28 | P5 | W-2 轨的 `maos/store/port.py`（StorePort）尚未合并 | `_fts_scores` / `_vector_scores` 目前恒走本地实现（SQLite FTS5 + 纯 Python 余弦）。接 StorePort 的分支已写好并按**能力探测**接（store 上有 `fts_search` / `vector_search` 就用），但**从未被真正走过**——这条分支没有测试守着 | W-2 合并当天验一次：确认 `SQLiteStore` 实现了那两个方法后，检索结果与本地实现一致（分数可以不同，命中集合应该一致）。若 PG 后端接上，`vector_search` 走 pgvector 时的分数量纲需要与本地余弦对齐，否则融合权重的含义会漂 |
+
+
+## task-X2
+
+replan 第三条触发线落地时发现，均**不在本轨可改面内**或**超出派单范围**，
+按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P4 | 四象限里 `retriable=False + failed`（终态失败）与未知码这两种情形，派单写的处置是「转人工或改单」，但**当前实现只做到「不重规划」**：闸判 blocker -> 普通返工 -> 重试到 `max_attempts` 耗尽 -> `FAILED("返工次数耗尽")`，中间没有任何一步停在 BLOCKED 等人 | 收敛是对的（不自旋、不假绿），但**收敛的姿势不对**：一笔「交易不存在」的退款会被原样重发两次才失败，而这两次重发从第一次就注定不可能成功。演示时看到的是三条一样的失败日志，不是一次干净的转人工 | 要给 rework 分支加第三个出口（网关处置为 human 时直接 `AWAITING_REVIEW->BLOCKED("gateway_needs_human")`），落点在 `on_review_verdict`。这会改变既有 rework 语义、影响所有闸，超出「增第三条触发线」的范围，本轨不当场做。**建议与 `## task-W3` 第 3 条（闸的 plan 级判据）一并想清楚再动** |
+| 2026-08-29 | P4 | `flows/scenario_7.py` 的模块 docstring「已知缺口」那一段（`scenario_7.py:41-48`）现在**过期了**：它写着 R2 的 replan 段「没有落在本文件里」「已记 `## task-W6`」。机制现已落地并有 19 条测试守着，但**没有任何场景把它演出来** —— 场景 7 走的仍是 `effect_risk=H` 那条 HITL 入口 | Demo 分镜 02:30 要的是「网关返可重试错误码 -> 换渠道 -> 达上限 -> 转人工」这条**可见**的链路。现在它只在 `test_replan_gateway.py` 里跑得通，评委在屏幕上看不到。`scenario_7.py` 是本轨只读面，且它的收口断言是 W-6 的验收，一个字不许变 | 两条路：①在场景 7 之前插一段叙事，让付款任务先撞一次 `40005`（`retriable=True + failed`）触发换渠道，再撞 `ACQ.SYSTEM_ERROR` 走现有收口 —— 收口断言完全不用动；②新开一个场景专演 R2。**建议 ①**，成本是给 `MockGateway` 的 script 多注一个码。由持有 `flows/**` 的一轨做 |
+| 2026-08-29 | P4 | `docs/` 与 `README.md` 里多处写着「六道闸」（`gate.py` 的 docstring 本轨已同步改成七道，文档侧没有） | 文档与代码对不上。评委按文档数闸会少一道，而少的那一道恰好是本轮新增的 R2 触发线 | `docs/*` 与 `scripts/gen_docs.py` 是 W-5 的面。**W-5 合并时重跑一次 `gen_docs.py` 即可**；若文档里的「六道闸」是手写而非生成，需手工过一遍 |
+| 2026-08-29 | P4 | `maos/agents/refund/payment_agent.py::_open_questions`（`payment_agent.py:114-130`）与第七道闸对同一份回执各判一次：前者按 `needs_compensation` 分「网关明确失败 / 轮询到顶」两句话，后者按码表四象限判处置 | 两处**当前都对**，但判据不同源 —— 码表将来加一条码或改一个 `outcome`，只有闸会跟着变，Agent 那句措辞会悄悄漂。这类漂没有症状：日志照样正常，只是那句话开始说错 | `maos/agents/refund/**` 不在本轨可改面内。最小改法是让 `_open_questions` 也走 `gateway_codes` 的四象限判据（闸已经把它抽成 `ReviewerGate._gateway_finding`，可直接复用其 `disposition`）。**不急，但别拖到码表下一次变更之后** |
+| 2026-08-29 | P4 | 本文件 `## task-W6` 第 1 条把触发条件写成「`retriable` 为真」 | 这个口径**不完整且踩铁律 8**：`retriable=True + outcome=unknown` 的两条码（`20000` / `ACQ.SYSTEM_ERROR`）按它会被判成可重试并直接重发，而那正是「重发造成第二笔退款」的那一格。本轨已按 `gateway_codes.py:23-44` 的四象限原文实现，与那条 BACKLOG 的字面口径**不一致** | 那条 BACKLOG 项已由本轨落地，可结掉；结的时候请一并把口径改成四象限，别让下一个人照着「retriable 为真」再写一遍。四象限的机器化版本在 `test_replan_gateway.py::test_every_official_code_lands_in_exactly_one_quadrant` |

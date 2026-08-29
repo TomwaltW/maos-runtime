@@ -280,8 +280,23 @@ def test_build_matrix_falls_back_to_inner_bus():
     """
     # 函数内 import：本文件其余几十条断言与 hiclaw 无关，不该因为可选依赖层缺席
     # 而在 collection 阶段集体失败。
+    import os
+
     from hiclaw.matrix_bus import MatrixEventBus
     from maos.contracts.events import Envelope
+
+    # 前置断言（H-6）：本条用例的「无 env」是**前提**，不是它自己造出来的 ——
+    # build() 里的 MatrixBusConfig.from_env() 读的是进程真环境，起跑线由
+    # maos/tests/conftest.py 的 _no_ambient_matrix_env 划。没有这句，起跑线一旦
+    # 被破坏（演示机上 export 了真键），失败消息会是下面那句「无 env 必须自动降级」，
+    # 把「机器上有键」念成「降级逻辑坏了」—— C-2 与 C-4 当时正是被这个形态误导的，
+    # 而且那一次 pytest 已经先把 22 条消息发进真房间了。
+    for name in ("MATRIX_HOMESERVER", "MATRIX_USER", "MATRIX_TOKEN", "MATRIX_ROOM_ID"):
+        assert not (os.environ.get(name) or "").strip(), (
+            f"起跑线被破坏：{name} 还留在进程环境里。本条验的是「无 env 时降级」，"
+            "该变量本应由 maos/tests/conftest.py 的 _no_ambient_matrix_env 删掉。"
+            "先查那个 fixture 还在不在，别改下面的降级断言。"
+        )
 
     _, bus, _, _, _, _ = build({}, matrix=True)
     assert isinstance(bus, MatrixEventBus), "matrix=True 落地后应返回 MatrixEventBus"

@@ -47,6 +47,57 @@ STATUS_PASSED = "passed"
 SCRIPTED_REASON = ("场景预置件（seed_scripted_report）：本场景 DAG 无 testing 节点，"
                    "报告是前置条件而非产物，未经沙箱执行")
 
+#: 旁路入库的产物用来自报来源的事件类型。走 ``append_event_log`` 的自由
+#: ``event_type``，**不进 contracts/events.py 的 Topic**（铁律 1）——
+#: ``SkillInvoked`` / ``ToolInvoked`` / ``AuthoritativeFactViolation`` 都是这么加的。
+#: 与 ``maos/obs/trace.py::SEEDED_EVENT`` 同值：读侧照抄而不 import，理由与那边
+#: 「只 import maos.core.store」那条依赖纪律同源。
+SEEDED_EVENT = "ArtifactSeeded"
+
+
+def record_seeded_artifact(store, *, plan_id: str, task_id: str, artifact_id: str,
+                           kind: str, version: int, source: str, reason: str,
+                           trace_id: str = "", extra: dict | None = None) -> None:
+    """给一份**绕开 ``on_task_result`` 入库**的产物补一条来源事件。
+
+    产物先落库、事件后补 —— 记的是既成事实，不是承诺。``detail.artifact_id``
+    把事件与产物**点名**绑定，``maos/obs/trace.py`` 据此认领，不靠时间窗猜
+    （``_submit_index`` 那套窗口只对 ``on_task_result`` 那条正路有效）。
+
+    这条事件补的是**审计链**，不是产物的成色：
+
+    * ``source`` 如实写产它的那个函数（``patch_verifier`` 是现跑沙箱的真产物，
+      ``seed_scripted_report`` 是不跑测试的场景预置件），两者在证据里必须始终
+      分得开 —— 把它们抹成一样，是把一个诚实的系统改成不诚实的；
+    * ``provenance`` 因此标成 ``artifact_seeded`` 而不是 ``task_result``：
+      这份产物确实没走 ``on_task_result``，冒充正路就是撒谎。洞被补上的是
+      「指不到是谁产的」，不是「它走的哪条路」—— 后者照旧写在脸上。
+
+    判产物真伪仍然看 ``trace.json`` 的 ``maos.artifact.sandbox.mode``
+    （container / subprocess / not-run），本函数一个字都不改它。
+    """
+    detail = {
+        "artifact_id": artifact_id,
+        "kind": kind,
+        "version": int(version),
+        "source": source,
+        "reason": reason,
+        "bypass": "on_task_result",
+    }
+    if extra:
+        detail.update(extra)
+    store.append_event_log({
+        "event_id": "",
+        "trace_id": trace_id or "",
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "event_type": SEEDED_EVENT,
+        "from_state": "",
+        "to_state": "",
+        "reason": source,
+        "detail": detail,
+    })
+
 
 def make_test_report(
     *,
@@ -222,9 +273,16 @@ def seed_scripted_report(store, *, plan_id: str, task_id: str, attempt: int,
     pytest 结果」，报告必须是跑出来的 —— 接线见 ``flows/common.py::patch_verifier``。
     判据是「宣称真跑的场景不许有脚本化报告」，不是「全仓不许有」。
 
-    这里直接 ``insert_artifact``、不经 ``on_task_result``，所以预置件**没有来源
-    事件** —— ``maos/obs/trace.py`` 据此把它标成 ``provenance="unknown"`` 并计进
-    ``summary.unsourced_artifacts``。那是有意的：审计链有洞就要让洞看得见。
+    这里直接 ``insert_artifact``、不经 ``on_task_result``。旁路仍是旁路，但不再
+    是**哑**旁路：落库之后补一条 ``ArtifactSeeded``（``record_seeded_artifact``），
+    把「谁、在哪一步、为什么这么落」写进 ``event_log``。``maos/obs/trace.py``
+    据此把它标成 ``provenance="artifact_seeded"``（**不是** ``task_result`` ——
+    它确实没走那条正路），审计链从此指得到具体一行。
+
+    从前这里什么都不补，产物落成 ``provenance="unknown"``，计进
+    ``summary.unsourced_artifacts``。「让洞看得见」是对的，但看得见之后就该把它
+    补上：现在洞的形状写在事件里（``detail.source`` 点名本函数、``detail.bypass``
+    点名绕开的是谁），比一个 ``unknown`` 说得准得多。
 
     执行路径就地补成 ``not-run``：预置件确实一次沙箱都没跑过，这是实话，也是
     ``sandbox.pytest_run`` 声明过的三个取值之一。不补的话它在证据里与「跑过但
@@ -238,7 +296,19 @@ def seed_scripted_report(store, *, plan_id: str, task_id: str, attempt: int,
     content = dict(report)
     content.setdefault("sandbox_mode", MODE_NOT_RUN)
     content.setdefault("degraded_reason", SCRIPTED_REASON)
+    artifact_id = new_id("art")
     store.insert_artifact({
-        "artifact_id": new_id("art"), "task_id": task_id, "plan_id": plan_id,
+        "artifact_id": artifact_id, "task_id": task_id, "plan_id": plan_id,
         "kind": KIND_TEST_REPORT, "version": attempt, "content": content,
     })
+    plan = store.get_plan(plan_id)
+    record_seeded_artifact(
+        store, plan_id=plan_id, task_id=task_id, artifact_id=artifact_id,
+        kind=KIND_TEST_REPORT, version=attempt,
+        trace_id=(plan or {}).get("trace_id") or "",
+        source="maos.agents.testing.seed_scripted_report",
+        reason=SCRIPTED_REASON,
+        # 预置件与现跑产物的分水岭就在这一行：它恒为 not-run（除非调用方自带），
+        # 而 patch_verifier 那条路补出来的恒是沙箱真实回报的 mode。
+        extra={"sandbox_mode": content.get("sandbox_mode"), "scripted": True},
+    )

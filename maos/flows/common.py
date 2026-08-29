@@ -41,7 +41,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from maos.agents.testing import make_test_report
+from maos.agents.testing import make_test_report, record_seeded_artifact
 from maos.artifacts import KIND_PATCH_SET, KIND_TEST_REPORT
 from maos.contracts.events import new_id
 from maos.contracts.states import PlanState, TaskState
@@ -268,6 +268,13 @@ def patch_verifier(store, workdir: str) -> Callable[[object, str], None]:
 
     只认「同 attempt 有 patch_set、且同 attempt 还没有 test_report」这一种形状 ——
     Testing 节点自己产的报告走的是 ``test.verify``，不从这里过。
+
+    报告落库之后补一条 ``ArtifactSeeded``（``agents/testing.py::
+    record_seeded_artifact``）：这条路绕开 ``on_task_result``，从前因此在
+    ``trace.json`` 里留一份 ``provenance="unknown"`` 的产物 —— 一份**真跑出来的**
+    报告被记成「指不到是谁产的」，评委只能靠 ``sandbox.mode`` 反推。现在事件里
+    点名了本函数，``provenance`` 变成 ``artifact_seeded``，而「走的是旁路」这件事
+    照旧写在脸上（不冒充 ``task_result``）。
     """
     def _verify(_cp, plan_id: str) -> None:
         for task in store.list_tasks(plan_id):
@@ -282,11 +289,24 @@ def patch_verifier(store, workdir: str) -> Callable[[object, str], None]:
                 continue
 
             report = verify_patch_in_sandbox(patch["content"], workdir)
+            artifact_id = new_id("art")
             store.insert_artifact({
-                "artifact_id": new_id("art"), "task_id": task["task_id"],
+                "artifact_id": artifact_id, "task_id": task["task_id"],
                 "plan_id": plan_id, "kind": KIND_TEST_REPORT,
                 "version": task["attempt"], "content": report,
             })
+            record_seeded_artifact(
+                store, plan_id=plan_id, task_id=task["task_id"],
+                artifact_id=artifact_id, kind=KIND_TEST_REPORT,
+                version=task["attempt"], trace_id=task.get("trace_id") or "",
+                source="maos.flows.common.patch_verifier",
+                reason=("演示装配层的 before_review 钩子当场跑的沙箱回归："
+                        "DAG 是 requirement->architecture->coding->testing，coding 过闸"
+                        "那一刻 testing 还没派出去，报告不可能由 on_task_result 带回来"),
+                # 这份是**真跑**出来的，mode 由沙箱回报（container / subprocess /
+                # not-run），不是常量；scripted=False 与预置件那条路划清界限。
+                extra={"sandbox_mode": report.get("sandbox_mode"), "scripted": False},
+            )
             log.info("[%s] attempt=%d 沙箱回归：%s", task["task_id"], task["attempt"],
                      report["tool_error"] or report["summary"])
     return _verify

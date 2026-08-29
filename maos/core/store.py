@@ -18,6 +18,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_LIKE_ESCAPE = "\\"
+
+
+def _escape_like(s: str) -> str:
+    r"""转义 LIKE 模式里的通配符，配合 SQL 侧的 ``ESCAPE '\'`` 使用。
+
+    转义符自身必须先转，否则关键词里本来就有的反斜杠会吃掉它后面那个字符。
+    注意这里做的是转义不是过滤 —— 含字面 % 或 _ 的知识仍然要能被搜到。
+    """
+    return (
+        s.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+
+
 class Store(ABC):
     """Control Plane 唯一的数据出口。Agent 永远不直接碰这一层。"""
 
@@ -82,6 +98,7 @@ class SqliteStore(Store):
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._task_cols: frozenset[str] | None = None
 
     # -- schema -----------------------------------------------------------
     def init_schema(self) -> None:
@@ -231,14 +248,45 @@ class SqliteStore(Store):
             ).fetchall()
             return [self._decode_task(r) for r in rs]
 
+    def _task_columns(self) -> frozenset[str]:
+        """task 表的列名集合，给 update_task 当字段白名单用。
+
+        走 PRAGMA 而不是写死一份常量：列名只有建表语句这一个来源，不会漂移，
+        也就没有「白名单漏一列、某次合法更新突然开始抛异常」这条暗坑。
+        每个实例只查一次，之后走缓存。
+        """
+        with self._lock:
+            if self._task_cols is None:
+                rows = self._conn.execute("PRAGMA table_info(task)").fetchall()
+                cols = frozenset(r["name"] for r in rows)
+                if not cols:
+                    # 表还没建（没调 init_schema）。空集不进缓存，否则建表之后
+                    # 这个实例会一直拿着一份空白名单。
+                    return cols
+                self._task_cols = cols
+            return self._task_cols
+
     def update_task(self, task_id: str, **fields: Any) -> None:
         if not fields:
             return
-        vals = {}
-        for k, v in fields.items():
-            vals[k] = json.dumps(v, ensure_ascii=False) if k in self._JSON_TASK_FIELDS else v
-        cols = ", ".join(f"{k}=?" for k in vals)
         with self._lock:
+            allowed = self._task_columns()
+            # 空集 = 表还没建。这时跳过校验，让 SQLite 报出真实的 no such table，
+            # 别用「合法列为 []」这种误导性报错盖掉它 —— 那正是 P2-7 那类
+            # 把排查引到错地方的错误，不能在修它的同时自己再犯一次。
+            unknown = sorted(set(fields) - allowed) if allowed else []
+            if unknown:
+                # 列名是拼进 SQL 的（占位符只管值、管不了标识符），白名单外的键
+                # 放过去就是注入面。直接抛而不是静默丢弃：丢弃会把「字段名写错了」
+                # 伪装成「更新成功但没生效」，那比报错难查得多。
+                raise ValueError(
+                    f"update_task 收到 task 表以外的字段名 {unknown}；"
+                    f"合法列为 {sorted(allowed)}"
+                )
+            vals = {}
+            for k, v in fields.items():
+                vals[k] = json.dumps(v, ensure_ascii=False) if k in self._JSON_TASK_FIELDS else v
+            cols = ", ".join(f"{k}=?" for k in vals)
             self._conn.execute(
                 f"UPDATE task SET {cols}, updated_at=? WHERE task_id=?",
                 (*vals.values(), _now(), task_id),
@@ -313,6 +361,11 @@ class SqliteStore(Store):
                 r = self._conn.execute(
                     "SELECT * FROM processed_key WHERE idempotency_key=?", (key,)
                 ).fetchone()
+                if r is None:
+                    # 冲突不是这个 key 引起的（比如 NOT NULL 违反）。原样抛出，
+                    # 让调用方看见真正的约束错误 —— 吞掉它只会让幂等闸门炸出一个
+                    # 误导性的 TypeError，把排查引到幂等逻辑上，而 bug 在别处。
+                    raise
                 d = dict(r)
                 d["outcome"] = json.loads(d["outcome"])
                 return d  # 重复投递
@@ -348,8 +401,12 @@ class SqliteStore(Store):
         sql = "SELECT * FROM knowledge"
         params: list[Any] = []
         if keyword:
-            sql += " WHERE (title LIKE ? OR body LIKE ?)"
-            like = f"%{keyword}%"
+            # 转义 + ESCAPE：不转的话 keyword="%" 会静默退化成全表扫描。
+            # 「看起来检索命中了」比「返回空」更坏 —— 这些结果是 Manager 的规划输入。
+            sql += (
+                " WHERE (title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')"
+            )
+            like = f"%{_escape_like(keyword)}%"
             params += [like, like]
         sql += " ORDER BY created_at"
         with self._lock:

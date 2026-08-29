@@ -797,3 +797,13 @@ H 轮八轨（H-1…H-8）合入时，编排侧**实跑核验**发现下面几�
 | 2026-08-29 | P7 | **`evidence/scenario-R1/` 那颗地雷只拆了手册一侧，`verify.py` 一侧还在**。H-8 把 `docs/EXECUTION.md:499/502` 的截图落点从 `evidence/scenario-R1/` 改到了 `evidence/room/`，但 `verify.py` 仍按 `d.startswith("scenario-")` 收目录 —— 编排侧本轮当场复现：`mkdir evidence/scenario-R1 && python3 scripts/verify.py` → **exit=2**，七项一项都跑不到 | 手册不再教人踩，但任何人手工建一个 `scenario-*` 目录仍会把核验器打死，且报错说的是「缺数据库」，指不到真正的原因 | 下一轮给 `verify.py` 加一条：遇到 `scenario-*` 目录但里面没有证据束文件时，报「这不是证据束目录」而不是「缺数据库」。归 `verify.py` 持有轨 |
 | 2026-08-29 | P7 | **`docs/clone-smoke-report.md` 的读数连续两轮没改**，占位仍挂 `PENDING-R9`。理由同 `## integrate-round-8`：它每个数都归因于「仓库外全新 clone 的冒烟实跑」，整合轮 9 同样没做第四遍冒烟 | 报告里的 `521 passed` / `4/74` 与当前的 `749 passed` 差了两百多条，而它是 A-1「新克隆冒烟 ≤ 15 分钟」那条的执行记录 | 仍需**单独一轨**做第四遍冒烟。这是目前唯一一条跨两轮没动的待办 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题仍然过期**。`## integrate-round-8` 已记过一次，本轮没接 | 一节挂着「待整合轮 6」的清单出现在整合轮 9 的交付里 | 下一轮顺手改标题并清掉已完成项 |
+
+## task-T3
+
+T3 轨修 `maos/core/store.py` 三处（P2-6 / P2-7 / P2-8）时发现，两条都**不在本轨白名单内**，
+按铁律 4 记账不当场改。基线 `27c9e18`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **派单 §2/§4 的前提「改 `update_task` 签名会牵动 `maos/store/port.py` 与 `pg_store.py`」实测不成立**。`StorePort` 协议一共只有 5 个方法（`execute` / `query` / `fts_search` / `vector_search` / `dialect`），本轨实测 `grep -c "update_task" maos/store/port.py` → **0**。`update_task` 只存在于 `maos/core/store.py` 的 `Store` ABC 与 `SqliteStore` 上 | 收窄 `update_task(**fields)` 为显式 `fields: dict` 的成本比派单假设的低得多：只牵动 `Store` ABC 一处声明 + 4 个调用点（`maos/core/control_plane.py:177`、`:619`、`:646`，`maos/tests/test_trace_evidence.py:126`），完全不碰 `maos/store/**`。开放 kwargs 是这个注入面的**根因**，白名单只是把它堵住 | 本轨仍按派单红线**没改签名**。下一轮若要根治，按上面这个实际影响面重新评估，别再按「会牵动 PG 适配」估成本 |
+| 2026-08-29 | P7 | **两套 store 实现的注入防护此前不对等**。`maos/store/sqlite_store.py:71-80` 早有 `_IDENT` 正则卡标识符形状，注释明写「这里不卡形状就等于开了一条注入路径」；而同仓 `maos/core/store.py` 唯一一处拼标识符的地方（`update_task`）此前一道防护都没有 | 同一个仓库两条 SQL 出口，一条守得很紧、另一条完全敞开，敞开的那条还是主链路（`control_plane` 走的是 `core/store.py`）。本轨已给它补上白名单（严于正则），但**没有任何机器提醒**要求新增的拼标识符代码也这么做 | 下一轮考虑加一条守卫测试：扫 `maos/**` 里所有把变量拼进 SQL 的 f-string，要求每处都有配套的形状校验或白名单。本轨只修了已知的这一处 |

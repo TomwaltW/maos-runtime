@@ -37,20 +37,27 @@ import pytest
 
 from maos.contracts import events as E
 from maos.contracts.events import Topic
-from maos.contracts.states import PlanState, TaskState
+from maos.contracts.states import PlanState, Risk, TaskState
 from maos.core.control_plane import (
+    AWAIT_HUMAN_DECISION,
     GATEWAY_GATE,
     GW_HUMAN_TERMINAL,
     GW_NO_REPLAN,
     GW_QUERY_FIRST,
     GW_QUERY_OR_HUMAN,
     GW_REPLAN_CHANNEL,
+    HUMAN_EXIT_GATEWAY,
     ControlPlane,
 )
 from maos.core.eventbus import EventBus, InMemoryEventBus
 from maos.core.store import SqliteStore
 from maos.flows import scenario_7 as s7
-from maos.runtime.gate import SEVERITY_INFO, ReviewerGate
+from maos.runtime.gate import (
+    GATEWAY_SEVERITY,
+    SEVERITY_INFO,
+    HumanApprovalQueue,
+    ReviewerGate,
+)
 from maos.tools import gateway_codes as GC
 
 TRACE = "trace-x2"
@@ -66,6 +73,7 @@ CODE_RETRIABLE_FAILED = "40005"                        # 调用频次超限
 CODE_RETRIABLE_UNKNOWN = "ACQ.SYSTEM_ERROR"            # 系统错误
 CODE_TERMINAL_FAILED = "ACQ.TRADE_NOT_EXIST"           # 交易不存在
 CODE_TERMINAL_UNKNOWN = "ACQ.DISCORDANT_REPEAT_REQUEST"  # 请求信息不一致
+CODE_NOT_IN_TABLE = "ACQ.NOT_A_REAL_CODE"                # 不在已核对官方表里的未知码
 
 
 # ======================================================================
@@ -224,13 +232,19 @@ def test_quadrant_not_retriable_unknown_is_the_most_dangerous_never_replan():
     """retriable=False + unknown：既不能原样重发、下落也不明 —— 最危险的一档。
 
     官方 remedy 里有「或查询历史执行结果」：同一个请求号之前那一笔可能已经成功了。
+
+    ⚠️ severity 这一条从 `info` 改成了 `blocker`（task-H2，见 docs/DECISIONS.md）。
+    原先 severity 只看 `outcome` 一维、disposition 看两维，两套判据在这一格分叉：
+    **未知**码给 blocker，**已知**的同格码给 info —— 最危险的一档反而是唯一一个
+    「已知码比未知码更容易被放行」的组合。现在两者同出 `GATEWAY_SEVERITY` 一张表。
     """
     entry = GC.ALL_CODES[CODE_TERMINAL_UNKNOWN]
     assert (entry.retriable, entry.outcome) == (False, GC.OUTCOME_UNKNOWN)
 
     f = _finding_for(CODE_TERMINAL_UNKNOWN)
     assert f["disposition"] == GW_QUERY_OR_HUMAN
-    assert f["severity"] == SEVERITY_INFO
+    assert f["severity"] == "blocker", \
+        "最危险的一档不许判成 info —— info 不挡闸，_review 会判 pass，走不到第三出口"
 
     _, _, cp, _ = _build()
     _, task_id = _make_task(cp)
@@ -561,3 +575,118 @@ def test_scenario_7_payment_gate_notes_the_receipt_without_blocking(driven_s7):
         f"第七道闸没认出场景 7 的网关回执，实际 {results.get(GATEWAY_GATE)!r}"
     assert all(v in ("pass", "noted") for v in results.values()), \
         f"场景 7 的付款任务不该有任何一道闸判 fail，实际 {results}"
+
+
+# ======================================================================
+# 6. task-H2：转人工那一跳的判据同源
+# ======================================================================
+def _drive_to_replan_limit(monkeypatch) -> tuple:
+    """把一个 effect_risk=L 的任务开到 replan 上限，返回 (store, cp, plan_id, task_id)。"""
+    monkeypatch.setenv("MAOS_MAX_REPLAN", "1")
+    store, bus, cp, gate = _build()
+    plan_id, task_id = _make_task(cp)
+    cp.set_replanner(lambda *, goal, findings, open_tasks: [
+        {"role": "payment", "title": "改走备用渠道", "inputs": {}, "acceptance": []}])
+    _gateway_round(bus, gate, cp, plan_id, task_id, 1, CODE_RETRIABLE_FAILED)
+    _gateway_round(bus, gate, cp, plan_id, task_id, 2, CODE_RETRIABLE_FAILED)
+    return store, cp, plan_id, task_id
+
+
+def test_human_queue_picks_up_a_low_risk_replan_limit_task(monkeypatch):
+    """撞 replan 上限的**非 H** 任务必须有人捞得到，否则就是静默挂起。
+
+    这条钉的是 `docs/BACKLOG.md` `## task-D1` 第 1 条那个洞在 replan 这条线上的
+    另一半。D-1 放宽 `HumanApprovalQueue.pending()`（改成也捞
+    `detail["await"] == human_decision`）时顺带把这条链路盖住了 —— 但**盖住不等于
+    钉住**。实测：把 `pending()` 变异回改造前那一版（只按 `effect_risk == HIGH`
+    捞），全量测试里只有 `test_human_exit.py` 的第三出口那两条红，replan 这条线
+    一条都不红。也就是说这条保证当时纯靠顺带覆盖成立，没有任何测试守着它 ——
+    D-1 自己写的「若日后另有代码按 effect_risk 自己过滤 BLOCKED，同一个洞会在
+    那里重新长出来」，缺的就是这一条。
+    """
+    store, cp, plan_id, task_id = _drive_to_replan_limit(monkeypatch)
+
+    task = store.get_task(task_id)
+    assert task["effect_risk"] == Risk.LOW, "前提没成立：这条要验的就是非高风险那一路"
+    assert task["state"] == TaskState.BLOCKED
+    blocked = [e for e in store.list_event_log(plan_id)
+               if e["to_state"] == TaskState.BLOCKED]
+    assert blocked[-1]["detail"]["reason"] == "replan_limit_exceeded", \
+        "前提没成立：走的不是 replan 上限那条分支"
+
+    assert [t["task_id"] for t in HumanApprovalQueue(store, cp).pending(plan_id)] == [task_id], \
+        "撞上限停下的非 H 任务必须有人捞得到，否则就是静默挂起 —— 比明确的 FAILED 更糟"
+
+
+def test_both_escalation_branches_declare_the_same_await_marker(monkeypatch):
+    """两条「机器没别的招了」的分支写进 event_log 的 `await` 是同一个字面量。
+
+    下游认的就是这一个值（`pending()` 与 `kb/experiment.py` 各读一次）。两条分支
+    各写一遍的话，改一处漏一处**不会报错**，只会静默漏捞 —— 所以这里比的是两条
+    分支的实跑产物，而不是去读源码里有没有那个常量。
+    """
+    store, cp, plan_id, task_id = _drive_to_replan_limit(monkeypatch)
+    limit_detail = [e for e in store.list_event_log(plan_id)
+                    if e["to_state"] == TaskState.BLOCKED][-1]["detail"]
+
+    # 第三出口：终态失败码，第 1 轮就停到人手上。
+    store2, bus2, cp2, gate2 = _build()
+    plan2, task2 = _make_task(cp2)
+    _gateway_round(bus2, gate2, cp2, plan2, task2, 1, CODE_TERMINAL_FAILED)
+    exit_detail = [e for e in store2.list_event_log(plan2)
+                   if e["to_state"] == TaskState.BLOCKED][-1]["detail"]
+
+    assert limit_detail["reason"] == "replan_limit_exceeded"
+    assert exit_detail["reason"] == HUMAN_EXIT_GATEWAY, "前提没成立：第二条走的不是第三出口"
+    assert limit_detail["await"] == exit_detail["await"] == AWAIT_HUMAN_DECISION, \
+        "两条转人工分支的 await 标记必须同源，否则下游只捞得到其中一条"
+
+
+def test_gateway_severity_is_a_function_of_disposition_alone():
+    """同一个 disposition 只能有一种 severity —— 全码表加未知码一起验。
+
+    改造前 severity 只看 `outcome` 一维、disposition 看 `retriable × outcome`
+    两维，两套判据在 `GW_QUERY_OR_HUMAN` 这一格分叉（`docs/BACKLOG.md` 的
+    `## task-D1` 第 4 条）。这条断言不写死哪一格，判据是「有没有分叉」本身 ——
+    以后再加一个码、或再动一次判据，分叉当场红。
+    """
+    by_disposition: dict[str, set[str]] = {}
+    for code in GC.ALL_CODES:
+        f = ReviewerGate._gateway_finding(code)
+        if f is None:                       # 成功码没什么要说的
+            continue
+        by_disposition.setdefault(f["disposition"], set()).add(f["severity"])
+
+    unknown = ReviewerGate._gateway_finding(CODE_NOT_IN_TABLE)
+    assert unknown["disposition"] == GW_QUERY_OR_HUMAN, "前提没成立：未知码不在最危险那一格"
+    by_disposition.setdefault(unknown["disposition"], set()).add(unknown["severity"])
+
+    split = {d: sevs for d, sevs in by_disposition.items() if len(sevs) > 1}
+    assert not split, f"同一个 disposition 出现了两种 severity：{split}"
+    assert by_disposition == {d: {GATEWAY_SEVERITY[d]} for d in by_disposition}, \
+        "产出的 severity 与 GATEWAY_SEVERITY 那张表对不上 —— 又有第二处判据了"
+
+
+def test_a_known_query_or_human_code_reaches_the_third_exit_on_its_own():
+    """`GW_QUERY_OR_HUMAN` 的**已知**码单独出现时也停到人手上（task-H2 行为变更）。
+
+    改造前它是 `info`：不挡闸 -> `_review` 判 pass -> 走不到 rework 分支 -> 走不到
+    第三出口。非 H 任务因此**直接 DONE** —— 四象限里官方称「最危险的一档」，却是
+    唯一一个「已知码比未知码更容易被放行」的组合。现在两者同源，都是 blocker。
+    """
+    store, bus, cp, gate = _build()
+    plan_id, task_id = _make_task(cp)
+    cp.set_replanner(lambda *, goal, findings, open_tasks: pytest.fail(
+        "最危险的一档触发了重规划 —— 那一笔的下落还没问清"))
+
+    _gateway_round(bus, gate, cp, plan_id, task_id, 1, CODE_TERMINAL_UNKNOWN)
+
+    task = store.get_task(task_id)
+    assert task["effect_risk"] == Risk.LOW, "前提没成立：非 H 任务才验得到「直接 DONE」那条旧路"
+    assert task["state"] == TaskState.BLOCKED, \
+        "改造前这里是 DONE：severity=info 不挡闸，整条链路一路放行到底"
+    detail = [e for e in store.list_event_log(plan_id)
+              if e["to_state"] == TaskState.BLOCKED][-1]["detail"]
+    assert detail["reason"] == HUMAN_EXIT_GATEWAY
+    assert detail["await"] == AWAIT_HUMAN_DECISION
+    assert [t["task_id"] for t in HumanApprovalQueue(store, cp).pending(plan_id)] == [task_id]

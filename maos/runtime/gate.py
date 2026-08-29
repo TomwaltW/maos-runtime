@@ -140,6 +140,30 @@ GATEWAY_MESSAGES: dict[str, str] = {
         " 或转人工。官方处置：{remedy}",
 }
 
+#: 四象限的严重度，**与 disposition 同一张表**。
+#:
+#: 改造前 severity 另算一遍 ``"blocker" if outcome == failed else info`` —— 只看
+#: ``outcome`` 一维，而 disposition 看 ``retriable × outcome`` 两维。两套判据必然
+#: 在某一格分叉，分叉点就落在 ``GW_QUERY_OR_HUMAN``：**未知**错误码走下面的
+#: ``except KeyError`` 分支给 blocker，**已知**的 ``retriable=False + outcome=unknown``
+#: 码（现表里只有 ``ACQ.DISCORDANT_REPEAT_REQUEST``）走正常分支给 info。同一个
+#: disposition 两种严重度，而 info 不挡闸 —— 于是它单独出现时 ``_review`` 判 pass，
+#: 走不到 rework 分支，也就走不到第三出口。四象限里官方称「最危险的一档」，却是
+#: 唯一一个**已知码比未知码更容易被放行**的组合（docs/BACKLOG.md 的 ## task-D1
+#: 第 4 条）。收成一张表，这类分叉在结构上就不可能再出现。
+#:
+#: ``GW_QUERY_OR_HUMAN`` 取 blocker 而不是 info：它与未知码同源（那一条已经是
+#: blocker），且它是 ``GW_HUMAN_EXIT`` 的两格之一 —— 控制面已经认定这一格
+#: 「机器返工修不好」，产出侧却判它「本轮产出没问题」，两侧对不上。
+#: ``GW_QUERY_FIRST`` 仍是 info 且不许改：网关自己说不清，判它「本轮产出不合格」
+#: 就是替网关下了它没下的结论（铁律 8），而它还有 ``gateway.query`` 这一招机器动作。
+GATEWAY_SEVERITY: dict[str, str] = {
+    GW_REPLAN_CHANNEL: "blocker",
+    GW_QUERY_FIRST: SEVERITY_INFO,
+    GW_HUMAN_TERMINAL: "blocker",
+    GW_QUERY_OR_HUMAN: "blocker",
+}
+
 
 def _finance_threshold() -> float:
     """每次判定现读 env，不在 import 时固化 —— 否则改阈值得重启进程。
@@ -705,7 +729,9 @@ class ReviewerGate:
         except KeyError as exc:
             log.error("网关回执带未知错误码 %r，按未知外部状态处置", code)
             return {
-                "gate": GATEWAY_GATE, "severity": "blocker", "path": None,
+                "gate": GATEWAY_GATE,
+                "severity": GATEWAY_SEVERITY[GW_QUERY_OR_HUMAN],
+                "path": None,
                 "id": code, "disposition": GW_QUERY_OR_HUMAN,
                 "code": code, "retriable": None, "outcome": None,
                 "msg": str(exc),
@@ -726,7 +752,8 @@ class ReviewerGate:
 
         return {
             "gate": GATEWAY_GATE,
-            "severity": "blocker" if entry.outcome == OUTCOME_FAILED else SEVERITY_INFO,
+            # severity 与 disposition 同源：同一格只有一种严重度（见 GATEWAY_SEVERITY）。
+            "severity": GATEWAY_SEVERITY[disposition],
             "path": None,
             "id": entry.code, "disposition": disposition, "code": entry.code,
             "retriable": entry.retriable, "outcome": entry.outcome,

@@ -674,3 +674,16 @@ F 轨两支的账各自记在 `## task-F1` / `## task-F2`，本节不重复；�
 | 2026-08-29 | P7 | **`docs/ppt-outline.md` 数字口径行末尾的两组 diff 统计（`+62−4` / `+273−7`）本轮仍没重算**。`## integrate-round-6` 已记，本轮没接 | 该行其余数字本轮全部刷成了 `4d691fc` 的实测值，唯独这两个仍是旧值，同一行里新旧混排 | 与下一轮材料面一起重算 |
 | 2026-08-29 | P7 | **`scenario-R5` 的 7 个文件首行出处 sha 仍带 `-dirty`**（`4d691fc-dirty`）。`## integrate-round-6` 已记，本轮按同一路径复现 | 不影响 verify（`verify.py` 显式容忍 R5 的这个后缀），但每轮都要向读者解释一次 | 修 `make_evidence.py` 的落盘顺序（先全算后全写），归下一轮 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题已过期**，且其中第 2 条「`integrate/round-5` 并回 `goai-restructure`」早已完成（主干 `c1049c2` 已含） | 一节挂着「待整合轮 6」的清单出现在整合轮 8 的交付里，读者会以为轮 6 没收口 | 下一轮顺手改标题并清掉已完成项。本轮不擅自扩面 |
+
+## task-H2
+
+第三出口的同款洞 + 网关闸 severity 与 disposition 不同源（分支 `task/h2-replan-exit`，
+基线 `1131795`）。设计与取舍记在 `docs/DECISIONS.md` 的 `## task-H2`；
+以下是本轨**按铁律 4 不当场改**的四条。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P4 | **`await == "human_decision"` 这个标记还有两处消费方各自硬编码字面量**：`maos/runtime/gate.py` 的 `HumanApprovalQueue.pending()`（`e["detail"].get("await") == "human_decision"`）与 `maos/kb/experiment.py:415`（`approved = await_kind != "human_decision"`）。本轨只把**产出侧**的两条分支收成了一处（`control_plane.AWAIT_HUMAN_DECISION`），消费侧一行没动 | 同一个约定现在有 3 份实现（1 产 + 2 消费）。产出侧改名不会报错，只会让 `pending()` 静默漏捞、让 `experiment.py` 把「等人裁决」误算成「已放行」—— 与 `## task-D1` 第 1 条是同一类失效形态 | 本轨白名单里 `maos/runtime/gate.py` 只许改 `_gateway_finding` 的 severity，`maos/kb/experiment.py` 根本不在面内，所以没动。下一轮动这两个文件时，让它们 import `AWAIT_HUMAN_DECISION`（方向 gate/kb -> control_plane，不成环）即可收口 |
+| 2026-08-29 | P4 | **`## task-D1` 第 1 条里有两处与本轮实测不符**：(a)「非 H 任务撞上限后没有任何人捞得到」在基线 `1131795` 上**已不成立** —— 探针实测 `pending()` 捞得到；(b)「`test_replan_gateway.py` 与场景 5/7 用的都是 H 任务，所以一直没露出来」不成立 —— 该文件 `_make_task` 写死的就是 `effect_risk: "L"` | 下一轮的人照抄这条会去修一个已经不存在的洞，或按「用的都是 H 任务」这个错前提去设计复现，两次都会白跑一遍 | 建议下一轮把该条改写成它**现在**的形态：「洞已被 `pending()` 顺带覆盖，本轨补了回归钉住；剩下的是消费侧字面量三份实现」（即上面第 1 条）。本轨不改别人的账本条目 |
+| 2026-08-29 | P4 | **`## task-D1` 第 4 条与 `## task-D2` 那条（`_gate_gateway` severity 不同源）已由本轨接走**，两处仍原样挂着 | 账本里三处（D1 第 4 条、D2 唯一一条、本节）说的是同一件事，其中两处的结论已经过时 | 下一轮收账时标记闭环，并把口径落到一句话：`GW_QUERY_OR_HUMAN` 已知码与未知码同为 blocker，两者都由第三出口兜 —— D-1 当时说「两种都行，但不能像现在这样没人写下来」，现在写下来了 |
+| 2026-08-29 | P4 | **`ACQ.DISCORDANT_REPEAT_REQUEST` 从本轮起会挡闸**（severity `info -> blocker`）。当前 `maos/flows/` 的场景 1-7 无一注入它，`run.py` 输出实测逐行无差异 | 但 `scenarios/refund/history/history_cases.json` 的语料里有这条码（`kb-rc-0021`），`maos/tools/gateway.py:256` 也会在同幂等键参数不一致时真的返回它。哪天有场景走到那条路径，任务会停在 BLOCKED 等人，而不是像改前那样直接 DONE | 这是**有意为之**的收严（见 `docs/DECISIONS.md` 的 `## task-H2` 第 2 行），不是回归。记在这里是为了让下一轮加演示场景的人知道这一格的出口变了；若届时演示需要它放行，那要改的是场景设计，不是把这一格再降回 info |

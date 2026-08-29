@@ -819,3 +819,13 @@ H 轮八轨（H-1…H-8）合入时，编排侧**实跑核验**发现下面几�
 | 2026-08-29 | P7 | **一次 `TaskResult` 交回多份 `patch_set` 时，补偿指向哪一份是未定义的**。`on_task_result` 对 `p["artifacts"]` 里的**每一份** `patch_set` 各调一次 `_attach_compensation`，它们的 `patch_ref` 只写 `(task_id, kind, attempt)` —— 同一次结果里的多份补丁 attempt 相同，引用彼此无法区分；解析侧 `resolve_patch_ref` 又是「取第一条 `kind==patch_set` 且 `version==attempt` 的」，取到哪一条同样没有排序依据 | 与 P2-9 同源但**不是同一条**：P2-9 是「多条 compensation 选哪条」（本轨已在 `control_plane.py` 侧修死），这条是「一条 compensation 指向的 patch_set 有多份」。真出现时的后果一样 —— 反向应用了错误的那份补丁。目前所有场景每次结果只交一份 patch_set，所以没暴露 | 解析口径在 `maos/artifacts.py`（冻结面，可读不可写），修它要人类先定「一次结果多份补丁该不该各附一条补偿」这个语义问题。**归整合轮，本轨不碰** |
 | 2026-08-29 | P7 | **零任务计划 / 全冻结计划在 `start_plan` 之后不会自行收敛**。本轨实测：`create_plan(tasks=[])` + `start_plan()` → 计划停在 `RUNNING`；再手工调一次 `_advance()` 才落 `FAILED`（本轨新加的收敛判定） | 理论边界，**当前没有调用点**会这么用：唯一产生冻结任务的路径 `_replan` 已由本轨在出口处兜住。留着是因为 `start_plan` 是公开方法，下一个接线的人可能踩 | 下一轮持有 `control_plane.py` 的那一轨，把收敛判定并进 `start_plan` 的返回路径（`dispatch_ready == 0` 时顺带问一次）。本轨不做 —— 派单范围是那五条，改 `start_plan` 会波及所有场景的启动路径 |
 | 2026-08-29 | P7 | **`human_decision` 重复投递抛 `IllegalTransition` 而不是短路返回**，这是本轨**有意保留**的既有行为（见 `docs/DECISIONS.md` 的 `## task-T2`），但它对 UI 不友好 | 接上真实审批界面后，操作员双击「驳回」会拿到一个异常而不是一次无害的重复提交。副作用已经挡住了（补偿只跑一次），剩下的纯粹是交互口径问题 | 等真做审批 UI 时由人类定：要么在调用侧吞掉这个异常，要么把控制面改成短路返回。现在改属于「为假想的调用方放宽守卫」，不做 |
+
+## task-T3
+
+T3 轨修 `maos/core/store.py` 三处（P2-6 / P2-7 / P2-8）时发现，两条都**不在本轨白名单内**，
+按铁律 4 记账不当场改。基线 `27c9e18`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **派单 §2/§4 的前提「改 `update_task` 签名会牵动 `maos/store/port.py` 与 `pg_store.py`」实测不成立**。`StorePort` 协议一共只有 5 个方法（`execute` / `query` / `fts_search` / `vector_search` / `dialect`），本轨实测 `grep -c "update_task" maos/store/port.py` → **0**。`update_task` 只存在于 `maos/core/store.py` 的 `Store` ABC 与 `SqliteStore` 上 | 收窄 `update_task(**fields)` 为显式 `fields: dict` 的成本比派单假设的低得多：只牵动 `Store` ABC 一处声明 + 4 个调用点（`maos/core/control_plane.py:177`、`:619`、`:646`，`maos/tests/test_trace_evidence.py:126`），完全不碰 `maos/store/**`。开放 kwargs 是这个注入面的**根因**，白名单只是把它堵住 | 本轨仍按派单红线**没改签名**。下一轮若要根治，按上面这个实际影响面重新评估，别再按「会牵动 PG 适配」估成本 |
+| 2026-08-29 | P7 | **两套 store 实现的注入防护此前不对等**。`maos/store/sqlite_store.py:71-80` 早有 `_IDENT` 正则卡标识符形状，注释明写「这里不卡形状就等于开了一条注入路径」；而同仓 `maos/core/store.py` 唯一一处拼标识符的地方（`update_task`）此前一道防护都没有 | 同一个仓库两条 SQL 出口，一条守得很紧、另一条完全敞开，敞开的那条还是主链路（`control_plane` 走的是 `core/store.py`）。本轨已给它补上白名单（严于正则），但**没有任何机器提醒**要求新增的拼标识符代码也这么做 | 下一轮考虑加一条守卫测试：扫 `maos/**` 里所有把变量拼进 SQL 的 f-string，要求每处都有配套的形状校验或白名单。本轨只修了已知的这一处 |

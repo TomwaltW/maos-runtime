@@ -48,7 +48,7 @@ class ManagerAgent(BaseAgent):
         `context` 是**可选**的结构化检索上下文（tenant_id / biz_type / channel_id /
         sku / rule_no / …，外加只用来给事件定归属的 plan_id / trace_id）。不传就
         退化成纯规划，prompt 与 1.0 逐字节一致 —— 不带 context 的场景
-        （1 / 2 / 3 / 4 / 5 / 7）`mgr.plan(GOAL)` 一行不用改，输出也一个字节不变。
+        （1 / 2 / 5 / 7）`mgr.plan(GOAL)` 一行不用改，输出也一个字节不变。
         演示主线上唯一接了 context 的是场景 6（`flows/scenario_6.py`）。
 
         检索到的东西**只能增加任务**，且不许替代订单事实、不许跳过人工审批：
@@ -129,7 +129,8 @@ class ManagerAgent(BaseAgent):
     @staticmethod
     def _user_message(goal: str, docs: list[dict]) -> str:
         """无命中时逐字节等于 1.0 的 prompt —— 「用户请求」这个前缀是
-        ScriptedModelClient 的分派关键字，动了它场景 1-6 全部改判。"""
+        ScriptedModelClient 的分派关键字，动了它，走 ManagerAgent 规划的
+        场景（1 / 2 / 5 / 6 / 7）全部改判。"""
         base = f"用户请求：{goal}"
         if not docs:
             return base

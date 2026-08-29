@@ -52,6 +52,7 @@ from maos.model.client import ModelClient, ScriptedModelClient
 from maos.runtime.gate import ReviewerGate
 from maos.runtime.worker import WorkerRuntime
 from maos.tools.sandbox import (
+    MODE_NOT_RUN,
     prepare_sandbox_workdir,
     sandbox_git_apply,
     sandbox_pytest_run,
@@ -227,6 +228,12 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
 
     补丁打不上按 ``tool_error`` 上报，不按「0 条失败」——本轮压根没有测试证据，
     而 Gate 对这两者的判定完全不同（铁律：tool_error 与 failed 分开报）。
+
+    两条出口都带上执行路径（``sandbox_mode`` / ``degraded_reason``）。这是本函数
+    存在感最低、也最容易漏的一段：``sandbox_pytest_run`` 早就把它们返回了，可这里
+    从前只逐字段搬那六个，于是**演示当天那份报告到底是不是在容器里跑的，证据里查不到**
+    —— 「容器隔离」只在日志里成立。补丁没落进沙箱那一条同样要报：pytest 压根没被
+    调用过，``not-run`` 说的就是这件事，它与「容器里跑挂了」不是一回事。
     """
     shutil.rmtree(workdir, ignore_errors=True)
     prepare_sandbox_workdir(workdir)
@@ -234,9 +241,13 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
     applied = sandbox_git_apply(patch_set, workdir)
     if not applied.get("ok"):
         err = applied.get("error") or {}
-        return make_test_report(tool_error=(
-            f"补丁没能落进沙箱（stage={err.get('stage')} path={err.get('path')}）: "
-            f"{err.get('message')}"))
+        return make_test_report(
+            tool_error=(
+                f"补丁没能落进沙箱（stage={err.get('stage')} path={err.get('path')}）: "
+                f"{err.get('message')}"),
+            sandbox_mode=MODE_NOT_RUN,
+            degraded_reason="补丁没落进沙箱，pytest 未被调用",
+        )
 
     raw = sandbox_pytest_run(workdir)
     return make_test_report(
@@ -246,6 +257,9 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
         cases=raw.get("cases") or (),
         duration=raw.get("duration") or 0.0,
         tool_error=raw.get("tool_error"),
+        summary=str(raw.get("summary") or ""),
+        sandbox_mode=raw.get("sandbox_mode"),
+        degraded_reason=raw.get("degraded_reason"),
     )
 
 

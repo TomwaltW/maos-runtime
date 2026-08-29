@@ -148,8 +148,22 @@ class ControlPlane:
     # ------------------------------------------------------------------
     # 计划与任务创建（Manager Agent 调用）
     # ------------------------------------------------------------------
-    def create_plan(self, *, goal: str, trace_id: str, tasks: list[dict]) -> str:
-        plan_id = E.new_id("plan")
+    def create_plan(self, *, goal: str, trace_id: str, tasks: list[dict],
+                    plan_id: str | None = None) -> str:
+        """建 Plan 与其下的任务，返回 plan_id。
+
+        ``plan_id`` 可选，缺省仍自己生成 —— 既有调用点一行都不用改。给了就用它：
+        **规划期**发生的调用（Manager 规划前的知识检索、``flows/scenario_5.py`` 的
+        ``issue.aggregate`` 需求归一）跑在建 Plan **之前**，那一刻还没有 plan_id
+        可写，事件只能落空串，于是 trace 把它们列进 ``stray_events`` —— 一次真实
+        发生的检索挂不到任何一棵树上（docs/BACKLOG.md ``## task-X4`` 第 2 条）。
+        调用方先 ``E.new_id("plan")`` 拿到 id、规划期带着它跑，再原样传进来，
+        那些事件就归到了它们真正属于的那棵树。
+
+        另起一个「规划期」伪 plan 是另一条路，**没走**：为了消 warn 在 trace 里
+        造出一棵不存在的树，是拿假绿换绿。
+        """
+        plan_id = plan_id or E.new_id("plan")
         self.store.insert_plan({
             "plan_id": plan_id, "trace_id": trace_id, "goal": goal, "state": PlanState.PENDING,
         })

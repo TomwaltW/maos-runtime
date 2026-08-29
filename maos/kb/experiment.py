@@ -206,8 +206,8 @@ def _seed_domain_from_corpus(store) -> dict:
     return counted
 
 
-def _seed_kb_from_corpus(store) -> int:
-    """把语料里的政策规则投影成 `kind='policy'` 的知识文档。返回落库条数。
+def promote_policy_rule(store, row: dict) -> dict:
+    """把**一行** `policy_rule` 投影成 `kind='policy'` 的知识文档。返回落库整行。
 
     投影是**逐字搬运**，不是改写：`title` / `body` / `rule_no` / `version` 原样取自
     `policy_rule` 行，`created_at` 取该版本的 `effective_from`。
@@ -215,38 +215,58 @@ def _seed_kb_from_corpus(store) -> int:
     `channel_scope` / `sku_scope` 都是通配，而阶段一的口径正是「文档侧 NULL = 通配」，
     照抄成具体值反而会把一条不限渠道的政策锁死在一个渠道上。
 
+    拆成「一行一次」是为了让场景 6 播它自己那 3 条政策时走同一份口径
+    （`flows/scenario_6.py` 的 `_seed_kb`）。两处各写一套投影，迟早在字段口径上
+    分叉，而症状只是「候选集少了些」—— 不报错，也没人看得出。
+    """
+    from maos.kb.retriever import embed
+
+    title = str(row["title"])
+    body = str(row["body"])
+    return kb.upsert_doc(store, {
+        "tenant_id": row["tenant_id"],
+        # doc_id 里必须带租户：`kb_doc` 的主键是 `(tenant_id, doc_id)`，
+        # 两个租户各有一条 AS-001，不带租户就是两行同名的 doc_id ——
+        # 表里不冲突，但事件里的一个 doc_id 从此指不到唯一一行，
+        # 证据（KbRetrieved.docs）就再也读不出「命中的到底是谁家那条」。
+        "doc_id": f"kb-policy-{row['tenant_id']}-{row['rule_no']}-v{row['version']}",
+        "biz_type": BIZ_TYPE,
+        "channel_id": None, "region": None, "sku": None,
+        "policy_version": int(row["version"]),
+        "workflow_version": None,
+        "rule_no": row["rule_no"], "gateway_code": None,
+        "kind": kb.KIND_POLICY, "outcome": None, "source_case_id": None,
+        "title": title, "body": body,
+        "embedding": embed(f"{title} {body}"),
+        "created_at": row["effective_from"],
+    })
+
+
+def seed_kb_corpus(store) -> int:
+    """把 W-1 语料里的 16 条政策投影进 `kb_doc`。返回落库条数。
+
+    租户**原样保留**（tnt-mfg-a / tnt-mfg-b），不改写成调用方自己的租户。改写是
+    最省事的做法也是最错的：`kb_doc` 的主键是 `(tenant_id, doc_id)`，两个租户各有
+    一条 AS-001，改写后就是同一行，16 条静默塌成 8 条；更要紧的是租户是阶段一
+    最硬的一维（`retriever.prefilter`），给别人家的政策贴上本租户的标签，等于亲手
+    废掉这套系统唯一不能出错的那条约束。
+
     **只投影政策，不投影 `history/history_cases.json` 的 24 条历史案例** ——
     核验器第 7 项要求库里每一条 `history_case` 的 `source_case_id` 都能回查到一条
     `biz_status='settled'` 的真实 `refund_case`，而外部导入的历史知识按定义没有这样
     一条本库记录。给它们凭空造 refund_case 行就是伪造证据（铁律 3），所以那 24 条由
     `maos/tests/test_kb_corpus.py` 全量装载并守着，账记在 BACKLOG `## task-X3`。
     """
-    from maos.kb.retriever import embed
-
     payload = load_corpus(os.path.join("policy", "policy_rules.json"))
     rows = _checked_rows(payload, "policy_rule",
                          dict(CORPUS_TABLES)["policy_rule"])
     for row in rows:
-        title = str(row["title"])
-        body = str(row["body"])
-        kb.upsert_doc(store, {
-            "tenant_id": row["tenant_id"],
-            # doc_id 里必须带租户：`kb_doc` 的主键是 `(tenant_id, doc_id)`，
-            # 两个租户各有一条 AS-001，不带租户就是两行同名的 doc_id ——
-            # 表里不冲突，但事件里的一个 doc_id 从此指不到唯一一行，
-            # 证据（KbRetrieved.docs）就再也读不出「命中的到底是谁家那条」。
-            "doc_id": f"kb-policy-{row['tenant_id']}-{row['rule_no']}-v{row['version']}",
-            "biz_type": BIZ_TYPE,
-            "channel_id": None, "region": None, "sku": None,
-            "policy_version": int(row["version"]),
-            "workflow_version": None,
-            "rule_no": row["rule_no"], "gateway_code": None,
-            "kind": kb.KIND_POLICY, "outcome": None, "source_case_id": None,
-            "title": title, "body": body,
-            "embedding": embed(f"{title} {body}"),
-            "created_at": row["effective_from"],
-        })
+        promote_policy_rule(store, row)
     return len(rows)
+
+
+#: 旧名。`maos/tests/test_kb_corpus.py`（X-3 的面，不是本轨的文件）按它消费，留个别名。
+_seed_kb_from_corpus = seed_kb_corpus
 
 
 # ---------------------------------------------------------------- 靶场
@@ -271,7 +291,7 @@ def _seed(store, case_id: str) -> None:
         (TENANT_ID, order_id, 1, SKU, AMOUNT, PAID_AT, CHANNEL_ID, POLICY_VERSION,
          "{}", C.now_iso()))
     kb.ensure_schema(store)
-    _seed_kb_from_corpus(store)
+    seed_kb_corpus(store)
 
 
 # ---------------------------------------------------------------- 一段的执行
@@ -308,17 +328,22 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
                   lambda env: verdicts.append({"task_id": env.task_id, **env.payload}))
 
     trace_id = new_id("trace")
-    # Manager 这次**带 store**：规划前检索要有库可查。场景 6 用的是 `cls(model)`
-    # 老写法（无 store），那条链路上检索恒返回空 —— 两种构造方式都必须能跑。
+    # plan_id 也先生成、规划期带着它跑：这次检索发生在 `create_plan` **之前**，
+    # 不先拿到 id，KbRetrieved / SkillInvoked 就只能落空串，成为 trace 里认领不了的
+    # 游离事件（docs/BACKLOG.md `## task-X4` 第 2 条）。归属不是硬凑的 ——
+    # 这次检索检的正是这个 Plan 该怎么排。
+    plan_id = new_id("plan")
+    # Manager **带 store**：规划前检索要有库可查。不带的话 SkillInvoker.store is None，
+    # 检索恒返回空且不报错 —— 两种构造方式都必须能跑。
     mgr = ManagerAgent(model, store=store)
     context = {"tenant_id": TENANT_ID, "biz_type": BIZ_TYPE, "channel_id": CHANNEL_ID,
                "region": REGION, "sku": SKU, "policy_version": POLICY_VERSION,
-               "rule_no": RULE_NO, "trace_id": trace_id,
+               "rule_no": RULE_NO, "plan_id": plan_id, "trace_id": trace_id,
                "keyword": "轴承 锈蚀 退款 财务核算"}
     with _kb_switch(use_kb):
         tasks = mgr.plan(GOAL, context=context)
 
-    plan_id = cp.create_plan(goal=GOAL, trace_id=trace_id, tasks=tasks)
+    cp.create_plan(goal=GOAL, trace_id=trace_id, tasks=tasks, plan_id=plan_id)
 
     # 主管审批**先落库**，两段一视同仁。放在 start_plan 之前是刻意的：
     # 漏排财务核算的那一段没有高风险任务，不会停在 BLOCKED，付款会在第一轮就执行 ——
@@ -353,9 +378,10 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
         "rework_count": sum(1 for e in events
                             if e["event_type"] == "StateTransition"
                             and e["to_state"] == "REWORK"),
-        # 按 trace_id 数，不按 plan_id：规划期的检索发生在 create_plan 之前，
-        # 那条 KbRetrieved 的 plan_id 是空串，按 plan 查恒为 0 —— 会把
-        # 「检索确实跑了」误报成「一次都没检索」，对照实验的关键量就此消失。
+        # 按 trace_id 数，不按 plan_id：trace 是这一段从头到尾唯一不变的那根线。
+        # 本段现在把 plan_id 预生成好再带着规划期跑，按 plan 查也数得到；但哪天
+        # 有人把那个前置去掉，检索又落回空串，按 plan 查会静悄悄退回 0 —— 把
+        # 「检索确实跑了」误报成「一次都没检索」。按 trace 数不吃这一跤。
         "kb_retrieved_events": len(kb.query(
             store, "SELECT seq FROM event_log WHERE event_type='KbRetrieved'"
                    " AND trace_id=?", (trace_id,))),

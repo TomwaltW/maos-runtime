@@ -1,7 +1,9 @@
 """场景 7：制造企业售后退款 —— **失败路径**（手册的场景 R2，按 D-05 编号为 7）。
 
     多源诉求 → 政策裁定通过 → 财务核算（第六道闸）→ 主管审批通过
-      → payment.execute → 网关返 ACQ.SYSTEM_ERROR（retriable=True / outcome=unknown）
+      → payment.execute → 主渠道返 40005（retriable=True / outcome=**failed**）
+      → 第七道闸判 replan_channel → **重规划换渠道**（s7-primary -> s7-backup），幂等键不变
+      → 备用渠道返 ACQ.SYSTEM_ERROR（retriable=True / outcome=**unknown**）→ 一票否决再 replan
       → payment.observe 轮询 3 次仍问不出终态 → 不写状态、不写观察行
       → 付款任务 effect_risk=H，Gate 过了也停在 BLOCKED，等人处置
       → 主管驳回：渠道异常，转人工
@@ -38,14 +40,28 @@
 `select_model_client(SCRIPT, force_scripted=True)`（A-12）：配了 key 的机器上也一行
 网络都不走。金额、政策版本、错误码、轮询次数全部写死，连跑两次输出逐条一致。
 
-## 已知缺口（不是本文件能补的）
+## 手册 R2 的「换渠道重试」演在哪一段
 
-手册 R2 原文里「网关可重试错误码 → replan 换渠道重试 → 达 replan 上限 → needs_human」
-这一段**没有落在本文件里**：新增 replan 触发源要改 `_should_replan`，而
-`maos/core/control_plane.py` 按 `docs/parallel/contracts.md` 附录 D 的文件所有权表归
-Task-D，不在本轨白名单内。已记 `docs/BACKLOG.md` 的 `## task-W6`。
-本文件走的是同一条 HITL 收口路径的另一个入口（`effect_risk=H` 的付款任务在
-Gate 过后停 BLOCKED），驳回之后的补偿与收口断言完全一致。
+手册 R2 原文里「网关可重试错误码 → replan 换渠道重试 → 仍失败 → 转人工」这一段，
+**机制**由第七道闸 `ReviewerGate._gate_gateway`（产 finding）与
+`ControlPlane._should_replan`（消费 disposition）落地，19 条测试守在
+`maos/tests/test_replan_gateway.py`。但机制跑得通不等于**看得见** —— 这一段
+现在演在本文件的下面两处，评委在屏幕上就能读到：
+
+  · **换渠道**：`drive()` 注册两个网关。主渠道 `s7-primary` 注入 `40005`
+    （retriable=True + outcome=failed）—— 四象限里**唯一**允许换渠道的那一格：
+    网关在入口就拒了，业务确定没执行，所以重发是安全的。第七道闸判
+    `replan_channel`，`_switch_channel` 把付款任务的 `gateway` 改派到 `s7-backup`。
+    幂等键由 (tenant, case) 唯一确定，换渠道**不换键**，不会造出第二笔。
+  · **换完仍失败，但不再换第三次**：备用渠道注入 `ACQ.SYSTEM_ERROR`
+    （retriable=True + outcome=unknown），这一格对 replan 是**一票否决**——
+    网关自己都说不清那一笔执行了没有，再重发就可能真退第二笔（铁律 8）。
+    于是不自旋，落回 `effect_risk=H` 的人工审批入口，也就是本文件原先唯一走的
+    那条收口路径：主管驳回 → 补偿 → Plan FAILED。
+
+两个码一前一后，演的正是要讲给评委的那句话：**可重试的那一格才重试，
+说不清的那一格一次都不许重发**。收口断言（第 383 行起）一条都没有因此改动 ——
+换渠道消耗的是一次 replan 额度，不是轮询预算，`poll_count` 仍恰好打满 3 次。
 """
 
 from __future__ import annotations
@@ -64,6 +80,7 @@ from maos.agents.refund import (
 from maos.agents.reviewer import ReviewerAgent, review_after_gate
 from maos.contracts.events import new_id
 from maos.contracts.states import TASK_TRANSITIONS, PlanState, TaskState
+from maos.core.control_plane import GATEWAY_GATE
 from maos.domain.refund import guard, objects
 from maos.flows.common import build, dump, run_until_settled
 from maos.model.client import Tier, select_model_client
@@ -92,12 +109,24 @@ AMOUNT_PAID = 6800.00
 #: 财务核算任务必须交出 finance_entry，否则闸判 blocker。
 AMOUNT_CLAIMED = 6800.00
 
+#: 主渠道与被换过去的备用渠道。两个都是 MockGateway，只有注入的码不同 ——
+#: 「换渠道」在本场景里是一次真实的重规划（换掉付款任务的 `gateway` 入参），
+#: 不是在同一个网关实例上改脚本。后者演不出 replan，评委也看不出换了什么。
 GATEWAY_NAME = "s7-primary"
+GATEWAY_BACKUP_NAME = "s7-backup"
 
-#: 注入的错误码。选它有三个理由，缺一不可：
+#: 主渠道注入的码 —— 四象限里**唯一**允许换渠道重试的那一格：
+#:   · retriable=True  —— 官方 remedy 就是重试；
+#:   · outcome=failed  —— 网关在入口就拒了，这一笔**确定没执行**，重发不会造出第二笔；
+#: 第七道闸判它 `replan_channel`，`_should_replan` 据此触发重规划。
+#: 换成 outcome=unknown 的码就演不出换渠道了 —— 那一格是一票否决。
+GATEWAY_RETRIABLE_CODE = "40005"
+
+#: 备用渠道注入的码。选它有三个理由，缺一不可：
 #:   · retriable=True —— 是「可重试」那一类，不是终态失败；
 #:   · outcome=unknown —— 官方 remedy 原文带「或查询执行结果」，网关自己说不清；
 #:   · layer=business —— 业务层的码，与网关层的 20000 各占一层，演示时能讲清两层结构。
+#: 它对 replan 是**一票否决**：换过一次渠道之后不再换第三次，落人工审批收口。
 #: 判据一律查 `maos/tools/gateway_codes.py`，不在这里凭语感另定。
 GATEWAY_ERROR_CODE = "ACQ.SYSTEM_ERROR"
 
@@ -110,6 +139,9 @@ TASK_INTAKE = "task-s7-intake"
 TASK_POLICY = "task-s7-policy"
 TASK_FINANCE = "task-s7-finance"
 TASK_PAYMENT = "task-s7-payment"
+
+#: 只用于打印，判据仍在 control_plane —— 这里不重算一遍上限逻辑。
+MAX_REPLAN_ENV = "MAOS_MAX_REPLAN"
 
 APPROVER = "沈思锴"
 REJECT_REASON = "渠道异常，转人工"
@@ -244,11 +276,23 @@ def seed_domain(store) -> None:
 
 
 def receipt_artifact(store, task_id: str) -> dict:
-    """取付款任务本轮的回执产物 —— 主管就是看着它做驳回决定的。"""
-    for art in store.list_artifacts(task_id):
-        if art["kind"] == KIND_PAYMENT_RECEIPT:
-            return art["content"]
-    raise LookupError(f"{task_id} 没有回执产物 —— 付款任务应当产出 {KIND_PAYMENT_RECEIPT}")
+    """取付款任务**最近一轮**的回执产物 —— 主管就是看着它做驳回决定的。
+
+    按 `version`（= 产出它的那次 attempt）取最大的一份，不取列表里的第一份：
+    换渠道重试之后这个任务有两份回执（attempt=1 的 40005、attempt=2 的
+    ACQ.SYSTEM_ERROR），而主管处置的依据只能是**最后那一份**。取第一份会让
+    收口断言去校验一份已经被重规划推翻了的回执。
+    """
+    arts = [a for a in store.list_artifacts(task_id) if a["kind"] == KIND_PAYMENT_RECEIPT]
+    if not arts:
+        raise LookupError(f"{task_id} 没有回执产物 —— 付款任务应当产出 {KIND_PAYMENT_RECEIPT}")
+    return max(arts, key=lambda a: a["version"])["content"]
+
+
+def _replan_count(cp, plan_id: str) -> int:
+    """重规划次数 = event_log 里的 Replanned 条数（口径同 scenario_5）。"""
+    return sum(1 for e in cp.store.list_event_log(plan_id)
+               if e["event_type"] == "Replanned")
 
 
 def compensate(store, *, plan_id: str, task_id: str, trace_id: str, operator: str,
@@ -272,6 +316,44 @@ def _count(store, sql: str, params: tuple = ()) -> int:
     return objects.query(store, sql, params)[0]["n"]
 
 
+def _switch_channel(*, goal: str, findings: list[dict], open_tasks: list[dict]) -> list[dict]:
+    """重规划回调：把付款任务改派到备用渠道 —— 换渠道就是这一次重规划的全部内容。
+
+    **零模型**。同 scenario_5 的口径：replan、补偿、审批是控制面行为，其正确性不得
+    依赖模型的智力表现。这里更强一层 —— 让 Manager 重新出一份方案会返回**整份**
+    四任务 DAG，而 `_apply_replan` 是逐位 zip 覆写 open_tasks（此刻只剩付款一条），
+    多出来的三条会被当成新任务插进来，把已经 DONE 的受理/裁定/核算凭空重做一遍。
+
+    返回的 specs 与 open_tasks **等长**，就是为了让覆写落在原 task_id 上：
+    task_id、attempt 与 event_log 的因果链连续，Trace 上看得出「换渠道前后是同一件事」。
+    """
+    gw = [f for f in findings if isinstance(f, dict) and f.get("gate") == GATEWAY_GATE]
+    for f in gw:
+        print(f"\n[2] 第七道闸认出网关回执: code={f.get('code')} "
+              f"retriable={f.get('retriable')} outcome={f.get('outcome')} "
+              f"-> disposition={f.get('disposition')}")
+        print(f"    {f.get('message')}")
+
+    specs = []
+    for task in open_tasks:
+        inputs = dict(task["inputs"])
+        title = task["title"]
+        if inputs.get("gateway") == GATEWAY_NAME:
+            inputs["gateway"] = GATEWAY_BACKUP_NAME
+            title = f"{title}（改派备用渠道）"
+            print(f"    → 触发 replan 重规划：付款任务换渠道 "
+                  f"{GATEWAY_NAME} -> {GATEWAY_BACKUP_NAME}；"
+                  f"幂等键由 (tenant, case) 定，换渠道不换键，不会造出第二笔")
+        specs.append({
+            "task_id": task["task_id"], "role": task["role"], "title": title,
+            "inputs": inputs, "acceptance": task["acceptance"],
+            "depends_on": task["depends_on"], "risk_level": task["risk_level"],
+            # effect_risk 显式带上：付款仍是不可逆落地动作，换个渠道不降它的风险。
+            "effect_risk": task["effect_risk"],
+        })
+    return specs
+
+
 # ------------------------------------------------------------------------ drive
 def drive(*, matrix: bool = False) -> dict:
     """跑完整条失败路径并返回收口用的句柄。**只跑不断言** —— 断言在 run() 里。
@@ -288,9 +370,17 @@ def drive(*, matrix: bool = False) -> dict:
 
     # 网关按名取：task.inputs 会被 json.dumps，实例塞不进去（见 _common.py 第 3 条）。
     # script 按 out_trade_no 注入错误码，确定性回放，不依赖随机数。
+    # 两个网关各注一个码：主渠道 40005（确定没执行，可换渠道），
+    # 备用渠道 ACQ.SYSTEM_ERROR（说不清，一票否决再 replan）。同一个 MockGateway 类，
+    # 行为一行没改 —— 换的是任务派到哪个实例上。
     C.reset_gateways()
     C.register_gateway(GATEWAY_NAME, MockGateway(
+        settle_after=SETTLE_AFTER, script={ORDER_ID: GATEWAY_RETRIABLE_CODE}))
+    C.register_gateway(GATEWAY_BACKUP_NAME, MockGateway(
         settle_after=SETTLE_AFTER, script={ORDER_ID: GATEWAY_ERROR_CODE}))
+
+    # 控制面只认这个回调，不认识 ManagerAgent（同 scenario_5）。
+    cp.set_replanner(_switch_channel)
 
     mgr = ManagerAgent(model)
     trace_id = new_id("trace")
@@ -319,22 +409,26 @@ def drive(*, matrix: bool = False) -> dict:
               note="已核对金额与政策版本")
     run_until_settled(bus, gate, cp, plan_id)
 
-    # —— 付款跑完了，但没跑成 ——
+    # —— 换过渠道之后仍然没跑成 ——
     receipt = receipt_artifact(store, TASK_PAYMENT)
-    print(f"\n[2] 付款回执: observed_state={receipt['observed_state']}"
+    replans = _replan_count(cp, plan_id)
+    print(f"\n[3] 备用渠道付款回执: observed_state={receipt['observed_state']}"
           f"（问了 {receipt['poll_count']} 次仍非终态）")
     print(f"    网关判据: code={receipt['receipt']['code']} "
           f"retriable={receipt['receipt']['retriable']} "
           f"outcome={receipt['receipt']['outcome']}")
     print(f"    官方处置: {receipt['remedy']}")
     print(f"    出处    : {receipt['source']}")
+    print(f"    重规划   : 已换渠道 {replans} 次（replan 上限 {MAX_REPLAN_ENV} 默认 2）；"
+          f"这一格 outcome=unknown 对 replan 一票否决，**不再换第三个渠道** —— "
+          f"重发可能真退出第二笔，正确出口是人工")
 
     # —— 第二次人工介入：主管看着这份回执驳回 ——
     pending = hq.pending(plan_id)
     assert len(pending) == 1 and pending[0]["task_id"] == TASK_PAYMENT, (
         f"付款任务应停在 BLOCKED 等人处置，实际 {[t['task_id'] for t in pending]}")
     payment_task = pending[0]
-    print(f"\n[3] 待主管处置: {payment_task['title']} —— 回执非终态，不能当成功放行")
+    print(f"\n[4] 待主管处置: {payment_task['title']} —— 回执非终态，不能当成功放行")
 
     C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID, approver=APPROVER,
                       decision="rejected", reason=REJECT_REASON)
@@ -343,7 +437,7 @@ def drive(*, matrix: bool = False) -> dict:
     # 状态一旦落 FAILED，「外面还有一笔下落不明的请求」这件事就没人记得了。
     comp = compensate(store, plan_id=plan_id, task_id=TASK_PAYMENT, trace_id=trace_id,
                       operator=APPROVER, reason=REJECT_REASON)
-    print(f"\n[4] 域内补偿: 作废 {len(comp['revoked'])} 笔请求，"
+    print(f"\n[5] 域内补偿: 作废 {len(comp['revoked'])} 笔请求，"
           f"最后观察到的下落 = {comp['last_observed_state']}"
           f"（**不是 failed** —— 网关自己都没给出结论）")
     print(f"    人工工单: {comp['ticket']['ticket_id']} -> {comp['ticket']['assignee']}")
@@ -353,7 +447,7 @@ def drive(*, matrix: bool = False) -> dict:
 
     dump(cp, plan_id, "场景 7：制造企业售后退款（失败路径）")
     return {"store": store, "cp": cp, "plan_id": plan_id, "trace_id": trace_id,
-            "receipt": receipt, "compensation": comp}
+            "receipt": receipt, "compensation": comp, "replans": replans}
 
 
 # -------------------------------------------------------------------------- run
@@ -361,6 +455,7 @@ def run(*, matrix: bool = False) -> int:
     out = drive(matrix=matrix)
     store, cp, plan_id = out["store"], out["cp"], out["plan_id"]
     receipt, comp = out["receipt"], out["compensation"]
+    replans = out["replans"]
 
     # ---------------------------------------------------------------- 收口与断言
     case = guard.get_case(store, TENANT_ID, CASE_ID)
@@ -378,6 +473,29 @@ def run(*, matrix: bool = False) -> int:
     print(f"  补偿记录  : {len(comp_rows)} 行 {[r['kind'] for r in comp_rows]}")
     print(f"  补偿事件  : {len(comp_events)} 条 CompensationExecuted")
     print(f"  Plan 终态 : {plan['state']}（主管驳回，业务确实没成功）")
+    print(f"  换渠道重试: {replans} 次 replan（{GATEWAY_RETRIABLE_CODE} 触发，"
+          f"{GATEWAY_ERROR_CODE} 一票否决，没有自旋）")
+
+    # —— 手册 R2 那一段真的演过：换渠道不是测试里才跑得通的机制 ——
+    # 放在收口断言之前：这一条红了说明叙事没接上，收口那几条会跟着连锁红，
+    # 先在这里断掉，报错信息才指得准。
+    assert replans >= 1, (
+        f"付款应先撞 {GATEWAY_RETRIABLE_CODE} 换一次渠道，实际重规划 {replans} 次 —— "
+        "手册 R2 的 replan 段没演出来")
+    # 两轮回执的码按 attempt 排出来，就是那条链路本身的证据。
+    # 不拿 refund_request 表数渠道：它按 (tenant, case) 做 INSERT OR REPLACE，
+    # 一个案子恒只留一行（那是「一个案子只允许有一笔退款」的落点），
+    # 换渠道之后第一笔的 gateway 已被覆盖，数出来只有一个渠道。
+    codes = [(a["version"], (a["content"].get("receipt") or {}).get("code"))
+             for a in store.list_artifacts(TASK_PAYMENT)
+             if a["kind"] == KIND_PAYMENT_RECEIPT]
+    assert [c for _, c in sorted(codes)] == [GATEWAY_RETRIABLE_CODE, GATEWAY_ERROR_CODE], (
+        f"付款两轮的回执码应依次是 {GATEWAY_RETRIABLE_CODE} -> {GATEWAY_ERROR_CODE}，"
+        f"实际 {sorted(codes)}")
+    assert objects.query(
+        store, "SELECT gateway FROM refund_request WHERE tenant_id=? AND case_id=?",
+        (TENANT_ID, CASE_ID))[0]["gateway"] == GATEWAY_BACKUP_NAME, (
+        "收口那一笔应落在换过去的备用渠道上")
 
     # —— 本场景存在的理由，第一断言 ——
     assert case["biz_status"] == "compensated", (

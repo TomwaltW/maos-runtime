@@ -209,16 +209,32 @@ class RefundCompensateSkill(Skill):
     # ------------------------------------------------------------------
     @staticmethod
     def _last_observed_state(store, tenant_id: str, case_id: str) -> str:
-        """最后一次**观察到**的下落。一次都没观察到返回 UNOBSERVED。
+        """**收口这一笔**最后一次观察到的下落。一次都没观察到返回 UNOBSERVED。
+
+        按当前那一笔 `refund_request` 的 `request_id` 收窄，不按 `(tenant, case)`
+        查全表。换渠道重试之后一个案子会先后有两笔请求（场景 7）：前一笔在网关入口
+        就被拒（`40005`，`payment.observe` 会照实落一行 `observed_state='failed'`），
+        换渠道之后的那一笔才是收口这一笔。按全表取最新会把**上一笔的下落**当成
+        这一笔的 —— 而这种错没有症状：补偿记录、人工工单、事件全都正常，只有
+        「外面那笔钱到底怎么样了」这一格填错，偏偏那是人工对账唯一的依据。
 
         刻意不兜底成 "failed"：轮询到顶没问出终态时 `payment.observe` 一行观察都不写
         （它在源码里写明「还没问出来不是一个可以落库的结论」），此时表是空的 ——
-        把空表读成「失败」正是本 skill 通篇在防的那个推断。
+        把空表读成「失败」正是本 skill 通篇在防的那个推断。查不到当前请求时同理，
+        返回 UNOBSERVED 而不是回退去读别的请求的观察。
         """
+        current = objects.query(
+            store,
+            "SELECT request_id FROM refund_request WHERE tenant_id=? AND case_id=?"
+            " ORDER BY submitted_at DESC", (tenant_id, case_id))
+        if not current:
+            return UNOBSERVED
         rows = objects.query(
             store,
-            "SELECT observed_state FROM payment_observation WHERE tenant_id=? AND case_id=?"
-            " ORDER BY observed_at DESC", (tenant_id, case_id))
+            "SELECT observed_state FROM payment_observation"
+            " WHERE tenant_id=? AND case_id=? AND request_id=?"
+            " ORDER BY observed_at DESC",
+            (tenant_id, case_id, current[0]["request_id"]))
         return str(rows[0]["observed_state"]) if rows else UNOBSERVED
 
     @staticmethod

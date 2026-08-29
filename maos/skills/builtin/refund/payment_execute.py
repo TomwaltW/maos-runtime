@@ -139,6 +139,18 @@ class PaymentExecuteSkill(Skill):
         plan_id = str(extras.get("plan_id") or "")
         task_id = str(extras.get("task_id") or "")
         if plan_id and task_id:
+            # 换渠道重发时先摘掉上一笔的引用。`refund_request` 上有
+            # `UNIQUE (tenant_id, idempotency_key)` —— 「一个案子只允许有一笔退款」
+            # 的落点 —— 所以同一个案子重发会把上一行**挤掉**，指向旧 request_id 的
+            # 引用当场悬空。而 `attach_business_ref` 的规矩写得很清楚：只存引用，
+            # 「读的时候一定读到当前那一份」；指着一个已经不在库里的对象，正是它
+            # 要防的那件事。不删的症状是**静默的**：付款照跑、补偿照落，只有
+            # `scripts/verify.py` 的 business-ref 那一项会数出一条悬空引用。
+            objects.execute(
+                store,
+                "DELETE FROM business_ref WHERE plan_id=? AND task_id=? AND tenant_id=?"
+                " AND object_type='refund_request' AND object_id<>?",
+                (plan_id, task_id, tenant_id, receipt["request_id"]))
             objects.attach_business_ref(
                 store, plan_id=plan_id, task_id=task_id, tenant_id=tenant_id,
                 object_type="refund_request", object_id=receipt["request_id"],

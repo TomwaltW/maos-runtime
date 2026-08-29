@@ -530,17 +530,29 @@ def test_scenario_7_error_code_sits_in_the_query_first_quadrant():
 
 
 def test_scenario_7_payment_gate_notes_the_receipt_without_blocking(driven_s7):
-    """场景 7 的付款任务：第七道闸认出了回执（noted），但闸仍放行。
+    """场景 7 的**收口那一轮**：第七道闸认出了回执（noted），但闸仍放行。
 
     放行之后走的是 `effect_risk=H` 的人工审批 -> 主管驳回 -> 补偿收口，
-    与加这道闸之前一字不差。闸一旦在这里判 rework，整个失败路径就被改写了。
+    与加这道闸之前一字不差。闸一旦在**这一轮**判 rework，整个失败路径就被改写了。
+
+    断言从「一次 REWORK 都不许有」收窄成「收口那一轮不许返工」：Y-4 之后场景 7
+    先撞一次 `40005`（`retriable=True + outcome=failed`）演换渠道，那一格 severity
+    恒为 blocker，**必然**产生一次返工 —— 那是要给评委看的那一段，不是回归。
+    这条断言原来的形状假设了场景 7 只撞一个码（见 `docs/BACKLOG.md` 的
+    `## task-Y4` 第 1 条）。守的东西一点没让：`ACQ.SYSTEM_ERROR` 那一格
+    仍然一次都不许返工，而且全场恰好只返工一次 —— 多一次就是自旋。
     """
     store, plan_id = driven_s7["store"], driven_s7["plan_id"]
     moves = [e for e in store.list_event_log(plan_id)
              if e["event_type"] == "StateTransition" and e["task_id"] == s7.TASK_PAYMENT]
 
-    assert not any(e["to_state"] == TaskState.REWORK for e in moves), \
-        "付款任务被判返工了 —— 第七道闸把场景 7 的失败路径改写了"
+    reviewed = [e for e in moves if e["from_state"] == TaskState.AWAITING_REVIEW]
+    assert reviewed and reviewed[-1]["to_state"] == TaskState.BLOCKED, (
+        f"收口那一轮（{s7.GATEWAY_ERROR_CODE}）被判成了 "
+        f"{reviewed[-1]['to_state'] if reviewed else '没过闸'} —— "
+        "第七道闸把场景 7 的失败路径改写了")
+    assert sum(1 for e in moves if e["to_state"] == TaskState.REWORK) == 1, \
+        f"场景 7 应恰好返工一次（{s7.GATEWAY_RETRIABLE_CODE} 触发换渠道），多于一次即自旋"
 
     blocked = [e for e in moves if e["to_state"] == TaskState.BLOCKED]
     assert blocked, "付款任务应停在 BLOCKED 等人处置"

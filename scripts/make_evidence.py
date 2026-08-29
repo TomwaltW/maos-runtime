@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """证据束生成器 —— 一键跑全部场景，把每一场的真实产出落成 ``evidence/scenario-<N>/``。
 
-    python3 scripts/make_evidence.py                    # 全部场景
-    python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景
+    python3 scripts/make_evidence.py                    # 全部场景 + scenario-R5
+    python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景（不含 R5）
+
+``scenario-R5``（RAG 有无对照）不在 ``maos.main.ALL_SCENARIOS`` 里，由
+``maos.kb.experiment`` 单独产，却是唯一带 ``kb_doc`` 的一束 —— ``verify.py``
+第 5、7 两项全靠它。缺省把它一并产出，是为了让「复现全量证据」只剩两条命令：
+本脚本 + ``verify.py``。见 ``build_r5``。
 
 三条不许破的规矩（铁律 3 / 铁律 6）：
 
@@ -487,8 +492,12 @@ def build_scenario(n: int, out_root: str, *, sha: str, secrets: dict[str, str],
         shutil.rmtree(tmp, ignore_errors=True)
         raise
 
+    return _bundle_info(n, final, bundle)
+
+
+def _bundle_info(scenario, final: str, bundle: dict) -> dict:
     return {
-        "scenario": n,
+        "scenario": scenario,
         "dir": os.path.relpath(final, ROOT),
         "span_count": bundle["summary"]["span_count"],
         "event_count": bundle["summary"]["event_count"],
@@ -496,6 +505,44 @@ def build_scenario(n: int, out_root: str, *, sha: str, secrets: dict[str, str],
         "stray_events": bundle["summary"]["stray_event_count"],
         "tree_errors": bundle["summary"]["tree_errors"],
     }
+
+
+def _flag_suffix(info: dict) -> str:
+    flags = []
+    if info["unsourced_artifacts"]:
+        flags.append(f"无来源产物 {info['unsourced_artifacts']}")
+    if info["stray_events"]:
+        flags.append(f"游离事件 {info['stray_events']}")
+    if info["tree_errors"]:
+        flags.append(f"span 树错误 {len(info['tree_errors'])}")
+    return f"  ⚠ {'，'.join(flags)}" if flags else ""
+
+
+def build_r5(out_root: str, *, secrets: dict[str, str]) -> dict:
+    """把 ``scenario-R5`` 也产出来 —— 它不在 ``ALL_SCENARIOS`` 里，得单独叫一次。
+
+    为什么非并进来不可：R5 是唯一带 ``kb_doc`` 的一束，``verify.py`` 第 5、7 项
+    全靠它。而「跑 make_evidence.py，再跑 verify.py」这条最直觉的路径，从前会稳定
+    地撞上 ``缺数据库: scenario-R5/maos.db``，提示却还是「先跑 make_evidence.py」——
+    照做的人原地打转（BACKLOG ## task-W5 第 2 条 / ## task-X3 第 4 条）。
+
+    ``out_root`` **必须**透传：``write_evidence(None)`` 缺省写进仓库 ``evidence/``，
+    ``--out`` 指到仓库外却偷偷改仓库，是最难发现的一种污染。有测试守着这一条。
+
+    这里不像场景 1-7 那样起子进程 —— 起子进程是因为 ``flows/common.py::build()``
+    用 ``:memory:`` 库，进程一退就没了；而 ``write_evidence`` 自己就落文件库，
+    且 KB 开关走上下文管理器进出成对复原，没有要隔离的进程级状态。
+    """
+    from maos.kb import experiment as kb_experiment
+
+    try:
+        final = kb_experiment.write_evidence(out_root)
+    except EvidenceError:
+        raise
+    except Exception as exc:
+        # 带上下文重抛：R5 失败与场景失败要落在同一个出口（不留半份产物、退出码 2）。
+        raise EvidenceError(f"scenario-R5 生成失败：{redact(str(exc), secrets)}") from exc
+    return _bundle_info("R5", final, load_evidence_json(os.path.join(final, "trace.json")))
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +558,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=600, help="单场景超时秒数")
     parser.add_argument("--strict-scenarios", action="store_true",
                         help="ALL_SCENARIOS 里声明了但模块还没有的场景，视为错误而不是跳过")
+    parser.add_argument("--r5", dest="r5", action="store_true", default=None,
+                        help="强制一并产出 scenario-R5（缺省：全量跑时产，指定 --scenarios 时不产）")
+    parser.add_argument("--no-r5", dest="r5", action="store_false",
+                        help="不产 scenario-R5；verify.py 的第 5、7 项会因此判 SKIP")
     parser.add_argument("--_child", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_db", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -526,11 +577,13 @@ def main(argv: list[str] | None = None) -> int:
         wanted = [int(x) for x in args.scenarios.split(",") if x.strip()]
     else:
         wanted = list(ALL_SCENARIOS)
+    # 指定了 --scenarios 就是奔着某几场去的，别拖上 R5；全量跑则缺省带上。
+    want_r5 = args.r5 if args.r5 is not None else not args.scenarios
 
     sha = git_sha()
     secrets = secret_values()
     os.makedirs(args.out, exist_ok=True)
-    print(f"证据束生成 · sha={sha} · 场景={wanted} · 输出={args.out}")
+    print(f"证据束生成 · sha={sha} · 场景={wanted}{' + R5' if want_r5 else ''} · 输出={args.out}")
     if secrets:
         print(f"脱敏哨兵：{sorted(secrets)}（值不打印）")
 
@@ -545,24 +598,24 @@ def main(argv: list[str] | None = None) -> int:
             continue
         info = build_scenario(n, args.out, sha=sha, secrets=secrets, timeout=args.timeout)
         produced.append(info)
-        flags = []
-        if info["unsourced_artifacts"]:
-            flags.append(f"无来源产物 {info['unsourced_artifacts']}")
-        if info["stray_events"]:
-            flags.append(f"游离事件 {info['stray_events']}")
-        if info["tree_errors"]:
-            flags.append(f"span 树错误 {len(info['tree_errors'])}")
-        suffix = f"  ⚠ {'，'.join(flags)}" if flags else ""
         print(f"  [OK] {info['dir']}  spans={info['span_count']} "
-              f"events={info['event_count']}{suffix}")
+              f"events={info['event_count']}{_flag_suffix(info)}")
+
+    if want_r5:
+        info = build_r5(args.out, secrets=secrets)
+        produced.append(info)
+        print(f"  [OK] {info['dir']}  spans={info['span_count']} "
+              f"events={info['event_count']}{_flag_suffix(info)}")
 
     write_json(os.path.join(args.out, "INDEX.json"), {
         "git_sha": sha,
-        "requested": wanted,
+        "requested": [*wanted, "R5"] if want_r5 else wanted,
         "produced": produced,
         "missing_scenarios": missing,
         "note": ("missing_scenarios 是 ALL_SCENARIOS 声明了但流程模块尚未落地的场景，"
-                 "它们不生成目录、也不写占位数据。"),
+                 "它们不生成目录、也不写占位数据。"
+                 "R5 不在 ALL_SCENARIOS 里（由 maos.kb.experiment 产），"
+                 "缺省一并产出，--no-r5 可关掉。"),
     }, sha=sha, secrets=secrets)
 
     if missing:

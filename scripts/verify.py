@@ -22,12 +22,18 @@
                                                   -> 失败 = RAG 命中是编的
     6 business-outcome    每个 Plan 终态都有 business_outcome，DONE 必须有外部判据
                                                   -> 失败 =「Agent 都完成了」被当成业务成功
-    7 history-case        每条 history_case 知识都能追溯到 outcome='success' 的真实 case
+    7 history-case        本库晋升的 history_case 都能追溯到 outcome='success'
+                          的真实 case（外部导入的知识不在判据内，但不许全空）
                                                   -> 失败 = 知识层被污染
 
 **SKIP 的纪律**：上游能力没落地的项输出 ``[SKIP]`` 并在结尾显式列名，
 **不计进 PASS 的分子**。静默跳过等于谎报 —— 一个 7/7 里藏着两个没跑的，
 比老老实实写 5/5 PASS + 2 SKIP 更坏。
+
+**空转也算没跑**：分母为 0 的项一律不判 PASS（``_idle_skip``）。``0/0 PASS``
+与「真跑了且全过」在屏幕上长得一模一样，是这个核验器能犯的最坏的错 —— 只跑了
+``make_evidence.py`` 而没产 ``scenario-R5`` 的人，会拿到一屏满分，而 RAG 的
+两项守卫一次都没执行。SKIP 至少看得出没跑，且不进分子。
 
 **依赖方向**：本文件不 import ``maos/domain/**`` 的业务逻辑，只按「表在不在」
 决定某一项跑还是 SKIP（铁律 9）。唯一的例外是 ``resolve_business_ref``：
@@ -106,9 +112,23 @@ def load_evidence_json(path: str):
             raise VerifyError(f"{path} 不是合法 JSON: {exc}") from exc
 
 
+#: 缺库时该往哪走 —— **产它的命令由目录名决定**。`scenario-R5` 不由
+#: `make_evidence.py` 的场景循环产（它按 `maos.main.ALL_SCENARIOS` 跑 1-7），
+#: 而由 `maos.kb.experiment` 单独产。对着 R5 印「先跑 make_evidence.py」，
+#: 照做的人会拿到一模一样的报错再撞一次 —— 提示指向一条解决不了它的命令，
+#: 比没有提示更坏。BACKLOG ## task-W5 第 2 条 / ## task-X3 第 4 条。
+_DB_HINT_DEFAULT = "python3 scripts/make_evidence.py"
+_DB_HINTS = {"scenario-R5": "python3 -m maos.kb.experiment"}
+
+
+def missing_db_hint(db_path: str) -> str:
+    """缺 ``db_path`` 这个库时，该跑哪条命令把它产出来。"""
+    return _DB_HINTS.get(os.path.basename(os.path.dirname(db_path)), _DB_HINT_DEFAULT)
+
+
 def connect_ro(db_path: str) -> sqlite3.Connection:
     if not os.path.exists(db_path):
-        raise VerifyError(f"缺数据库: {db_path}（先跑 python3 scripts/make_evidence.py）")
+        raise VerifyError(f"缺数据库: {db_path}（先跑 {missing_db_hint(db_path)}）")
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
@@ -406,6 +426,22 @@ def _warn_sandbox_path(chk: Check, case: Case) -> None:
 # ---------------------------------------------------------------------------
 # 第 5 项：kb-hit
 # ---------------------------------------------------------------------------
+def _idle_skip(chk: Check, cases: list[Case], what: str) -> None:
+    """分母为 0 —— 本项一次都没执行过。判 SKIP，并说清缺的是哪一份证据。
+
+    印成 ``0/0 PASS`` 是这个核验器能犯的最坏的错：它跟「真跑了且全过」在屏幕上
+    长得**一模一样**，而守卫其实空转。SKIP 不进分子（见文件头「SKIP 的纪律」），
+    至少看得出没跑。RAG 两项的素材全在 ``scenario-R5`` 那一束里，所以缺它时
+    直接把补跑的命令印出来 —— 「没核到」要在屏幕上看得见，还要说得出往哪走。
+    """
+    tail = ""
+    if "scenario-R5" not in {c.name for c in cases}:
+        tail = ("；本轮没有 scenario-R5，而 RAG 的证据全在那一束里 —— "
+                "跑 python3 scripts/make_evidence.py 一并产出，"
+                "或 python3 -m maos.kb.experiment 单独补")
+    chk.skip(f"空转：{what}，本项判据一次都没执行{tail}")
+
+
 def check_kb_hit(cases: list[Case]) -> Check:
     chk = Check("kb-hit", "KbRetrieved 的 doc_id 在 kb_doc 中存在")
     live = [c for c in cases if "kb_doc" in c.tables]
@@ -424,6 +460,8 @@ def check_kb_hit(cases: list[Case]) -> Check:
                     chk.ok()
                 else:
                     chk.bad(f"{case.name} seq={e['seq']}: doc_id={doc_id!r} 不在 kb_doc 里")
+    if chk.total == 0:
+        _idle_skip(chk, cases, "证据束里没有一条 KbRetrieved 事件")
     return chk
 
 
@@ -489,17 +527,36 @@ def check_business_outcome(cases: list[Case]) -> Check:
 # 第 7 项：history-case
 # ---------------------------------------------------------------------------
 def check_history_case(cases: list[Case]) -> Check:
-    chk = Check("history-case", "history_case 知识可追溯到 outcome='success' 的真实 case")
+    """**本库晋升的** history_case 必须回查得到一条 settled 的 refund_case。
+
+    判据只覆盖本库晋升出来的那些，不覆盖外部导入的历史知识（BACKLOG ## task-X3
+    第 3 条）：导入的知识按定义没有本库记录，而给它造一条就是伪造证据（铁律 3）。
+    原判据要求**每一条** history_case 都回查得到，等于把「外部导入的知识」挡在
+    任何证据库之外 —— 规则本身是对的（它守的是「RAG 命中不是编的」），只是太窄。
+
+    区分标志是现成的：本库晋升的 ``source_case_id`` 在 ``refund_case`` 里有行，
+    导入的没有。放宽到此为止 —— 「一条都回查不到」仍判负，见函数末尾：
+    否则这一项会退化成「库里全是导入知识 -> 0/0 -> 过」，那正是空转。
+    """
+    chk = Check("history-case", "本库晋升的 history_case 可追溯到 outcome='success' 的真实 case")
     live = [c for c in cases if "kb_doc" in c.tables]
     if not live:
         chk.skip("kb 层未落地：本轮无 kb_doc 表，history_case 这一类知识尚不存在（P5 才建）")
         return chk
+    seen = imported = 0
     for case in live:
+        local = set()
+        if "refund_case" in case.tables:
+            local = {r[0] for r in case.conn.execute("SELECT case_id FROM refund_case")}
         for r in case.conn.execute(
                 "SELECT doc_id, source_case_id FROM kb_doc WHERE kind='history_case'"):
+            seen += 1
             src = r["source_case_id"]
             if not src:
                 chk.bad(f"{case.name} doc={r['doc_id']}: history_case 没有 source_case_id")
+                continue
+            if src not in local:
+                imported += 1        # 外部导入：本库没有它的 case 行，不在本项判据内
                 continue
             hit = case.conn.execute(
                 "SELECT 1 FROM refund_case WHERE case_id=? AND biz_status='settled'",
@@ -508,6 +565,17 @@ def check_history_case(cases: list[Case]) -> Check:
                 chk.ok()
             else:
                 chk.bad(f"{case.name} doc={r['doc_id']}: 追不到成功收口的真实 case {src}")
+    if imported:
+        chk.warn(f"{imported} 条 history_case 的 source_case_id 不在本库 refund_case 里，"
+                 f"按**外部导入的历史知识**处理，不在本项判据内 —— "
+                 f"给它补一条本库 case 才是伪造证据（铁律 3）")
+    if chk.total == 0:
+        if seen:
+            # 有素材却一条都没进判据 = 放宽放过头的那个形态，判负。
+            chk.bad(f"{seen} 条 history_case 全部回查不到本库 refund_case —— "
+                    f"放宽是为了放行外部导入的知识，不是让本项退化成空转")
+        else:
+            _idle_skip(chk, cases, "证据束里没有一条 history_case 知识")
     return chk
 
 

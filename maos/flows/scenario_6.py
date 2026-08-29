@@ -225,8 +225,19 @@ def run(*, matrix: bool = False) -> int:
     C.register_gateway(GATEWAY_NAME, MockGateway(settle_after=SETTLE_AFTER))
 
     # —— Manager 零改动复用：为代码域写的规划器，在退款域照样规划 DAG ——
-    mgr = ManagerAgent(model)
-    plan_id = cp.create_plan(goal=GOAL, trace_id=new_id("trace"), tasks=mgr.plan(GOAL))
+    # **带 store 构造**：不带的话 SkillInvoker.store is None，规划前检索恒返回空，
+    # `MAOS_KB_ENABLED` 对这条链路没有任何影响。接上之后检索真的发生，
+    # event_log 里落得下 KbRetrieved —— 关掉开关则一条都不落，对照才干净。
+    #
+    # context 只给规划期**此刻真知道**的四个维度：租户 / 业务类型 / 渠道 / SKU。
+    # 政策版本与命中规则（AS-01）是 policy.match 后面才裁出来的，规划期传进来
+    # 等于让它知道了它还不该知道的事 —— 检索上下文不是许愿池。
+    trace_id = new_id("trace")
+    mgr = ManagerAgent(model, store=store)
+    kb_context = {"tenant_id": TENANT_ID, "biz_type": C.BIZ_TYPE,
+                  "channel_id": CHANNEL_ID, "sku": SKU, "trace_id": trace_id}
+    plan_id = cp.create_plan(goal=GOAL, trace_id=trace_id,
+                             tasks=mgr.plan(GOAL, context=kb_context))
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)
 

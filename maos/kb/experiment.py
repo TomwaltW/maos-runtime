@@ -43,15 +43,41 @@ from typing import Any
 from maos import kb
 from maos.kb import guardrails
 
-TENANT_ID = "tnt-mfg-001"
-CHANNEL_ID = "ch-tmall"
-REGION = "CN-EAST"
-SKU = "SKU-BRG-6204"
+#: 靶场身份**逐字对齐 W-1 的语料**（`scenarios/refund/`）。
+#: 对齐不是为了好看：阶段一按 tenant/channel/region/sku/policy_version 硬过滤，
+#: 身份对不上时那 40 条语料一条都进不了候选集 —— 库里有几十条、候选集仍然是 1 条，
+#: 而且不报错。R5 的含金量全在候选集上，所以这几个常量必须跟着语料走。
+TENANT_ID = "tnt-mfg-a"
+CHANNEL_ID = "ch-online"
+REGION = "cn-hangzhou"
+SKU = "SKU-BRG-6205"
 BIZ_TYPE = "refund"
 POLICY_VERSION = 1
+#: 本案诉求是 `quality_defect`，对应语料里的 AS-002「质保期内质量问题全额退」。
+#: 精确通道按它命中，所以它必须是语料里真实存在的编号，不能是自造的 AS-01。
+RULE_NO = "AS-002"
 APPROVER = "沈思锴"
 GATEWAY_NAME = "r5-demo"
 SETTLE_AFTER = 2
+
+#: W-1 语料根目录。本文件是证据生成器，读靶场数据是它的本职（见模块头「领域相关性」）。
+CORPUS_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "scenarios", "refund")
+
+#: 语料里被本文件消费的四张退款域表，以及各自的**列清单**。
+#: 列清单写在这里而不是靠 `INSERT ... VALUES` 的位置对齐：语料多一列少一列都当场抛，
+#: 而不是等到某条 INSERT 报 no such column，或者更糟 —— 值悄悄错位一列。
+#: W-1 的账（`## task-W1` 第 3 条）记着这 7 份数据文件「零消费方，字段分叉不会有任何报错」，
+#: 这一份列清单就是那条账的守卫。
+CORPUS_TABLES = (
+    ("tenant", ("tenant_id", "name", "region")),
+    ("channel", ("tenant_id", "channel_id", "kind", "name")),
+    ("product_snapshot", ("tenant_id", "sku", "version", "name", "category",
+                          "warranty_months", "payload_json")),
+    ("policy_rule", ("tenant_id", "rule_no", "version", "title", "body",
+                     "effective_from", "effective_to", "channel_scope", "sku_scope")),
+)
 
 #: 三段各自的 case 与订单。金额全部写死 —— 对照实验的两跑必须逐条可复现。
 SEGMENTS = {
@@ -73,11 +99,6 @@ SIGNALS = [
     {"source": "客服记录", "kind": "csr_note", "severity": "major",
      "title": "收到的轴承有锈蚀 ", "detail": "客服 0721 通话记录：客户口述同一问题"},
 ]
-
-POLICY_RULES = [
-    ("AS-01", 1, "整机质量问题全额退款", {"refund_ratio": 1.0, "deduct_fee": 0}),
-]
-
 
 # ---------------------------------------------------------------- DAG 脚本
 def _tasks(case_id: str, *, with_finance: bool) -> list[dict]:
@@ -136,23 +157,112 @@ def _tasks(case_id: str, *, with_finance: bool) -> list[dict]:
 SEGMENTS_BY_CASE = {v["case_id"]: v for v in SEGMENTS.values()}
 
 
+# ---------------------------------------------------------------- 语料装载
+def load_corpus(name: str) -> dict:
+    """读一份 W-1 语料。文件缺失就抛 —— 靶场数据不在了，这一跑的结论不成立。
+
+    不做「读不到就回落到自造的最小集」：那样 R5 会照常跑绿，而候选集悄悄退回 1 条，
+    整个对照实验的含金量凭空蒸发且没有任何症状。
+    """
+    path = os.path.join(CORPUS_ROOT, name)
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _checked_rows(payload: dict, key: str, columns: tuple) -> list[dict]:
+    """取语料里的一段行，并**逐行校验列清单逐字对齐**，分叉就抛。
+
+    这是 W-1 那条「零消费方」账的守卫（`## task-W1` 第 3 条）：语料多一列、少一列、
+    改个列名，从前不会有任何东西变红；现在会当场抛，而且报的是差在哪一列。
+    """
+    rows = payload.get(key)
+    if not isinstance(rows, list) or not rows:
+        raise KeyError(f"语料里没有 {key!r} 这一段，或者它是空的")
+    want = set(columns)
+    for idx, row in enumerate(rows):
+        got = set(row)
+        if got != want:
+            raise ValueError(
+                f"{key}[{idx}] 的列清单与本文件登记的不一致："
+                f"多出 {sorted(got - want)}，缺少 {sorted(want - got)}。"
+                " 语料与消费方的列清单分叉，改一处就要改另一处，不许只改一边。")
+    return rows
+
+
+def _seed_domain_from_corpus(store) -> dict:
+    """把 W-1 的政策语料装进退款域四张表。返回各表落了几行。"""
+    from maos.domain.refund import objects
+
+    payload = load_corpus(os.path.join("policy", "policy_rules.json"))
+    counted: dict[str, int] = {}
+    for table, columns in CORPUS_TABLES:
+        rows = _checked_rows(payload, table, columns)
+        marks = ", ".join("?" for _ in columns)
+        sql = (f"INSERT OR REPLACE INTO {table} ({', '.join(columns)})"
+               f" VALUES ({marks})")
+        for row in rows:
+            objects.execute(store, sql, tuple(row[c] for c in columns))
+        counted[table] = len(rows)
+    return counted
+
+
+def _seed_kb_from_corpus(store) -> int:
+    """把语料里的政策规则投影成 `kind='policy'` 的知识文档。返回落库条数。
+
+    投影是**逐字搬运**，不是改写：`title` / `body` / `rule_no` / `version` 原样取自
+    `policy_rule` 行，`created_at` 取该版本的 `effective_from`。
+    `channel_id` / `region` / `sku` 一律留 NULL —— 语料里这些规则的
+    `channel_scope` / `sku_scope` 都是通配，而阶段一的口径正是「文档侧 NULL = 通配」，
+    照抄成具体值反而会把一条不限渠道的政策锁死在一个渠道上。
+
+    **只投影政策，不投影 `history/history_cases.json` 的 24 条历史案例** ——
+    核验器第 7 项要求库里每一条 `history_case` 的 `source_case_id` 都能回查到一条
+    `biz_status='settled'` 的真实 `refund_case`，而外部导入的历史知识按定义没有这样
+    一条本库记录。给它们凭空造 refund_case 行就是伪造证据（铁律 3），所以那 24 条由
+    `maos/tests/test_kb_corpus.py` 全量装载并守着，账记在 BACKLOG `## task-X3`。
+    """
+    from maos.kb.retriever import embed
+
+    payload = load_corpus(os.path.join("policy", "policy_rules.json"))
+    rows = _checked_rows(payload, "policy_rule",
+                         dict(CORPUS_TABLES)["policy_rule"])
+    for row in rows:
+        title = str(row["title"])
+        body = str(row["body"])
+        kb.upsert_doc(store, {
+            "tenant_id": row["tenant_id"],
+            # doc_id 里必须带租户：`kb_doc` 的主键是 `(tenant_id, doc_id)`，
+            # 两个租户各有一条 AS-001，不带租户就是两行同名的 doc_id ——
+            # 表里不冲突，但事件里的一个 doc_id 从此指不到唯一一行，
+            # 证据（KbRetrieved.docs）就再也读不出「命中的到底是谁家那条」。
+            "doc_id": f"kb-policy-{row['tenant_id']}-{row['rule_no']}-v{row['version']}",
+            "biz_type": BIZ_TYPE,
+            "channel_id": None, "region": None, "sku": None,
+            "policy_version": int(row["version"]),
+            "workflow_version": None,
+            "rule_no": row["rule_no"], "gateway_code": None,
+            "kind": kb.KIND_POLICY, "outcome": None, "source_case_id": None,
+            "title": title, "body": body,
+            "embedding": embed(f"{title} {body}"),
+            "created_at": row["effective_from"],
+        })
+    return len(rows)
+
+
 # ---------------------------------------------------------------- 靶场
 def _seed(store, case_id: str) -> None:
+    """装靶场：W-1 的政策语料 + 本段自己的订单快照。
+
+    订单快照是 R5 自己的（三段各一笔），语料里没有 —— 语料给的是政策与商品，
+    交易是本次实验现造的。两者的租户 / 渠道 / SKU / 政策版本必须一致，
+    否则政策裁定与检索预过滤会各自落到不同的口径上。
+    """
     from maos.domain.refund import objects
     from maos.skills.builtin.refund import _common as C
 
     order_id = SEGMENTS_BY_CASE[case_id]["order_id"]
     objects.ensure_schema(store)
-    objects.execute(store, "INSERT OR REPLACE INTO tenant (tenant_id, name, region)"
-                           " VALUES (?,?,?)", (TENANT_ID, "示例精密制造", REGION))
-    objects.execute(store, "INSERT OR REPLACE INTO channel (tenant_id, channel_id, kind, name)"
-                           " VALUES (?,?,?,?)",
-                    (TENANT_ID, CHANNEL_ID, "marketplace", "天猫旗舰店"))
-    objects.execute(
-        store,
-        "INSERT OR REPLACE INTO product_snapshot (tenant_id, sku, version, name, category,"
-        " warranty_months, payload_json) VALUES (?,?,?,?,?,?,?)",
-        (TENANT_ID, SKU, 1, "深沟球轴承 6204", "bearing", 12, "{}"))
+    _seed_domain_from_corpus(store)
     objects.execute(
         store,
         "INSERT OR REPLACE INTO order_snapshot (tenant_id, order_id, version, sku, amount_paid,"
@@ -160,14 +270,8 @@ def _seed(store, case_id: str) -> None:
         " VALUES (?,?,?,?,?,?,?,?,?,?)",
         (TENANT_ID, order_id, 1, SKU, AMOUNT, PAID_AT, CHANNEL_ID, POLICY_VERSION,
          "{}", C.now_iso()))
-    for rule_no, version, title, params in POLICY_RULES:
-        objects.execute(
-            store,
-            "INSERT OR REPLACE INTO policy_rule (tenant_id, rule_no, version, title, body,"
-            " effective_from, effective_to, channel_scope, sku_scope) VALUES (?,?,?,?,?,?,?,?,?)",
-            (TENANT_ID, rule_no, version, title,
-             json.dumps(params, ensure_ascii=False, sort_keys=True),
-             "2026-01-01T00:00:00+00:00", None, "*", "*"))
+    kb.ensure_schema(store)
+    _seed_kb_from_corpus(store)
 
 
 # ---------------------------------------------------------------- 一段的执行
@@ -209,7 +313,7 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
     mgr = ManagerAgent(model, store=store)
     context = {"tenant_id": TENANT_ID, "biz_type": BIZ_TYPE, "channel_id": CHANNEL_ID,
                "region": REGION, "sku": SKU, "policy_version": POLICY_VERSION,
-               "rule_no": "AS-01", "trace_id": trace_id,
+               "rule_no": RULE_NO, "trace_id": trace_id,
                "keyword": "轴承 锈蚀 退款 财务核算"}
     with _kb_switch(use_kb):
         tasks = mgr.plan(GOAL, context=context)
@@ -255,6 +359,9 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
         "kb_retrieved_events": len(kb.query(
             store, "SELECT seq FROM event_log WHERE event_type='KbRetrieved'"
                    " AND trace_id=?", (trace_id,))),
+        # 候选集大小 = 阶段一过完七维硬约束之后还剩几条。它是「融合排序有没有话可说」
+        # 的直接量度：只有 1 条时四通道排给谁看都一样，对照实验说明不了检索质量。
+        "kb_candidate_count": _candidate_count(store, trace_id),
         "human_approval_stops": blocked_titles,
         "biz_status": (case or {}).get("biz_status"),
         "failed_tasks": [{"title": t["title"], "error": t["last_error"]}
@@ -264,6 +371,44 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
             (TENANT_ID, case_id))),
         "settled": (case or {}).get("biz_status") == "settled",
         "plan_done": plan["state"] == PlanState.DONE,
+    }
+
+
+def _candidate_count(store, trace_id: str) -> int:
+    """本段规划期那次检索的候选集大小。从 event_log 读，不从内存拼（铁律 3）。"""
+    rows = kb.query(
+        store, "SELECT detail FROM event_log WHERE event_type='KbRetrieved'"
+               " AND trace_id=? ORDER BY seq", (trace_id,))
+    for row in rows:
+        try:
+            return int(json.loads(row["detail"]).get("candidate_count") or 0)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _kb_funnel(store) -> dict:
+    """检索漏斗的三级数字：库存 -> 同租户 -> 七维预过滤后。
+
+    三个数一起看才说明问题：只报候选集大小，看不出预过滤到底砍掉了什么；
+    只报库存，看不出跨租户的那一半从来没进过候选集。
+    """
+    from maos.kb.retriever import prefilter
+
+    total = kb.query(store, "SELECT COUNT(1) AS n FROM kb_doc")[0]["n"]
+    same_tenant = kb.query(
+        store, "SELECT COUNT(1) AS n FROM kb_doc WHERE tenant_id=?", (TENANT_ID,))[0]["n"]
+    candidates = prefilter(store, {
+        "tenant_id": TENANT_ID, "biz_type": BIZ_TYPE, "channel_id": CHANNEL_ID,
+        "region": REGION, "sku": SKU, "policy_version": POLICY_VERSION})
+    by_kind = kb.query(
+        store, "SELECT kind, COUNT(1) AS n FROM kb_doc GROUP BY kind ORDER BY kind")
+    return {
+        "kb_doc_total": int(total),
+        "same_tenant": int(same_tenant),
+        "after_prefilter": len(candidates),
+        "by_kind": {r["kind"]: int(r["n"]) for r in by_kind},
+        "corpus_root": os.path.join("scenarios", "refund"),
     }
 
 
@@ -361,11 +506,11 @@ def promote_history_case(store, *, case_id: str, plan_id: str) -> dict | None:
         "tenant_id": TENANT_ID, "doc_id": DOC_ID, "biz_type": BIZ_TYPE,
         "channel_id": CHANNEL_ID, "region": REGION, "sku": SKU,
         "policy_version": POLICY_VERSION, "workflow_version": 1,
-        "rule_no": "AS-01", "gateway_code": None,
+        "rule_no": RULE_NO, "gateway_code": None,
         "kind": doc_kind, "outcome": outcome, "source_case_id": case_id,
         "title": "轴承锈蚀全额退款：财务核算不可省",
         "body": body,
-        "embedding": embed("轴承 锈蚀 退款 财务核算 政策 AS-01"),
+        "embedding": embed(f"轴承 锈蚀 退款 财务核算 政策 {RULE_NO}"),
     })
 
 
@@ -450,11 +595,16 @@ def run_r5(db_path: str | None = None) -> dict:
 
     delta = [k for k in with_kb["task_keys"] if k not in without_kb["task_keys"]]
     hits = _triggering_docs(store, with_kb["plan_id"])
+    funnel = _kb_funnel(store)
     print(f"\n差异：delta_tasks={delta}，触发文档="
           f"{[(h['doc_id'], h['score']) for h in hits]}")
+    print(f"检索漏斗：库存 {funnel['kb_doc_total']} 条 -> 同租户 {funnel['same_tenant']} 条"
+          f" -> 七维预过滤后 {funnel['after_prefilter']} 条"
+          f"（with_kb 段实测候选集 {with_kb['kb_candidate_count']} 条）")
     return {
         "experiment": "R5 · RAG 有无对照",
         "variable": f"{kb.KB_ENABLED_ENV}=0 / 1，两段的计划脚本逐字节相同",
+        "kb_funnel": funnel,
         "history_case": {
             "case_id": SEGMENTS["history"]["case_id"],
             "plan_id": history["plan_id"],

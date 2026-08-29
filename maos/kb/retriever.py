@@ -41,6 +41,7 @@ import logging
 import math
 import os
 import time
+import weakref
 from typing import Any
 
 from maos import kb
@@ -176,66 +177,131 @@ def prefilter(store: Any, query: dict, *, limit: int = MAX_CANDIDATES) -> list[d
 
 
 # ------------------------------------------------------ 阶段二：四通道混合召回
+#: 每个 store 上两条 StorePort 通道的可用性判定，探一次记一次。
+#: 用 `WeakKeyDictionary` 而不是 `id(store)` 做键：id 会被回收后的新对象复用，
+#: 那就成了把 A 的判定按在 B 头上，而症状是「换了个库检索忽然全走本地」。
+_PORT_STATE: Any = weakref.WeakKeyDictionary()
+
+
+def port_channel_state(store: Any) -> dict[str, bool]:
+    """这个 store 上两条 StorePort 通道各自探过没有、通不通。只读，供自证与测试用。"""
+    try:
+        return dict(_PORT_STATE.get(store) or {})
+    except TypeError:                                  # 不支持弱引用的 store
+        return {}
+
+
+def _port_search(store: Any, channel: str, args: tuple) -> list[tuple[str, float]] | None:
+    """走 StorePort 的一条通道。返回 `None` = 这条通道走不通，调用方用本地实现。
+
+    **「有这个方法」不等于「这条通道能用」。** F-2 约定源表主键列名固定为 `id`，
+    而 `kb_doc` 的主键是 `(tenant_id, doc_id)`、影子表存的也是 `doc_id` ——
+    真 `SqliteStorePort` 在本层这份 schema 上两条通道都抛 `LookupError`
+    （`no such column: id`，本轨实测，见 BACKLOG `## task-X3`）。所以第一次调用
+    兼作探测：抛了就**记住判定**并只告警一次。每次检索都抛一次再吞掉的写法，
+    症状是日志被刷满而没人看得出这条通道其实一直没通。
+
+    探测通过之后，端口返回的**空列表就是真的没命中**，不再回落本地实现 ——
+    F-2 原话「『后端没准备好』不许伪装成『没命中』」，反过来同样成立：
+    把「后端说没有」偷偷换成本地实现的结果，两条通道的口径就再也对不上了。
+    """
+    method = getattr(store, channel, None)
+    if not callable(method):
+        return None                                    # 能力探测不成立：没有这个方法
+    try:
+        state = _PORT_STATE.setdefault(store, {})
+    except TypeError:                                  # 不支持弱引用，退化成每次都探
+        state = {}
+    if state.get(channel) is False:
+        return None
+    try:
+        rows = [(str(d), float(s)) for d, s in (method(*args) or [])]
+    except Exception as exc:                           # noqa: BLE001 —— 检索不阻塞
+        if state.get(channel) is not False:
+            log.warning(
+                "StorePort.%s 在 %s 上走不通（%s），本次起这条通道退化为本模块的本地实现。"
+                " 两层口径不一致不会报错，只会让召回悄悄变少，所以这条只告警一次并记住判定。",
+                channel, type(store).__name__, exc)
+        state[channel] = False
+        return None
+    state[channel] = True
+    return rows
+
+
+def _rank_normalize(scores: dict[str, float]) -> dict[str, float]:
+    """把一批原始分按**名次**归一，不按分值。命中即正分。
+
+    这条口径来自 W-2 的实测（BACKLOG `## task-W2` 第 2 条）：bm25 的 IDF 在
+    「词出现在过半文档里」时塌到下限，同一批命中的原始分挤成一团；而 bm25 对
+    弱相关文档确实会给出 `-rank <= 0` 的值。按**分值**归一时这两种情况都会把
+    命中压成 0.0，`score_candidates` 又丢掉总分 <= 0 的文档 —— 于是「FTS 明明
+    命中了」变成「一条都没召回」，而且不报错。库越小越容易触发，演示库正是小库。
+
+    所以原始分只用来**排名次**：同分同名次同分数，第一名 1.0，往下按名次线性
+    衰减，最低一档仍是正数。要设阈值就设在名次上，不设在分值上。
+    """
+    if not scores:
+        return {}
+    # 浮点噪声不该把「同分」拆成两个名次：先按 12 位小数归档再排名次。
+    keyed = {d: round(float(v), 12) for d, v in scores.items()}
+    tiers = sorted(set(keyed.values()), reverse=True)
+    step = 1.0 / len(tiers)
+    by_tier = {value: 1.0 - idx * step for idx, value in enumerate(tiers)}
+    return {d: by_tier[v] for d, v in keyed.items()}
+
+
+def _local_fts_rows(store: Any, tenant_id: str, keyword: str,
+                    limit: int) -> list[tuple[str, float]]:
+    """本地 FTS5 通道。返回 `(doc_id, 越大越相关)`，方向与 F-2 一致。
+
+    影子表用的是缺省 unicode61，中文由写入侧的 `kb.fts_text()` 先切成单字 ——
+    所以这里**没有** trigram 那条「<3 字符查询恒返回空集」的坑（W-2 的
+    BACKLOG 第 1 条），两字词「退款」照常召回。要点在于查询侧必须走同一个
+    `kb.tokenize`：换成把原文整串丢进 MATCH，中文那一段一个字都对不上。
+    """
+    match = " OR ".join(f'"{t}"' for t in kb.tokenize(keyword))
+    if not match:
+        return []
+    try:
+        rows = kb.query(
+            store,
+            "SELECT doc_id, bm25(kb_doc_fts) AS rank FROM kb_doc_fts"
+            " WHERE kb_doc_fts MATCH ? AND tenant_id = ? ORDER BY rank LIMIT ?",
+            (match, tenant_id, int(limit)))
+    except Exception as exc:                           # noqa: BLE001 —— 检索不阻塞
+        log.warning("本地 FTS5 检索失败（%s），本通道记 0 分", exc)
+        return []
+    return [(r["doc_id"], -float(r["rank"])) for r in rows]
+
+
 def _fts_scores(store: Any, tenant_id: str, keyword: str,
                 candidates: dict[str, dict], limit: int) -> dict[str, float]:
-    """BM25 通道。优先走 StorePort.fts_search（F-2），没有就用本地 FTS5。
+    """BM25 通道。优先走 StorePort.fts_search（F-2），走不通就用本地 FTS5。
 
-    归一化到 0..1：BM25 是「越小越相关」的负值，绝对值大小又随语料规模浮动，
-    直接加权会让这一通道的量纲压过另外三个。按本次结果集的最大值归一 ——
-    比较的是「本次候选里谁更相关」，这正是融合排序需要的语义。
+    两条实现都只负责给出「谁比谁更相关」的次序，归一交给 `_rank_normalize` ——
+    BM25 的绝对值随语料规模浮动，拿它跟另外三个通道直接相加是量纲错配。
+
+    **租户收窄不靠这一层**：F-2 的 `fts_search` 没有租户参数，端口是全表查的；
+    跨租户不召回由阶段一的候选集兜住（下面那句 `d in candidates`），
+    这也正是「阶段一是硬约束而不是打分项」在实现上的样子。
     """
     if not keyword:
         return {}
-
-    raw: list[tuple[str, float]] = []
-    port_search = getattr(store, "fts_search", None)
-    if callable(port_search):
-        try:
-            raw = list(port_search("kb_doc", "body", keyword, limit) or [])
-        except Exception as exc:                       # noqa: BLE001 —— 检索不阻塞
-            log.warning("StorePort.fts_search 不可用（%s），退化本地 FTS5", exc)
-            raw = []
-    if not raw:
-        # 查询串走与写入侧同一个分词函数，再把 token 用 OR 连起来。
-        # 直接把原文丢进 MATCH 会被 FTS5 当成短语查询，中文那一段一个字都对不上。
-        match = " OR ".join(f'"{t}"' for t in kb.tokenize(keyword))
-        if not match:
-            return {}
-        try:
-            rows = kb.query(
-                store,
-                "SELECT doc_id, bm25(kb_doc_fts) AS rank FROM kb_doc_fts"
-                " WHERE kb_doc_fts MATCH ? AND tenant_id = ? ORDER BY rank LIMIT ?",
-                (match, tenant_id, int(limit)))
-        except Exception as exc:                       # noqa: BLE001 —— 检索不阻塞
-            log.warning("本地 FTS5 检索失败（%s），本通道记 0 分", exc)
-            return {}
-        raw = [(r["doc_id"], -float(r["rank"])) for r in rows]
-
-    scores = {d: s for d, s in raw if d in candidates}
-    if not scores:
-        return {}
-    top = max(scores.values())
-    if top <= 0:
-        return {d: 0.0 for d in scores}
-    return {d: max(0.0, s) / top for d, s in scores.items()}
+    raw = _port_search(store, "fts_search", ("kb_doc", "body", keyword, int(limit)))
+    if raw is None:
+        raw = _local_fts_rows(store, tenant_id, keyword, limit)
+    return _rank_normalize({d: s for d, s in raw if d in candidates})
 
 
 def _vector_scores(store: Any, query_text: str,
                    candidates: dict[str, dict], limit: int) -> dict[str, float]:
-    """语义通道。优先 StorePort.vector_search（pgvector），没有就纯 Python 余弦。"""
+    """语义通道。优先 StorePort.vector_search（pgvector），走不通就纯 Python 余弦。"""
     if not query_text:
         return {}
     vec = embed(query_text)
-
-    port_search = getattr(store, "vector_search", None)
-    if callable(port_search):
-        try:
-            raw = list(port_search("kb_doc", "embedding", vec, limit) or [])
-            if raw:
-                return {d: max(0.0, min(1.0, float(s))) for d, s in raw if d in candidates}
-        except Exception as exc:                       # noqa: BLE001 —— 检索不阻塞
-            log.warning("StorePort.vector_search 不可用（%s），退化纯 Python 余弦", exc)
+    raw = _port_search(store, "vector_search", ("kb_doc", "embedding", vec, int(limit)))
+    if raw is not None:
+        return {d: max(0.0, min(1.0, float(s))) for d, s in raw if d in candidates}
     return {doc_id: cosine(vec, _doc_vector(doc)) for doc_id, doc in candidates.items()}
 
 

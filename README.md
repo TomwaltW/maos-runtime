@@ -6,9 +6,19 @@
 （政策与历史案例是按行业惯例构造的合成数据，支付网关的错误码与时序取自公开规范
 ——口径见 [§8](#8-与提案--比赛要求的映射)，不含糊。）
 
+<!-- Y轮易变（Y-3）：①② 正在合并成一条命令；合并后本块与 §3、§4 的三条链需同步改写 -->
+
 ```bash
-python3 scripts/verify.py        # 评委的一条命令：七项证据逐项重放校验
+python3 scripts/make_evidence.py   # ① 跑 7 个场景，生成 evidence/scenario-1..7
+python3 -m maos.kb.experiment      # ② 生成 evidence/scenario-R5（① 不产它）
+python3 scripts/verify.py          # ③ 七项证据逐项重放校验 -> RESULT: 7/7 PASS
 ```
+
+> **新克隆必须按 ①②③ 跑满三条，一条都不能省。** `*.db` 不入 git（`.gitignore` 挡着），
+> 核验器要的是库、不是快照。直接跑 ③ 会报 `缺数据库` 并**退出 2**；只跑 ①③ 会卡在
+> `缺数据库: evidence/scenario-R5/maos.db`，而它给的提示仍是「先跑 `make_evidence.py`」
+> —— **照那句做会原地打转**（实测：重跑多少次都是同一个错）。原委见
+> [§3](#3-一条命令核验这一节是给评委的)。
 
 ---
 
@@ -92,7 +102,8 @@ python3 scripts/verify.py            # ③ 七项逐条重放校验
 echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 ```
 
-本机实跑（基线 `df96fa8`）：
+本机实跑（基线 `42822fc`，**全新克隆 + 无任何 API key**，逐步耗时见
+[`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
 
 ```
 [PASS] hash-integrity       74/74
@@ -120,6 +131,22 @@ RESULT: 7/7 PASS
 **照样退出 2**，而它给的提示是「先跑 `make_evidence.py`」—— 按这句提示做会原地打转。
 **②不能省。** 已记 `docs/BACKLOG.md ## task-W5`。
 
+🔴 **跑完 `git status` 会有 50 行改动，这是预期，不是你弄坏了仓库。** 证据文件首行带
+生成时间与 git sha，每次重跑都会变；`*.db` 被 `.gitignore` 挡着不会出现在里面。
+
+**但不要用 `git checkout -- evidence/` 去「收拾干净」。** json 会被还原成入库的旧版本，
+而 `maos.db` 不入 git、不会跟着还原 —— 新库配旧快照，再跑 `verify.py` 会掉到
+`RESULT: 3/7 PASS`（`hash-integrity 4/74`、`business-ref 0/33`），看上去像证据被伪造，
+其实只是两边不同步。实测过的两条出路，二选一：
+
+```bash
+python3 scripts/make_evidence.py && python3 -m maos.kb.experiment   # 甲：重跑，回到 7/7
+find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连库一起清，回到出厂态
+```
+
+甲之后 `verify.py` 回到 7/7；乙之后工作区 0 行改动、`verify.py` 退 2（等同新克隆）。
+**只做 `git checkout` 而不删库，是唯一会得出错误结论的那条路。**
+
 **SKIP 的纪律**：上游能力没落地的项输出 `[SKIP]` 并在结尾显式列名，**不计进 PASS
 的分子**。静默跳过等于谎报 —— 一个 7/7 里藏着两个没跑的，比老实写 5/5 + 2 SKIP 更坏。
 
@@ -141,12 +168,27 @@ RESULT: 7/7 PASS
 
 **不需要任何 API key。** 核心零依赖，只要 Python ≥ 3.10。
 
+下面每条命令都在**仓库根目录**执行（clone 出来的目录名由你给的地址决定，
+`cd` 进去即可，不要写死成别的名字）：
+
 ```bash
-git clone <repo> && cd maos-runtime
+git clone <本仓库地址> maos && cd maos
 python3 -m pytest maos/tests -q     # 521 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
+
+# 到这里只跑了代码；要看到评委关心的 7/7，还差证据链这三条：
+python3 scripts/make_evidence.py    # ① scenario-1..7
+python3 -m maos.kb.experiment       # ② scenario-R5（① 不产它，不能省）
+python3 scripts/verify.py           # ③ RESULT: 7/7 PASS，exit=0
 ```
+
+<!-- Y轮易变（Y-3）：①② 合并成一条命令后，本块末尾三行与 §3、抬头块需同步改写 -->
+
+全新克隆 + 无任何 API key 实测：以上全部跑完约 **17 秒**，其中「clone + 证据链三条」
+这条最短路径约 **7 秒**；
+跑完 `git status` 会有 50 行 `evidence/` 改动，属预期 —— **别用 `git checkout` 单独还原**，
+原因与两条出路见 [§3](#3-一条命令核验这一节是给评委的)。
 
 **`python3 run.py` 无参跑全部 1–7**：`maos/main.py` 的 `DEFAULT_SCENARIOS` 已是
 `(1,…,7)`。场景 7 是本仓库唯一一条「业务确实没成功」的演示路径，无参跑就能看到它；

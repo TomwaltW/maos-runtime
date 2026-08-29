@@ -317,3 +317,20 @@ X 轮四轨 + W-5 合并后的整体验收发现三条，均**不在整合轮可
 | 2026-08-29 | P4 | **`docs/domain-portability.md` 的「领域无关」论证，其证据区间 `90251b3..HEAD` 现在混进了非退款域的改动。** 该文档用「退款域上线前后 `git diff` 逐面为零」来论证内核领域无关，但本轮 X-2 给 `maos/core/control_plane.py` 加了 +46/−2（网关码四象限），X-4 给 `maos/tools/sandbox.py` 加了 +111/−13（降级可见化）—— 两者都**不是退款域上线带来的**，却落在同一个区间里 | 论证的**结论没塌**：`maos/contracts/` 仍严格为零，两条 AST/import 守卫（`test_runtime_and_core_do_not_import_refund_domain` / `test_kernel_does_not_know_the_refund_domain`）本轮实跑 2 passed，「内核不认识退款域」这件事仍被机器钉住。塌的是**数字的读法**：表格里 `maos/core/` 那一格从「（空，零改动）」变成非零，读者会以为是退款域把它改的 | 本轮已按真实值刷了数字，并在表格与「不是零 —— 如实说清楚」小节里点明这两笔的出处（整合轮 4 / X-2、X-4）。但更干净的做法是**把论证的区间端点从「当前主干」换成「退款域上线那一刻的 sha」**，让区间只包住退款域，非退款域的改动另起一段说。这要重新选 sha 并重跑全表数字，属文档结构调整，交下一轮 |
 | 2026-08-29 | P5 | **派单 §4 第四步写的「`python3 run.py` 重新生成 `evidence/`」与实际不符** —— `run.py` 跑完 `git status --porcelain` 只有 1 行（gen_docs 的产物），`evidence/` 一个文件都没动。真正产证据的是 README ①②③：`scripts/make_evidence.py`（产 scenario-1..7）+ `python3 -m maos.kb.experiment`（产 scenario-R5）+ `scripts/verify.py`（校验） | 照派单字面执行的会话会以为证据束已按新 HEAD 重跑，实际 `evidence/` 里仍是旧代码的产物 —— 正是派单自己要防的「假绿」。本轮已改跑实际生成器，见 DECISIONS `## integrate-round-4` 第 1 条 | 下一轮派单模板里把第四步的命令换成 `make_evidence.py` + `maos.kb.experiment` + `verify.py` 三条。README §3 的 ①②③ 就是正确版本，直接抄 |
 | 2026-08-29 | P4 | **`CLAUDE.md:75` 的常用命令注释仍写 `python3 run.py  # 场景 1-6 端到端`**，X-1 合并后实际跑 1-7 | 与 `## task-X1` 第 3 条是同一条（那条由 X-1 记下并建议「编排侧收口时一行改掉」）。`CLAUDE.md` 每个会话自动加载，是所有会话看到的第一份事实；留着它，下一个会话会照「1-6」去复核 `run.py` 输出，把多出来的场景 7 当成异常 | `CLAUDE.md` **不在整合轮派单的可改面内**（派单 §4 第三步只列 README.md 与 docs/\*.md），故本轮未改。README / demo-script / submission-checklist / architecture / domain-portability 里的同类措辞本轮已全部刷成 1-7，只剩 `CLAUDE.md` 这一处。**请人类一行改掉**，或在下一轮派单里把它列进可改面 |
+
+## task-Z5
+
+新克隆冒烟（分支 `task/z5-clone-smoke`，基线 `42822fc`）时撞见、**README 救不了**的两条。
+本轨可改面只有 `README.md` 与本轨四份文档，`scripts/**` 与 `maos/**` 全在禁改面内。
+
+已有账不重开：**「只跑 ①③ 会在 `缺数据库: scenario-R5/maos.db` 上原地打转」这条属
+`## task-W5` 第 2 条**，本轨在全新克隆上又复现一次（照提示重跑 `make_evidence.py`
+第二次、第三次，报错一字不差），结论与出路与该条完全一致，故不另开条目 —— 只补一条
+实测读数供那条参考：**照提示重跑一次后工作区脏行从 43 涨到 50 再到 43+**，因为
+第二次生成时工作区已不干净，证据首行的 sha 变成 `-dirty`，把原本字节稳定的
+`scenario-1..4` 也一并改脏，观感上像「越修越坏」。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`evidence/*.json` 入 git 而 `evidence/*/maos.db` 不入 git，两者会失同步；一旦评委用 `git checkout -- evidence/` 把跑脏的工作区「收拾干净」，`verify.py` 立刻从 7/7 掉到 `RESULT: 3/7 PASS`。** 本轨在标准路径上实测：clone → ①②③ → 7/7 PASS（脏 50 行）→ `git checkout -- evidence/`（脏 0 行）→ 再 `verify.py` → `[FAIL] hash-integrity 4/74`、`[FAIL] business-ref 0/33`、`[FAIL] business-outcome 0/10`、`RESULT: 3/7 PASS`、exit=1。根因是 checkout 只还原了入库的 json 快照，现跑出来的新库还在原地，核验器拿新库校验旧快照 | **这是本轨发现的最坏一条，比 W-5 第 2 条更伤**：W-5 那条的表现是 `exit=2` 加一句「缺数据库」，评委知道自己少跑了一步；这一条的表现是**七项里三项 FAIL、hash 完整性 4/74**，屏幕上写着「证据被篡改或事后手写」（README §3 的失败释义表原话）。一个刚跑出 7/7、顺手 `git checkout` 收拾了一下、又复核了一遍的评委，拿到的结论是**这个项目的证据束是伪造的**。而整件事只是两边不同步 | 三条路，建议 ①+③：①`verify.py` 在 `hash-integrity` 大面积失配时**先比对库与 json 的生成时间戳**，不一致就报「库与快照不同步，请重跑 ①② 或删库还原」而不是直接判 FAIL——它出现在评委正看着的那一屏上，与 `## task-W5` 第 2 条建议 ① 是同一类修法，宜一并做；②把 `evidence/*.json` 也移出 git（只留 `INDEX.json` 与目录骨架），让「证据只能现跑」变成结构上的事实，但这会动 `.gitignore` 与仓库形态，且 W-5 建立的「证据入库可被 diff 审计」这条好处会没掉，**不建议**；③`make_evidence.py` 跑完打一行提示，说明工作区会脏、以及不要单独 `git checkout`。**本轨已在 `README.md` §3 写了警告并给出两条实测过的出路（重跑 ①② / `find evidence -name 'maos.db' -delete && git checkout -- evidence/`），但那只在读了 README 的人身上生效** |
+| 2026-08-29 | P7 | **`python3 -m maos.kb.experiment` 没有 argparse，任何参数都被无视并直接开跑**：`--help` 不打用法、不退出，而是跑完对照实验、把 `evidence/scenario-R5/` 7 个文件落盘，工作区脏 7 行，`exit=0`。同一屏上并列的 `python3 scripts/make_evidence.py --help` 则是正规 argparse（`usage: make_evidence [-h] [--out OUT] ...`），打完用法即退、不写任何文件 | README 抬头与 §3 把这两条命令并列成 ①②，评委很自然会对两条都敲一次 `--help` 看有什么开关。结果是：一条给用法，另一条**默不作声地改了他的工作区**。踩到的人不会意识到是自己触发的，只会看到 `git status` 又多了 7 行 —— 与上一条叠加时尤其糟，因为他此刻正在琢磨「工作区怎么又脏了」。这也是「一条命令复现全量证据」这个卖点上最后一处不齐的接缝 | 与 `## task-W5` 第 2 条、本文件 `## task-X4` 段落里那条 `--out` 的账**同源**，一次做完：给 `maos/kb/experiment.py` 的 `__main__` 补一个真 argparse（`--out`，缺省 `evidence/`，带 `-h`）。`maos/kb/**` 不在本轨可改面内。**Y-3 若把 ①② 合并成一条命令，本条自动消解**（届时 `kb.experiment` 不再是评委直接敲的入口），故优先级跟着 Y-3 走 |

@@ -317,6 +317,25 @@ def _seed(store, case_id: str) -> None:
 
 
 # ---------------------------------------------------------------- 一段的执行
+def _await_kind(store, plan_id: str, task_id: str) -> str:
+    """这个任务最近一次进 BLOCKED 时，控制面声明它在等哪一类人的动作。
+
+    判据与 `HumanApprovalQueue.pending()` 同源：都读 BLOCKED 迁移那条事件的
+    `detail["await"]`，不在任务行上另开字段（event_log 是唯一事实源）。
+
+    取**最近一次**而不是第一次：BLOCKED 可以进出多次（`human_resume` 回去、再因
+    别的原因停下），要处置的是最后那一次。缺省回 `human_approval` —— effect_risk=H
+    那条既有路径不写 `await`，缺省成放行才是保持既有语义。
+    """
+    from maos.contracts.states import TaskState
+
+    kinds = [e["detail"].get("await") for e in store.list_event_log(plan_id)
+             if e.get("task_id") == task_id
+             and e.get("to_state") == TaskState.BLOCKED
+             and isinstance(e.get("detail"), dict)]
+    return kinds[-1] if kinds and kinds[-1] else "human_approval"
+
+
 def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
     """跑一段，返回这一段的真实观测。
 
@@ -377,13 +396,28 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)
 
-    # Task 级的人工审批闸是另一回事（effect_risk=H 才停）：补上财务核算的那一段
-    # 会停在这里等人放行，漏排的那一段压根停不下来 —— 这本身也是差异的一部分。
+    # 停在 BLOCKED 等人的任务有两类，处置方式不同，判据与 `HumanApprovalQueue.pending()`
+    # 同源（都读 BLOCKED 迁移那条事件的 `detail["await"]`，见 `_await_kind`）：
+    #
+    # · `human_approval` —— effect_risk=H 的高风险放行。补上财务核算的那一段会停在
+    #   这里等人核对金额与政策版本，主管放行（既有语义，一个字节没动）。
+    # · `human_decision` —— 控制面的第三出口：机器返工修不好，转人工裁决。漏排财务
+    #   核算是**计划的静态结构缺陷**，放行一次不会让它消失（重评照旧 blocker，闸判
+    #   的是「排没排这一步」），主管在这里能做的只有驳回，让这一版计划收敛到 FAILED。
+    #
+    # 改造前漏排那一段压根停不下来、要等付款技能拒绝才失败；现在闸在裁定那一步就
+    # 拦下转人工，早两步。这里补上「人来处置」是为了不在演示里留一个悬空的 BLOCKED，
+    # **不动闸判什么** —— `finance_gate` 记的仍是闸真的说的那个 blocker。
     hq = HumanApprovalQueue(store, cp)
-    blocked_titles = [b["title"] for b in hq.pending(plan_id)]
+    dispositions: list[dict] = []
     for blocked in hq.pending(plan_id):
-        hq.decide(blocked["task_id"], approved=True, operator=APPROVER,
-                  note="已核对金额与政策版本")
+        await_kind = _await_kind(store, plan_id, blocked["task_id"])
+        approved = await_kind != "human_decision"
+        hq.decide(blocked["task_id"], approved=approved, operator=APPROVER,
+                  note=("已核对金额与政策版本" if approved else
+                        "计划漏排财务核算，退回重排 —— 不许在没有财务凭据时发起付款"))
+        dispositions.append({"title": blocked["title"], "await": await_kind,
+                             "approved": approved})
     run_until_settled(bus, gate, cp, plan_id)
 
     plan = cp.store.get_plan(plan_id)
@@ -410,7 +444,11 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
         # 候选集大小 = 阶段一过完七维硬约束之后还剩几条。它是「融合排序有没有话可说」
         # 的直接量度：只有 1 条时四通道排给谁看都一样，对照实验说明不了检索质量。
         "kb_candidate_count": _candidate_count(store, trace_id),
-        "human_approval_stops": blocked_titles,
+        # 放行的那些（既有字段，口径不变：主管核对后放行的高风险任务）
+        "human_approval_stops": [d["title"] for d in dispositions if d["approved"]],
+        # 全部处置明细，含被驳回的 —— 「谁停下了、等的是哪一类人、人怎么判的」
+        # 三件事得在证据里分得开，只留一个 title 列表分不开。
+        "human_dispositions": dispositions,
         "biz_status": (case or {}).get("biz_status"),
         "failed_tasks": [{"title": t["title"], "error": t["last_error"]}
                          for t in rows if t["last_error"]],
@@ -632,6 +670,16 @@ def run_r5(db_path: str | None = None) -> dict:
               f"{without_kb['kb_retrieved_events']} 条，第六道闸 "
               f"{without_kb['finance_gate']}，Plan {without_kb['plan_state']}，"
               f"业务状态 {without_kb['biz_status']}")
+        # 三行叙事：闸判出计划缺陷 -> 控制面第三出口转人工 -> 主管驳回。
+        # 每一行都从这一段的真实观测里取，不写死任何结论。
+        for rejected in [d for d in without_kb["human_dispositions"]
+                         if not d["approved"]]:
+            print(f"  第六道闸：计划缺陷 {without_kb['finance_gate']}"
+                  f"（漏排财务核算，付款前拿不到金额凭据）")
+            print(f"  第三出口：{rejected['title']} -> BLOCKED"
+                  f"（await={rejected['await']}，机器返工修不好，转人工）")
+            print(f"  主管裁决：驳回 -> 计划收敛到 {without_kb['plan_state']}，"
+                  f"付款一次都没派发")
         for failed in without_kb["failed_tasks"]:
             print(f"  拦点：{failed['title']} -> {failed['error']}")
 

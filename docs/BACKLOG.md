@@ -784,3 +784,16 @@ H-5 轨（`scripts/matrix_probe.py` 的 ②a / ②c 两个假阴性，分支 `ta
 - `## task-C4` 第 1 条（`:499`/`:502` 打死 verify）：**实测复现，已修**。见 `docs/DECISIONS.md ## task-H8` 第 1 行。
 - `## task-C4` 第 2 条（`:790`/`:793` 证据列指错目录）：**实测仍成立，已按其建议修**（`:790` → `evidence/scenario-6,7/`、`:793` → `evidence/scenario-7/trace.json`）。
 - `## task-F1` 第 2 条（`:710` 十角色与 `AGENT_POOL` 9 个对不上）：**本轨实测判定该条记账不成立** —— `docs/EXECUTION.md:710` 描述的是生成物 `docs/agent-identity.md` 的内容清单，那份生成物确实是 10 个 Identity、软件交付域确实 6 个（含 `manager`）、退款域 4 个，两个数都对。F-1 当时的判断（「严格说这句没错，建议不改」）是对的。本轨按派单授权只做了**措辞增强**：在该行下补出「10 = 带 Identity 的角色总数，9 = 可派单数，`manager` 有 Identity 不进池」，不是纠错。
+
+## integrate-round-9
+
+H 轮八轨（H-1…H-8）合入时，编排侧**实跑核验**发现下面几条。均**不在整合轮可改面内**
+（整合轮只做合并 + 验证 + 本轮数字回填），按铁律 4 记账不当场改。
+基线 `1131795`，合并后 HEAD `627cce6`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`scripts/verify.py` 里 `_SHA_DIRTY_SUFFIX` 上方的注释已过期**：仍写着「`scenario-R5` **恒带**这个后缀」，而 H-7 修好落盘顺序后实测八个场景 sha 全干净。H-7 已记过一条（它当时量到的行号是 `:80-83`，合入 H-1 对同文件的改动后现在是 `:94-97`） | 一条写着「恒带」的注释旁边跟着一个再也不会命中的分支。`_SHA_DIRTY_SUFFIX` 常量**本身仍要保留**（工作区真脏时仍会写 `-dirty`），过期的只是「R5 恒带」这半句 | 下一轮持有 `verify.py` 的那一轨顺手改注释。**不要删 `_SHA_DIRTY_SUFFIX`** |
+| 2026-08-29 | P7 | **`evidence/scenario-R1/` 那颗地雷只拆了手册一侧，`verify.py` 一侧还在**。H-8 把 `docs/EXECUTION.md:499/502` 的截图落点从 `evidence/scenario-R1/` 改到了 `evidence/room/`，但 `verify.py` 仍按 `d.startswith("scenario-")` 收目录 —— 编排侧本轮当场复现：`mkdir evidence/scenario-R1 && python3 scripts/verify.py` → **exit=2**，七项一项都跑不到 | 手册不再教人踩，但任何人手工建一个 `scenario-*` 目录仍会把核验器打死，且报错说的是「缺数据库」，指不到真正的原因 | 下一轮给 `verify.py` 加一条：遇到 `scenario-*` 目录但里面没有证据束文件时，报「这不是证据束目录」而不是「缺数据库」。归 `verify.py` 持有轨 |
+| 2026-08-29 | P7 | **`docs/clone-smoke-report.md` 的读数连续两轮没改**，占位仍挂 `PENDING-R9`。理由同 `## integrate-round-8`：它每个数都归因于「仓库外全新 clone 的冒烟实跑」，整合轮 9 同样没做第四遍冒烟 | 报告里的 `521 passed` / `4/74` 与当前的 `749 passed` 差了两百多条，而它是 A-1「新克隆冒烟 ≤ 15 分钟」那条的执行记录 | 仍需**单独一轨**做第四遍冒烟。这是目前唯一一条跨两轮没动的待办 |
+| 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题仍然过期**。`## integrate-round-8` 已记过一次，本轮没接 | 一节挂着「待整合轮 6」的清单出现在整合轮 9 的交付里 | 下一轮顺手改标题并清掉已完成项 |

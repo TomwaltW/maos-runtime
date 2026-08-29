@@ -10,7 +10,9 @@
 证据，吞掉就没了。
 
 `refund_case` 的一切写入只有两个入口 —— `create_case()` 建、`update_biz_status()` 改，
-不留第三条路径。两道拦截：
+不留第三条路径。其中 `create_case()` 是**幂等**的：受理这一步会被返工重跑，而主键是
+`(tenant_id, case_id)`，裸 INSERT 的重跑不是「建出两个案子」而是当场 IntegrityError
+（幂等语义、以及为什么不能 upsert 覆盖，见 `create_case` 的 docstring）。两道拦截：
   - 运行时：`objects.execute()` 见到 refund_case 的写语句直接抛 `BypassedGuardError`
   - 提交前：grep -rn "biz_status.*=.*'settled'" maos/ | grep -v guard.py | grep -v observe
 """
@@ -64,8 +66,22 @@ INITIAL_STATUS = "submitted"
 
 VIOLATION_EVENT = "AuthoritativeFactViolation"
 
+#: 同一个案号上来了一份业务字段不一样的受理 —— 落这个事件类型。
+#: 与 `VIOLATION_EVENT` 分开：越权写入是「你不该写」，这里是「你写的和库里那份
+#: 不是同一件事」，两种排查方向完全不同，压成一个事件类型就得靠读 reason 去分。
+CASE_CONFLICT_EVENT = "RefundCaseIdentityConflict"
+
 #: 一条回执至少要有的字段。缺任何一个都算「没有回执」。
 _OBSERVATION_REQUIRED = ("request_id", "gateway_code", "observed_state")
+
+#: 判定「这是不是同一件事的重放」要逐字段比对的业务字段（见 `create_case` 的幂等语义）。
+#:
+#: `biz_status` 与 `created_at` **不在里面**：前者是案子建成之后被推进的结果，
+#: 后者是第一次受理的时刻 —— 拿它们比对会让每一次正常重放都判成冲突。
+#: `plan_id` 在里面：两个 Plan 同时推进同一个案子的 `biz_status` 没有正确解，
+#: 那种案号复用该在受理这一步就响，不该留到状态机上去打架。
+_CASE_IDENTITY_FIELDS = ("channel_id", "order_id", "order_version", "sku",
+                         "reason_code", "amount_claimed", "plan_id")
 
 
 class AuthoritativeFactViolation(RuntimeError):
@@ -80,6 +96,15 @@ class BizStatusTransitionError(ValueError):
     """业务状态迁移不在 `BIZ_STATUS_FLOW` 里。"""
 
 
+class CaseIdentityConflict(ValueError):
+    """同一个 `(tenant_id, case_id)` 上来了一份**业务字段不一样**的受理。
+
+    不是重放，是两件事撞了同一个案号。定义成 `ValueError` 而不是复用
+    `AuthoritativeFactViolation`：那个说的是「你没资格写」，这个说的是
+    「你写的和库里那份不是同一件事」。
+    """
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -89,6 +114,39 @@ def _require_invocation_id(invocation_id: str) -> str:
     if not invocation_id:
         raise ValueError("invocation_id 不许为空：它是 refund_case 每一次写入的 actor 锚点")
     return invocation_id
+
+
+def _identity_of(row: dict) -> dict:
+    """把库里那一行折成与 `create_case` 入参同一个形状，好逐字段比。
+
+    必须过一遍类型转换：sqlite 的 INTEGER / REAL 回来是 int / float，而调用方递
+    进来的可能是 str 或 int（`refund.intake` 就对整份 seed 做过一次 `str()` /
+    `int()` / `float()`）—— 不归一就会把「3200 与 3200.0」判成冲突，
+    幂等当场退化成「每次重跑都报冲突」。
+    """
+    return {
+        "channel_id":     str(row["channel_id"]),
+        "order_id":       str(row["order_id"]),
+        "order_version":  int(row["order_version"]),
+        "sku":            str(row["sku"]),
+        "reason_code":    str(row["reason_code"]),
+        "amount_claimed": float(row["amount_claimed"]),
+        "plan_id":        str(row["plan_id"]),
+    }
+
+
+def _log_case_conflict(store: Any, *, plan_id: str, tenant_id: str, case_id: str,
+                       diff: dict, actor: str, invocation_id: str) -> None:
+    """拒绝一次案号复用也要留证据 —— 理由同模块 docstring：吞掉就没了。"""
+    store.append_event_log({
+        "plan_id": plan_id,
+        "event_type": CASE_CONFLICT_EVENT,
+        "reason": f"case_id 被复用，业务字段对不上：{sorted(diff)}",
+        "detail": {"tenant_id": tenant_id, "case_id": case_id,
+                   "actor": actor, "invocation_id": invocation_id,
+                   "conflicts": {f: {"stored": old, "incoming": new}
+                                 for f, (old, new) in diff.items()}},
+    })
 
 
 def _log_violation(store: Any, *, plan_id: str, tenant_id: str, case_id: str,
@@ -122,23 +180,75 @@ def create_case(
     actor_skill: str,
     invocation_id: str,
 ) -> dict:
-    """建一个 refund_case，落 `submitted`。这是本表唯一的插入口径。
+    """建一个 refund_case，落 `submitted`。这是本表唯一的插入口径，**且是幂等的**。
 
     `biz_status` 不接受调用方指定 —— 想直接建成 settled 的路必须从一开始就不存在，
     否则守卫只挡得住 update，挡不住 insert。
+
+    **幂等语义**（受理这一步会被返工重跑，而主键是 `(tenant_id, case_id)`）：
+
+      · 案号已在库 + `_CASE_IDENTITY_FIELDS` 逐字段相同 → 一个字节都不写，返回
+        **既有那一行**（原 `created_at`、原 `biz_status`）。所以这里既不能
+        `INSERT OR REPLACE` 也不能 `ON CONFLICT DO UPDATE`：那两种写法会让一次
+        重跑把已经推进到 approved / processing 的案子**静悄悄**倒回 `submitted`，
+        比裸 INSERT 抛异常坏得多（BACKLOG `## task-D2` 第 1 条已点名不建议）。
+      · 案号已在库 + 任一业务字段不同 → 落一条 `CASE_CONFLICT_EVENT` 事件并抛
+        `CaseIdentityConflict`。**这一档不许静默**，两种静默走法都错：
+        悄悄收下新金额 → 库里的 `amount_claimed` 是 `finance.settle` 真正拿去
+        算钱的输入，而第六道财务复核闸的 plan 级与任务级判据**都只读
+        `task["inputs"]`**、看不见库里这次改动，等于把那道闸绕过去；
+        悄悄丢弃 → 调用方拿到一份和自己递进来的 seed 对不上的 `case_draft`，
+        同样一点信号都没有。与第 ④ 道「有回执 ≠ 回执说到账了」同一个 fail-closed 口径。
+
+    用 `ON CONFLICT (tenant_id, case_id) DO NOTHING` 而不是 `INSERT OR IGNORE`：
+    后者会把 `biz_status` 那条 CHECK 约束的失败一并吞掉，指名冲突目标才只放过
+    主键这一种冲突。判定放在插入**之后**回读比对，而不是插入前先查一次 ——
+    先查后插在 `lock_of()` 退化成 nullcontext 的 Store 上有 TOCTOU 窗口。
     """
     _require_invocation_id(invocation_id)
+    incoming = {
+        "channel_id":     str(channel_id),
+        "order_id":       str(order_id),
+        "order_version":  int(order_version),
+        "sku":            str(sku),
+        "reason_code":    str(reason_code),
+        "amount_claimed": float(amount_claimed),
+        "plan_id":        str(plan_id),
+    }
     conn = objects._conn(store)
     with objects.lock_of(store):
         conn.execute(
             "INSERT INTO refund_case (tenant_id, case_id, channel_id, order_id, order_version,"
             " sku, reason_code, amount_claimed, biz_status, plan_id, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (tenant_id, case_id, channel_id, order_id, int(order_version), sku, reason_code,
-             float(amount_claimed), INITIAL_STATUS, plan_id, _now()),
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT (tenant_id, case_id) DO NOTHING",
+            (tenant_id, case_id, incoming["channel_id"], incoming["order_id"],
+             incoming["order_version"], incoming["sku"], incoming["reason_code"],
+             incoming["amount_claimed"], INITIAL_STATUS, incoming["plan_id"], _now()),
         )
         conn.commit()
-    return get_case(store, tenant_id, case_id)  # type: ignore[return-value]
+
+    case = get_case(store, tenant_id, case_id)
+    if case is None:
+        # 既没插进去、又读不到。不静默返回 None：调用方的类型标注说这里必有一行。
+        raise RuntimeError(
+            f"create_case 之后读不到 case：tenant={tenant_id} case={case_id}")
+
+    stored = _identity_of(case)
+    diff = {f: (stored[f], incoming[f])
+            for f in _CASE_IDENTITY_FIELDS if stored[f] != incoming[f]}
+    if diff:
+        _log_case_conflict(store, plan_id=incoming["plan_id"], tenant_id=tenant_id,
+                           case_id=case_id, diff=diff, actor=actor_skill,
+                           invocation_id=invocation_id)
+        detail = "；".join(f"{f}：库里 {old!r}、这次 {new!r}"
+                          for f, (old, new) in sorted(diff.items()))
+        raise CaseIdentityConflict(
+            f"case={case_id}（tenant={tenant_id}）已经存在，业务字段对不上：{detail}。"
+            "受理重跑只在业务字段逐字段相同时幂等；对不上说明这不是同一件事的重放，"
+            "既不许覆盖也不许静默丢弃 —— 换个 case_id，或先查清这个案号为什么被复用"
+        )
+    return case
 
 
 def update_biz_status(

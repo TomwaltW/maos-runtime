@@ -674,3 +674,17 @@ F 轨两支的账各自记在 `## task-F1` / `## task-F2`，本节不重复；�
 | 2026-08-29 | P7 | **`docs/ppt-outline.md` 数字口径行末尾的两组 diff 统计（`+62−4` / `+273−7`）本轮仍没重算**。`## integrate-round-6` 已记，本轮没接 | 该行其余数字本轮全部刷成了 `4d691fc` 的实测值，唯独这两个仍是旧值，同一行里新旧混排 | 与下一轮材料面一起重算 |
 | 2026-08-29 | P7 | **`scenario-R5` 的 7 个文件首行出处 sha 仍带 `-dirty`**（`4d691fc-dirty`）。`## integrate-round-6` 已记，本轮按同一路径复现 | 不影响 verify（`verify.py` 显式容忍 R5 的这个后缀），但每轮都要向读者解释一次 | 修 `make_evidence.py` 的落盘顺序（先全算后全写），归下一轮 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题已过期**，且其中第 2 条「`integrate/round-5` 并回 `goai-restructure`」早已完成（主干 `c1049c2` 已含） | 一节挂着「待整合轮 6」的清单出现在整合轮 8 的交付里，读者会以为轮 6 没收口 | 下一轮顺手改标题并清掉已完成项。本轮不擅自扩面 |
+
+## task-H3
+
+受理幂等轨（分支 `task/h3-intake-idempotent`，基线 `1131795`）：把 `guard.create_case`
+从裸 `INSERT` 改成幂等 upsert，只动 `maos/domain/refund/guard.py` 一个代码文件。
+`## task-D2` 第 1 条点名的坑本轨已修；按惯例不回改别人的既有条目，处置理由见
+`docs/DECISIONS.md` 的 `## task-H3`。以下三条是本轨看见但**在白名单外、按铁律 4
+不当场改**的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`maos/skills/builtin/refund/intake.py:79` 那条注释的前提已被本轨推翻**。原文「纯规则 + 一次库写入。重试会撞 refund_case 主键，没有可重试的失败形态」，而 `create_case` 现在幂等，重试不再撞主键 | 注释给的理由已不成立，这是纠错；但同处的 `max_retries=0` + `failure_policy="escalate"` 还对不对是**策略判断**，两件事要分开：受理的库写入之外全是入参校验，确实没有别的可重试失败形态，保持 0 也说得通 | `intake.py` 不在本轨白名单（派单 §4 只给了 `guard.py`）。建议下一轮连注释带 `max_retries` 一并定：要么只改注释，要么把「重跑安全」这条新事实兑现成允许一次重试 |
+| 2026-08-29 | P7 | **`maos/kb/experiment.py:41` 的模块 docstring 把 R5 without_kb 段那句 IntegrityError 归因于「受理 skill 在返工下不幂等」，本轨之后这个归因不再成立**。同段自己已声明是过渡态（「D-1 合并后这一段会变成『受理 BLOCKED，等人决策』」），而 D-1 早已并进主干 `1131795` | 纯文档失真，不改行为。本轨实跑 `make_evidence.py` + `verify.py` 仍 `RESULT: 7/7 PASS`、`business-ref 35/35`，与基线逐项相同 —— 恰好反证那条返工路径已不可达，这句归因描述的是一个现在跑不出来的现象 | `maos/kb/experiment.py` 是 D-2 的独占面，本轨一个字节没碰。`## task-F1` 第 1 条也在等同一个文件的另一处改动，建议一并处理 |
+| 2026-08-29 | P7 | **退款域内出现了两种「重跑安全」口径**：`refund_case` 走本轨这条「同则幂等、异则报错」，而 `business_ref` 与 `customer_evidence` 走 `INSERT OR REPLACE` 静默覆盖（`objects.attach_business_ref`、`intake.py:137`） | 当前无症状，且对那两张表说得通 —— 它们存的是引用与证据指针，重跑覆盖成同一份值本就幂等，没有「被推进过的状态」会被盖掉。问题在于同一个域里两种口径并存而没有一处说明，下一个人照着哪张表抄都不知道自己抄的对不对 | **不建议为统一而统一**：`refund_case` 那条口径的理由是 `biz_status` 会被推进、`amount_claimed` 是财务闸的量，那两张表两条都不占。建议在 `docs/` 补一句「按表说明为什么口径不同」，归下一轮文档面 |

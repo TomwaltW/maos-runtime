@@ -10,13 +10,20 @@ attributes``。**不做真 OTel 导出**：没有 SDK 依赖、没有 collector�
 **不会**被悄悄挂到某个 span 下面充数，而是显式标成 ``provenance="unknown"`` ——
 审计链有洞就要让洞看得见；把洞填平是上游的事，不是导出器的事。
 
-已知的两处洞（都在 ``docs/BACKLOG.md`` 有案，本模块只负责让它们可见）：
+已知的三处洞（都在 ``docs/BACKLOG.md`` 有案，本模块只负责让它们可见）：
 
 1. ``review_after_gate()`` 直接 ``store.insert_artifact`` 落 review_note，不经
    ``on_task_result``，因此没有 StateTransition 可挂 —— trace 里会凭空多出一份产物。
-2. 场景层的 ``seed_scripted_report()`` 同理：预置的 test_report 也没有来源事件。
+2. 场景 3 / 5 的 ``seed_scripted_report()`` 同理：预置的 test_report 没有来源事件。
+3. 场景 1 / 2 的 ``flows/common.py::patch_verifier`` 也走同一条旁路入库。
 
-两者在本模块里都会被标成 ``provenance="unknown"`` 并计进 ``summary.unsourced_artifacts``。
+三者都会被标成 ``provenance="unknown"`` 并计进 ``summary.unsourced_artifacts``。
+
+**``provenance="unknown"`` 说的是入库路径，不是内容真伪。** 第 3 类是**真跑**
+沙箱回归的产物（真 workdir、真 ``git apply``、真 pytest），只是插入时绕开了
+``on_task_result``，于是没有事件可指。把这三类一律读成「预置的假报告」，会把已经
+兑现的外部判据重新贬成脚手架 —— 判「这份报告是不是真跑的」要看下面那条
+``maos.artifact.sandbox.mode``，不是看 provenance。
 
 依赖方向：``maos/obs`` 只 import ``maos.core.store``，不 import 任何业务域
 （铁律 9）。换域时本文件一行不改。
@@ -44,6 +51,18 @@ KIND_ARTIFACT = "artifact"
 PROV_TASK_RESULT = "task_result"
 PROV_COMPENSATION = "compensation_attached"
 PROV_UNKNOWN = "unknown"
+
+# 与 ``maos/artifacts.py::KIND_TEST_REPORT`` 同值。不 import 是为了守住本模块
+# 「只 import maos.core.store」那条依赖纪律（见模块 docstring）。
+_KIND_TEST_REPORT = "test_report"
+
+# 一份 test_report 是在容器里跑的还是降级成裸 subprocess 跑的，写在它自己的
+# content 里（``maos/tools/sandbox.py::sandbox_pytest_run``）。这里只**读**，
+# 读不到就标 unrecorded —— 不按「跑绿了应该就是容器」去补一个值，那种补法
+# 正好把这一层要暴露的洞填掉：降级跑出来的全绿和容器跑出来的全绿长得一模一样，
+# 差别只在 --network none 那条用例是 skipped 还是 passed，而计数里看不见 skipped。
+MODE_SUBPROCESS = "subprocess"
+MODE_UNRECORDED = "unrecorded"
 
 # 有 duration_ms 的事件类型：span 的 end 由 start + duration_ms 得出，其余 end == start。
 _TIMED_EVENTS = ("SkillInvoked", "ToolInvoked", "KbRetrieved")
@@ -293,6 +312,8 @@ def export_trace(store: Any, plan_id: str) -> dict:
                 (_sid("event", e.get("seq")), (e.get("detail") or {}).get("patch_ref")))
 
     unsourced = 0
+    degraded_reports = 0
+    unrecorded_reports = 0
     for t in tasks:
         tid = t["task_id"]
         # 归属条件三条同时成立才认：version 对得上这一次 attempt、落库时间在这次
@@ -322,6 +343,19 @@ def export_trace(store: Any, plan_id: str) -> dict:
 
             if prov == PROV_UNKNOWN:
                 unsourced += 1
+
+            # 测试报告额外带一条「这一次到底在哪儿跑的」。非 test_report 一律 None，
+            # 不给别的产物安一个它本来就没有的字段。
+            sandbox_mode = sandbox_reason = None
+            if kind == _KIND_TEST_REPORT:
+                content = art.get("content") or {}
+                sandbox_mode = content.get("sandbox_mode") or MODE_UNRECORDED
+                sandbox_reason = content.get("degraded_reason")
+                if sandbox_mode == MODE_SUBPROCESS:
+                    degraded_reports += 1
+                elif sandbox_mode == MODE_UNRECORDED:
+                    unrecorded_reports += 1
+
             spans.append(_span(
                 trace_id=trace_id, span_id=_sid("artifact", art.get("artifact_id")),
                 parent_span_id=parent, name=f"artifact:{kind}", kind=KIND_ARTIFACT,
@@ -337,6 +371,15 @@ def export_trace(store: Any, plan_id: str) -> dict:
                         None if prov != PROV_UNKNOWN else
                         "无来源事件：该产物未经 on_task_result 入库，"
                         "审计链上查不到是谁在哪一步产的（docs/BACKLOG.md task-C 第 5 条）"
+                    ),
+                    "maos.artifact.sandbox.mode": sandbox_mode,
+                    "maos.artifact.sandbox.degraded_reason": sandbox_reason,
+                    "maos.artifact.sandbox.note": (
+                        None if sandbox_mode not in (MODE_SUBPROCESS, MODE_UNRECORDED) else
+                        "容器隔离本次未生效：报告是裸 subprocess 跑出来的"
+                        if sandbox_mode == MODE_SUBPROCESS else
+                        "执行路径不可审计：报告里没记 sandbox_mode，无从判断这一次"
+                        "是不是在容器里跑的（docs/BACKLOG.md task-X4 第 1 条）"
                     ),
                 },
             ))
@@ -357,6 +400,10 @@ def export_trace(store: Any, plan_id: str) -> dict:
             "artifact_count": sum(1 for s in spans if s["kind"] == KIND_ARTIFACT),
             "unsourced_artifacts": unsourced,
             "unresolved_task_events": unknown_task_events,
+            # 「跑了但没真跑」的两种形态，分开计数：前者是知道降级了，
+            # 后者是连有没有降级都查不到 —— 后者比前者更糟，不能合并成一个数。
+            "degraded_sandbox_reports": degraded_reports,
+            "unrecorded_sandbox_reports": unrecorded_reports,
             "tree_errors": errors,
         },
     }
@@ -423,6 +470,10 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
             "span_count": sum(t["summary"]["span_count"] for t in traces),
             "event_count": sum(t["summary"]["event_count"] for t in traces),
             "unsourced_artifacts": sum(t["summary"]["unsourced_artifacts"] for t in traces),
+            "degraded_sandbox_reports": sum(
+                t["summary"]["degraded_sandbox_reports"] for t in traces),
+            "unrecorded_sandbox_reports": sum(
+                t["summary"]["unrecorded_sandbox_reports"] for t in traces),
             "stray_event_count": len(strays),
             "tree_errors": [e for t in traces for e in t["summary"]["tree_errors"]],
         },

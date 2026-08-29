@@ -48,7 +48,20 @@ from maos.tools.port import ToolPort
 log = logging.getLogger("maos.tools.sandbox")
 
 IMAGE = "maos-sandbox"
+# 探测与 docker run 都写显式 tag。裸仓库名靠 daemon 自己补 `:latest`，而这一步
+# 在 Docker 29.6.1 上会失败：`docker image inspect maos-sandbox` 连三次 exit=1
+# 报 `No such image`，同一时刻 `docker image ls maos-sandbox` 列得出
+# `maos-sandbox:latest`、`docker run --rm maos-sandbox python -V` 也跑得通。
+# 带上 tag 之后 3/3 exit=0。省掉 tag 省下的那两个字符，换来的是沙箱静默降级。
+TAG = "latest"
+IMAGE_REF = f"{IMAGE}:{TAG}"
 DEFAULT_TIMEOUT = 300
+
+# 本次 pytest 实际走的是哪条路径。写进 test_report 里跟报告一起落盘 ——
+# 降级只进 log.warning 的话，屏幕上「容器隔离」这句话不成立而没有人会知道。
+MODE_CONTAINER = "container"
+MODE_SUBPROCESS = "subprocess"
+MODE_NOT_RUN = "not-run"
 
 # 靶场源目录（maos/tools/sandbox.py -> 仓库根 -> scenarios/fixture-repo）
 FIXTURE_REPO = Path(__file__).resolve().parents[2] / "scenarios" / "fixture-repo"
@@ -110,21 +123,54 @@ def _clean_env(home: str) -> dict[str, str]:
     return env
 
 
+def _image_listed() -> str:
+    """`docker image ls` 眼里这个镜像在不在。返回镜像 id，查不到返回空串。
+
+    只用来给 inspect 的失败做交叉确认，不作为主探测：`image ls` 对不存在的镜像
+    也返回 exit=0（只是输出为空），拿退出码当判据会把「镜像没有」判成「镜像有」。
+    """
+    try:
+        proc = subprocess.run(["docker", "image", "ls", "-q", IMAGE],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def _docker_ready() -> tuple[bool, str]:
-    """容器主路径能不能走。返回 (可用, 不可用的原因)。"""
+    """容器主路径能不能走。返回 (可用, 不可用的原因)。
+
+    原因文本会原样进 test_report 的 summary，所以它得说清「为什么没走容器」，
+    不能只说「不可用」—— 评委看到降级时要能当场判断这是环境没装、镜像没 build，
+    还是探测本身在骗人。
+
+    inspect 失败时再问一次 `docker image ls` 是有必要的：两者不一致就说明镜像在、
+    daemon 也在，只是探测不可靠。这一条仍然降级（保守），但原因文本会点名这个矛盾，
+    免得现场把「探测抽风」误读成「你忘了 docker build」而去做一次没用的重建。
+    """
     if os.environ.get("MAOS_SANDBOX_FORCE_SUBPROCESS") == "1":
         return False, "MAOS_SANDBOX_FORCE_SUBPROCESS=1（测试与 CI 恒走降级路径）"
     if shutil.which("docker") is None:
         return False, "找不到 docker 命令"
     try:
         # image inspect 一次同时问了两件事：daemon 在不在、镜像有没有。
-        probe = subprocess.run(["docker", "image", "inspect", IMAGE],
+        probe = subprocess.run(["docker", "image", "inspect", IMAGE_REF],
                                capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"docker 探测失败: {type(exc).__name__}: {exc}"
-    if probe.returncode != 0:
-        return False, f"镜像 {IMAGE} 不可用（先跑 docker build -t {IMAGE} -f deploy/sandbox.Dockerfile .）"
-    return True, ""
+    if probe.returncode == 0:
+        return True, ""
+
+    detail = (probe.stderr or probe.stdout or "").strip().splitlines()
+    detail = detail[0] if detail else f"退出码 {probe.returncode}"
+    listed = _image_listed()
+    if listed:
+        return False, (
+            f"探测不一致：docker image inspect {IMAGE_REF} 退出码 {probe.returncode}"
+            f"（{detail}），但 docker image ls 列得出 {IMAGE}（id={listed}）——"
+            f"镜像与 daemon 都在，是探测本身不可靠；本次仍按不可用降级")
+    return False, (f"镜像 {IMAGE_REF} 不可用（{detail}）"
+                   f"；先跑 docker build -t {IMAGE} -f deploy/sandbox.Dockerfile .")
 
 
 def _git(cwd: str | os.PathLike, *args: str) -> subprocess.CompletedProcess:
@@ -315,10 +361,39 @@ def sandbox_git_apply(
 # ---------------------------------------------------------------------------
 # ToolPort 2 · 测试执行
 # ---------------------------------------------------------------------------
-def _tool_error_report(message: str, started: float) -> dict[str, Any]:
+def _degradation_note(mode: str, reason: str | None) -> str:
+    """降级路径在报告里那句话。容器路径返回空串。
+
+    三个 flag 逐个点名，不写「隔离未生效」这种概括：演示现场看到的是这句话本身，
+    它得让人当场判断出「容器隔离」这个说法这一次到底成不成立。
+    """
+    if mode != MODE_SUBPROCESS:
+        return ""
+    return (f"[沙箱降级] 本次未走容器，退化为裸 subprocess，"
+            f"--network none / --read-only / --user 1000:1000 三项均未生效；"
+            f"原因：{reason or '未记录'}")
+
+
+def _report_envelope(mode: str, reason: str | None) -> dict[str, Any]:
+    """每份 test_report 都带的执行路径字段。
+
+    `sandbox_mode` 缺失和 `sandbox_mode="container"` 是两回事：前者是「这份报告
+    没人记录过它怎么跑的」，后者是「记录过，走的容器」。下游（obs/trace.py）
+    按这个区分决定是报「降级」还是报「执行路径不可审计」，所以这里一律带上，
+    不因为「正常路径没什么好说的」就省掉。
+    """
+    return {"sandbox_mode": mode, "degraded_reason": reason}
+
+
+def _tool_error_report(message: str, started: float, *,
+                       mode: str = MODE_NOT_RUN,
+                       reason: str | None = None) -> dict[str, Any]:
     """工具层炸了：三个计数一律 0，failed=0 才不会被 Gate 当成「用例挂了」。"""
+    note = _degradation_note(mode, reason)
     return {"passed": 0, "failed": 0, "errors": 0, "cases": [],
-            "duration": round(time.perf_counter() - started, 3), "tool_error": message}
+            "duration": round(time.perf_counter() - started, 3), "tool_error": message,
+            "summary": f"测试工具未跑成：{message}" + (f"｜{note}" if note else ""),
+            **_report_envelope(mode, reason)}
 
 
 def _classify_exit(proc: subprocess.CompletedProcess) -> str | None:
@@ -343,7 +418,7 @@ def _run_in_container(base: str) -> str | None:
         "-v", f"{base}:/w", "--tmpfs", "/tmp", "-w", "/w",
         "--user", "1000:1000",
         "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
-        IMAGE, "python", "-m", "pytest", *PYTEST_ARGS, f"--junitxml=/w/{REPORT_NAME}",
+        IMAGE_REF, "python", "-m", "pytest", *PYTEST_ARGS, f"--junitxml=/w/{REPORT_NAME}",
     ]
     timeout = sandbox_timeout()
     try:
@@ -404,10 +479,17 @@ def sandbox_pytest_run(workdir: str) -> dict[str, Any]:
     返回 test_report：
       {"passed": int, "failed": int, "errors": int,
        "cases": [{"id": str, "status": str, "msg": str}],
-       "duration": float, "tool_error": str | None}
+       "duration": float, "tool_error": str | None,
+       "summary": str, "sandbox_mode": str, "degraded_reason": str | None}
 
     tool_error 与 failed 必须分开上报：前者是环境或工具炸了（根本没跑成），
     后者是用例真的挂了（跑成了但不过）。Gate 对这两种的判定不一样。
+
+    后三个键是 C-7 六键之外的**增量**（``validate_artifact`` 只查必填键在不在，
+    不禁额外键）。加它们是因为降级路径原先只留一条 ``log.warning``：容器的
+    ``--network none / --read-only / --user 1000:1000`` 三项全部失效，而报告照旧
+    全绿、``test_no_network`` 从 passed 静静变成 skipped —— 屏幕上看不出任何差别。
+    执行路径必须跟报告一起落盘，才轮得到别人来质疑它。
 
     duration 记的是墙钟耗时（含容器启停），不是 junit 里的用例执行时间和 ——
     上层要用它判「沙箱是不是慢到该调超时」，那需要的正是墙钟。
@@ -422,22 +504,29 @@ def sandbox_pytest_run(workdir: str) -> dict[str, Any]:
 
     usable, why = _docker_ready()
     if usable:
+        mode, reason = MODE_CONTAINER, None
         failure = _run_in_container(base)
     else:
         # 降级 idiom 照抄 flows/common.py::_wrap_matrix：告警 + 继续，不抛。
+        # 但只告警是不够的 —— 日志不进证据，而「这一次容器隔离没生效」正是
+        # 评委最需要看见、也最容易被一份全绿报告盖住的那件事。原因同时写进
+        # 下面的 summary / degraded_reason，跟报告一起落盘。
+        mode, reason = MODE_SUBPROCESS, why
         log.warning("容器沙箱不可用（%s），降级为裸 subprocess；env 已按白名单重建，"
                     "宿主密钥与 HOME 都不进沙箱", why)
         failure = _run_degraded(base, report)
 
     try:
         if failure is not None:
-            return _tool_error_report(failure, started)
+            return _tool_error_report(failure, started, mode=mode, reason=reason)
         if not report.is_file():
-            return _tool_error_report("pytest 没有产出 junit 报告，多半根本没跑起来", started)
+            return _tool_error_report("pytest 没有产出 junit 报告，多半根本没跑起来",
+                                      started, mode=mode, reason=reason)
         try:
             parsed = _parse_junit(report)
         except ElementTree.ParseError as exc:
-            return _tool_error_report(f"junit 报告解析失败: {exc}", started)
+            return _tool_error_report(f"junit 报告解析失败: {exc}", started,
+                                      mode=mode, reason=reason)
     finally:
         # 解析完就删：报告是本次调用的中间产物，留着会让「干跑不落盘」
         # 和「跑完 workdir 逐字节不变」这两条断言失效。
@@ -445,6 +534,11 @@ def sandbox_pytest_run(workdir: str) -> dict[str, Any]:
 
     parsed["duration"] = round(time.perf_counter() - started, 3)
     parsed["tool_error"] = None
+    counts = (f"{parsed['passed']} 过 / {parsed['failed']} 挂 / {parsed['errors']} 错")
+    note = _degradation_note(mode, reason)
+    parsed["summary"] = (f"沙箱回归（容器隔离）：{counts}" if not note
+                         else f"沙箱回归：{counts}｜{note}")
+    parsed.update(_report_envelope(mode, reason))
     return parsed
 
 
@@ -482,12 +576,16 @@ PYTEST_RUN_PORT = ToolPort(
     params_schema={"workdir": "str"},
     returns_schema={"passed": "int", "failed": "int", "errors": "int",
                     "cases": "list[{id,status,msg}]", "duration": "float",
-                    "tool_error": "str | None"},
+                    "tool_error": "str | None", "summary": "str",
+                    "sandbox_mode": "container | subprocess | not-run",
+                    "degraded_reason": "str | None"},
     failure_modes=[
         "tool_error: workdir 不可用 / docker run 起不来 / 超时（容器已强制清除）",
         "tool_error: pytest 退出码 ≥2（中断、内部错、用法错、零用例收集）",
         "tool_error: 没产出 junit 报告或报告解析失败",
         "failed>0: 用例真的挂了 —— 这不是工具失败，Gate 逐条转 findings",
+        "sandbox_mode=subprocess: 跑成了，但容器隔离本次未生效（degraded_reason 说明原因）"
+        " —— 这不是失败，是一份可信度更低的通过",
     ],
     security_boundary=(
         "主路径容器：--network none --read-only --user 1000:1000 --memory 512m "

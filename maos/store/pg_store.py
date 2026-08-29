@@ -103,7 +103,8 @@ _SECRETISH = (
 
 _INSTALL_HINT = (
     "PG 后端的驱动是**可选依赖**（核心零运行时依赖，见 pyproject.toml 的"
-    " dependencies = []）：装 `psycopg[binary]` 再试。"
+    " dependencies = []）：`pip install -e '.[pg]'`（或直接 `pip install"
+    " 'psycopg[binary]'`）再试。"
 )
 
 

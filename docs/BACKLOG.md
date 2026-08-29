@@ -674,3 +674,15 @@ F 轨两支的账各自记在 `## task-F1` / `## task-F2`，本节不重复；�
 | 2026-08-29 | P7 | **`docs/ppt-outline.md` 数字口径行末尾的两组 diff 统计（`+62−4` / `+273−7`）本轮仍没重算**。`## integrate-round-6` 已记，本轮没接 | 该行其余数字本轮全部刷成了 `4d691fc` 的实测值，唯独这两个仍是旧值，同一行里新旧混排 | 与下一轮材料面一起重算 |
 | 2026-08-29 | P7 | **`scenario-R5` 的 7 个文件首行出处 sha 仍带 `-dirty`**（`4d691fc-dirty`）。`## integrate-round-6` 已记，本轮按同一路径复现 | 不影响 verify（`verify.py` 显式容忍 R5 的这个后缀），但每轮都要向读者解释一次 | 修 `make_evidence.py` 的落盘顺序（先全算后全写），归下一轮 |
 | 2026-08-29 | P7 | **`docs/submission-checklist.md` 的「待整合轮 6 回填」一节标题已过期**，且其中第 2 条「`integrate/round-5` 并回 `goai-restructure`」早已完成（主干 `c1049c2` 已含） | 一节挂着「待整合轮 6」的清单出现在整合轮 8 的交付里，读者会以为轮 6 没收口 | 下一轮顺手改标题并清掉已完成项。本轮不擅自扩面 |
+
+## task-H5
+
+H-5 轨（`scripts/matrix_probe.py` 的 ②a / ②c 两个假阴性，分支 `task/h5-probe-falsenegative`，
+基线 `1131795`）。本轨只改探针那两段判据；以下是**按铁律 4 不当场改**的账。
+取舍记在 `docs/DECISIONS.md` 的 `## task-H5`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P5 | **`should_deliver` 的回声否决分支（`sender == self_user_id`）在生产里是死代码。** `_NioChannel._send`（`hiclaw/matrix_bus.py:353-357`）发的是 **`m.notice`**（有注释写明理由：不触发人类推送、不和别的 bot 接龙），而 `listen()`（`:383`）把回调绑在 **`RoomMessageText`** 上。nio 的类型分发按 `isinstance` 过滤，`RoomMessageNotice` 与 `RoomMessageText` 是 `RoomMessageFormatted` 下的**兄弟类**，互不为实例 —— 于是 bot 自己的回声被挡在**比 `should_deliver` 更早的一层**，那条否决永远走不到 | 实测证据（H-5，只读 sync 旧房 `!xfRqhNYVNyuOMitWVs`）：绑 `RoomMessageText` 收到 7 条、全是 `@boss`；绑全量 `Event` 收到 10 条，多出的 3 条全是 `RoomMessageNotice` 且 `sender=@maos-bot`，**含编排轮 7 drip 的 #3/#6「发送方 bot」**。当前无症状（回声本来就该被丢），但**保护是两层里靠前那层给的，而判据写在靠后那层**：哪天 `_send` 改回 `m.text`（或新增一条走 `m.text` 的通知），回声过滤就成了唯一防线，而它从没被执行过 —— 也就从没被验证过 | `hiclaw/matrix_bus.py` **不在本轨白名单**，未动一字。建议下一轮把两处收成同源：要么 `listen()` 绑 `(RoomMessageText, RoomMessageNotice)`（回声真的流经 `should_deliver`，判据变活），要么在 `should_deliver` 的 docstring 里写死「回声分支是**冗余**防线，主防线是 msgtype 过滤」。**两种都行，但不能像现在这样没人写下来** |
+| 2026-08-29 | P5 | **`## integrate-round-7` 第 1 / 2 两条的归因经实测均不成立**（本轨按派单要求复跑确认，未改动那两条原文 —— 不属本轨条目）。第 1 条说 ②a「没清 `next_batch`，而同一个 client 已被 ① / ③ 用过，`next_batch` 非空 …… 实际做的是增量同步」：实测 `whoami` / `room_get_state_event` / `room_send` **都不写 `next_batch`**（nio 只在 sync 响应处理里赋值，`async_client.py:709`），而 `AsyncClient.__init__` 把 `next_batch` 与 `loaded_sync_token` 双双初始化成 `""`（`base_client.py:238-239`）—— 所以 ②a 那次**本来就是**冷启动，补 `client.next_batch = ""` 是**空操作**。第 2 条说 ②c「过滤器本身是对的，错的只是计数」：实测回声压根没进回调，`should_deliver` **一次也没被调用**，不存在「过滤器挡住了」 | 两条的**现象**都真（②a 恒 skip、②c 恒印 0），**修法**却都会落空：照第 1 条改完 exit 不会变 0；照第 2 条只修计数会修不动，因为计数所在的回调根本收不到事件。本轨按实测重定根因后改的（见 `## task-H5` 决策），不是照抄 | **无需再处理**，此条只为存证。留着原文不改是有意的：那两条如实记录了当时观察到的现象与推断，事后证明推断错了 —— 按本仓惯例（`## task-F1` 第 2 条同款处置）不追改历史条目，在新节里写清推翻依据即可 |
+| 2026-08-29 | P5 | **现役演示房 `!qcaXWSgkmosmxdYgpD:maos.local` 已积了 14 条 `m.notice`**，全是探针 ③c 的 `[matrix_probe] 探针连通性自检`（每跑一次探针 +1）。`m.text` 仍是 0 条 | `## integrate-round-7` 第 4 条已立规矩「截图前不要再往现役房发任何测试消息，包括 `scripts/matrix_probe.py`（它的 ③c 会 `room_send` 一条进去）」—— 本条是那条规矩的**实测欠账数**：换新房时房间是干净的，之后至少跑过 14 次探针。这 14 条会出现在演示截图里 | 与「补 `evidence/room/` 截图」那一轨**一并处理**：要么截图前再换一次空房，要么给探针加一个「只读模式」开关（跳过 ③c 的 `room_send`）。本轨已把 ②a 的 `/messages` 回溯做成**只读**、不新增任何发送，但没动 ③c —— 那是 §5 范围外 |

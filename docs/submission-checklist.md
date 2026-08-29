@@ -258,11 +258,25 @@ grep -rh "^# generated at" evidence/ | sed 's/.* from //' | sed 's/-dirty//' | s
 - [ ] ② 只列出 `evidence/scenario-R5/` 下的 7 个文件（其余任何一个出现都要查）。
 - [ ] ③ 只输出**一个** sha，且等于 `git rev-parse HEAD`。
 
-> 🔴 **当前实测：① 是红的，这是待办不是误报。** 在 `42822fc` 上跑，仓库里**已 commit** 的
-> `evidence/` 是 `df96fa8` 生成的 —— 落后 3 个 commit。
-> 好消息是那 3 个都只动文档（`docs(int-4)` / `feat(p5)` 的证据刷新 / `chore`），
-> 证据内容没过期，**只是 sha 对不上**；坏消息是评委照 ① 一跑就看见不一致。
-> **提交前必须重跑一次证据链并 commit**（D-0 选甲），让 ① 变绿。
+> 🔴 **① 是结构性红的，别指望它变绿 —— 要的是「红得可解释」。**
+> 证据束在整合轮 5 已按合并后的代码重跑过（`9964f17`，`git_sha=caf45d2`），
+> 但**任何写进 `evidence/` 的重跑，其记录的 sha 必然是重跑那一刻的 HEAD，
+> 而把它 commit 又会产生新的 HEAD** —— 这是个不动点问题，跑多少次都差至少 1 个 commit。
+>
+> **所以判据改成这条，它是可勾的**：
+>
+> ```bash
+> # ①' 证据束记录的 sha 到 HEAD 之间，有没有动过代码？（输出 0 = 证据未过期）
+> IDX=$(python3 -c "import json;f=open('evidence/INDEX.json');f.readline();print(json.load(f)['git_sha'])")
+> git diff --name-only $IDX HEAD -- maos/ scripts/ run.py scenarios/ fixtures/ | wc -l
+> ```
+>
+> - [ ] ①' 输出 **0**，且 `git log --oneline $IDX..HEAD` 里每一条都只动 `docs/` / `README.md` / `evidence/`。
+>
+> **整合轮 5 实测**：`IDX=caf45d2`，落后 **4 个 commit** —— `9964f17`（证据束重跑本身，
+> 只动 `evidence/`）+ 三条 `docs(p7)`（README 刷数 / BACKLOG 记账 / 第二批回填与看板）。
+> 代码文件差异 **0** —— 证据内容没过期。
+> 只有当 `maos/**` 或 `scripts/**` 再被动过时，才必须重跑证据链并 commit。
 > ②③ 当前是绿的（②恰好 7 个且全在 R5，③去掉 `-dirty` 后唯一）。
 - [ ] PPT 与视频里出现的**每一个数字**（`596 passed` / `7/7 PASS` / `33/33` / `19 条测试` …），
       都能在 [`docs/ppt-outline.md`](ppt-outline.md) 或 [`docs/demo-script.md`](demo-script.md)

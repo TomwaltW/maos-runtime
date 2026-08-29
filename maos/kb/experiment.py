@@ -15,16 +15,34 @@
 两段喂给模型的脚本逐字节相同，差的只有那个环境变量。两版 DAG 的差异是跑出来的，
 不是写出来的（铁律 3）。
 
-## 拦点是权威边界，不是质量门禁 —— 这一点比手册的设想更硬
+## 拦点从权威边界前移到闸 —— 两层防线，两段历史
 
-手册预期 without_kb 会被第六道闸判 blocker。**实测不是**，而且原因是对的：
-第六道闸按 `task.inputs` 的 `biz_type + amount_claimed` 触发（F-1 冻结口径），
-而「漏排财务核算」意味着**没有任何任务带着申报金额**——闸根本没有可判的对象。
-漏排的真正症状出在下一步：`payment.execute` 查不到 `finance_entry`，
-抛「金额未经核算，不许发起付款」，整个 Plan 收在 FAILED。
+**Phase 7 之前**：手册预期 without_kb 会被第六道闸判 blocker，实测不是。
+第六道闸按 `task.inputs` 的 `biz_type + amount_claimed` **逐任务**触发（F-1 冻结口径），
+而「漏排财务核算」意味着**没有任何任务带着申报金额**——闸根本没有可判的对象，
+`finance_gate` 如实记 `not_triggered`。漏排的真正症状出在下一步：
+`payment.execute` 查不到 `finance_entry`，抛「金额未经核算，不许发起付款」，
+整个 Plan 收在 FAILED。拦住它的不是审查员的意见，是权威事实边界本身。
 
-这比 blocker 更有说服力：拦住它的不是审查员的意见，是权威事实边界本身。
-两版的 `finance_gate` 字段如实记 `not_triggered` / `pass`，不硬凑成 blocker ——
+**Phase 7 起**（BACKLOG `## task-W3` 第 3 条）：第六道闸补上 **plan 级判据** ——
+「这个 Plan 报了超阈金额，却没有任何任务把它带进闸的视野」。它判计划的**静态结构**，
+不判凭据跑出来没有，所以与评审顺序无关。于是 without_kb 段在**受理那一步过闸时**
+就被判出计划缺陷，比付款早两步，`finance_gate` 记 `blocker`。
+
+**权威边界没被拆，只是这一跑走不到那儿了。** 两层防线各管各的：闸判「计划里排没排
+这一步」，付款方判「这一笔到底核算过没有」；上面那层永远可能被绕过（改阈值、改
+`biz_type`），下面这层不能。R5 让出的那条运行时演示，由 `maos/tests/test_plan_gate.py`
+的 `test_authority_boundary_still_refuses_payment_without_a_finance_entry` 接住 ——
+唯一的演示没了却没人补断言，是这次改动最容易留下的暗坑。
+
+⚠️ **当前 without_kb 段的拦点是个过渡态。** plan 级 finding 带 `scope="plan"`，按跨轨
+冻结契约该由控制面直接转人工（`AWAITING_REVIEW -> BLOCKED`，**不返工**）；那条路由在
+D-1 轨，本分支里还没有。于是 blocker 走了普通返工路径，受理那一步被重跑，撞上
+`refund_case` 的唯一键 —— 日志里那句 IntegrityError 就是这么来的（受理 skill 在返工下
+不幂等，是先于本次改动就在的问题，记在 BACKLOG `## task-D2`）。D-1 合并后这一段会变成
+「受理 BLOCKED，等人决策」，**证据束届时必须重跑**。
+
+两版的 `finance_gate` 字段一律**如实记闸真的说了什么**，不硬凑 ——
 对照实验的价值在于差异是真的，不在于差异长成预期的样子。
 
 ## 领域相关性
@@ -145,8 +163,12 @@ def _tasks(case_id: str, *, with_finance: bool) -> list[dict]:
     if with_finance:
         tasks.insert(2, {
             "task_id": finance, "role": ROLE_FINANCE, "title": "核算退款金额并写财务分录",
-            # 申报金额只挂在这一步：第六道闸按 biz_type + amount_claimed 触发（F-1），
-            # 而判据是同 attempt 的产物里有没有 finance_entry —— 那份产物只有本任务产得出来。
+            # 申报金额只挂在这一步：第六道闸的**任务级**判据按 biz_type + amount_claimed
+            # 触发（F-1），而判据是同 attempt 的产物里有没有 finance_entry —— 那份产物只有
+            # 本任务产得出来。所以 with_finance=False 那一版，顶层申报金额跟着一起消失。
+            # 那一版由**plan 级**判据接住（P7 起）：它扫的是 inputs 树里任意深度的同一个
+            # 字段名，于是受理那一步 case_seed 里那份金额仍然在场 —— 这个形状**不许为了
+            # 迁就判据去改**（把金额塞进 shared 就是自证，与本文件抬头那条红线同一件事）。
             "inputs": {**shared, "amount_claimed": AMOUNT},
             "acceptance": ["产出 finance_entry 且与库表一致", "金额按锁定政策版本核算"],
             "depends_on": [policy], "risk_level": "M", "effect_risk": "H"})
@@ -295,6 +317,25 @@ def _seed(store, case_id: str) -> None:
 
 
 # ---------------------------------------------------------------- 一段的执行
+def _await_kind(store, plan_id: str, task_id: str) -> str:
+    """这个任务最近一次进 BLOCKED 时，控制面声明它在等哪一类人的动作。
+
+    判据与 `HumanApprovalQueue.pending()` 同源：都读 BLOCKED 迁移那条事件的
+    `detail["await"]`，不在任务行上另开字段（event_log 是唯一事实源）。
+
+    取**最近一次**而不是第一次：BLOCKED 可以进出多次（`human_resume` 回去、再因
+    别的原因停下），要处置的是最后那一次。缺省回 `human_approval` —— effect_risk=H
+    那条既有路径不写 `await`，缺省成放行才是保持既有语义。
+    """
+    from maos.contracts.states import TaskState
+
+    kinds = [e["detail"].get("await") for e in store.list_event_log(plan_id)
+             if e.get("task_id") == task_id
+             and e.get("to_state") == TaskState.BLOCKED
+             and isinstance(e.get("detail"), dict)]
+    return kinds[-1] if kinds and kinds[-1] else "human_approval"
+
+
 def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
     """跑一段，返回这一段的真实观测。
 
@@ -355,13 +396,28 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)
 
-    # Task 级的人工审批闸是另一回事（effect_risk=H 才停）：补上财务核算的那一段
-    # 会停在这里等人放行，漏排的那一段压根停不下来 —— 这本身也是差异的一部分。
+    # 停在 BLOCKED 等人的任务有两类，处置方式不同，判据与 `HumanApprovalQueue.pending()`
+    # 同源（都读 BLOCKED 迁移那条事件的 `detail["await"]`，见 `_await_kind`）：
+    #
+    # · `human_approval` —— effect_risk=H 的高风险放行。补上财务核算的那一段会停在
+    #   这里等人核对金额与政策版本，主管放行（既有语义，一个字节没动）。
+    # · `human_decision` —— 控制面的第三出口：机器返工修不好，转人工裁决。漏排财务
+    #   核算是**计划的静态结构缺陷**，放行一次不会让它消失（重评照旧 blocker，闸判
+    #   的是「排没排这一步」），主管在这里能做的只有驳回，让这一版计划收敛到 FAILED。
+    #
+    # 改造前漏排那一段压根停不下来、要等付款技能拒绝才失败；现在闸在裁定那一步就
+    # 拦下转人工，早两步。这里补上「人来处置」是为了不在演示里留一个悬空的 BLOCKED，
+    # **不动闸判什么** —— `finance_gate` 记的仍是闸真的说的那个 blocker。
     hq = HumanApprovalQueue(store, cp)
-    blocked_titles = [b["title"] for b in hq.pending(plan_id)]
+    dispositions: list[dict] = []
     for blocked in hq.pending(plan_id):
-        hq.decide(blocked["task_id"], approved=True, operator=APPROVER,
-                  note="已核对金额与政策版本")
+        await_kind = _await_kind(store, plan_id, blocked["task_id"])
+        approved = await_kind != "human_decision"
+        hq.decide(blocked["task_id"], approved=approved, operator=APPROVER,
+                  note=("已核对金额与政策版本" if approved else
+                        "计划漏排财务核算，退回重排 —— 不许在没有财务凭据时发起付款"))
+        dispositions.append({"title": blocked["title"], "await": await_kind,
+                             "approved": approved})
     run_until_settled(bus, gate, cp, plan_id)
 
     plan = cp.store.get_plan(plan_id)
@@ -388,7 +444,11 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
         # 候选集大小 = 阶段一过完七维硬约束之后还剩几条。它是「融合排序有没有话可说」
         # 的直接量度：只有 1 条时四通道排给谁看都一样，对照实验说明不了检索质量。
         "kb_candidate_count": _candidate_count(store, trace_id),
-        "human_approval_stops": blocked_titles,
+        # 放行的那些（既有字段，口径不变：主管核对后放行的高风险任务）
+        "human_approval_stops": [d["title"] for d in dispositions if d["approved"]],
+        # 全部处置明细，含被驳回的 —— 「谁停下了、等的是哪一类人、人怎么判的」
+        # 三件事得在证据里分得开，只留一个 title 列表分不开。
+        "human_dispositions": dispositions,
         "biz_status": (case or {}).get("biz_status"),
         "failed_tasks": [{"title": t["title"], "error": t["last_error"]}
                          for t in rows if t["last_error"]],
@@ -448,12 +508,20 @@ def _gate_result(verdicts: list[dict]) -> str:
 def _finance_gate(task_rows: list[dict], verdicts: list[dict]) -> str:
     """第六道闸的真实判定：`not_triggered` / `pass` / `blocker`。
 
-    `not_triggered` 是**有意义的一档**，不是「没数据」。闸按 `task.inputs` 的
-    `biz_type + amount_claimed` 触发（F-1 冻结口径）—— 漏排财务核算时没有任何任务
-    带着申报金额，闸连可判的对象都没有。这正是漏排最危险的地方：它不是被判不合格，
-    是压根没进入判定视野。所以这一档必须能与 `pass` 区分，不能都记成「闸过了」。
+    **先读闸真的说了什么，再谈触没触发**。闸有两条判据（P7 起）：任务级按
+    `task.inputs` 的 `biz_type + amount_claimed` 触发，plan 级按「这个 Plan 报了超阈
+    金额却没有任何任务带着它」触发。后者命中时**没有任何一个任务的顶层 inputs 带
+    金额** —— 照着任务级的触发面去反推，会把一条真的 blocker 记成 `not_triggered`。
+    所以这里的顺序是：`gate_results["finance"] == "fail"` 即 blocker，不问是哪条判据。
+
+    `not_triggered` 仍是**有意义的一档**，不是「没数据」：两条判据都没开口，才说明
+    这个 Plan 里根本没有超阈的钱。它必须能与 `pass` 区分，不能都记成「闸过了」。
     """
     from maos.runtime.gate import DEFAULT_FINANCE_THRESHOLD, FINANCE_BIZ_TYPE
+
+    judged_all = [v for v in verdicts if isinstance(v.get("gate_results"), dict)]
+    if any(v["gate_results"].get("finance") == "fail" for v in judged_all):
+        return "blocker"
 
     triggering = set()
     for task in task_rows:
@@ -469,10 +537,7 @@ def _finance_gate(task_rows: list[dict], verdicts: list[dict]) -> str:
     if not triggering:
         return "not_triggered"
 
-    judged = [v for v in verdicts if v.get("task_id") in triggering
-              and isinstance(v.get("gate_results"), dict)]
-    if any(v["gate_results"].get("finance") == "fail" for v in judged):
-        return "blocker"
+    judged = [v for v in judged_all if v.get("task_id") in triggering]
     return "pass" if judged else "not_reviewed"
 
 
@@ -605,6 +670,16 @@ def run_r5(db_path: str | None = None) -> dict:
               f"{without_kb['kb_retrieved_events']} 条，第六道闸 "
               f"{without_kb['finance_gate']}，Plan {without_kb['plan_state']}，"
               f"业务状态 {without_kb['biz_status']}")
+        # 三行叙事：闸判出计划缺陷 -> 控制面第三出口转人工 -> 主管驳回。
+        # 每一行都从这一段的真实观测里取，不写死任何结论。
+        for rejected in [d for d in without_kb["human_dispositions"]
+                         if not d["approved"]]:
+            print(f"  第六道闸：计划缺陷 {without_kb['finance_gate']}"
+                  f"（漏排财务核算，付款前拿不到金额凭据）")
+            print(f"  第三出口：{rejected['title']} -> BLOCKED"
+                  f"（await={rejected['await']}，机器返工修不好，转人工）")
+            print(f"  主管裁决：驳回 -> 计划收敛到 {without_kb['plan_state']}，"
+                  f"付款一次都没派发")
         for failed in without_kb["failed_tasks"]:
             print(f"  拦点：{failed['title']} -> {failed['error']}")
 

@@ -30,6 +30,7 @@
 | :-- | :-- |
 | 克隆命令（第一遍） | `git clone <本仓库地址> /tmp/maos-smoke-z5-r2 && git checkout -q 42822fc` |
 | 克隆命令（第二遍） | `git clone -b task/z5-clone-smoke <本 worktree> /tmp/maos-smoke2-z5` |
+| 克隆命令（第四遍） | `git clone --single-branch -b integrate/round-6 <本仓库> <目标目录>` |
 | 第一遍基线 sha | `42822fc`（钉死，见下） |
 | 第二遍基线 sha | `d213ef4`（本轨 README 改动已 commit） |
 | `python3 --version` | `Python 3.11.7` |
@@ -122,9 +123,66 @@ Y-3 合并后 `make_evidence.py` 缺省一并产出 `scenario-R5`，复现路径
 **没变的**：`git status` 跑完仍是 **50 行 M**；`scenario-R5` 的 7 个文件首行 sha
 **仍带 `-dirty`**（见 §3 卡点 6 的补记）。
 
+### 第四遍（整合轮 6，基线 `e6075e5`）—— 合 D-1 + D-2 之后
+
+D-1（rework 第三出口）与 D-2（第六道闸 plan 级判据）并入后，七项证据里有四项的
+分母涨了、`pytest` 从 596 涨到 645。**这一遍是来验「合并之后，一个只有仓库、
+没有 key 的人还能不能从零跑到 7/7」的**，不是来刷秒数的。
+
+| # | 命令原文 | 耗时 | exit | 脏行 |
+| :-- | :-- | --: | --: | --: |
+| 1 | `git clone --single-branch -b integrate/round-6 …` | 1.76s | 0 | 0 |
+| 2 | `python3 scripts/verify.py`（**出厂态直接跑 ②**） | 0.04s | **2** | 0 |
+| 3 | `python3 scripts/make_evidence.py`（①） | 5.04s | 0 | 50 |
+| 4 | `python3 scripts/verify.py`（②） | 0.10s | 0 | 50 |
+| 5 | `python3 -m pytest maos/tests -q` | 10.50s | 0 | 50 |
+| 6 | `python3 run.py` | 2.52s | 0 | 50 |
+| 7 | `python3 run.py --scenario 7` | 0.28s | 0 | 50 |
+| 8 | `python3 scripts/gen_docs.py --check` | 0.13s | 0 | 50 |
+| | **掐表：clone → `RESULT: 7/7 PASS`** | **6.89s** | | |
+| | 全程（八条跑满） | **20.4s** | | |
+
+第 2 行是**刻意跑的**：README 抬头说「直接跑 ② 会报缺数据库并退出 2，这是设计行为」，
+这一遍逐字复核了它 —— `[FAIL] 无法开始核验：缺数据库: …/evidence/scenario-1/maos.db
+（先跑 python3 scripts/make_evidence.py）`，退出码 **2**，且错误消息自己给出了正确的
+下一步。**这条仍然成立**，合并没有把它弄坏。
+
+七项读数与在整合轮 6 工作区内实测的**逐字节一致**，这是这一遍最要紧的一条：
+
+```
+[PASS] hash-integrity       86/86
+[PASS] business-ref         35/35
+[PASS] authoritative-fact   3/3
+[PASS] trace-tree           19/19
+[PASS] kb-hit               7/7
+[PASS] business-outcome     10/10
+[PASS] history-case         1/1
+
+RESULT: 7/7 PASS
+```
+
+`warn` **12 行 / 3 类**，`pytest` **645 passed**（第三遍是 571，其间隔着 Y-4 的 25 条、
+D-1 的 26 条、D-2 的 23 条）。
+
+⚠️ **无 key 这个条件，这一遍是怎么成立的与前几遍不同，值得写清楚。** 第三遍是
+**显式 unset 了 20 个**变量；这一遍按同一套规则（所有 `MAOS_*`，以及名字里含
+`API_KEY` / `BASE_URL` / `LLM` 或各厂商名的变量）过滤执行环境，实测**抹掉 0 个**
+—— 环境里本来就一个都没有。结论（无 key 能跑完全程）不变，但**它这次不是被 unset
+保证的，是恰好没有**。谁要在带 key 的机器上复现这一遍，仍须显式 unset，否则这一遍
+的执行条件并没有被真正复制。
+
+顺带实测了 §3 卡点 3 给的**乙方案**（`find evidence -name 'maos.db' -delete &&
+git checkout -- evidence/`）：跑完后 `git status` **脏行归 0**，确实回到出厂态，
+且此后直接跑 ② 就是上面第 2 行那个 `exit=2`。两条出路里的这一条，本轮复核有效。
+
+**没变的**：`git status` 跑完仍是 **50 行 M**；`scenario-R5` 的 7 个文件首行 sha
+**仍带 `-dirty`** —— 且这一遍证明了它**不是某个工作区的特产**，全新克隆一样有，
+根因见 `docs/BACKLOG.md` 的 `## integrate-round-6` 第 1 条（`make_evidence.py`
+同一次运行内部：场景 1-7 先落盘把工作区弄脏，排在最后的 R5 取 sha 时就读到脏状态）。
+
 ---
 
-**对 15 分钟预算的结论**：三遍都远在预算内（6.57s / 6.44s / 5.4s，约占预算的 0.7%）。
+**对 15 分钟预算的结论**：四遍都远在预算内（6.57s / 6.44s / 5.4s / 6.89s，约占预算的 0.8%）。
 **但这个数字本身不说明 README 好用** —— 掐表只量机器时间，而第一遍真正的成本全部
 落在「照 README 走不通、要回头猜」上，那部分不体现在秒数里。见下一节。
 
@@ -277,3 +335,23 @@ Y-3 合并后 `make_evidence.py` 缺省一并产出 `scenario-R5`，复现路径
 | 4 | **Y-1** | `verify.py` 的 4 条 warn 自动消失后，README §3 里「两项会附若干 `warn:` 行」那段要删或改写。**本轨没有在 README 里新增任何 warn 相关文字**，只需处理原有那一段 | `README.md` §3 |
 | 5 | **Y-2 / Y-4** | 场景 6 的 RAG 检索、场景 7 的换渠道重试有话可说之后，README §5 七个场景表的对应两行描述要刷。**本轨未动 §5** | `README.md` §5 |
 | 6 | 编排侧 | 本报告第一遍钉的基线 `42822fc` 与第二遍的 `d213ef4` 在后续合并后都会成为历史 sha；若要重跑，先刷 §1 的两行克隆命令 | `docs/clone-smoke-report.md` §1 |
+
+---
+
+## 整合轮 6 冒烟收口（2026-08-29）
+
+上表第 6 条本轮**已执行**：合入 D-1 + D-2 之后重跑了一遍全新克隆冒烟，见 §2 第四遍，
+§1 的克隆命令表已补上第四遍那一行。
+
+🔴 **前三遍的读数一个字都没改。** 它们是各自那次跑出来的事实，带各自的基线 sha；
+把 `521 passed` / `571 passed` / `4/74` 改写成当前值，等于伪造那几次冒烟的结果。
+本报告的口径从本轮起明确为：**历史快照，只增不改** —— 要新读数就另起一节，
+不回头改旧节。已记进 `docs/DECISIONS.md` 的 `## integrate-round-6`。
+
+因此 §3 的卡点清单、§4 的 README 修正清单、§5 的结论段也**全部按原样保留**，
+包括 §5 里那句「Y-3 合并后必须重跑」—— 它在写下的那一刻是对的，第三遍就是它的执行。
+
+本轮唯一需要下一轮接手的：**A-1 那条判据仍然只量机器时间**。四遍的秒数分别是
+6.57 / 6.44 / 5.4 / 6.89 秒，而第一遍有 6 处卡点、第四遍零卡点，秒数却看不出差别。
+§5 早就提过「建议把『≤ 15 分钟』补一句『且全程零非零退出、不需要跨节拼路径』」，
+这条建议至今没有落到 `docs/submission-checklist.md` 的 A-1 里。

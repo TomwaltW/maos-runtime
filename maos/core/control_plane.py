@@ -67,6 +67,37 @@ GW_QUERY_OR_HUMAN = "query_or_human"
 #: 下落不明的退款重新发一次。
 GW_NO_REPLAN = frozenset({GW_QUERY_FIRST, GW_HUMAN_TERMINAL, GW_QUERY_OR_HUMAN})
 
+# -- 第三出口：机器返工修不好的，一次干净转人工（跨轨冻结契约 D-1）--------------
+# 原先 rework 只有两个出口：重规划，或者普通返工到 max_attempts 耗尽后 FAILED。
+# 收敛是对的（不自旋、不假绿），但**收敛的姿势不对** —— 一笔「交易不存在」会被
+# 原样重发两次才失败，而这两次重发从第一次就注定不可能成功
+# （docs/BACKLOG.md 的 ## task-X2）。第三出口就是把这一类在**第一次**就停到人手上。
+#
+# 判据同样不在这里算：闸负责说「这条 finding 机器返工修不好」（产 disposition 与
+# scope），控制面只负责把它路由到人。口径同 GW_* 那一段，理由也同 —— 两处推断迟早分叉。
+
+#: 网关回执判成终态失败 / 说不清且不可重发。机器把同一份产物再交一遍，
+#: 撞的还是同一个码（``ACQ.TRADE_NOT_EXIST`` 不会因为重发就变成存在）。
+HUMAN_EXIT_GATEWAY = "gateway_needs_human"
+#: 缺陷落在**方案**上而不是这一次产出上。返工只会拿同一份规格再做一遍。
+HUMAN_EXIT_PLAN_DEFECT = "plan_defect"
+
+#: 四象限里走第三出口的两格 —— 共同点是 ``retriable=False``：原样重发没有意义。
+#: 与 GW_NO_REPLAN 的分界要看清：那一条答的是「许不许换渠道重发」，
+#: 这一条答的是「机器还有没有别的招」。``GW_QUERY_FIRST`` 两条都不许重发，
+#: 但它还有一招 —— ``gateway.query`` 去问，那是机器动作，不该占人的时间
+#: （详见 docs/DECISIONS.md 的 ## task-D1 设计点 1）。
+GW_HUMAN_EXIT = frozenset({GW_HUMAN_TERMINAL, GW_QUERY_OR_HUMAN})
+
+#: finding 的 ``scope``：**缺省不写即为任务级**，闸产 plan 级 finding 时显式写它。
+#: 任务级缺陷返工能修（换个写法、补一份证据），plan 级不能 —— 方案错了，
+#: 拿同一份规格再做一遍还是错的。
+SCOPE_PLAN = "plan"
+
+#: 与 ``gate.SEVERITY_INFO`` 同一个字面量，刻意不共享一处定义：import 方向是
+#: gate -> control_plane，反向 import 会成环。字面量重复两处好过循环依赖。
+SEVERITY_INFO = "info"
+
 # 被重规划取代、不再派发的任务，用 last_error 打标。
 # 借 last_error 而不是加状态：states.py 是冻结契约（铁律 1），加「冻结态」要动
 # 迁移表；而 last_error 本就是「这个任务为什么没往前走」的说明字段，语义相容。
@@ -92,6 +123,17 @@ Replanner = Callable[..., list[dict]]
 def _is_frozen(task: dict) -> bool:
     """这个任务是否已被重规划取代。判定只留这一处，三个调用点共用。"""
     return task.get("last_error") == FROZEN_BY_REPLAN
+
+
+#: 一条 finding 上足以回答「为什么转人工」的字段。缺的键不写进去 —— 一串
+#: ``"scope": null`` 会让 event_log 里真正有值的那几个字段淹掉。
+_FINDING_REF_KEYS = ("gate", "id", "code", "severity", "disposition", "scope")
+
+
+def _finding_ref(finding: dict) -> dict:
+    """把一条 finding 压成可落 event_log 的引用。``message`` 那段长文案不带走。"""
+    return {k: finding[k] for k in _FINDING_REF_KEYS
+            if finding.get(k) is not None}
 
 
 class ControlPlane:
@@ -338,7 +380,20 @@ class ControlPlane:
 
         elif verdict == "rework":
             findings = env.payload.get("findings", [])
-            if env.attempt >= task["max_attempts"]:
+            human_exit = self._human_exit(findings)
+            if human_exit is not None:
+                # 第三出口。**必须排在 max_attempts 之前** —— 排在后面的话最后一轮
+                # 仍然 FAILED，等于白改；而这一单买的正是「少重发那两次」。
+                # 姿势同下面的 replan_limit_exceeded：AWAITING_REVIEW -> BLOCKED，
+                # 不动 plan 状态（plan 的死活由人的决定说了算，不由闸说了算）。
+                reason, evidence = human_exit
+                log.warning("[%s] %s —— 机器返工修不好，一次转人工，不再重发",
+                            task["task_id"], reason)
+                self._transit(task, TaskState.BLOCKED, event_id=env.event_id,
+                              findings=findings,
+                              detail={**detail, "await": "human_decision",
+                                      "reason": reason, "evidence": evidence})
+            elif env.attempt >= task["max_attempts"]:
                 self._transit(task, TaskState.FAILED, event_id=env.event_id,
                               last_error="返工次数耗尽")
                 self._fail_plan(task["plan_id"])
@@ -373,6 +428,50 @@ class ControlPlane:
             self._transit(task, TaskState.BLOCKED, event_id=env.event_id, detail=detail)
 
         self.store.finish_idempotency(env.idempotency_key, {"verdict": verdict})
+
+    # ------------------------------------------------------------------
+    # 第三出口：判定同样是纯函数，与 _should_replan 并列
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _human_exit(findings: list[dict]) -> tuple[str, list[dict]] | None:
+        """这一轮的 findings 里有没有「机器返工修不好」的？有就返回 (reason, 证据)。
+
+        两条判据，按此顺序定 ``reason`` —— 顺序有意义而不是随手排的：网关那条是
+        **外部事实**（那笔交易不存在，重发多少次都不存在），plan 那条是**内部判断**
+        （方案写错了）。两条同时命中时报外部事实，因为它是不可谈判的那一条，
+        人拿到工单先要知道的是它。
+
+        · ``gate == GATEWAY_GATE`` 且 ``disposition`` 落在 ``GW_HUMAN_EXIT``
+          —— 四象限里 ``retriable=False`` 的两格。重发不会有不同结果。
+        · ``scope == SCOPE_PLAN`` 且 ``severity != info`` —— 缺陷在方案上，
+          返工是拿同一份规格再做一遍。``scope`` 缺省不写即任务级，所以这一条
+          **只对显式声明了 plan 级的 finding 生效**，不会误伤既有的六道闸。
+
+        返回的证据是 findings 的**投影**而不是原文：完整 findings 已经随
+        ``_transit(findings=...)`` 落在任务行上了，detail 里再存一份长文案只是噪声。
+        投影保留的五个字段够一个人判断「为什么轮到我」，也够审计对回码表。
+
+        判定与路由分开（同 ``_should_replan`` 的口径）：本方法不碰 store、不发事件，
+        因此边界可以脱开整条链路单测 —— 见 ``maos/tests/test_human_exit.py``。
+        """
+        gateway_hits, plan_hits = [], []
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            # 两条判据各自独立地扫，写成 if/elif 行为完全一样（elif 只在 (a) 已命中时
+            # 跳过 (b)，而那一轮 (a) 本就赢下优先级）—— 写成两个独立 if 是为了跟契约
+            # §4.2 的措辞一一对上：那里是两条并列的「任一 finding……」，顺序只决定
+            # reason 报哪一个，不决定谁参与判定。哪天优先级改了，这里不用跟着重排。
+            if f.get("gate") == GATEWAY_GATE and f.get("disposition") in GW_HUMAN_EXIT:
+                gateway_hits.append(f)
+            if f.get("scope") == SCOPE_PLAN and f.get("severity") != SEVERITY_INFO:
+                plan_hits.append(f)
+
+        if gateway_hits:
+            return HUMAN_EXIT_GATEWAY, [_finding_ref(f) for f in gateway_hits]
+        if plan_hits:
+            return HUMAN_EXIT_PLAN_DEFECT, [_finding_ref(f) for f in plan_hits]
+        return None
 
     # ------------------------------------------------------------------
     # Replan：判定与执行分开 —— 判定是纯函数，可以脱开重规划回调单独验边界

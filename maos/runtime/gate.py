@@ -17,6 +17,15 @@ Phase 3 加第六道闸 ``_gate_finance``（判据见跨轨冻结契约 F-1）�
 与 artifact 的 ``content`` 这两个数据形状上，不落在业务模块上。做不到这一点，
 「换域只换 Skill/ToolPort/业务对象」当场作废。
 
+Phase 7 给第六道闸补上 **plan 级判据**（见 ``_gate_finance_plan``）。补之前，上一段那句
+「漏掉财务复核要能在这里被拦下」是句空话：F-1 按 ``biz_type + amount_claimed`` **逐任务**
+触发，而漏排财务复核意味着**没有任何任务带着申报金额**，闸连可判的对象都没有
+（BACKLOG ``## task-W3`` 第 3 条）。plan 级判据补的就是这个缺口。
+
+它顺带引入第三个新概念：**作用域**（``scope``）。任务级 finding 说「这一轮产出不合格」，
+交给返工；plan 级 finding 说「计划本身少排了一步」—— 返工任何单个任务都补不出那一步，
+多返几轮只是把重试次数烧完，所以它交给人（跨轨冻结契约 D-1）。
+
 Phase 4 加第七道闸 ``_gate_gateway``（手册 R2）。它是「网关错误码 -> replan 换渠道」
 这条触发线的**输入端**：闸认网关回执、按官方码表判四象限处置，产出
 ``{"gate": "gateway", "disposition": ...}``；判定由 ``ControlPlane._should_replan``
@@ -86,6 +95,19 @@ FINANCE_BIZ_TYPE = "refund"
 FINANCE_THRESHOLD_ENV = "MAOS_FINANCE_THRESHOLD"
 DEFAULT_FINANCE_THRESHOLD = 5000.0
 
+#: F-1 的申报金额字段名。抽成常量而不是各处再抄一遍字面量：plan 级判据要按**同一个
+#: 字段名**去扫，两处一分叉就是两套口径 —— 正是本节抬头警告的那种事故形状。
+FINANCE_AMOUNT_FIELD = "amount_claimed"
+
+# -- 第六道闸的 plan 级判据（BACKLOG ``## task-W3`` 第 3 条）------------------
+#: finding 的作用域。**缺省不写即为任务级**；plan 级 finding 显式写这个值，
+#: 由控制面路由到人（跨轨冻结契约 D-1 第 4 条）。闸只管产，不管路由。
+SCOPE_PLAN = "plan"
+
+#: 递归扫 inputs 找申报金额时的最深层数。设上限而不是无限下潜：inputs 是外部喂进来
+#: 的 JSON，Gate 不能假设上游收敛过形状（同 ``_gate_finance`` 的「一律不许抛」）。
+FINANCE_SCAN_MAX_DEPTH = 4
+
 
 # -- 第七道闸的口径（手册 R2）------------------------------------------------
 #: 网关回执在 artifact ``content`` 里的字段名。闸只认这个**数据形状**，不认产物
@@ -135,6 +157,50 @@ def _finance_threshold() -> float:
         log.warning("%s=%r 解析不出数值，回落默认阈值 %s",
                     FINANCE_THRESHOLD_ENV, raw, DEFAULT_FINANCE_THRESHOLD)
         return DEFAULT_FINANCE_THRESHOLD
+
+
+def _over_finance_threshold(raw, threshold: float) -> bool:
+    """按 F-1 的字面口径判「这个申报金额要不要走财务复核」。
+
+    三档压成一个 bool，三档都不许改：
+
+      · 缺失 / ``None`` -> ``float(None or 0)`` = 0 -> **不触发**（F-1 字面口径）；
+      · 解析不出数（``float("六千")`` 抛）-> **触发**。吞掉当 0 算的话，一笔字段脏掉
+        的高额退款就悄悄绕过了财务复核 —— 与把 tool_error 读成「0 条失败」同类假绿；
+      · 恰好等于阈值 -> 不触发（``>`` 不是 ``>=``，与 F-1 一字不差）。
+
+    抽成模块函数是因为任务级与 plan 级两条判据必须用**同一把尺**：两边各写一遍
+    ``float(... or 0)``，哪天有人只改一边，症状是「闸对同一笔钱一处触发一处不触发」。
+    """
+    try:
+        amount = float(raw or 0)
+    except (TypeError, ValueError):
+        return True                        # 解析不出 = 自证不了它在阈值之下
+    return amount > threshold
+
+
+def _claimed_amounts(node, depth: int = 0):
+    """挖出一份 ``inputs`` 里所有 ``amount_claimed`` 的取值，含嵌套的那些。
+
+    **按字段名下潜，不按路径**。写死 ``case_seed.amount_claimed`` 这种嵌套路径，
+    换个域、换个 seed 键名，这条判据当场变成死代码而且没有症状；按字段名扫的话，
+    判据跟着 F-1 的词汇走 —— 顶层与嵌套只是同一个字段的两个位置，不是两套口径。
+    换域时要动的仍然只有 ``FINANCE_AMOUNT_FIELD`` 这一个常量，与任务级判据同一个。
+
+    命中的键**不再往下潜**：``amount_claimed`` 的值本身是个 dict 时，那是「金额解析
+    不出」这一档（交给 ``_over_finance_threshold`` 收严），不是「里面还藏着一个金额」。
+    """
+    if depth > FINANCE_SCAN_MAX_DEPTH:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == FINANCE_AMOUNT_FIELD:
+                yield value
+            else:
+                yield from _claimed_amounts(value, depth + 1)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _claimed_amounts(value, depth + 1)
 
 
 class ReviewerGate:
@@ -430,9 +496,42 @@ class ReviewerGate:
                        f"{err.get('message') or '沙箱未给出结构化错误'}",
         }]
 
+    def _gate_finance(self, task, artifacts) -> list[dict]:
+        """财务复核闸。两条判据，一条守「金额进了闸还交不出凭据」，一条守「金额压根没进闸」。
+
+        · **任务级**（``_gate_finance_task``，F-1 冻结判据）：这个任务报了超阈金额，
+          本轮产出里就必须有财务核算的凭据；
+        · **plan 级**（``_gate_finance_plan``，BACKLOG ``## task-W3`` 第 3 条）：这个 Plan
+          里报了超阈金额，就必须有任务把它带进任务级判据的触发面 —— 一个任务都没有，
+          意味着计划里漏排了财务复核，闸连可判的对象都没有。
+
+        **两条互斥**，所以拼起来至多命中一条：plan 级只在「没有任何任务的顶层
+        ``amount_claimed`` 超阈」时开口，而任务级只对「顶层 ``amount_claimed`` 超阈」的
+        任务开口。写成相加而不是 if/else，是为了让这条互斥性由代码形状本身托住 ——
+        哪天判据松动、两条同时命中，findings 里会如实出现两条，而不是被 else 吃掉一条。
+
+        三条硬规矩（两条判据同守）：
+          · **不许 import ``maos.domain.refund``**（铁律 9 推论）。闸只读
+            ``task["inputs"]``、artifact 的 ``content``、以及 ``store.list_tasks``
+            这三种数据形状，判据不落在业务模块上；换域时要动的只有本文件顶上那几个
+            常量。手册正文里「Gate 会查 finance_entry 表」那句与本条冲突，按事实源
+            优先级取 F-1（详见 DECISIONS ``## task-R0``）；
+          · **金额解析不出数 = 触发，不是放过**（见 ``_over_finance_threshold``）；
+          · **空 dict 不算凭据**（见 ``_gate_finance_task``）。
+
+        这道闸是「RAG 有无」对照实验的判定面：没检索到历史案例 → 计划里漏排财务复核
+        → 在这里被拦下。**Phase 3 到 Phase 7 之间这句话是假的**，实测里一次都没走过：
+        那时只有任务级判据，而漏排意味着没有任何任务带着申报金额，闸根本没被叫到，
+        症状要等到下一步 ``payment.execute`` 查不到 ``finance_entry`` 才暴露
+        （BACKLOG ``## task-W3`` 第 3 条记的就是这个）。补上 plan 级判据之后它才成立。
+        """
+        # 相加不是 if/else —— 理由见上面「两条互斥」那段。
+        return (self._gate_finance_plan(task)
+                + self._gate_finance_task(task, artifacts))
+
     @staticmethod
-    def _gate_finance(task, artifacts) -> list[dict]:
-        """财务复核闸（F-1 冻结判据）：退款金额超阈值，就必须有财务核算的凭据。
+    def _gate_finance_task(task, artifacts) -> list[dict]:
+        """任务级判据（F-1 冻结原文，一字未动）：报了超阈金额就必须交得出凭据。
 
         · **触发**：``inputs["biz_type"] == "refund"`` 且
           ``float(inputs["amount_claimed"] or 0)`` 大于阈值（``MAOS_FINANCE_THRESHOLD``，
@@ -440,26 +539,18 @@ class ReviewerGate:
         · **判据**：同 attempt 的 artifacts 里，任一份 ``content["finance_entry"]``
           是**非空 dict** 即 pass；否则 blocker。
 
-        三条硬规矩：
-          · **不许 import ``maos.domain.refund``**（铁律 9 推论）。闸只读
-            ``task["inputs"]`` 与 artifact 的 ``content``：判据落在数据形状上，
-            换域时这道闸一行都不用改。手册正文里「Gate 会查 finance_entry 表」
-            那句与本条冲突，按事实源优先级取 F-1（详见 DECISIONS ``## task-R0``）；
-          · **金额解析不出数 = 触发，不是放过**。``float("六千")`` 会抛，吞掉当 0
-            处理的话，一笔字段脏掉的高额退款就悄悄绕过了财务复核 —— 与把
-            tool_error 读成「0 条失败」是同一类假绿；
-          · **空 dict 不算凭据**。``finance_entry = {}`` 是「跑过了但什么都没算出来」，
-            放行它等于把判据降级成「键在不在」。
+        **空 dict 不算凭据**：``finance_entry = {}`` 是「跑过了但什么都没算出来」，
+        放行它等于把判据降级成「键在不在」。
 
-        这道闸也是「RAG 有无」对照实验的判定面：没检索到历史案例 → 计划里漏排
-        财务复核 → 在这里被拦下。闸判错，对照实验就没有对照。
+        这一段判的只有「金额已经在闸的视野里」的那些任务。「金额压根没进视野」
+        是另一条判据的事，见 ``_gate_finance_plan``。
         """
         inputs = task.get("inputs") or {}
         if not isinstance(inputs, dict) or inputs.get("biz_type") != FINANCE_BIZ_TYPE:
             return []
 
         threshold = _finance_threshold()
-        raw_amount = inputs.get("amount_claimed")
+        raw_amount = inputs.get(FINANCE_AMOUNT_FIELD)
         try:
             amount = float(raw_amount or 0)
         except (TypeError, ValueError):
@@ -476,12 +567,87 @@ class ReviewerGate:
                 return []
 
         why = (f"退款金额 {amount} 超过财务复核阈值 {threshold}" if amount is not None
-               else f"退款金额 amount_claimed={raw_amount!r} 解析不出数值，"
+               else f"退款金额 {FINANCE_AMOUNT_FIELD}={raw_amount!r} 解析不出数值，"
                     f"自证不了它在财务复核阈值 {threshold} 之下")
         return [{
             "gate": "finance", "severity": "blocker", "path": None,
             "message": f"{why}，而本轮产出里没有任何一份 artifact 带非空 finance_entry"
                        f" —— 缺少财务核算凭据，不放行",
+        }]
+
+    def _gate_finance_plan(self, task) -> list[dict]:
+        """plan 级判据：这个 Plan 报了超阈金额，却没有任何任务把它带进闸的视野。
+
+        **判据落在哪个数据形状上**（BACKLOG ``## task-W3`` 第 3 条问的就是这个）：
+        两侧都只读 ``store.list_tasks(plan_id)`` 拿到的 ``task["inputs"]``，
+        一个字段名（``FINANCE_AMOUNT_FIELD``），两个位置 ——
+
+          · **报没报**：这个 Plan 的任一退款任务的 inputs 树里，任意深度出现过一个
+            超阈的 ``amount_claimed``（见 ``_claimed_amounts``）。漏排财务复核之后，
+            仍然在场的申报金额只剩下受理那一步的案件种子里那份；
+          · **进没进闸**：任一退款任务的**顶层** ``inputs["amount_claimed"]`` 超阈 ——
+            那正是 F-1 任务级判据的触发面。
+
+        报了、却一个都没进闸 → plan 级 blocker。反过来只要有一个任务进了闸，这里就闭嘴，
+        剩下的交给任务级判据 —— 那才是「带了金额却交不出凭据」该管的事。
+
+        **不判「有没有 finance_entry」**，虽然 BACKLOG 的原话是那么写的。凭据是**跑出来**
+        的，判它就等于判「到此刻为止跑出来没有」：正常计划在受理那一步过闸时，财务那一步
+        还没轮到，凭据当然还不在，这条判据会对一个完全健康的计划报 blocker。判「计划里有
+        没有排这一步」则是计划的静态属性，与跑到哪儿无关 —— 这是下面顺序无关性的前提。
+
+        **与 review 顺序无关**，这是这条判据能挂在逐任务的闸上的立身之本
+        （类 docstring 第 5 行：判定必须可复现、可解释、可审计）：
+
+          1. **判据本身与顺序无关**。它是当前任务集的纯函数，只读 ``inputs``，不读任何
+             随执行推进而变的东西（任务状态、attempt、artifacts 一概不读）。同一个任务集，
+             无论先评审哪个任务、评审到第几个，两侧的扫描结果都一样。
+             需要说清的是**任务集本身不是永远不变的**：重规划会覆写 inputs、新增任务
+             （``ControlPlane._apply_replan``）。但那是一次显式的计划变更事件，不是评审顺序
+             ——变更之后判据照新任务集重算，且这正是要的行为：一次把财务复核改掉的重规划，
+             应当在这里被重新拦下。
+          2. **命中 N 次不会自相矛盾**。上一条已经保证 N 次判定的**结论**相同；这里再让
+             **文案**也相同：报错取 ``min(..., key=task_id)`` 而不是「当前正在评审的任务」，
+             所以 N 条 finding 逐字节一致，不会出现「在 A 上说漏了、在 B 上说别的」。
+             至于同一条结论要不要重复 N 次 —— 那是控制面的事：它见到第一条
+             ``scope="plan"`` 的 blocker 就该转人工，不会走到第二条（跨轨冻结契约 D-1）。
+        """
+        plan_id = task.get("plan_id")
+        if not plan_id:
+            return []
+        try:
+            siblings = self.store.list_tasks(plan_id)
+        except Exception as exc:               # noqa: BLE001 —— 闸的异常会掀掉整个 plan
+            # 读不到任务集就闭嘴，不抛也不猜。抛会让 review_pending() 裸调处崩掉整个
+            # plan（同 _dry_run_reverse）；猜「大概是漏排了」会把存储抖动报成计划缺陷。
+            log.warning("[%s] plan 级财务判据读不到任务集（%s: %s），本轮跳过",
+                        plan_id, type(exc).__name__, exc)
+            return []
+
+        threshold = _finance_threshold()
+        declared: list[tuple[str, object]] = []
+        in_view = False
+        for sibling in siblings:
+            inputs = sibling.get("inputs")
+            if not isinstance(inputs, dict) or inputs.get("biz_type") != FINANCE_BIZ_TYPE:
+                continue
+            if _over_finance_threshold(inputs.get(FINANCE_AMOUNT_FIELD), threshold):
+                in_view = True
+            for raw in _claimed_amounts(inputs):
+                if _over_finance_threshold(raw, threshold):
+                    declared.append((str(sibling.get("task_id")), raw))
+
+        if in_view or not declared:
+            return []
+
+        where, raw = min(declared, key=lambda item: item[0])
+        return [{
+            "gate": "finance", "scope": SCOPE_PLAN, "severity": "blocker", "path": None,
+            "message": f"这个 Plan 报了 {FINANCE_AMOUNT_FIELD}={raw!r}（在任务 {where} 的 "
+                       f"inputs 里），超过财务复核阈值 {threshold}，却没有任何一个任务把它"
+                       f"带到 inputs[\"{FINANCE_AMOUNT_FIELD}\"] 上 —— 第六道闸对这笔钱没有"
+                       f"可判的对象，计划里漏排了财务复核这一步。这是计划本身的缺陷，"
+                       f"返工任何单个任务都补不出这一步，需要重规划或转人工。",
         }]
 
     # -- 第七道闸：网关回执 ------------------------------------------------
@@ -573,15 +739,44 @@ class ReviewerGate:
 
 
 class HumanApprovalQueue:
-    """人工审批队列。高风险任务 Gate 过了也停在 BLOCKED，等这里放行。"""
+    """人工审批队列。停在 BLOCKED 等人的任务从这里捞，捞不到的就是没人知道。"""
 
     def __init__(self, store: Store, cp: ControlPlane) -> None:
         self.store = store
         self.cp = cp
 
     def pending(self, plan_id: str) -> list[dict]:
+        """捞出所有在等人的 BLOCKED 任务。两类，缺一不可。
+
+        · ``effect_risk=H`` —— 产物落地是不可逆动作，Gate 过了也要人放行（既有语义）。
+        · 控制面在那一跳的 ``detail`` 里明说 ``await == "human_decision"`` 的
+          —— 控制面判定「机器已经没有别的招了」，这一类与 ``effect_risk`` 无关。
+
+        为什么第二类非加不可：控制面的第三出口（``HUMAN_EXIT_*``）判的是
+        「机器返工修不好」，判据是 finding 的 disposition 与 scope，两者都不看
+        ``effect_risk``。plan 级缺陷尤其可能落在一个 ``effect_risk=L`` 的任务上。
+        只按 H 捞，这类任务会停在 BLOCKED 且**没有任何人捞得到** —— 静默挂起，
+        比改造前那个明确的 FAILED 更糟。理由与取舍见 docs/DECISIONS.md 的
+        ## task-D1 设计点 3。
+
+        判据取自 event_log 而不是任务行上的某个字段：``detail`` 只落在迁移那一条
+        事件上，而 event_log 是 Trace 与审计的唯一来源（control_plane 铁律 4）。
+        为此在任务行上另开一个字段，就有了第二份事实。
+
+        历史上等过人、后来 ``human_resume`` 回去、这次因**别的**原因再次 BLOCKED
+        的任务也会被捞出来 —— 这是刻意的宽：BLOCKED 的三条出边
+        （``human_resume`` / ``human_approve`` / ``human_reject``，states.py:40-42）
+        全是人的动作，任何一个 BLOCKED 都在等人，多捞不会错，漏捞才会。
+        """
+        awaiting = {
+            e["task_id"] for e in self.store.list_event_log(plan_id)
+            if e.get("to_state") == TaskState.BLOCKED
+            and isinstance(e.get("detail"), dict)
+            and e["detail"].get("await") == "human_decision"
+        }
         return [t for t in self.store.list_tasks(plan_id)
-                if t["state"] == TaskState.BLOCKED and t["effect_risk"] == Risk.HIGH]
+                if t["state"] == TaskState.BLOCKED
+                and (t["effect_risk"] == Risk.HIGH or t["task_id"] in awaiting)]
 
     def decide(self, task_id: str, approved: bool, operator: str, note: str = "") -> None:
         self.cp.human_decision(task_id, approved, operator, note)

@@ -45,7 +45,7 @@
 
 ```bash
 cd <repo>
-python3 -m pytest maos/tests -q          # 应 596 passed
+python3 -m pytest maos/tests -q          # 应 645 passed
 python3 run.py                           # 场景 1-7，exit=0，实测 2.4s
 python3 run.py --scenario 7              # 单跑失败路径，exit=0（它已在缺省序列里）
 python3 scripts/make_evidence.py         # 落 evidence/scenario-1..7 与 -R5，实测 4.5s
@@ -330,15 +330,15 @@ python3 scripts/verify.py
 被问到 warn 就照实答：**warn 不影响判定，七项全 PASS，退出码 0**；
 warn 说的是产物来源可审计性，出处已记在 `docs/BACKLOG.md task-X4`。
 
-七行实跑值（`147df03` 实测，已含 Y-4）：
+七行实跑值（`2474c56` 实测，已含 Y-4 + D-1 + D-2）：
 
 ```
-[PASS] hash-integrity       81/81
-[PASS] business-ref         33/33
+[PASS] hash-integrity       86/86
+[PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
-[PASS] trace-tree           18/18
+[PASS] trace-tree           19/19
 [PASS] kb-hit               7/7
-[PASS] business-outcome     9/9
+[PASS] business-outcome     10/10
 [PASS] history-case         1/1
 
 RESULT: 7/7 PASS
@@ -450,6 +450,8 @@ Y-4 已并入（`783d9dd`），下面四条**已按实跑回填**：
 | 1 | 镜 5 | **A/B 两版并存**，B 版屏幕输出「无实测值可贴」 | **合并成一版**，`[2]`/`[3]` 两段业务输出与状态迁移轨迹全部照实跑粘贴 | Y-4 |
 | 2 | 镜 1 | 第四个任务写「发起退款并观察网关终态 / attempt=1」 | 实测已变成「（改派备用渠道）/ **attempt=2**」，并把它明写成镜 5 的伏笔 | Y-4 |
 | 3 | 镜 7 | warn 10 行 2 类、`hash-integrity 77/77` | **11 行 3 类**、**`81/81`** | Y-4 + 证据束重跑 |
+| 6 | 镜 7 | 七行读数 `81/81` `33/33` `18/18` `9/9`（`147df03` 实测） | **`86/86` `35/35` `19/19` `10/10`**（`2474c56` 实测）；warn **12 行 3 类** | 整合轮 6 合 D-1 + D-2 后证据束重跑 |
+| 7 | 录制前置 | `应 596 passed` | **`应 645 passed`** | D-1 带 26 条、D-2 带 23 条 |
 | 4 | 三件事表第 2 行 | 「机制在，屏幕上演不出来，用 A 版」 | 「✅ 已能演」，红线改方向 | Y-4 |
 | 5 | 耗时表 | A 版 265s / B 版 287s（B 版为估算） | 镜 5 实数 190 字 / 47.5s、分配 55s，**总长 280s（4:40）**，镜 6/7/8 各顺延 15s | 重数重算 |
 

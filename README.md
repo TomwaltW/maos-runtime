@@ -97,16 +97,16 @@ python3 scripts/verify.py            # ② 七项逐条重放校验
 echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 ```
 
-本机实跑（整合轮 5，**全新克隆 + 无任何 API key**，逐步耗时见
+本机实跑（整合轮 6，**全新克隆 + 无任何 API key**，逐步耗时见
 [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
 
 ```
-[PASS] hash-integrity       81/81
-[PASS] business-ref         33/33
+[PASS] hash-integrity       86/86
+[PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
-[PASS] trace-tree           18/18
+[PASS] trace-tree           19/19
 [PASS] kb-hit               7/7
-[PASS] business-outcome     9/9
+[PASS] business-outcome     10/10
 [PASS] history-case         1/1
 
 RESULT: 7/7 PASS
@@ -130,7 +130,7 @@ RESULT: 7/7 PASS
 
 **但不要用 `git checkout -- evidence/` 去「收拾干净」。** json 会被还原成入库的旧版本，
 而 `maos.db` 不入 git、不会跟着还原 —— 新库配旧快照，再跑 `verify.py` 会掉到
-`RESULT: 3/7 PASS`（`hash-integrity 4/74`、`business-ref 0/33`），看上去像证据被伪造，
+`RESULT: 3/7 PASS`（`hash-integrity 6/86`、`business-ref 0/35`），看上去像证据被伪造，
 其实只是两边不同步。实测过的两条出路，二选一：
 
 ```bash
@@ -167,7 +167,7 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 
 ```bash
 git clone <本仓库地址> maos && cd maos
-python3 -m pytest maos/tests -q     # 596 passed
+python3 -m pytest maos/tests -q     # 645 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 

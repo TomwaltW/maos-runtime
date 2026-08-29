@@ -595,3 +595,67 @@ G-2 轨（verify 第 6 项：外部判据只验列表非空）执行中发现，
 |---|---|---|---|---|
 | 2026-08-29 | P7 | **FAILED 的 plan 可以自称 `status: "succeeded"` 而第 6 项照过。** `check_business_outcome` 对终态的判据是：`state not in ("DONE","FAILED")` 就跳过，否则只要 `business_outcome` 是个 dict 且 `status` 非空就 `chk.ok()` —— 只有 `state == "DONE"` 的分支才继续查判据。于是库里 FAILED、result.json 也老实记 FAILED（躲开了 state 比对）、`business_outcome.status` 却写 `succeeded`，第 6 项一声不吭 | 与本轨修的是**同一个模式**：只验字段在不在，不验说的是不是真的。危害比本轨那条小一档（要骗过的是「读 json 的人」而不是「跑核验器的人」，且 `basis`/`plan_state` 两个字段会自相矛盾），但它就在同一个函数里，隔着五行 | 建议下一轮顺手做，判据是现成的：FAILED 分支加一句 `status` 必须是 `failed`（生成侧 `derive_business_outcome` 就是这么写死的，`plan_state == "FAILED"` -> `status, basis = "failed", "plan_failed"`），一行的事。本轨不擅自扩面 |
 | 2026-08-29 | P7 | **`business_outcome` 的 `basis` / `plan_state` / `source` / `unaudited_evidence_count` 四个字段仍是「写什么就是什么」。** 本轨回查的是 `external_evidence` 里**指得到的东西**（产物、回执），这四个字段本身没有任何一层校验 | `unaudited_evidence_count` 尤其值得点名：把它改成 0 就能让第 6 项那条 warn 凭空消失，而那条 warn 是评委判断「这份报告是不是脚手架」的唯一线索。warn 不判负，所以这不是「伪造成功」，是**伪造干净** —— 一屏没有 warn 的 7/7，比有 warn 的 7/7 更容易被当成没问题 | 不急，但修法很便宜：`unaudited_evidence_count` 应当等于列表里 `provenance == "unknown"` 的条数，`plan_state` 应当等于库里的 `state`，`basis` 与 `status` 的对应关系在 `derive_business_outcome` 里是死的。四条都能在同一个 for 循环里就地比对，不需要新查库 |
+
+## task-D1
+
+rework 第三出口（分支 `task/d1-human-exit`，基线 `956e6af`）。设计与取舍记在
+`docs/DECISIONS.md` 的 `## task-D1`；以下是本轨**按铁律 4 不当场改**的四条。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P4 | **既有的 `replan_limit_exceeded` 有和第三出口一模一样的洞**（派单 §5.1 设计点 3 要求顺带核）：`control_plane.py` 那条分支对**任何** `effect_risk` 的任务都落 `AWAITING_REVIEW -> BLOCKED`，而改造前的 `HumanApprovalQueue.pending()` 只捞 `effect_risk == HIGH` —— 非 H 任务重规划撞上限后会停在 BLOCKED 且没有任何人捞得到。X-2 当时的两条链路（`test_replan_gateway.py` 与场景 5/7）用的都是 H 任务，所以一直没露出来 | 本轨选了设计点 3 的方案 (a)，`pending()` 改成「H **或** `detail["await"] == "human_decision"`」，而 `replan_limit_exceeded` 写的正是 `await: human_decision` —— 所以**这个洞被顺带覆盖了**。但覆盖不等于修：控制面那条分支一行没动，能不能被捞到仍然取决于 `pending()` 这一个消费方。若日后另有代码按 `effect_risk == HIGH` 自己过滤 BLOCKED 任务，同一个洞会在那里重新长出来 | 派单明确「记 BACKLOG，别顺手修」（X-2 的既有语义，改它超出本单范围）。建议下一轮把「BLOCKED 的任务由谁捞」收成一处判据（`pending()` 是唯一入口），而不是让每个消费方各写一遍过滤条件 |
+| 2026-08-29 | P4 | **证据束七项里四项的数字变了，README / 自查单 / PPT 里写死的是旧值**。本轨实测（`python3 scripts/make_evidence.py && python3 scripts/verify.py`，`RESULT: 7/7 PASS`，8 个来源不变）：`hash-integrity` **81 → 90**、`business-ref` **33 → 38**、`trace-tree` **18 → 19**、`business-outcome` **9 → 10**；`authoritative-fact 3/3`、`kb-hit 7/7`、`history-case 1/1` 三项未变 | 场景 7 的 `result.json` 从 1 个 plan 变 2 个（第二段另起了一个 plan），四项分母跟着涨。`README.md:104-109` 的读数块、`docs/submission-checklist.md`、`docs/ppt-outline.md` 里凡写死这四个数的地方都对不上了 | 派单 §5.2 明确「记 BACKLOG 交整合轮，别去改」（那三份都不是本轨的面）。刷数时注意 `README.md:133` 那个 `hash-integrity 4/74` 是**坏路径**的读数，分母另算，与 `## integrate-round-5` 第 3 条是同一笔账 |
+| 2026-08-29 | P4 | **`verify.py` 的 warn 从 11 行变 12 行，仍是 3 类** —— `authoritative-fact` 项下新增一条 `scenario-7 case=case-s7-0002: 有回执但 biz_status 不是 settled` | 与 `## integrate-round-5` 第 1 条同源、同性质：第二笔**真收到过网关回执**（`ACQ.TRADE_NOT_EXIST`），而全案落人工驳回、从未进入 `settled` —— 这条 warn 恰恰是权威事实边界守住了的证明，不是缺口。`docs/submission-checklist.md` A-2 若已按整合轮 5 的建议改成「3 类 11 行」，本轮又要改成 **3 类 12 行** | 与 `## integrate-round-5` 第 1 条**合并一次做**，别分两轮改两遍。建议 A-2 那一格不再写死行数，改成「`authoritative-fact` 每个未 settled 的退款 case 一行，场景 7 现有 2 个 case」——行数会跟着场景走，写死一个数就是每加一笔演示都要回来改一次 |
+| 2026-08-29 | P4 | **`_gate_gateway` 的 `severity` 与第三出口的判据在 `GW_QUERY_OR_HUMAN` 这一格不同源**：同一个 disposition 有两种严重度 —— 未知码走 `gate.py` 的 `except KeyError` 分支给 `blocker`，而**已知**的 `retriable=False + outcome=unknown` 码（如 `ACQ.DISCORDANT_REPEAT_REQUEST`）走正常分支，按 `outcome != failed` 给 `info` | 后者单独出现时 `_review` 判 `pass`，走不到 rework 分支，也就走不到第三出口 —— 它落回 `effect_risk=H` 的人工审批入口（有 H 的话），非 H 任务则直接 DONE。这一格是四象限里官方称「最危险的一档」，却是唯一一个「已知码比未知码更容易被放行」的组合。本轨不改：severity 的判据在 `gate.py:563`，那是 D-2 的面，且改它会动场景 7 第一段现在走的路径 | 交 D-2 或下一轮一并想：要么让这一格的已知码也给 blocker（与未知码同源），要么明确写下「已知的 unknown 由高风险审批兜、未知的 unknown 由第三出口兜」这个分工。**两种都行，但不能像现在这样没人写下来** —— 本轨的 `test_terminal_gateway_codes_route_to_human` 已经把「路由侧对两格一视同仁」钉住了，缺的是产出侧的口径 |
+
+## task-D2
+
+第六道闸补 plan 级判据（分支 `task/d2-plan-gate`，基线 `956e6af`）时发现四条，
+均**不在本轨白名单内**，按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`refund.intake` 在返工下不幂等**。`maos/domain/refund/guard.py:115` 的 `create_case` 是裸 `INSERT`（无 upsert、无 `ON CONFLICT`），而 `refund_case` 的主键是 `(tenant_id, case_id)`。任何一道闸在受理任务上判出 rework，重跑就抛 `IntegrityError: UNIQUE constraint failed: refund_case.tenant_id, refund_case.case_id`，任务耗尽 3 次 attempt 后 FAILED | **先于本次改动就在的坑**，只是过去没有触发路径（受理任务一直没被判过 rework）。本轨补上 plan 级判据后它被走到了：R5 without_kb 段的实测拦点因此是这条 UNIQUE 报错，而不是那条 plan 级 finding 的文案。D-1 的第三出口合并后 plan 级 blocker 直接转人工、不返工，这条路径会重新变成不可达 —— 但**坑还在**，换任何一道闸在受理上判 rework 都会重现 | `guard.py` / `skills/builtin/refund/intake.py` 都不在本轨白名单。建议与 D-1 合并后一并处理：或让 `create_case` 在同 `(tenant, case)` 且同 `plan_id` 时幂等返回既有行，或让受理 skill 先查后建。**不建议**改成 `INSERT OR REPLACE` —— 那会让重跑悄悄覆盖已经推进过的 `biz_status`，比抛异常坏得多 |
+| 2026-08-29 | P7 | **`verify.py` 的 `business-ref` 从 33/33 变成 30/30**。R5 without_kb 段的 plan 现在死在受理那一步，裁定 / 付款 / 通知三步都没跑，少落三条业务引用 | 不影响判定（`RESULT: 7/7 PASS`，30/30 全部指得到、版本对得上），但**分子分母同时变小**这件事会让照着旧数字对的人以为丢了引用。`docs/submission-checklist.md` 与 README 里凡是写死 `business-ref 33/33` 的地方都会对不上 | 这个数字**还会再变一次** —— D-1 的第三出口合并后 without_kb 段变成「受理 BLOCKED 等人决策」，跑到哪一步又不一样。所以现在不值得刷任何文档里的数字，等整合轮把 D-1/D-2 合起来重跑证据束之后一次刷到位。本轨已按派单 §8「不要改 README / 自查单 / PPT 里的数字」留给整合轮 |
+| 2026-08-29 | P7 | **`maos/kb/guardrails.py:204-219` 的 `_shared_inputs` 只扫顶层 `inputs`**，取不到嵌在 `case_seed` 里的 `amount_claimed`。它的 docstring 明写「`amount_claimed` 取自当前计划已有的任务 …… 抄错一位数就是把闸绕过去」 | 当前无症状：with_kb 段的 baseline 里 finance 那一步带着顶层 `amount_claimed`，拿得到。但**漏排财务核算的 baseline 拿不到** —— 知识建议若在那种 baseline 上补步骤，补出来的任务会缺申报金额，第六道闸对它恒不触发。这与本轨修的是同一类坑（触发面只看顶层），只是在检索侧 | `kb/guardrails.py` 不在本轨白名单。本轨已把「按字段名任意深度扫」抽成 `gate.py` 的 `_claimed_amounts`，检索侧若要修可以照同一口径走，但**不要跨轨共用实现** —— 内核与知识层之间不该新增依赖方向。交后续轨 |
+| 2026-08-29 | P7 | **`docs/domain-portability.md` §2 的行数与 diff 统计没跟着本轨刷**（§2.2 表里 `maos/runtime/` 的 `+126 / −4`、正文 `:116` 与 `:251` 的「+126」、§2.3 的 `+150 / −6`） | 本轨给 `gate.py` 加了约 +200 行（plan 级判据 + 两个模块级辅助函数 + docstring），这几处数字全部偏小。不影响论证方向（「这些行领域无关」照旧由两条 AST 守卫钉着），只是数字不准 | 那几个数字按定义是 `git diff --shortstat` 的区间统计，**必须实跑才能填**，且区间端点会随整合轮的合并提交变。本轨只刷了 §5 与收口台账里**与本轨改动直接相关**的行号（`gate.py:454 -> :522`，新增 `:578`），没有代刷区间统计。交整合轮 |
+
+## task-F1
+
+口径统一轨（分支 `task/f1-role-count`，基线 `c1049c2`）：只改两处措辞
+（`maos/agents/manager.py` 的场景集合、`docs/agentteams-mapping.md:21` 的角色数），
+零行为变更。以下三条是本轨看见但**按铁律 4 不当场改**的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`maos/kb/experiment.py:678` 的 `write_evidence()` docstring 写「与场景 1-6 走同一套落盘与脱敏口径」，应为 1-7**。本轨实测判定：**确认该改**。依据是这句话自称的复用关系确实覆盖到了场景 7 —— `write_bundle` 全仓唯一实现在 `scripts/make_evidence.py:409`，`:481` 在 `for n in wanted` 循环里对每个场景调它，而 `wanted` 缺省取 `maos/main.py:26` 的 `ALL_SCENARIOS = (1,2,3,4,5,6,7)`；R5 自己在 `experiment.py:711` 调的是同一个 `write_bundle`。所以场景 7 与 R5 同源这件事成立，只是数字没跟着 Y-4 走 | 不改判定、不改行为，纯文档失真。但它恰好是在解释「为什么不另立第二份落盘口径」，把 7 漏在外面会让读者以为场景 7 走的是别的路径 —— 而场景 7 正是唯一走失败路径的那个，最容易被当成特例 | **`maos/kb/experiment.py` 是 D-2 全文件独占，本轨一个字节没碰。** 交 D-2 顺手改，或 D-2 合并后另开一单 |
+| 2026-08-29 | P7 | **`docs/EXECUTION.md:710` 说 `agent-identity.md` 是「十角色清单（软件域 6 + 退款域 4）」，与 `AGENT_POOL` 的 9 个对不上**，是 `docs/BACKLOG.md:304` 那条账的第三处表述。本轨判定：**建议不改** | 严格说这句没错 —— 它描述的是 `agent-identity.md` 这份生成物的**内容清单**（确实列了 10 个 Identity），不是在描述可派单数；且生成物自己 `:7` 已如实印出「10 个 / 9 个 / 1 个」并解释差在哪，顺着链接就能数平。真正会误导的是把 10 直接挂在 `AGENT_POOL` 后面那种写法，那处已由本轨在 `agentteams-mapping.md:21` 修掉 | **手册是事实源，改它历来要人类当场授权（先例 `docs/DECISIONS.md:322`），本轨不动。** 若人类仍想把三处表述统一，最小改法是在该行末尾追加「其中 9 个可被派单」—— 那是措辞增强，不是纠错，可与 `## task-X4` 那批文档一起做 |
+| 2026-08-29 | P7 | **`mgr.plan()` 还有一个「场景」以外的调用点：`maos/kb/experiment.py:344`（R5 RAG 对照实验，传 context）**。本轨把 `_user_message` 的注释改成「走 ManagerAgent 规划的场景（1 / 2 / 5 / 6 / 7）全部改判」，措辞限定在**场景**，未提这一处 | 「用户请求」前缀一旦动，R5 实验同样改判，而 R5 不在 `ALL_SCENARIOS` 里、也不在场景编号体系内，照注释复核的人可能漏掉它。影响只在「改这个前缀之前要复核哪些出口」这一件事上 | 与上面第 1 条同属 `maos/kb/experiment.py` 面。若 D-2 处理那条时顺手，可在 `experiment.py:338-344` 附近加一句「本处与场景共用 `_user_message` 的『用户请求』前缀」的反向指路；不做也不影响任何判定 |
+
+## task-F2
+
+派单模板轨（分支 `task/f2-dispatch-template`，基线 `c1049c2`）。本轨一行代码、一个测试都不改。
+以下三条都在白名单外，按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **仓库 `CLAUDE.md` 的「开工自检」只认下了一条预期拦截，没有第二条。** 它写的是「让 Claude 读一次守卫脚本，**被拦 = hook 正常**」—— 只覆盖那一次 Read。但守卫按路径与裸文件名拦截的是**一整类**只读引用（`git log -- <受保护路径>`、`grep <裸文件名> …`、`wc -l <受保护路径>`，本轨探针实测均 exit=2），而每份派单同时写着「被拦不要绕，停下来报告」 | 子会话想查清自己的禁改面、或看某个受保护文件最近改过没，都会撞上一次拦截，然后**按铁律停手叫人**。这是纯假警报：守卫是对的，命令也是无害的只读。它每轮、每轨都会重演一次，而且踩到的人无从判断这次拦截是不是该报告的那种 | 本轨的修法落在派单侧（模板 §3 已写死判据与五条换写法）。**但 `CLAUDE.md` 是所有会话自动加载的第一份事实**，只在派单里写会漏掉不走派单的会话。建议人类在「开工自检」那条后面补一句指向：「其它只读命令被守卫拦下也多半是预期，判据与换写法见 `review/DISPATCH-TEMPLATE.md` §3」。`CLAUDE.md` 不在任何一轨白名单，**请人类一行改掉** |
+| 2026-08-29 | P7 | **`review/` 由 `.git/info/exclude:7` 排除、不入库，于是「每轮一份的 paste」与「跨轮复用的资产」被同一条规则一起挡在版本库外。** paste 文件不入库是对的（一轮一份、靠粘贴交付，看板 §7 08-28 那行与 §8 抬头都记了这条惯例）；但派单模板与 `review/tools/` 下的排障脚本不是一轮一份 | 不处理的话，这类资产只活在某个 worktree 里，worktree 一清就蒸发；下一轮编排又从零抽一次共性。本轨已用 `git add -f` 逐文件点名把两个新文件入库绕过（记 `docs/DECISIONS.md` `## task-F2`），但那是**每次新增文件都要记得加 `-f`** 的手工绕法，下一个人不会知道 | `.git/info/exclude` 是本机、非共享文件，且在任何一轨白名单外。两条路：①在 exclude 里给这两条路径加放行（`!review/DISPATCH-TEMPLATE.md`、`!review/tools/`）—— 但 exclude 不随仓库分发，换台机器又是老样子；②**建议这条**：把跨轮复用的东西挪出 `review/`，模板归 `docs/ops/`、探针归 `scripts/` 或 `tools/`，让「`review/` = 一轮一份的草稿」这条规则重新自洽。①②都要动白名单外的文件，交人类定 |
+| 2026-08-29 | P7 | **本轨核对过全局 `~/.claude/CLAUDE.md`「多轨并行派单的交付形式」一节与本模板，未发现互相矛盾之处**（模板已把该节的「`cd` 与 `claude` 同一行」「派单会过期，粘之前 grep 一遍旧 sha / 旧条数」两条逐条吸收）。唯一的缺口是**该节没有「守卫预期拦截」这一条** | 全局 CLAUDE.md 管的是所有项目，而「守卫按路径字面量拦只读命令」这件事只要项目装了同型 hook 就会重演。缺这一条意味着换个仓库、换套派单，同一个假警报还会再发一次 | 优先级低于上面第 1 条（那条影响的是本仓库每个会话）。建议等模板在下一轮实际用过一次、§3 的措辞被验证过之后，再把判据压成一两句放进全局 CLAUDE.md 的那一节。**本轨不动全局 CLAUDE.md**，它不在任何一轨白名单 |
+
+## integrate-round-6
+
+本轮并入**四轨**，基线 `c1049c2`：D-1（rework 第三出口）、D-2（第六道闸 plan 级判据）、
+F-1（角色数口径：Manager 两处注释改成实测场景集合）、F-2（派单模板落盘）。
+前两轨是派单 INT-6 的原定范围，F-1/F-2 是并轨协调方备料、经沈总批准后本轮增收的。
+以下是本轮**按铁律 4 不当场改**的账。
+
+F 轨两支的账各自记在 `## task-F1` / `## task-F2`，本节不重复；本节只记整合侧的发现。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`make_evidence.py` 同一次运行内部的 dirty 传染**：`scenario-R5` 的 7 个文件首行出处 sha 仍带 `-dirty`。sha 本身正确（本轮实测 `9c7483b`），dirty 来自它自己 —— 场景 1..7 先落盘就把工作区弄脏了，排在最后的 R5 取 sha 时读到的自然是脏状态 | 与 `## task-Z5`、自查单 A-2「已知缺口」是同一笔账，本轮**实测复现**：干净工作区下重跑，`INDEX.json` 与场景 1-7 全部干净，**只有 R5 那 7 个带 `-dirty`**。不影响判定（`RESULT: 7/7 PASS`），但自查单 §D 那条「evidence 首行 sha 不带 `-dirty`」的判据在 R5 上恒红 | 属 `scripts/make_evidence.py` 的面，不在本单范围。**最小修法**：进程启动时取一次 sha 存起来，八个场景共用，而不是每个场景各取一次 —— 这样「跑之前工作区干净不干净」才是它真正想记的那件事。自查单 A-2 已按「当前应只列出 scenario-R5 的 7 个」写死了预期，修好后那条也要跟着改 |
+| 2026-08-29 | P7 | **`docs/clone-smoke-report.md` 的旧读数本轮一个字没改**（`521 passed` / `571 passed` / `4/74` / `0/33` / 前三遍逐步耗时） | 该文件是**某次冒烟的实测记录**，带明确的基线 sha 标注与时效声明，里面每个数字都是「那一次跑出来的事实」。照当前值改写它，等于伪造那次冒烟的结果 —— 比留着旧数字坏得多 | **已处理，不是欠账**：本轮按「历史快照，只增不改」的口径重跑了一遍全新克隆冒烟，另起 §2「第四遍（整合轮 6，基线 `e6075e5`）」，§1 克隆命令表补了一行，文末加了收口节。前三遍与 §3/§4/§5 全部原样保留。**剩下的真欠账只有一条**：§5 早就建议给自查单 A-1 补一句「且全程零非零退出、不需要跨节拼路径」（四遍秒数 6.57/6.44/5.4/6.89 几乎无差，而第一遍 6 处卡点、第四遍零卡点，掐表这个判据没有区分力），这条至今没落到 `docs/submission-checklist.md` |
+| 2026-08-29 | P7 | **`docs/ppt-outline.md` 数字口径行末尾的两组 diff 统计（`+62−4` / `+273−7`）本轮没重算** | 这两个数按定义是 `git diff --shortstat` 的区间统计。本轮实测同区间已变成 `core/ +162 / −5`、`runtime/ +470 / −9`（见 `docs/domain-portability.md` 的整合轮 6 台账），所以口径行里那两组**确实偏小**。已在该行下加了一行 ⚠ 注明「本轮没重算」，没有写「已刷」 | 下一轮连同 `domain-portability.md` 的区间表一起刷 —— 两处是同一笔账，分开刷必然又对不上。或者更省事：口径行不再复述这两个数，改成一句「diff 统计以 `domain-portability.md` §2.4 为准」，单点维护 |
+| 2026-08-29 | P7 | **`grep -c 'def _gate_'` 这个数闸法本轮开始失准**：在 `2474c56` 上数出 **9**，而闸仍是**七道** —— D-2 把 `_gate_finance` 拆成了「分发 + `_gate_finance_task` + `_gate_finance_plan`」三个函数 | `domain-portability.md` §1 的注脚块用这条命令逐端点实测闸数，是「两道新闸都不 import 业务域」那句话的实测支撑。本轮已在该块里如实写明 9 与七道闸的差别并给出正确数法（数 `_review` 的判据表），但**命令本身仍会数出 9** | 低优先，且**不建议为此改代码**（拆三段是 D-2 有理由的设计，见 `## task-D2` 的 DECISIONS）。若下一轮想让这条命令重新可用，改成数 `_review` 判据表的条目数即可；在那之前，谁引用这个数都要连注脚一起引 |
+| 2026-08-29 | P7 | **`## task-D1` 记的 `_gate_gateway` severity 与第三出口在 `GW_QUERY_OR_HUMAN` 一格不同源，D-2 没有接** | D-1 当时写的是「交 D-2 或下一轮一并想」，而 D-2 本轮做的是第六道闸的 plan 级判据，没有碰 `_gate_gateway` 的 severity。所以这条**仍然悬着**：同一个 disposition 下，未知码给 `blocker`、已知的 `retriable=False + outcome=unknown` 码给 `info`，后者走不到第三出口 | 原样保留在 `## task-D1` 里，本轮只是确认它没被接走、不要以为 D 轮合完就消解了。判据落在 `gate.py`，与 D-2 本轮改的是同一个文件，下一轮动 `gate.py` 时一并处理最省事 |

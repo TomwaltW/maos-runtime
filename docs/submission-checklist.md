@@ -23,7 +23,7 @@
 
 ```bash
 # ①
-python3 -m pytest maos/tests -q          # □ 596 passed，个位数秒
+python3 -m pytest maos/tests -q          # □ 645 passed，个位数秒
 # ②
 python3 run.py                           # □ exit=0，个位数秒；跑完 git status 仍空（它不产证据）
 # ③
@@ -33,7 +33,7 @@ python3 scripts/gen_docs.py --check      # □ exit=0，打印「3 份文档与�
 # ⑤
 python3 scripts/make_evidence.py         # □ 「8 场景落盘，0 场景缺模块」（含 R5）；⚠️ 之后工作区 50 行脏
 # ⑥
-python3 scripts/verify.py                # □ 7/7 PASS，exit=0，另有 11 行 warn（3 类，见 A-2）
+python3 scripts/verify.py                # □ 7/7 PASS，exit=0，另有 12 行 warn（3 类，见 A-2）
 # ⑦
 git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动过）
 ```
@@ -60,16 +60,16 @@ git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动
 - [ ] 证据束里 grep 不到任何真密钥（生成脚本已做出口脱敏 + 哨兵反查，
       但**提交前再人肉扫一遍** `MAOS_LLM_API_KEY` / `MATRIX_TOKEN` 的值）。
 
-#### verify.py 的 11 行 warn 是**已知缺口，不是回归**
+#### verify.py 的 12 行 warn 是**已知缺口，不是回归**
 
-`verify.py` 报 7/7 PASS 的同时会打印 11 行 `· warn:`，分 3 类（整合轮 5 **合入 Y-4 后**实测）。
+`verify.py` 报 7/7 PASS 的同时会打印 12 行 `· warn:`，分 3 类（整合轮 6 **合入 D-1 + D-2 后**实测）。
 **第一次看到的人会以为是回归 —— 不是。** 逐类对照：
 
 | 类 | 行数 | 内容 | 出处 |
 | :-- | :-- | :-- | :-- |
 | A | 6 | 产物没有来源事件（`provenance=unknown`）—— scenario-1/2/3/5/6/7 各 1–3 份 | `docs/BACKLOG.md ## task-X4` |
 | D | 4 | 外部判据来源未审计 —— scenario-1/2/3/5，说的是**入库路径**（绕开 `on_task_result`），不是内容真伪 | `## task-X4` |
-| E | 1 | `authoritative-fact` 项下：`scenario-7 case=case-s7-0001: 有回执但 biz_status 不是 settled` | **Y-4 带来的预期内新增**，见下 |
+| E | 2 | `authoritative-fact` 项下：`scenario-7 case=case-s7-0001` 与 `case-s7-0002`，都是「有回执但 `biz_status` 不是 settled」 | `0001` 是 **Y-4** 带来的预期内新增（见下）；`0002` 是 **D-1** 带来的：第二笔撞终态失败码后走第三出口转人工、被主管驳回 |
 
 E 类是 Y-4 让场景 7 先撞一次 `40005` 换渠道造成的：**主渠道那笔真收到过回执**，
 而全案最终落人工审批、业务状态收在 `compensated`。回执是真的、`biz_status` 不是 `settled`
@@ -77,9 +77,14 @@ E 类是 Y-4 让场景 7 先撞一次 `40005` 换渠道造成的：**主渠道�
 
 原来的 B 类（`test_report` 缺 `sandbox_mode`，4 行）与 C 类（事件不在任何一棵树内，3 行）
 **已在整合轮 5 归零** —— 分别由 Y-1、Y-2 补掉。
-17 行 / 4 类（整合轮 5 之前）与 10 行 / 2 类（合 Y-4 之前）都是旧读数，别照抄旧材料。
+17 行 / 4 类（整合轮 5 之前）、10 行 / 2 类（合 Y-4 之前）与 11 行 / 3 类（合 D 轮之前）
+都是旧读数，别照抄旧材料。
 
-- [ ] 跑出来的 warn **就是这 11 行 / 3 类**，B 类与 C 类**不该再出现**（出现了就是回归）。
+- [ ] 跑出来的 warn 是 **12 行 / 3 类**（A 6 行 / D 4 行 / E 2 行），B 类与 C 类**不该再出现**（出现了就是回归）。
+      🔴 **三个数各自随哪一轨变**：A 类每多一份没有来源事件的产物 +1；D 类每多一条绕开
+      `on_task_result` 入库的外部判据 +1；**E 类按「场景 7 里未 settled 的退款 case 数」走**，
+      每加一笔演示就 +1。数字对不上先照这三条查成因，别直接当回归报 —— 上一轮就是把
+      当前实测值写死成判据，Y-4 一合入就自己变成了假警报源（见本文件末尾那条教训）。
 
 #### 已知缺口：`scenario-R5` 的首行 sha 仍带 `-dirty`（收敛成一条命令后依然存在）
 
@@ -156,7 +161,7 @@ Z-1 允许拆子页（`P8a`/`P8b`），但**不许改 P1–P14 的编号**，所
 | 3 | 关键 Skill 的真实调用 | P7 | `OQ-1` | `event_log` 的 `SkillInvoked` | ☐ |
 | 4 | 返工 / HITL Trace | P10 | `OQ-1` | `evidence/scenario-2,3,5,7/trace.json` | ☐ |
 | 5 | Evidence Bundle | P11 | `OQ-1` | `verify.py` 7/7 | ☐ |
-| 6 | 业务对象关联到同一案例 | P3 / P11 | `OQ-1` | verify 第 2 项（`business-ref 33/33`） | ☐ |
+| 6 | 业务对象关联到同一案例 | P3 / P11 | `OQ-1` | verify 第 2 项（`business-ref 35/35`） | ☐ |
 | 7 | 外部系统保留权威事实，区分已提出/处理中/已到账 | P9 | `OQ-1` | verify 第 3 项 + 越权拒绝单测 | ☐ |
 | 8 | RAG 面向 workflow 规划 | P8 | `OQ-1` | `kb-hits.json` + `dag-diff.json` | ☐ |
 | 9 | 先结构化过滤再组合召回（评委给的字段顺序） | P8 | `OQ-1` | `maos/kb/retriever.py` + 跨租户不召回单测 | ☐ |
@@ -282,8 +287,8 @@ grep -rh "^# generated at" evidence/ | sed 's/.* from //' | sed 's/-dirty//' | s
 > 代码文件差异 **0** —— 证据内容没过期。
 > 只有当 `maos/**` 或 `scripts/**` 再被动过时，才必须重跑证据链并 commit。
 > ②③ 当前是绿的（②恰好 7 个且全在 R5，③去掉 `-dirty` 后唯一）。
-<!-- PENDING-R6: pytest 条数，整合轮 6 按合入后 HEAD 实跑填入 -->
-- [ ] PPT 与视频里出现的**每一个数字**（`596 passed` / `7/7 PASS` / `33/33` / `19 条测试` …），
+<!-- PENDING-R8: pytest 条数与 business-ref 分母，整合轮 8 按合入后 HEAD 实跑填入 -->
+- [ ] PPT 与视频里出现的**每一个数字**（`645 passed` / `7/7 PASS` / `35/35` / `19 条测试` …），
       都能在 [`docs/ppt-outline.md`](ppt-outline.md) 或 [`docs/demo-script.md`](demo-script.md)
       里找到**产出它的那条命令**。找不到命令的数字就是没有出处的数字，删掉或补命令。
 - [ ] **改了代码就要回来重录那一镜、重生成那三份文档**（`gen_docs.py --check` 会告诉你哪份漂了）。
@@ -327,6 +332,9 @@ Y-4 已并入（合并提交 `783d9dd`），下面四条**已回填并实跑复�
 | 3 | §B 第 10 条 | 只有闸 + 政策锁 + `MAX_REPLAN` | 补上场景 7 的实跑输出 | Y-4 |
 | 4 | §C 的 ⚠️「Y-4 合并前不要开录」 | 拦着不许开录 | **已解除**，02:06 那一镜已切 B 版 | Y-4 |
 | 5 | A-1 ① 的条数 | 571 passed | **596 passed** | Y-4 带 25 条新测试 |
+| 6 | A-2 warn 对照表 | 11 行 / 3 类 | **12 行 / 3 类**，E 类由 1 行变 **2 行**（新增 `case-s7-0002`） | D-1 |
+| 7 | A-1 ① 的条数 | 596 passed | **645 passed** | D-1 带 26 条、D-2 带 23 条 |
+| 8 | A-2 / §D 的 verify 读数 | `81/81` `33/33` `18/18` `9/9` | **`86/86` `35/35` `19/19` `10/10`** | 整合轮 6 证据束重跑 |
 
 🔴 **这一批里最该记住的一条**：A-2 上一版立的判据是「就是这 **10 行 2 类**，多出来的才要查」。
 Y-4 合入后 warn 变成 11 行 3 类，**照旧判据执行会把一条预期内的 warn 判成回归**。

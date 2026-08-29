@@ -161,9 +161,21 @@ def test_compensated_and_never_settled(driven):
         store, "SELECT COUNT(*) AS n FROM payment_observation WHERE observed_state='settled'")
     assert settled == 0, f"全库不该有 settled 观察，实际 {settled} 条"
 
-    # 论证：连一条观察都没有 —— payment.observe 轮询到顶时不落库，
+    # 论证：**收口那一笔**连一条观察都没有 —— payment.observe 轮询到顶时不落库，
     # 「我问累了」不是一个可以写进表里的结论。
-    assert _count(store, "SELECT COUNT(*) AS n FROM payment_observation") == 0
+    #
+    # 按 request_id 收窄，不查全表：Y-4 之后场景 7 先撞一次 40005 演换渠道，
+    # 那一笔在网关入口就被拒，`payment.observe` 会照实落一行 observed_state='failed'
+    # —— 那是**网关真下过的结论**，本来就该留痕，不是这条断言要防的东西。
+    # 全表口径会把它一起数进来（见 docs/BACKLOG.md 的 ## task-Y4 第 1 条）。
+    current = objects.query(
+        store,
+        "SELECT request_id FROM refund_request WHERE tenant_id=? AND case_id=?"
+        " ORDER BY submitted_at DESC", (s7.TENANT_ID, s7.CASE_ID))[0]["request_id"]
+    assert _count(
+        store,
+        "SELECT COUNT(*) AS n FROM payment_observation WHERE request_id=?",
+        (current,)) == 0
 
     assert driven["cp"].store.get_plan(driven["plan_id"])["state"] == PlanState.FAILED
 

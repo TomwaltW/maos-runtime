@@ -18,7 +18,14 @@ observe 没问出终态时**不失败**：轮询到顶仍是 processing 是一�
 from __future__ import annotations
 
 from maos.agents.base import AgentIdentity, AgentOutput, BaseAgent, TaskContext, register
+from maos.core.control_plane import (
+    GW_HUMAN_TERMINAL,
+    GW_QUERY_FIRST,
+    GW_QUERY_OR_HUMAN,
+    GW_REPLAN_CHANNEL,
+)
 from maos.model.client import Tier
+from maos.runtime.gate import ReviewerGate
 
 from ._base import (
     KIND_PAYMENT_RECEIPT,
@@ -30,6 +37,22 @@ from ._base import (
 
 SKILL_EXECUTE = "payment.execute"
 SKILL_OBSERVE = "payment.observe"
+
+#: 四象限各一句处置说法。**判据不在这里算** —— 码 -> disposition 由第七道闸的
+#: `ReviewerGate._gateway_finding` 算一次，本表只把那个结论翻译成给人看的话。
+#: 反过来在这里再写一套 code -> 措辞的映射，码表加一条码时只有闸会跟着变，
+#: 这句话会悄悄开始说错，而且没有症状（日志照样正常）。
+_DISPOSITION_PHRASE = {
+    GW_REPLAN_CHANNEL: "网关在入口就拒了、业务确定未执行，可原样重发或换渠道重试",
+    GW_QUERY_FIRST: "网关说不清这一笔执行了没有，不许直接重发（会造出第二笔），先 query 再决定",
+    GW_HUMAN_TERMINAL: "网关终态失败且重发无意义，需转人工或改单",
+    GW_QUERY_OR_HUMAN: "既判不了可重试、也判不了终态失败 —— 最危险的一档，必须 query 或转人工",
+}
+
+#: 未知码单独一句：它与 retriable=False + unknown 共用 GW_QUERY_OR_HUMAN，但两者的
+#: **理由**完全不同（一个是查过表判成这样，一个是压根不在表里）。混成一句话，
+#: 拿到它的人会以为这个码已经被官方文档核对过。
+_UNKNOWN_CODE_PHRASE = "网关回执带的码不在已核对的官方清单内，按未知外部状态处置"
 
 
 @register
@@ -114,15 +137,33 @@ class RefundPaymentAgent(BaseAgent):
     # ------------------------------------------------------------------
     @staticmethod
     def _open_questions(seen: dict) -> list[str]:
-        """没到 settled 的两种情形都要显式挂出来给人看 —— 但都不改任务状态。
+        """没到 settled 就把处置显式挂出来给人看 —— 但一律不改任务状态。
 
-        「网关说失败了」与「轮询到顶还没问出来」是两回事，措辞必须分开：
-        混成一句，后续处置（补偿 vs 继续观察）就会挑错。
+        **判据与第七道闸同源**：措辞按 ``ReviewerGate._gateway_finding(code)`` 返回的
+        ``disposition`` 分档，而不是按 ``needs_compensation`` 分「网关明确失败 /
+        轮询到顶」两句。原先那个分法当时也没判错，但它是**另一套判据**：闸看四象限
+        （``retriable`` × ``outcome``，见 ``maos/tools/gateway_codes.py``），这里只看
+        一个 bool。同一份回执被两套判据各判一次，码表将来加一条码或改一个
+        ``outcome``，只有闸会跟着变，这句话会悄悄漂 —— 而这类漂**没有症状**：
+        日志照样正常，只是那句话开始说错。所以这里做调用方，不重写映射。
         """
         if seen["settled"]:
             return []
-        if seen["needs_compensation"]:
-            code = (seen.get("receipt") or {}).get("code")
-            return [f"网关明确失败（code={code}）：{seen['remedy']}；需走补偿收口"]
-        return [f"轮询 {seen['poll_count']} 次仍未取得终态（当前 {seen['observed_state']}）；"
-                f"这不是失败，需继续观察：{seen['remedy']}"]
+
+        code = (seen.get("receipt") or {}).get("code")
+        finding = (ReviewerGate._gateway_finding(code)
+                   if isinstance(code, str) and code else None)
+
+        # finding 为 None = 成功码或压根没带码：网关一个异常都没报，纯粹是还没问出
+        # 终态。这一档才是真正的「我问累了」，与上面四象限任何一格都不是一回事。
+        if finding is None:
+            return [f"轮询 {seen['poll_count']} 次仍未取得终态（当前 {seen['observed_state']}）；"
+                    f"这不是失败，需继续观察：{seen['remedy']}"]
+
+        head = (_UNKNOWN_CODE_PHRASE if finding.get("retriable") is None
+                else _DISPOSITION_PHRASE[finding["disposition"]])
+        remedy = finding.get("remedy") or seen.get("remedy") or ""
+        tail = f"；官方处置：{remedy}" if remedy else ""
+        return [f"{head}（code={finding['code']} retriable={finding['retriable']} "
+                f"outcome={finding['outcome']}，已问 {seen['poll_count']} 次仍未取得终态）"
+                f"{tail}"]

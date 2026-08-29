@@ -317,3 +317,15 @@ X 轮四轨 + W-5 合并后的整体验收发现三条，均**不在整合轮可
 | 2026-08-29 | P4 | **`docs/domain-portability.md` 的「领域无关」论证，其证据区间 `90251b3..HEAD` 现在混进了非退款域的改动。** 该文档用「退款域上线前后 `git diff` 逐面为零」来论证内核领域无关，但本轮 X-2 给 `maos/core/control_plane.py` 加了 +46/−2（网关码四象限），X-4 给 `maos/tools/sandbox.py` 加了 +111/−13（降级可见化）—— 两者都**不是退款域上线带来的**，却落在同一个区间里 | 论证的**结论没塌**：`maos/contracts/` 仍严格为零，两条 AST/import 守卫（`test_runtime_and_core_do_not_import_refund_domain` / `test_kernel_does_not_know_the_refund_domain`）本轮实跑 2 passed，「内核不认识退款域」这件事仍被机器钉住。塌的是**数字的读法**：表格里 `maos/core/` 那一格从「（空，零改动）」变成非零，读者会以为是退款域把它改的 | 本轮已按真实值刷了数字，并在表格与「不是零 —— 如实说清楚」小节里点明这两笔的出处（整合轮 4 / X-2、X-4）。但更干净的做法是**把论证的区间端点从「当前主干」换成「退款域上线那一刻的 sha」**，让区间只包住退款域，非退款域的改动另起一段说。这要重新选 sha 并重跑全表数字，属文档结构调整，交下一轮 |
 | 2026-08-29 | P5 | **派单 §4 第四步写的「`python3 run.py` 重新生成 `evidence/`」与实际不符** —— `run.py` 跑完 `git status --porcelain` 只有 1 行（gen_docs 的产物），`evidence/` 一个文件都没动。真正产证据的是 README ①②③：`scripts/make_evidence.py`（产 scenario-1..7）+ `python3 -m maos.kb.experiment`（产 scenario-R5）+ `scripts/verify.py`（校验） | 照派单字面执行的会话会以为证据束已按新 HEAD 重跑，实际 `evidence/` 里仍是旧代码的产物 —— 正是派单自己要防的「假绿」。本轮已改跑实际生成器，见 DECISIONS `## integrate-round-4` 第 1 条 | 下一轮派单模板里把第四步的命令换成 `make_evidence.py` + `maos.kb.experiment` + `verify.py` 三条。README §3 的 ①②③ 就是正确版本，直接抄 |
 | 2026-08-29 | P4 | **`CLAUDE.md:75` 的常用命令注释仍写 `python3 run.py  # 场景 1-6 端到端`**，X-1 合并后实际跑 1-7 | 与 `## task-X1` 第 3 条是同一条（那条由 X-1 记下并建议「编排侧收口时一行改掉」）。`CLAUDE.md` 每个会话自动加载，是所有会话看到的第一份事实；留着它，下一个会话会照「1-6」去复核 `run.py` 输出，把多出来的场景 7 当成异常 | `CLAUDE.md` **不在整合轮派单的可改面内**（派单 §4 第三步只列 README.md 与 docs/\*.md），故本轮未改。README / demo-script / submission-checklist / architecture / domain-portability 里的同类措辞本轮已全部刷成 1-7，只剩 `CLAUDE.md` 这一处。**请人类一行改掉**，或在下一轮派单里把它列进可改面 |
+
+
+## task-Y4
+
+把手册 R2 的「换渠道重试」演进场景 7（分支 `task/y4-gateway-demo`，基线 `42822fc`）。
+本轨撞上的两条硬冲突**已由人类授权改四处白名单外文件解掉**，过程与理由记在
+`docs/DECISIONS.md` 的 `## task-Y4`。以下两条是留给后来者的账。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P4 | **「让付款先撞一次可重试码」这件事有两个绕不开的副作用，任何后续场景想复用这条演法都会再撞一次。** 四象限里唯一允许 replan 换渠道的那一格是 `retriable=True + outcome=failed`，而它①severity 恒为 blocker（`gate.py:563`）→ **必然**产生一次 `AWAITING_REVIEW -> REWORK`；②在 `MockGateway` 里直接返终态 failed（`gateway.py:270-272`）→ `payment.observe` **必然**落一行 `payment_observation`（`payment_observe.py:123-128`）。这两个「必然」在 Y-4 之前不存在，因为没有场景撞过这一格 | 本轮为此调了三处断言的形状（`test_replan_gateway.py` 的 REWORK 断言、`test_refund_failure.py` 的空表断言、`compensate._last_observed_state` 的查询口径）。三处原本都假设「一个案子只有一笔请求、付款只过一轮闸」—— 那个假设在换渠道之后不再成立。**再有场景走这条演法，先对照这三处** | 无需处理，记录性质。若日后码表新增 `retriable=True + outcome=failed` 的码，四象限断言 `test_gateway_demo.py::test_四象限每格都被真码覆盖到` 会自动覆盖到 |
+| 2026-08-29 | P4 | `CLAUDE.md:59` 的 `python3 run.py  # 场景 1-6 端到端` 仍是旧值，实际跑 1-7 | 与 `## task-X1` 第 3 条、`## integrate-round-4` 第 3 条是同一条，整合轮 4 漏刷。每个会话自动加载，是所有会话看到的第一份事实 | 已由派单点名「不要顺手改」（`CLAUDE.md` 不在任何一轨白名单）。**请人类一行改掉** |

@@ -20,7 +20,8 @@
                                                   -> 失败 = 事件链不完整
     5 kb-hit              每个 KbRetrieved 的 doc_id 在 kb_doc 中存在
                                                   -> 失败 = RAG 命中是编的
-    6 business-outcome    每个 Plan 终态都有 business_outcome，DONE 必须有外部判据
+    6 business-outcome    每个 Plan 终态都有 business_outcome，DONE 必须有外部判据，
+                          且每条判据都在库里回查得到
                                                   -> 失败 =「Agent 都完成了」被当成业务成功
     7 history-case        本库晋升的 history_case 都能追溯到 outcome='success'
                           的真实 case（外部导入的知识不在判据内，但不许全空）
@@ -68,6 +69,12 @@ AUTHORITATIVE_WRITER = "payment.observe"
 #: 四态 processing/unknown/settled/failed，不是 `outcome` 的 success/failed/unknown）。
 #: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要在退款域缺席时照跑。
 AUTHORITATIVE_RECEIPT_STATE = {"settled": frozenset({"settled"})}
+
+#: 外部判据的取值域。与 ``make_evidence.py::derive_business_outcome`` 里两处
+#: ``evidence.append`` 的 ``kind`` 同源 —— 生成侧装得进什么，核验侧才认什么。
+#: Agent 对自己的评价（``patch_set`` 里的 ``self_check``）不在其中，README §3 写死了这条。
+#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要能独立于生成脚本跑。
+EXTERNAL_EVIDENCE_KINDS = frozenset({"test_report", "payment_observation"})
 
 #: 出处注释里 sha 的合法后缀 —— `make_evidence.py` 在工作区脏时写 `<sha>-dirty`。
 #: `scenario-R5` 恒带这个后缀：它由 `build_r5()` 在场景 1-7 已经把 evidence/ 改脏之后
@@ -552,13 +559,115 @@ def check_kb_hit(cases: list[Case]) -> Check:
 # ---------------------------------------------------------------------------
 # 第 6 项：business-outcome
 # ---------------------------------------------------------------------------
+def _test_report_backing(case: Case, plan_id: str, item: dict) -> str:
+    """``test_report`` 判据回查 ``artifact`` 表。返回失败理由；空串 = 回查得到。
+
+    判据二（``payment_observation``）指的不是产物，走另一个函数 —— 那一类**没有**
+    ``artifact_id``，拿同一套字段名去查两种东西是 C-7 的反例。
+    """
+    artifact_id = item.get("artifact_id")
+    if not artifact_id:
+        return "一条 test_report 判据没有 artifact_id，无从回查"
+    row = case.conn.execute(
+        "SELECT plan_id, task_id, kind, version, content FROM artifact"
+        " WHERE artifact_id=?", (artifact_id,)).fetchone()
+    if row is None:
+        return f"artifact_id={artifact_id!r} 在库里查无此物"
+    if row["plan_id"] != plan_id:
+        return (f"artifact_id={artifact_id!r} 属于 plan={row['plan_id']}，"
+                f"不能给本 plan 背书")
+    if row["kind"] != "test_report":
+        return (f"artifact_id={artifact_id!r} 在库里的 kind 是 {row['kind']!r}，"
+                f"不是外部判据类")
+    if (item.get("task_id"), item.get("version")) != (row["task_id"], row["version"]):
+        return (f"artifact_id={artifact_id!r} 记的 task/version 与库里不符："
+                f"记 {item.get('task_id')!r}/{item.get('version')!r}，"
+                f"库里 {row['task_id']!r}/{row['version']!r}")
+    content = _loads(row["content"], {}) or {}
+    if content.get("failed") or content.get("errors") or content.get("tool_error"):
+        return (f"artifact_id={artifact_id!r} 这份报告自己就没过"
+                f"（failed={content.get('failed')!r} errors={content.get('errors')!r} "
+                f"tool_error={content.get('tool_error')!r}），背不了书")
+    if item.get("passed") != content.get("passed"):
+        return (f"artifact_id={artifact_id!r} 记的 passed={item.get('passed')!r} "
+                f"与库里 {content.get('passed')!r} 不符")
+    return ""
+
+
+def _observation_backing(case: Case, plan_id: str, item: dict) -> str:
+    """``payment_observation`` 判据回查退款两张表。返回失败理由；空串 = 回查得到。
+
+    生成侧（``derive_business_outcome`` 判据二）只给 ``biz_status='settled'`` 的 case
+    记这一类判据，回执字段逐个抄自 ``payment_observation`` 行，所以这里照着倒推。
+    """
+    if not {"refund_case", "payment_observation"} <= case.tables:
+        return ("记了 payment_observation 判据，本库却没有退款那两张表 —— "
+                "生成侧根本推不出这一条")
+    tenant_id, case_id = item.get("tenant_id"), item.get("case_id")
+    request_id = item.get("request_id")
+    if not (tenant_id and case_id and request_id):
+        return f"一条 payment_observation 判据缺 tenant_id/case_id/request_id：{item!r}"
+    row = case.conn.execute(
+        "SELECT plan_id, biz_status FROM refund_case WHERE tenant_id=? AND case_id=?",
+        (tenant_id, case_id)).fetchone()
+    if row is None:
+        return f"refund_case ({tenant_id}, {case_id}) 在库里查无此行"
+    if row["plan_id"] != plan_id:
+        return f"case={case_id} 属于 plan={row['plan_id']}，不能给本 plan 背书"
+    if row["biz_status"] != "settled":
+        return (f"case={case_id} 的 biz_status 是 {row['biz_status']!r} 而非 settled，"
+                f"生成侧只给 settled 记这一类判据")
+    hits = case.conn.execute(
+        "SELECT gateway_code, observed_state, actor_invocation_id FROM payment_observation"
+        " WHERE tenant_id=? AND case_id=? AND request_id=?",
+        (tenant_id, case_id, request_id)).fetchall()
+    if not hits:
+        return f"request_id={request_id!r} 在 payment_observation 里查无此回执"
+    if not any((h["gateway_code"], h["observed_state"], h["actor_invocation_id"])
+               == (item.get("gateway_code"), item.get("observed_state"),
+                   item.get("actor_invocation_id")) for h in hits):
+        return (f"request_id={request_id!r} 记的回执与库里没有一行对得上："
+                f"记 code={item.get('gateway_code')!r} "
+                f"state={item.get('observed_state')!r} "
+                f"actor={item.get('actor_invocation_id')!r}")
+    return ""
+
+
+def evidence_backing(case: Case, plan_id: str, item: object) -> str:
+    """一条外部判据能不能在**库里**回查到。返回失败理由；空串 = 回查得到。
+
+    为什么非得在这里回查：第 4 项 trace-tree 的牙齿是「trace.json 与库重放逐字节
+    一致」，而它**不看 result.json**；第 6 项从前只数这个列表的长度。于是
+    ``result.json`` 里的外部判据成了整束证据里唯一一处「写什么就是什么」的地方 ——
+    偏偏它就是用来证明「这单业务真的成了」的那一处（G-2）。
+
+    三问同时成立才算一条有效判据：指得到的东西在不在库里、属不属于**这个** plan、
+    它的 kind 是不是外部判据类（Agent 自评不算，见 EXTERNAL_EVIDENCE_KINDS）。
+
+    与 ``unaudited_evidence_count`` 那条 warn 是**两个维度**，不要混：那条说的是
+    入库路径（绕开 ``on_task_result``，审计链指不到是哪一步产的），这里说的是内容
+    对不对得上库。一条判据完全可以「来源未审计（warn）」而「回查得到（PASS）」——
+    scenario 1/2/3/5 现在就是这样：真产物，只是入库时没走事件。
+    """
+    if not isinstance(item, dict):
+        return f"外部判据不是一个对象：{item!r}"
+    kind = item.get("kind")
+    if kind not in EXTERNAL_EVIDENCE_KINDS:
+        return (f"kind={kind!r} 不是外部判据类"
+                f"（取值域 {sorted(EXTERNAL_EVIDENCE_KINDS)}，出处 make_evidence.py）")
+    if kind == "test_report":
+        return _test_report_backing(case, plan_id, item)
+    return _observation_backing(case, plan_id, item)
+
+
 def check_business_outcome(cases: list[Case]) -> Check:
     """Plan 走到 DONE 不等于业务成功。DONE 必须指得出一条**外部**判据。
 
     「外部」的意思是这条判据不是 Agent 对自己的评价：回归报告是沙箱/测试给的，
     payment_observation 是支付网关给的；``patch_set.self_check`` 不算。
     """
-    chk = Check("business-outcome", "Plan 终态有 business_outcome，DONE 有外部判据")
+    chk = Check("business-outcome",
+                "Plan 终态有 business_outcome，DONE 的外部判据回查得到")
     for case in cases:
         db_states = {r["plan_id"]: r["state"] for r in case.conn.execute(
             "SELECT plan_id, state FROM plan")}
@@ -603,6 +712,14 @@ def check_business_outcome(cases: list[Case]) -> Check:
                              f"（scenario 3/5 的 seed_scripted_report），也可能是演示装配层"
                              f"现跑的真产物（scenario 1/2 的 patch_verifier）。"
                              f"判真伪看 trace.json 的 maos.artifact.sandbox.mode")
+                # 列表非空还不够 —— 里面装的每一条都得在库里指得到东西。
+                broken = [why for why in
+                          (evidence_backing(case, plan_id, item) for item in ev) if why]
+                if broken:
+                    chk.bad(f"{label}: {len(broken)}/{len(ev)} 条外部判据回查不到 —— "
+                            f"result.json 里写什么就算什么，那不叫判据："
+                            + "；".join(broken))
+                    continue
             chk.ok()
     return chk
 

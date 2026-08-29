@@ -62,6 +62,21 @@ def _limit_of(payload: dict) -> int | None:
     return None if value <= 0 else value
 
 
+def _event_sink(ctx: SkillContext) -> Any:
+    """这次检索的 `KbRetrieved` 该落到哪儿。`extras["event_sink"]` 优先，缺省 `ctx.store`。
+
+    检索这半条可以走 StorePort（RAG 真跑在 PolarDB 上的前提），落事件那半条只能走
+    核心 Store —— F-2 的五个方法里没有 `append_event_log`，事件日志是核心 Store 的
+    冻结表。今天这两者是同一个对象，所以缺省回落 `ctx.store` 的行为一个字节没变。
+
+    哪天 invoker 把 `ctx.store` 换成端口对象，只要在 extras 里点名一个核心 Store，
+    整条链路就通；不点名的话会在**检索之后**撞 TypeError，被下面那层兜底压成
+    `docs: []` —— 症状是「检索看起来在跑，docs 恒空」，而日志只有一行 warning。
+    判据写在这一个函数里而不是散在调用点，理由与 `kb.port_of()` 那条一样。
+    """
+    return (ctx.extras or {}).get("event_sink") or ctx.store
+
+
 def _build_query(payload: dict) -> dict:
     query = {f: payload.get(f) for f in _QUERY_FIELDS if payload.get(f) not in (None, "")}
     keyword = payload.get("keyword")
@@ -137,6 +152,9 @@ class KbRetrieveSkill(Skill):
 
         任何异常都压成空结果并告警：检索不该把调用方的主链路带下水（空结果不阻塞）。
         `store` 不是 SQLite 后端时 `ensure_schema` 会抛 TypeError，也走这条兜底。
+
+        检索与落事件是**两个去处**：前者吃 `ctx.store`（可以是 StorePort），后者吃
+        `_event_sink(ctx)`（必须是核心 Store）。理由见 `retriever.emit_kb_retrieved`。
         """
         query = _build_query(payload)
         if not query.get("tenant_id"):
@@ -149,7 +167,8 @@ class KbRetrieveSkill(Skill):
                 limit=limit if limit is not None else 0,
                 plan_id=str(extras.get("plan_id") or ""),
                 task_id=extras.get("task_id"),
-                trace_id=str(extras.get("trace_id") or ""))
+                trace_id=str(extras.get("trace_id") or ""),
+                event_sink=_event_sink(ctx))
         except Exception as exc:                       # noqa: BLE001 —— 检索不阻塞
             log.warning("kb_doc 检索失败（%s），本次返回空 docs", exc)
             return []

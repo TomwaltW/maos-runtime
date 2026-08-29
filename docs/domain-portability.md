@@ -19,8 +19,8 @@ MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内�
 | **Task 状态机** | `PENDING → DISPATCHED → RUNNING → AWAITING_REVIEW → DONE/BLOCKED/FAILED` | 同左，**没加新状态、没加新迁移** | ✅ 同一份 `maos/contracts/states.py` |
 | **Control Plane** | 唯一的状态迁移持有者、幂等去重、版本冲突拒绝 | 同左 | ✅ 同一份 `maos/core/control_plane.py` |
 | **Worker Runtime** | 按 role 从 `AGENT_POOL` 取执行者，跑 Identity 三查 | 同左 | ✅ 同一份 `maos/runtime/worker.py` |
-| **Gate** | 七道闸；代码类任务看 `test_report` | 七道闸；退款任务在第六道闸看财务凭据、第七道闸看网关回执 | ✅ 同一份 `maos/runtime/gate.py`（+2 道闸） |
-| **replan** | 单轮 blocker ≥ 2 / 同一任务第 2 次 rework，上限 `MAOS_MAX_REPLAN`（默认 2） | 同左，同一份实现 | ✅ `maos/core/control_plane.py:366` |
+| **Gate** | 七道闸；代码类任务看 `test_report` | 七道闸；退款任务在第六道闸看财务凭据、第七道闸看网关回执 | ✅ 同一份 `maos/runtime/gate.py`（两道新闸分属两个区间，见下方脚注★） |
+| **replan** | 单轮 blocker ≥ 2 / 同一任务第 2 次 rework，上限 `MAOS_MAX_REPLAN`（默认 2） | 同左，同一份实现 | ✅ 判据 `maos/core/control_plane.py:366`（`_should_replan`）／上限 `:409`（`_max_replan`） |
 | **HITL 审批** | `effect_risk=H` 停 `BLOCKED`，等 `/approve`｜`/reject` | 同左，审批人换成退款主管 | ✅ 同一份 `HumanApprovalQueue` |
 | **补偿** | 逆补丁：`sandbox.git_apply(reverse=True)` | 域内补偿：撤销 `refund_request` + 开人工工单 | ⚠️ **机制共用**（`_gate_compensation` 干跑闸 + `CompensationExecuted` 事件），**手段按域实现** |
 | **Skill** | `req.normalize` / `code.repo-patch` / `test.verify` / `issue.aggregate` / `kb.*` | `refund.intake` / `policy.match` / `finance.settle` / `payment.execute` / `payment.observe` / `refund.compensate` / `notify.customer` | ❌ **按域实现**（同一个 `SkillContract` 九要素契约） |
@@ -30,37 +30,91 @@ MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内�
 
 一句话：**表格里 ✅ 的那些一行都没改，❌ 的那些是新增文件**。下面是数字。
 
+> ★ **Gate 行的数字注脚。** 「七道闸」是**当前主干的事实**，但这两道新闸不是一起
+> 落的，别把它们算成同一笔账：
+>
+> - **第六道闸** `_gate_finance`（财务凭据）落在**区间 A**，是上退款域的一部分；
+> - **第七道闸** `_gate_gateway`（网关回执四象限）落在**区间 B**，X-2 轨加的，
+>   与上退款域无关。
+>
+> 两道闸**都不 import 业务域**，都被 §3 的两条守卫钉着。逐个端点实测闸数：
+>
+> ```bash
+> for c in 90251b3 4a70cb0 42822fc; do \
+>   printf '%s: ' "$c"; git show $c:maos/runtime/gate.py | grep -c 'def _gate_'; done
+> # 90251b3: 5   ← 退款域上线前
+> # 4a70cb0: 6   ← 区间 A 之后，多了 _gate_finance
+> # 42822fc: 7   ← 区间 B 之后，多了 _gate_gateway
+> ```
+
 ---
 
-## 2. 数字：退款域上线前后的 `git diff --stat`
+## 2. 数字：两个区间，分开算
 
-- `90251b3` = P2 四轨收口，**退款域上线前**
-- `df96fa8` = 当前主干（软件域 + 退款域 + RAG + 证据束 + 整合轮 4 五轨全部在内）
+上退款域的代价，和上退款域**之后**内核又长出来的通用能力，是两笔账。混在一个区间里
+算，读者会把后者误读成「上退款域的代价」。所以这里拆成两段：
 
+| 区间 | 端点 | 装的是什么 |
+| :-- | :-- | :-- |
+| **A** | `90251b3` → `4a70cb0` | **上退款域**：六 Skill / 四 Agent / 第六道闸 / 场景 6+7 / RAG 语料 |
+| **B** | `4a70cb0` → `42822fc` | **X 轮之后的内核增量**：网关码四象限、第七道闸、沙箱降级可见化 |
+
+端点是什么，自己核：
+
+```bash
+git log --oneline -1 90251b3   # fix(p2): 补偿 workdir 缺省值改必填 —— 退款域上线前
+git log --oneline -1 4a70cb0   # docs(ops): 看板补 W 轮七行与整合轮 3 —— 整合轮 3 收口，X 轮一行未开工
+git log --oneline -1 42822fc   # chore: 移除 CLAUDE.md 的「回答结尾规范」一节 —— 当前主干
 ```
-$ git diff --stat 90251b3 df96fa8 -- maos/contracts/ maos/runtime/
- maos/runtime/gate.py | 280 +++++++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 273 insertions(+), 7 deletions(-)
-```
 
-拆开逐面看（`git diff --shortstat 90251b3 df96fa8 -- <path>`，空行 = 零改动）：
+### 2.1 区间 A：上退款域的真实代价
+
+复跑命令（把 `<path>` 换成表里那一列即可，空输出 = 零改动）：
+
+```bash
+git diff --shortstat 90251b3 4a70cb0 -- <path>
+# 或一次跑完整张表：
+for p in contracts core runtime agents skills tools domain flows kb; do \
+  printf '%-10s ' "$p"; git diff --shortstat 90251b3 4a70cb0 -- maos/$p/; echo; done
+```
 
 | 面 | 改动 | 读法 |
 | :-- | :-- | :-- |
 | `maos/contracts/` | **（空，零改动）** | 事件契约与状态机一个字节没动 —— 铁律 1 与铁律 9 兑现 |
-| `maos/core/` | 1 file, +46 / −2 | **只有 `control_plane.py`** 的网关码四象限判据（整合轮 4 / X-2）；EventBus、Store 一个字节没动。不是零，读法见下节 |
-| `maos/runtime/` | 1 file, +273 / −7 | **只有 `gate.py`**，即第六道闸与第七道闸；`worker.py` / `plan_finalizer.py` 零改动 |
+| `maos/core/` | **（空，零改动）** | Control Plane、EventBus、Store **一个字节没动** |
+| `maos/runtime/` | 1 file, +126 / −4 | **只有 `gate.py`**，即第六道闸 `_gate_finance`；`worker.py` / `plan_finalizer.py` 零改动 |
 | `maos/agents/` | 8 files, +604 / −27 | 退款域 4 个新角色 + 共用基类 |
 | `maos/skills/` | 11 files, +1536 / −25 | 退款域 7 个新 skill（含 `notify.customer`） |
-| `maos/tools/` | 3 files, +863 / −13 | `gateway.py` / `gateway_codes.py` 两个新 ToolPort；另 +111/−13 是 `sandbox.py` 的降级可见化（整合轮 4 / X-4），与退款域无关 |
+| `maos/tools/` | 2 files, +752 | `gateway.py`（+414）与 `gateway_codes.py`（+338）两个新 ToolPort，**纯新增，`sandbox.py` 零改动** |
 | `maos/domain/` | 5 files, +656 | 退款业务对象与 settled guard，**纯新增目录** |
+| `maos/flows/` | 5 files, +1023 / −123 | 演示流程，按域写的，见 §5 |
+| `maos/kb/` | 5 files, +1568 | 知识层与语料，按域写的，见 §5 |
 
-### 关于 `core/` 与 `runtime/` 那两块不是零 —— 如实说清楚
+`tools/` 与 `runtime/` 的逐文件明细（证明确实只有那几个文件）：
 
-`maos/runtime/` 那一侧**不是零**，是 `gate.py` 的 +273 行：第六道闸 `_gate_finance`
-与第七道闸 `_gate_gateway`。`maos/core/` 那一侧**也不是零**，是 `control_plane.py`
-的 +46 行：网关码四象限的重规划否决判据（`GW_*` 常量与 `_should_replan` 的入口）。
-两处都不是反例，理由是它们**领域无关**：
+```bash
+git diff --stat 90251b3 4a70cb0 -- maos/tools/ maos/runtime/
+#  maos/runtime/gate.py        | 130 +++++++++++++-
+#  maos/tools/gateway.py       | 414 ++++++++++++++++++++++++++++++++++++++++++++
+#  maos/tools/gateway_codes.py | 338 ++++++++++++++++++++++++++++++++++++
+#  3 files changed, 878 insertions(+), 4 deletions(-)
+```
+
+（`--stat` 的 `130` 是「改动行总数」= 126 + 4，与 `--shortstat` 的 `+126 / −4`
+是同一笔；`414 + 338 = 752`，与上表 `tools/` 一栏对得上。）
+
+### 2.2 `contracts/` 与 `core/` 在区间 A 下是**真零**
+
+这是本文件最硬的一条：**上一个完整的业务域，事件契约、状态机、Control Plane、
+EventBus、Store 五处合起来改动为零。**不是「几乎为零」，是 `git diff` 输出空行。
+
+```bash
+git diff --shortstat 90251b3 4a70cb0 -- maos/contracts/ maos/core/
+# （无输出）
+```
+
+`maos/runtime/` **不是零**，是 `gate.py` 的 +126 / −4：第六道闸 `_gate_finance`。
+这不是反例，理由是它**领域无关**：
 
 - 它的判据只落在两个数据形状上：`task["inputs"]` 里的 `biz_type` + `amount_claimed`，
   和 artifact `content` 里的 `finance_entry` 键。**不查退款域的任何一张表**。
@@ -82,7 +136,63 @@ $ git diff --stat 90251b3 df96fa8 -- maos/contracts/ maos/runtime/
 
 ```bash
 python3 -m pytest maos/tests -q -k "not_import_refund_domain or does_not_know_the_refund_domain"
+# 2 passed
 ```
+
+### 2.3 区间 B：X 轮之后的内核增量（**不是**上退款域的代价）
+
+**以下数字全部按 `42822fc` 实测**；右端点是主干 HEAD，会随后续轮次变化，
+复算见文末「待整合轮 5 回填」。
+
+```bash
+git diff --shortstat 4a70cb0 42822fc -- <path>
+for p in contracts core runtime agents skills tools domain flows kb; do \
+  printf '%-10s ' "$p"; git diff --shortstat 4a70cb0 42822fc -- maos/$p/; echo; done
+```
+
+| 面 | 改动（按 `42822fc` 实测） | 是什么 |
+| :-- | :-- | :-- |
+| `maos/contracts/` | **（空）** | 契约面在两个区间下都是零 |
+| `maos/core/` | 1 file, +46 / −2 | `control_plane.py`：网关码四象限的重规划否决判据（X-2） |
+| `maos/runtime/` | 1 file, +150 / −6 | `gate.py`：第七道闸 `_gate_gateway`（X-2） |
+| `maos/agents/` | **（空）** | — |
+| `maos/skills/` | **（空）** | — |
+| `maos/tools/` | 1 file, +111 / −13 | `sandbox.py`：沙箱降级可见化（X-4） |
+| `maos/domain/` | **（空）** | 退款域本身在区间 B 一行没动 |
+| `maos/flows/` | 1 file, +13 / −2 | `scenario_6.py`：接上规划期检索（X-1） |
+| `maos/kb/` | 2 files, +293 / −77 | `experiment.py` / `retriever.py`：对照实验与检索（X-3） |
+
+这三块（网关码四象限、第七道闸、沙箱降级可见化）是**通用能力**，不是上退款域的代价：
+
+- **网关码四象限**（`core/` +46）判的是「外部系统回了什么码，该不该重规划」。
+  判据落在 `GW_REPLAN_CHANNEL` / `GW_QUERY_FIRST` / `GW_HUMAN_TERMINAL` /
+  `GW_QUERY_OR_HUMAN` 四个常量上（`control_plane.py:54–68`），任何有外部系统
+  回执的域都用得上，与「退款」两个字无关。
+- **第七道闸**（`runtime/` +150）与第六道闸同构：判据落在 artifact 的数据形状上。
+- **沙箱降级可见化**（`tools/` +111）是软件交付域那一侧的工具，与退款域无关。
+
+关键在于：**它们同样被 §3 的两条守卫钉着** —— `core/` 与 `runtime/` 不许 import
+`maos.domain.**` 这条约束，对区间 B 新增的每一行同样生效。所以「换第三个域这道闸
+一行都不用改」这句话，现在覆盖**第六和第七两道闸**。
+
+### 2.4 两个区间的合计（≠ 两段简单相加）
+
+`git diff` 不可加：区间 A 加的行有一部分在区间 B 被改写，所以 `126+150 ≠ 273`。
+合计必须单独跑：
+
+```bash
+for p in contracts core runtime tools flows kb; do \
+  printf '%-10s ' "$p"; git diff --shortstat 90251b3 42822fc -- maos/$p/; echo; done
+```
+
+| 面 | 区间 A | 区间 B | **合计（`90251b3..42822fc`）** |
+| :-- | :-- | :-- | :-- |
+| `maos/contracts/` | 空 | 空 | **空** |
+| `maos/core/` | 空 | +46 / −2 | 1 file, +46 / −2 |
+| `maos/runtime/` | +126 / −4 | +150 / −6 | 1 file, **+273 / −7**（≠ 276 / −10） |
+| `maos/tools/` | 2 files, +752 | 1 file, +111 / −13 | 3 files, +863 / −13 |
+| `maos/flows/` | 5 files, +1023 / −123 | 1 file, +13 / −2 | 5 files, +1034 / −123 |
+| `maos/kb/` | 5 files, +1568 | 2 files, +293 / −77 | 5 files, **+1784** |
 
 ---
 
@@ -93,8 +203,20 @@ python3 -m pytest maos/tests -q -k "not_import_refund_domain or does_not_know_th
 | # | 守卫 | 位置 | 守的是什么 |
 | :-- | :-- | :-- | :-- |
 | 1 | 契约指纹锁 | `maos/tests/test_contracts_frozen.py` + `.contracts.lock` | `contracts/events.py` 与 `contracts/states.py` 的 sha256，加上 Phase 0 那 5 张既有表的 DDL。退款域新增了 **14 张表**（`maos/domain/refund/schema.sql`），**指纹一个字节没变** —— 只新增、不改既有 |
-| 2 | 内核不识域 | `test_gate.py:561`、`test_refund_flow.py:454` | 内核三个子包不许 import `maos.domain.**` |
+| 2 | 内核不识域 | `test_gate.py:561`、`test_refund_flow.py:454` | 内核三个子包不许 import `maos.domain.**`，**区间 A 与区间 B 新增的行一视同仁** |
 | 3 | 权威事实边界 | `test_refund_flow.py::test_no_bypass_writes_settled` + `scripts/verify.py` 第 3 项 | 全仓只有 `payment.observe` 写得进 `settled`。详见 [`authoritative-facts.md`](authoritative-facts.md) |
+
+那 14 张表自己数：
+
+```bash
+grep -c 'CREATE TABLE' maos/domain/refund/schema.sql
+# 14
+```
+
+依次是 `tenant` / `channel` / `order_snapshot` / `product_snapshot` / `policy_rule` /
+`refund_case` / `customer_evidence` / `approval_record` / `finance_entry` /
+`refund_request` / `payment_observation` / `notification` / `compensation_record` /
+`business_ref`。
 
 ---
 
@@ -112,7 +234,9 @@ python3 -m pytest maos/tests -q -k "not_import_refund_domain or does_not_know_th
 
 **不需要动**：`contracts/`、`core/`、`runtime/`、`artifacts.py`、`main.py`。
 
-退款域就是照这份清单落的，实测：`contracts/` 与 `core/` 的 diff 是空的（见 §2）。
+退款域就是照这份清单落的，实测：**区间 A 下 `contracts/` 与 `core/` 的 diff 都是空的**
+（见 §2.1 与 §2.2）。`runtime/` 那一处 +126 是第六道闸，按 §2.2 的三条理由，
+它是领域无关的通用判据，不是「为退款域改内核」。
 
 ---
 
@@ -121,10 +245,45 @@ python3 -m pytest maos/tests -q -k "not_import_refund_domain or does_not_know_th
 - **两个域，不是 N 个域。** 两个不同领域跑通不等于「任意领域可移植」，它证明的是
   「内核里没有软件交付域的特化」这件否定式的事 —— 而这恰好是靠 §3 的机器守卫钉住的，
   不是靠两个域的样本量说话。
-- **第六道闸的注释与实际拦点不完全一致。** `gate.py:363` 的注释写「没检索到历史案例
+- **`runtime/` 不是零。** 区间 A 下 `contracts/` 与 `core/` 是真零，但 `gate.py`
+  实实在在多了 126 行。本文件的主张是「这 126 行领域无关」，不是「一行都没加」——
+  前者靠 §2.2 的三条理由 + §3 的两条守卫支撑，后者本仓库给不出。
+- **第六道闸的注释与实际拦点不完全一致。** `gate.py:454` 的注释写「没检索到历史案例
   → 计划里漏排财务复核 → 在这里被拦下」，实测漏排时闸没有可判的对象（没有任何任务带
   申报金额），真实拦点在 `payment.execute` 的「没有 finance_entry 不许发起付款」。
-  已记 `docs/BACKLOG.md ## task-W3`。
-- **`flows/` 与 `kb/` 的改动量很大**（+1023 / +1568），这两处**本来就是按域写的**
-  （演示流程与知识语料），不在「内核零改动」的主张范围内。把它们算进内核会让数字好看，
-  但那是偷换。
+  已记 `docs/BACKLOG.md ## task-W3`（该条记的行号是 `gate.py:363`，是 W-3 当时的
+  行号，第七道闸落地后已漂到 454，坑本身没变）。
+- **`flows/` 与 `kb/` 的改动量很大**（**按区间 A**：`flows/` +1023 / −123、
+  `kb/` +1568），这两处**本来就是按域写的**（演示流程与知识语料），不在「内核零改动」
+  的主张范围内。把它们算进内核会让数字好看，但那是偷换。
+  **当前主干（`42822fc`）下这两个数字更大** —— `flows/` +1034 / −123、`kb/` +1784，
+  因为 X-1 接了场景 6 的规划期检索、X-3 又扩了对照实验与语料（见 §2.4 合计表）。
+
+---
+
+## 待整合轮 5 回填
+
+**区间 A（`90251b3..4a70cb0`）的数字不用回填** —— 两个端点都在过去，钉死了，
+Y 轮怎么改 `maos/**` 都不会动它。这正是换端点的收益之一。
+
+**区间 B 的右端点是主干 HEAD，下面每一行都要按新 HEAD 重跑**（当前值按 `42822fc`）：
+
+| # | 位置 | 现值（按 `42822fc`） | 复跑命令 |
+| :-- | :-- | :-- | :-- |
+| 1 | §2 区间表 | 右端点 `42822fc` | `git log --oneline -1` |
+| 2 | §2.3 `core/` | 1 file, +46 / −2 | `git diff --shortstat 4a70cb0 <HEAD> -- maos/core/` |
+| 3 | §2.3 `runtime/` | 1 file, +150 / −6 | `git diff --shortstat 4a70cb0 <HEAD> -- maos/runtime/` |
+| 4 | §2.3 `tools/` | 1 file, +111 / −13 | `git diff --shortstat 4a70cb0 <HEAD> -- maos/tools/` |
+| 5 | §2.3 `flows/` | 1 file, +13 / −2 | `git diff --shortstat 4a70cb0 <HEAD> -- maos/flows/` |
+| 6 | §2.3 `kb/` | 2 files, +293 / −77 | `git diff --shortstat 4a70cb0 <HEAD> -- maos/kb/` |
+| 7 | §2.3 `contracts/`／`agents/`／`skills/`／`domain/` | 四面皆空 | 同上换 path，**若不再是空，§2.3 的结论要重写** |
+| 8 | §2.4 合计表 6 行 | 见表 | `git diff --shortstat 90251b3 <HEAD> -- maos/<p>/` |
+| 9 | §2.4 `runtime/` 合计 | +273 / −7 | 同上，**不许用 126+150 算** |
+| 10 | §5 末条主干数字 | `flows/` +1034 / −123、`kb/` +1784 | `git diff --shortstat 90251b3 <HEAD> -- maos/flows/ maos/kb/` |
+| 11 | §1 ★ 脚注闸数 | `42822fc` 为 7 | `git show <HEAD>:maos/runtime/gate.py \| grep -c 'def _gate_'` |
+| 12 | §1／§2.2／§5 行号 | `control_plane.py:366`／`:409`、`test_gate.py:561`、`test_refund_flow.py:454`／`:460`、`gate.py:454` | `grep -n` 逐条核 |
+
+⚠️ Y 轮的 Y-2 在改 `maos/core/control_plane.py` 与 `maos/kb/**`、Y-1 在改
+`maos/agents/` 与 `maos/flows/`。**它们合并后第 2/5/6/8/12 行必变**，其中第 7 行的
+`agents/` 一栏可能从「空」变成非空 —— 那不是回归，但 §2.3「区间 B 只有内核通用能力」
+这句要相应改写。

@@ -317,3 +317,20 @@ X 轮四轨 + W-5 合并后的整体验收发现三条，均**不在整合轮可
 | 2026-08-29 | P4 | **`docs/domain-portability.md` 的「领域无关」论证，其证据区间 `90251b3..HEAD` 现在混进了非退款域的改动。** 该文档用「退款域上线前后 `git diff` 逐面为零」来论证内核领域无关，但本轮 X-2 给 `maos/core/control_plane.py` 加了 +46/−2（网关码四象限），X-4 给 `maos/tools/sandbox.py` 加了 +111/−13（降级可见化）—— 两者都**不是退款域上线带来的**，却落在同一个区间里 | 论证的**结论没塌**：`maos/contracts/` 仍严格为零，两条 AST/import 守卫（`test_runtime_and_core_do_not_import_refund_domain` / `test_kernel_does_not_know_the_refund_domain`）本轮实跑 2 passed，「内核不认识退款域」这件事仍被机器钉住。塌的是**数字的读法**：表格里 `maos/core/` 那一格从「（空，零改动）」变成非零，读者会以为是退款域把它改的 | 本轮已按真实值刷了数字，并在表格与「不是零 —— 如实说清楚」小节里点明这两笔的出处（整合轮 4 / X-2、X-4）。但更干净的做法是**把论证的区间端点从「当前主干」换成「退款域上线那一刻的 sha」**，让区间只包住退款域，非退款域的改动另起一段说。这要重新选 sha 并重跑全表数字，属文档结构调整，交下一轮 |
 | 2026-08-29 | P5 | **派单 §4 第四步写的「`python3 run.py` 重新生成 `evidence/`」与实际不符** —— `run.py` 跑完 `git status --porcelain` 只有 1 行（gen_docs 的产物），`evidence/` 一个文件都没动。真正产证据的是 README ①②③：`scripts/make_evidence.py`（产 scenario-1..7）+ `python3 -m maos.kb.experiment`（产 scenario-R5）+ `scripts/verify.py`（校验） | 照派单字面执行的会话会以为证据束已按新 HEAD 重跑，实际 `evidence/` 里仍是旧代码的产物 —— 正是派单自己要防的「假绿」。本轮已改跑实际生成器，见 DECISIONS `## integrate-round-4` 第 1 条 | 下一轮派单模板里把第四步的命令换成 `make_evidence.py` + `maos.kb.experiment` + `verify.py` 三条。README §3 的 ①②③ 就是正确版本，直接抄 |
 | 2026-08-29 | P4 | **`CLAUDE.md:75` 的常用命令注释仍写 `python3 run.py  # 场景 1-6 端到端`**，X-1 合并后实际跑 1-7 | 与 `## task-X1` 第 3 条是同一条（那条由 X-1 记下并建议「编排侧收口时一行改掉」）。`CLAUDE.md` 每个会话自动加载，是所有会话看到的第一份事实；留着它，下一个会话会照「1-6」去复核 `run.py` 输出，把多出来的场景 7 当成异常 | `CLAUDE.md` **不在整合轮派单的可改面内**（派单 §4 第三步只列 README.md 与 docs/\*.md），故本轮未改。README / demo-script / submission-checklist / architecture / domain-portability 里的同类措辞本轮已全部刷成 1-7，只剩 `CLAUDE.md` 这一处。**请人类一行改掉**，或在下一轮派单里把它列进可改面 |
+
+## task-Z3
+
+换论证区间端点时发现四条，均**不在本轨可改面内**（本轨只许动
+`docs/domain-portability.md` 与两份账本），按铁律 4 记账不当场改。
+
+> ✅ 本轨已收口 `## integrate-round-4` 第 1 条（「把论证的区间端点从当前主干换成
+> 退款域上线那一刻的 sha」）。区间已换成 A `90251b3..4a70cb0` + B `4a70cb0..42822fc`，
+> 全表九面按两个区间各重跑一次，`maos/core/` 在区间 A 下**实测为真零**，
+> 该条连同它引出的文件内自相矛盾一并消除，见 DECISIONS `## task-Z3`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`gate.py` 里那条与实际拦点不符的注释仍在**，只是行号从 W-3 记账时的 `363` 漂到了 `454`（第七道闸插在它前面）。注释写「没检索到历史案例 → 计划里漏排财务复核 → 在这里被拦下」，实测漏排时闸没有可判的对象 | 与 `## task-W3` 第 2 条是**同一个坑**，两轮过去没修。本轨在 `domain-portability.md` §5 如实写明它还在、并标了新行号，但注释本身没动 —— `maos/runtime/` 是本轨禁改面 | 修法仍是 W-3 给的两条路（①改注释承认这道闸守的是「带了金额却交不出凭据」；②给闸加 plan 级判据）。**下一次动 `runtime/gate.py` 的一轨顺手改掉**。⚠️ 改注释时注意：闸的 docstring 里写着「不许 import `maos.domain.refund`」那句是 §3 第 2 条守卫踩过的坑（AST 扫而非子串扫），改注释别把这句删了 |
+| 2026-08-29 | P7 | **区间 B 的数字与主干 HEAD 绑定，没有任何机器守卫盯着它过期。** `gen_docs.py --check` 只管三份生成文档，`domain-portability.md` 是手写的，数字漂了不会红 | 这是整合轮 4 让 `maos/core/` 那一格变成假话、却拖到本轮才发现的**根因**。本轨的缓解是文末「## 待整合轮 5 回填」列了 12 行逐条复跑命令，但那仍靠人记得去跑 | 两条路：①把区间 B 的 shortstat 也纳入 `gen_docs.py` 生成（数字由脚本算，`--check` 自动守），代价是 `scripts/` 要改且生成器要能跑 git；②退一步，加一条测试断言「`domain-portability.md` 里出现的 sha 必须是 `git log` 里存在的 commit」。①更彻底，②便宜。`scripts/**` 与 `maos/tests/**` 都不在本轨可改面，**交下一轮或编排侧决定** |
+| 2026-08-29 | P7 | **`docs/` 下其余手写文档可能还引用旧区间 `90251b3..df96fa8` 或「`core/` 非零」的旧读法。** 本轨只清了自己这一份，未做全库 grep（其余 docs 多为他轨本轮独占面，同时在改） | 若 README / architecture / submission-checklist 里还留着旧区间的数字，会与 `domain-portability.md` 打架 —— 评委对照两份文档会看到两套 `maos/core/` 的数 | **整合轮 5 合并后统一 grep 一次**：`grep -rn 'df96fa8\|90251b3' docs/ README.md`，把仍指旧区间的地方改成引用本文件的 §2.1／§2.3。本轮 Z-1/Z-2/Z-4/Z-5 正在各自改 `ppt-outline` / `demo-script` / `submission-checklist` / `README`，此刻 grep 出来的结果会立刻过期，故不在本轨做 |
+| 2026-08-29 | P7 | **区间 A 的左端点 `90251b3` 是「P2 四轨收口」，不是「退款域第一个 commit 的父提交」**，两者之间可能夹着少量非退款域的 P2 收尾改动 | 本轨沿用派单钉死的端点未做收窄。实测九面数字里没有明显的非退款域残留（`core/` `contracts/` 双零已是最强证据），但严格说区间 A 仍可能宽了一点点 | 优先级低。若要做到极致，可用 `git log --oneline 90251b3..4a70cb0 -- maos/domain/` 找退款域首个 commit 再往前退一格。**收益很小**：`core/`／`contracts/` 已经是零，收窄区间只可能让 `agents/`／`skills/` 的数字略降，不影响任何论断。除非评委追问，否则不建议动 |

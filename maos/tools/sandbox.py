@@ -229,17 +229,64 @@ def _diff_targets(diff: str) -> list[str]:
     只校验 `patch_set` 声明的 `path` 是不够的：声明写 `auth/session.py`、
     正文的 `+++ b/tests/test_session.py` 指向别处，落盘的是正文那个。
     这一层不看正文，前面那三条校验就全是摆设。
+
+    路径先过 `unquote_c_style` 再剥 `a/` `b/`：git 把含特殊字节的路径写成
+    `"a/\\164ests/conftest.py"`，`a/` 在**引号内部**，不先解引号 `_strip_ab`
+    连前缀都认不出，剥不掉。顺序反了这一层就白做。
+
+    `\\t` 切分排在解码**之前**：diff 头里跟在路径后面的时间戳是真 tab 分隔的，
+    而路径自身的 tab 在 C-quoted 里是 `\\t` 两个字符，切不到。
     """
+    unquote = _unquote_c_style()
     targets: list[str] = []
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             parts = line.split()
-            targets.extend(_strip_ab(p) for p in parts[2:4])
+            targets.extend(_strip_ab(unquote(p)) for p in parts[2:4])
         elif line.startswith(("--- ", "+++ ")):
-            raw = line[4:].strip().split("\t")[0]
+            raw = unquote(line[4:].strip().split("\t")[0])
             if raw and raw != "/dev/null":
                 targets.append(_strip_ab(raw))
     return [t for t in targets if t]
+
+
+def _numstat_targets(base: str, cmd: list[str],
+                     payload: str) -> list[str] | dict[str, Any]:
+    """让 git 自己报出它将要写的路径清单。判定与执行同源，不会再分叉。
+
+    `--numstat -z` 报的是 git **解码后**的路径（`"a/\\164ests/…"` → `tests/…`，
+    `"a/\\056\\056/x"` → `../x`），也就是它真正要落盘的那个。`-z` 不能省：
+    不带它 git 会把含特殊字节的路径重新 C-quote 回去，等于又把解码撤销一遍。
+
+    这一份是**补充**而不是替代 `_diff_targets`：实测 `git apply --numstat` 对
+    rename 只报目标路径，`rename from tests/x to auth/y` 里的 `tests/x` 不出现 ——
+    只信 numstat 会把「删掉受保护目录下的文件」这条现成的覆盖丢掉。两份取并集。
+
+    numstat 只解析补丁、不碰工作树：上下文对不上这类失败它照样 rc=0，
+    仍旧留给后面真正的 `git apply` 去报 `apply` 阶段的错，stage 语义不变。
+    """
+    try:
+        proc = subprocess.run([*cmd, "--numstat", "-z"], cwd=base, input=payload,
+                              capture_output=True, text=True, timeout=_GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _error("apply", None, None,
+                      f"git apply --numstat 起不来: {type(exc).__name__}: {exc}")
+    if proc.returncode != 0:
+        # git 连解析都做不到 —— 是补丁集本身不合法，归 validate，不是 apply 被拒。
+        return _error("validate", None, None,
+                      (proc.stderr or proc.stdout or "").strip()
+                      or f"git apply --numstat 退出码 {proc.returncode}，但没有输出")
+
+    targets: list[str] = []
+    for record in proc.stdout.split("\0"):
+        if not record:
+            continue
+        # 记录形如 `<added>\t<deleted>\t<path>`；maxsplit=2 让路径里的真 tab
+        # 留在第三段里（`-z` 模式下路径不 quote，tab 是原样字节）。
+        fields = record.split("\t", 2)
+        if len(fields) == 3 and fields[2]:
+            targets.append(fields[2])
+    return targets
 
 
 def _protected_path_rules():
@@ -258,6 +305,15 @@ def _protected_path_rules():
     """
     from maos.skills.builtin.code_repo_patch import PROTECTED_SEGMENTS, _path_segments
     return PROTECTED_SEGMENTS, _path_segments
+
+
+def _unquote_c_style():
+    """取 C-quoted 解引号函数 —— 同样只留 code_repo_patch 那一处，理由见上。
+
+    延迟 import 的原因与 `_protected_path_rules` 完全相同（模块级会成环）。
+    """
+    from maos.skills.builtin.code_repo_patch import unquote_c_style
+    return unquote_c_style
 
 
 def _check_path(candidate: str, base: str) -> dict[str, Any] | None:
@@ -286,7 +342,10 @@ def _check_path(candidate: str, base: str) -> dict[str, Any] | None:
     # 3) 内含性：补丁路径规范化后必须落在 workdir 内。
     #    /etc/passwd、../../../.ssh/id_rsa 规范化后的分段是 etc/passwd、.ssh/id_rsa，
     #    都不在 PROTECTED_SEGMENTS 里 —— skill 层没有 workdir 可比对，这一层才有。
-    target = os.path.realpath(os.path.join(base, candidate))
+    #    这里必须拿**解码后**的路径去 join：`"a/\056\056/x"` 的字面量拼进 base 只是
+    #    一个名字古怪的子路径，落不出去；git 解码出的 `../x` 才是真会写的位置。
+    #    第 1、2 条经由 _path_segments 已各自解过码，只有这条是自己 join 的。
+    target = os.path.realpath(os.path.join(base, _unquote_c_style()(candidate)))
     if target != base and not target.startswith(base + os.sep):
         return _error("path_escape", candidate, None,
                       f"补丁路径规范化后落在 workdir 之外: {target}")
@@ -311,9 +370,15 @@ def sandbox_git_apply(
     返回 {"ok": bool, "error": {"stage", "path", "hunk", "message"} | None}。
     ok=False 时 error 必须结构化 —— Gate 要把 path 和 hunk 逐条转成 findings 喂回 Coding。
 
-    stage 取值：validate（补丁集本身不合法）/ prepare（workdir 不可用）/
-    path_check（受保护目录）/ conftest_guard / path_escape / apply（git 拒绝）。
-    hunk 是 git 自己报的行号，只在 apply 阶段有值。
+    stage 取值不变，仍是六个：validate（补丁集本身不合法，**含 git 自己解析不了**）/
+    prepare（workdir 不可用）/ path_check（受保护目录）/ conftest_guard /
+    path_escape / apply（git 拒绝）。hunk 是 git 自己报的行号，只在 apply 阶段有值。
+
+    路径校验四条来源，全过同一个 `_check_path`：patch_set 声明的 `path`、
+    `_diff_targets` 从正文抠的路径、以及 `_numstat_targets` 让 git 自己报的
+    落盘清单。前两条读字面量，最后一条读 git 解码后的结果 —— 判定与执行同源，
+    这是 C-quoted 八进制那类「字面量与落盘路径分叉」绕过的堵口。
+    并集不是冗余：numstat 对 rename 只报目标，`_diff_targets` 才看得见源路径。
     """
     files = patch_set.get("files") if isinstance(patch_set, dict) else None
     if not isinstance(files, list) or not files:
@@ -338,11 +403,25 @@ def sandbox_git_apply(
     cmd = ["git", "apply", "--whitespace=nowarn"]
     if reverse:
         cmd.append("-R")
+
+    payload = "".join(chunks)
+
+    # 第四条校验：判定与执行同源。上面三条读的是 diff 正文的字面量，而落盘的是
+    # git 解码后的路径 —— 两者一旦分叉就是绕过口（C-quoted 八进制正是这么绕的）。
+    # 这里让 git 自己报它将要写的路径，拿那份清单再过一遍同样的 _check_path。
+    listed = _numstat_targets(base, cmd, payload)
+    if isinstance(listed, dict):                    # 结构化错误，直接回
+        return listed
+    for candidate in listed:
+        failure = _check_path(candidate, base)
+        if failure is not None:
+            return failure
+
     if check_only:
         cmd.append("--check")
 
     try:
-        proc = subprocess.run(cmd, cwd=base, input="".join(chunks),
+        proc = subprocess.run(cmd, cwd=base, input=payload,
                               capture_output=True, text=True, timeout=_GIT_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as exc:
         return _error("apply", None, None, f"git apply 起不来: {type(exc).__name__}: {exc}")

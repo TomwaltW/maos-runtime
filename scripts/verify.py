@@ -76,6 +76,21 @@ AUTHORITATIVE_RECEIPT_STATE = {"settled": frozenset({"settled"})}
 #: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要能独立于生成脚本跑。
 EXTERNAL_EVIDENCE_KINDS = frozenset({"test_report", "payment_observation"})
 
+#: 终态 -> 生成侧唯一写得出的 ``(status, basis)``，出处 ``make_evidence.py::derive_business_outcome``
+#: 那三支 if：``FAILED`` 恒配 ``plan_failed``，有判据的 ``DONE`` 恒配 ``external_evidence``。
+#: ``DONE`` 还有第三种取值 ``("undetermined", "no_external_evidence")``（判据为空时），
+#: 但它在第 6 项里先被「DONE 但没有任何外部判据」判负，走不到自述比对那一步。
+#: 非终态的 ``("in_progress", "plan_not_terminal")`` 同理不在本项判据内。
+#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要能独立于生成脚本跑。
+TERMINAL_OUTCOME = {
+    "DONE": ("succeeded", "external_evidence"),
+    "FAILED": ("failed", "plan_failed"),
+}
+
+#: ``business_outcome.source`` 生成侧写死的唯一取值，出处同 TERMINAL_OUTCOME。
+#: 它是这份结论的**出身**声明：改掉它等于声称这些数字不是从库里推出来的。
+OUTCOME_SOURCE = "derived-from-db-at-export-time"
+
 #: 出处注释里 sha 的合法后缀 —— `make_evidence.py` 在工作区脏时写 `<sha>-dirty`。
 #: `scenario-R5` 恒带这个后缀：它由 `build_r5()` 在场景 1-7 已经把 evidence/ 改脏之后
 #: 才自算 sha（其余场景共用主流程开头那一次干净的取值）。这是 submission-checklist.md
@@ -660,11 +675,55 @@ def evidence_backing(case: Case, plan_id: str, item: object) -> str:
     return _observation_backing(case, plan_id, item)
 
 
+def outcome_selfclaim(state: str, outcome: dict, unaudited: int) -> list[str]:
+    """``business_outcome`` 那四个自述字段与证据的**就地**比对。返回全部失败理由。
+
+    第 6 项从前只查 ``external_evidence`` 里**指得到的东西**（G-2 把产物和回执做进了
+    回查）。可 ``plan_state`` / ``basis`` / ``source`` / ``unaudited_evidence_count``
+    这四个字段谁也没查过 —— 它们描述的是「这份结论是怎么来的」。结论本身长了牙齿之后，
+    描述结论的那层**元数据**就成了整束证据里最后一处「写什么就是什么」。
+
+    危害不是伪造成功，是**伪造干净**：把 ``unaudited_evidence_count`` 抹成 0，
+    第 6 项那条「来源未审计」的 warn 就凭空消失，而 verify 照印 ``7/7 PASS``。
+    一屏没有 warn 的 7/7 比有 warn 的 7/7 更像「这套东西没问题」—— 而那条 warn
+    恰恰是评委判断「这份报告是不是脚手架」的唯一线索（H-1 实测：warn 12 行掉到 11 行，
+    七项读数一个不变）。所以调用侧那条 warn 改按**列表里数出来的**条数印，
+    不按报告自述的数字印：判负归判负，warn 一行都不许被判据吃掉（G-2 的口径）。
+
+    四条都不新查库：``state`` 调用侧已经拿到，其余三个在生成侧是死的推导，照着倒推。
+    ``provenance`` 本身对不对得上事件链**不在这里判**（那要重算入库路径，是另一件事，
+    见 BACKLOG ``## task-H1``）—— 这里只保证「自述的数」等于「列表里数得出来的数」。
+    """
+    expect_status, expect_basis = TERMINAL_OUTCOME[state]
+    wrong: list[str] = []
+    if outcome.get("plan_state") != state:
+        wrong.append(f"plan_state 自述 {outcome.get('plan_state')!r}，库里是 {state!r}")
+    if outcome.get("basis") != expect_basis:
+        wrong.append(f"status={expect_status!r} 配的 basis 只能是 {expect_basis!r}"
+                     f"（生成侧是死的推导，出处 make_evidence.py），"
+                     f"报告写的是 {outcome.get('basis')!r}")
+    if outcome.get("source") != OUTCOME_SOURCE:
+        wrong.append(f"source 自述 {outcome.get('source')!r}，"
+                     f"生成侧只写得出 {OUTCOME_SOURCE!r}")
+    if outcome.get("unaudited_evidence_count") != unaudited:
+        wrong.append(f"unaudited_evidence_count 自述 "
+                     f"{outcome.get('unaudited_evidence_count')!r}，"
+                     f"external_evidence 里 provenance='unknown' 的实有 {unaudited} 条"
+                     f" —— 抹掉这个数就是抹掉那条 warn")
+    return wrong
+
+
 def check_business_outcome(cases: list[Case]) -> Check:
     """Plan 走到 DONE 不等于业务成功。DONE 必须指得出一条**外部**判据。
 
     「外部」的意思是这条判据不是 Agent 对自己的评价：回归报告是沙箱/测试给的，
     payment_observation 是支付网关给的；``patch_set.self_check`` 不算。
+
+    FAILED 一侧同样有牙齿。从前这一支只要 ``business_outcome`` 是个非空 dict 就放行，
+    于是「库里 FAILED、``result.json`` 也老实记 FAILED（躲开上面那条 state 比对）、
+    ``business_outcome.status`` 却写 succeeded」这一手一声不吭（H-1 实测：7/7 PASS、
+    exit=0、warn 一行不少）。判负要判在**自称**上，不是判在 state 上 —— 因为
+    state 本来就是老实的，那正是这一手能躲过去的原因。
     """
     chk = Check("business-outcome",
                 "Plan 终态有 business_outcome，DONE 的外部判据回查得到")
@@ -687,8 +746,13 @@ def check_business_outcome(cases: list[Case]) -> Check:
             if not isinstance(outcome, dict) or not outcome.get("status"):
                 chk.bad(f"{label}: 终态 {state} 却没有 business_outcome")
                 continue
+            # 来源未审计的条数按**列表里数出来的**印，不按报告自述的数字印：
+            # 自述的数一旦被抹成 0，下面那条 warn 就凭空消失，而七项读数一个不变。
+            # 自述与实数对不上是判负的事（outcome_selfclaim），但 warn 照印不误。
+            ev = outcome.get("external_evidence") or []
+            unaudited = sum(1 for e in ev
+                            if isinstance(e, dict) and e.get("provenance") == "unknown")
             if state == "DONE":
-                ev = outcome.get("external_evidence") or []
                 if not ev:
                     chk.bad(f"{label}: DONE 但没有任何外部判据 —— "
                             f"「Agent 都完成了」不等于业务成功")
@@ -696,7 +760,6 @@ def check_business_outcome(cases: list[Case]) -> Check:
                 if outcome.get("status") != "succeeded":
                     chk.bad(f"{label}: 有外部判据却记成 status={outcome.get('status')}")
                     continue
-                unaudited = outcome.get("unaudited_evidence_count") or 0
                 if unaudited:
                     # 措辞只说这一项证得了的事：**入库路径**上没有来源事件。
                     # 原措辞写的是「场景预置件，非实跑产出」—— 那是它证不了的断言，
@@ -720,6 +783,19 @@ def check_business_outcome(cases: list[Case]) -> Check:
                             f"result.json 里写什么就算什么，那不叫判据："
                             + "；".join(broken))
                     continue
+            elif outcome.get("status") != TERMINAL_OUTCOME[state][0]:
+                # FAILED 一侧的牙齿：库里老实记了 FAILED，报告自称成功照样判负。
+                chk.bad(f"{label}: 库里是 FAILED，报告却自称 "
+                        f"status={outcome.get('status')!r} —— 失败的 Plan 没有"
+                        f"「业务成功」这一说，生成侧那一支只写得出 "
+                        f"{TERMINAL_OUTCOME[state][0]!r}")
+                continue
+            # 结论有了牙齿，描述结论的那四个字段还得对得上（见 outcome_selfclaim）。
+            wrong = outcome_selfclaim(state, outcome, unaudited)
+            if wrong:
+                chk.bad(f"{label}: business_outcome 的自述字段与证据对不上 —— "
+                        f"这一层从前没人查过：" + "；".join(wrong))
+                continue
             chk.ok()
     return chk
 

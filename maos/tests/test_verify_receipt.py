@@ -547,3 +547,172 @@ def test_evidence_kinds_match_the_generator_side():
     assert appended == set(verify.EXTERNAL_EVIDENCE_KINDS), (
         f"两边的外部判据取值域分叉了：生成侧装 {sorted(appended)}，"
         f"核验侧认 {sorted(verify.EXTERNAL_EVIDENCE_KINDS)}")
+
+
+# ===========================================================================
+# 盲区 D：结论有了牙齿，描述结论的那一层还是自述（H-1）
+#
+# 与 A/B/C 同一个模式的第四、第五个实例，只是往上挪了一层。G-2 把
+# `external_evidence` 里**指得到的东西**做进了回查之后，第 6 项还剩两处没人查：
+#
+# D. FAILED 那一支只要 `business_outcome` 是个非空 dict 就 `chk.ok()`。于是
+#    「库里 FAILED、result.json 也老实记 FAILED（躲开那条 state 比对）、
+#    `business_outcome.status` 却写 succeeded」这一手一声不吭 —— H-1 在 1131795
+#    上实测：`RESULT: 7/7 PASS`、exit=0、warn 一行不少。判负要判在**自称**上，
+#    不是判在 state 上，因为 state 本来就是老实的，那正是它能躲过去的原因。
+# E. `plan_state` / `basis` / `source` / `unaudited_evidence_count` 这四个字段
+#    描述的是「这份结论是怎么来的」，一层校验都没有。危害不是伪造成功，是
+#    **伪造干净**：把 `unaudited_evidence_count` 抹成 0，那条「来源未审计」的 warn
+#    就凭空消失，七项读数一个不变（实测 warn 12 行掉到 11 行，仍 7/7 PASS）。
+#    一屏没有 warn 的 7/7 比有 warn 的 7/7 更像「这套东西没问题」—— 而那条 warn
+#    恰恰是评委判断「这份报告是不是脚手架」的唯一线索。
+#
+# 所以 warn 改按**列表里数出来的**条数印，不按报告自述的数字印：自述对不上判负，
+# warn 照印不误。判据不许把 warn 吃掉（G-2 记进 DECISIONS 的那条口径）。
+# ===========================================================================
+def _failed_recorded(*, plan_id: str = PLAN) -> dict:
+    """FAILED 那一支生成侧唯一写得出的形状（make_evidence.py::derive_business_outcome）。"""
+    return {
+        "plan_id": plan_id,
+        "state": "FAILED",
+        "business_outcome": {
+            "status": "failed",
+            "basis": "plan_failed",
+            "plan_state": "FAILED",
+            "external_evidence": [],
+            "unaudited_evidence_count": 0,
+            "source": "derived-from-db-at-export-time",
+        },
+    }
+
+
+def _tampered(recorded: dict, **fields) -> dict:
+    """把一条记录的 business_outcome 就地改几个字段 —— 攻击者动的就是这里，
+    库和 trace.json 一个字节都不碰。
+    """
+    recorded["business_outcome"].update(fields)
+    return recorded
+
+
+def test_honest_failed_plan_passes(outcome_case):
+    """正面对照：库里 FAILED、报告也老实记 FAILED，四个字段都对得上 —— 该过。"""
+    case = outcome_case(plans=[(PLAN, "FAILED")], recorded=[_failed_recorded()])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.PASS and (chk.passed, chk.total) == (1, 1)
+
+
+def test_failed_plan_claiming_success_is_caught(outcome_case):
+    """攻击 D 的回归钉：state 老实记 FAILED，`business_outcome.status` 写 succeeded。
+
+    躲得过 state 比对（那一条对得上），也躲得过外部判据回查（那一段只在 DONE 里跑）。
+    修前 `RESULT: 7/7 PASS`、exit=0。
+    """
+    case = outcome_case(
+        plans=[(PLAN, "FAILED")],
+        recorded=[_tampered(_failed_recorded(), status="succeeded")])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL, "失败的 Plan 自称业务成功却过关"
+    assert (chk.passed, chk.total) == (0, 1)
+    note = " ".join(chk.notes)
+    assert "库里是 FAILED" in note and "自称" in note, f"报错得说清是自称，实际：{note}"
+
+
+def test_failed_plan_claiming_success_with_a_matching_basis_is_caught(outcome_case):
+    """同一手的加强版：连 `basis` 一起改圆，让这份 outcome 自己内部自洽。
+
+    判据不能只做内部自洽比对 —— 那样「status 和 basis 一起改」就整套躲过去了。
+    `status` 得钉在库里的 state 上，那是自洽改不动的地方。
+    """
+    case = outcome_case(
+        plans=[(PLAN, "FAILED")],
+        recorded=[_tampered(_failed_recorded(), status="succeeded",
+                            basis="external_evidence")])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "库里是 FAILED" in " ".join(chk.notes)
+
+
+def test_scrubbed_unaudited_count_is_caught_and_the_warn_survives(outcome_case):
+    """攻击 E 的主形态：把 `unaudited_evidence_count` 抹成 0，抹掉那条 warn。
+
+    两条断言缺一不可 —— 判负是新长的牙齿；**warn 仍在**是这颗牙齿不许咬掉的东西。
+    warn 改按列表里 `provenance == "unknown"` 的实有条数印，抹自述的数字影响不了它。
+    """
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real")],
+        recorded=[_tampered(
+            _recorded(evidence=[_report_evidence("art-real", provenance="unknown")],
+                      unaudited=1),
+            unaudited_evidence_count=0)])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL, "抹掉未审计条数却过关 —— 伪造干净比伪造成功更好使"
+    note = " ".join(chk.notes)
+    assert "unaudited_evidence_count" in note and "实有 1 条" in note, note
+    assert any("来源未审计" in n for n in chk.notes), "判据把 warn 吃掉了"
+
+
+def test_doctored_plan_state_is_caught(outcome_case):
+    """`plan_state` 是 outcome 自己抄的一份 state 副本，从前没人拿它跟库比过。"""
+    case = outcome_case(
+        plans=[(PLAN, "FAILED")],
+        recorded=[_tampered(_failed_recorded(), plan_state="DONE")])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "plan_state 自述" in " ".join(chk.notes)
+
+
+def test_doctored_basis_is_caught(outcome_case):
+    """`basis` 与 `status` 在生成侧是死的一一对应，对不上就是改过。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real")],
+        recorded=[_tampered(_recorded(evidence=[_report_evidence("art-real")]),
+                            basis="no_external_evidence")])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "basis 只能是" in " ".join(chk.notes)
+
+
+def test_doctored_source_is_caught(outcome_case):
+    """`source` 是这份结论的出身声明：改掉它等于声称这些数字不是从库里推出来的。"""
+    case = outcome_case(
+        plans=[(PLAN, "DONE")],
+        artifacts=[_report_artifact("art-real")],
+        recorded=[_tampered(_recorded(evidence=[_report_evidence("art-real")]),
+                            source="hand-written-by-me")])
+    chk = verify.check_business_outcome([case])
+
+    assert chk.status == verify.FAIL
+    assert "source 自述" in " ".join(chk.notes)
+
+
+@pytest.mark.parametrize("state", ["DONE", "FAILED"])
+def test_generator_output_satisfies_the_selfclaim_check(tmp_path, state):
+    """守着 `TERMINAL_OUTCOME` / `OUTCOME_SOURCE` 别与生成侧分叉。
+
+    与 `test_evidence_kinds_match_the_generator_side` 同一个套路（取值域两边各存
+    一份，核验器不 import 生成脚本），只是这条不解析源码文本 —— 直接把生成侧的
+    **真产出**喂给核验侧的判据。生成侧哪天改了那三支 if 或那个 source 常量而这里
+    没跟上，全量证据束会整片判负，得先在这条测试上红。
+    """
+    make_evidence = _load_script("make_evidence")
+    db = tmp_path / f"gen-{state}.db"
+    _build_db(db, plans=[(PLAN, state)], artifacts=[_report_artifact("art-real")])
+    conn = verify.connect_ro(str(db))
+    try:
+        outcome = make_evidence.derive_business_outcome(
+            conn, PLAN, state, verify.table_names(conn), {"art-real": "task_result"})
+    finally:
+        conn.close()
+
+    unaudited = sum(1 for e in outcome["external_evidence"]
+                    if e.get("provenance") == "unknown")
+    assert verify.outcome_selfclaim(state, outcome, unaudited) == [], (
+        f"生成侧的真产出过不了核验侧的自述比对，两边分叉了：{outcome}")

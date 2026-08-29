@@ -6,18 +6,14 @@
 （政策与历史案例是按行业惯例构造的合成数据，支付网关的错误码与时序取自公开规范
 ——口径见 [§8](#8-与提案--比赛要求的映射)，不含糊。）
 
-<!-- Y轮易变（Y-3）：①② 正在合并成一条命令；合并后本块与 §3、§4 的三条链需同步改写 -->
-
 ```bash
-python3 scripts/make_evidence.py   # ① 跑 7 个场景，生成 evidence/scenario-1..7
-python3 -m maos.kb.experiment      # ② 生成 evidence/scenario-R5（① 不产它）
-python3 scripts/verify.py          # ③ 七项证据逐项重放校验 -> RESULT: 7/7 PASS
+python3 scripts/make_evidence.py   # ① 跑 7 个场景 + RAG 对照，生成 evidence/scenario-1..7 与 -R5
+python3 scripts/verify.py          # ② 七项证据逐项重放校验 -> RESULT: 7/7 PASS
 ```
 
-> **新克隆必须按 ①②③ 跑满三条，一条都不能省。** `*.db` 不入 git（`.gitignore` 挡着），
-> 核验器要的是库、不是快照。直接跑 ③ 会报 `缺数据库` 并**退出 2**；只跑 ①③ 会卡在
-> `缺数据库: evidence/scenario-R5/maos.db`，而它给的提示仍是「先跑 `make_evidence.py`」
-> —— **照那句做会原地打转**（实测：重跑多少次都是同一个错）。原委见
+> **新克隆必须按 ①② 跑满两条，一条都不能省。** `*.db` 不入 git（`.gitignore` 挡着），
+> 核验器要的是库、不是快照 —— 直接跑 ② 会报 `缺数据库` 并**退出 2**。这是设计行为。
+> 全新克隆实测：clone + 这两条共约 **5 秒**，`RESULT: 7/7 PASS`，退出码 0。原委见
 > [§3](#3-一条命令核验这一节是给评委的)。
 
 ---
@@ -96,21 +92,20 @@ flowchart LR
 独立跑一遍，失败时说得出「失败意味着什么」。
 
 ```bash
-python3 scripts/make_evidence.py     # ① 跑全部 7 个场景，落成 evidence/scenario-N/
-python3 -m maos.kb.experiment        # ② 跑 RAG 有无对照实验，落成 evidence/scenario-R5/
-python3 scripts/verify.py            # ③ 七项逐条重放校验
+python3 scripts/make_evidence.py     # ① 跑全部 7 个场景 + RAG 有无对照，落成 evidence/scenario-{1..7,R5}/
+python3 scripts/verify.py            # ② 七项逐条重放校验
 echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 ```
 
-本机实跑（基线 `42822fc`，**全新克隆 + 无任何 API key**，逐步耗时见
+本机实跑（整合轮 5，**全新克隆 + 无任何 API key**，逐步耗时见
 [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
 
 ```
-[PASS] hash-integrity       74/74
+[PASS] hash-integrity       77/77
 [PASS] business-ref         33/33
 [PASS] authoritative-fact   3/3
 [PASS] trace-tree           18/18
-[PASS] kb-hit               4/4
+[PASS] kb-hit               7/7
 [PASS] business-outcome     9/9
 [PASS] history-case         1/1
 
@@ -121,15 +116,14 @@ RESULT: 7/7 PASS
 （`trace-tree` 与 `business-outcome` 两项会附若干 `warn:` 行 —— 那是点名不判负的
 提示，比如「某份产物没有来源事件」。warn 不改判定，但它们是真的，没有被藏起来。）
 
-**①②③ 三条缺一不可，顺序不能换。** `*.db` 不入库（`.gitignore` 挡着），
+**①② 两条缺一不可，顺序不能换。** `*.db` 不入库（`.gitignore` 挡着），
 核验器要的是库、不是快照 —— 所以新克隆的仓库直接跑 `verify.py` 会报
 `缺数据库: evidence/scenario-1/maos.db` 并**退出 2**。这是设计行为，不是故障。
 
-⚠️ **只跑 ①③ 会撞一个坑**：`make_evidence.py` 只产 `scenario-1..7`，
-`scenario-R5`（RAG 对照）归 ② 单产。仓库里 `evidence/scenario-R5/` 目录是入库的、
-但它的库不是，于是 `verify.py` 会报 `缺数据库: evidence/scenario-R5/maos.db`，
-**照样退出 2**，而它给的提示是「先跑 `make_evidence.py`」—— 按这句提示做会原地打转。
-**②不能省。** 已记 `docs/BACKLOG.md ## task-W5`。
+（`scenario-R5` 这条 RAG 对照曾经要单独敲 `python3 -m maos.kb.experiment` 才产，
+少敲一条就会卡在 `缺数据库: evidence/scenario-R5/maos.db`。现在 ① 缺省一并产出，
+这个坑不存在了；`--no-r5` 可显式跳过，届时 `verify.py` 的第 5、7 项按 `[SKIP]` 计，
+**不会**冒充 PASS。）
 
 🔴 **跑完 `git status` 会有 50 行改动，这是预期，不是你弄坏了仓库。** 证据文件首行带
 生成时间与 git sha，每次重跑都会变；`*.db` 被 `.gitignore` 挡着不会出现在里面。
@@ -140,7 +134,7 @@ RESULT: 7/7 PASS
 其实只是两边不同步。实测过的两条出路，二选一：
 
 ```bash
-python3 scripts/make_evidence.py && python3 -m maos.kb.experiment   # 甲：重跑，回到 7/7
+python3 scripts/make_evidence.py                                    # 甲：重跑，回到 7/7
 find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连库一起清，回到出厂态
 ```
 
@@ -173,20 +167,17 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 
 ```bash
 git clone <本仓库地址> maos && cd maos
-python3 -m pytest maos/tests -q     # 521 passed
+python3 -m pytest maos/tests -q     # 571 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 
-# 到这里只跑了代码；要看到评委关心的 7/7，还差证据链这三条：
-python3 scripts/make_evidence.py    # ① scenario-1..7
-python3 -m maos.kb.experiment       # ② scenario-R5（① 不产它，不能省）
-python3 scripts/verify.py           # ③ RESULT: 7/7 PASS，exit=0
+# 到这里只跑了代码；要看到评委关心的 7/7，还差证据链这两条：
+python3 scripts/make_evidence.py    # ① scenario-1..7 + scenario-R5
+python3 scripts/verify.py           # ② RESULT: 7/7 PASS，exit=0
 ```
 
-<!-- Y轮易变（Y-3）：①② 合并成一条命令后，本块末尾三行与 §3、抬头块需同步改写 -->
-
-全新克隆 + 无任何 API key 实测：以上全部跑完约 **17 秒**，其中「clone + 证据链三条」
-这条最短路径约 **7 秒**；
+全新克隆 + 无任何 API key 实测：以上全部跑完约 **18 秒**，其中「clone + 证据链两条」
+这条最短路径约 **5 秒**；
 跑完 `git status` 会有 50 行 `evidence/` 改动，属预期 —— **别用 `git checkout` 单独还原**，
 原因与两条出路见 [§3](#3-一条命令核验这一节是给评委的)。
 

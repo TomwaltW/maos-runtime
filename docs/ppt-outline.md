@@ -287,11 +287,10 @@ RAG 的价值要用「有无对照」证明 —— 两版 DAG 的 diff；而检�
 **13**（只有证据完整且外部结果明确的案例进默认知识层）
 
 **不许说的话**
-- 🔴 不许说「场景 6 演示了 RAG 召回得很准」。场景 6 当前 `candidate_count=0`，
-  「RAG 接上了」在场景 6 上只证明到**链路通**，证明不到**召回准**；后者的证据
-  只在 `evidence/scenario-R5/` 的对照实验里（`docs/BACKLOG.md:248`）。
-
-> ⚠️ Y 轮易变：上面这条「场景 6 当前 `candidate_count=0`」—— 见文末回填清单。
+- 🔴 不许说「场景 6 演示了 RAG 召回得很准」。整合轮 5 后场景 6 实测
+  `candidate_count=3` / `hit_count=3`（Y-2 把 W-1 语料播了进去，此前是 0），
+  「RAG 接上了」在场景 6 上证明到的是**链路通 + 确实召回到东西**，
+  证明不到**召回准** —— 后者的证据只在 `evidence/scenario-R5/` 的有无对照实验里。
 
 ---
 
@@ -393,11 +392,11 @@ RAG 命中是真的、Agent 完成没被当成业务成功、知识层没被污�
 `business-ref 23/23`、`kb-hit 1/1` 已过期，**不要照抄旧文档**）：
 
 ```
-[PASS] hash-integrity       74/74
+[PASS] hash-integrity       77/77
 [PASS] business-ref         33/33
 [PASS] authoritative-fact   3/3
 [PASS] trace-tree           18/18
-[PASS] kb-hit               4/4
+[PASS] kb-hit               7/7
 [PASS] business-outcome     9/9
 [PASS] history-case         1/1
 
@@ -415,7 +414,9 @@ RESULT: 7/7 PASS
 - 不许说「新克隆的仓库直接跑 `verify.py` 就有 7/7」—— `*.db` 不入库，
   直接跑会报缺数据库并退出 2，**这是设计行为**（`README.md:113-115`）。
 
-> ⚠️ Y 轮易变：`warn:` 行的条数、以及「①②③ 三条命令」这个说法 —— 见文末回填清单。
+（整合轮 5 实测：`warn:` 共 **10 行 / 2 类** —— `trace-tree` 下 6 行、
+`business-outcome` 下 4 行。此前的 17 行 / 4 类里，B 类「执行路径不可审计」与
+C 类「事件不在任何一棵树内」已由 Y-1、Y-2 归零。）
 
 ---
 
@@ -495,7 +496,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 ```bash
 git clone <repo> && cd maos-runtime
-python3 -m pytest maos/tests -q     # 521 passed
+python3 -m pytest maos/tests -q     # 571 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/
@@ -505,25 +506,23 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 
 **讲稿**
 不需要任何 API key，核心零依赖，只要 Python 三点十以上。缺省走 Scripted 模式，
-一行网络都不走，状态迁移序列在任何机器上逐条一致。生成证据是①②两条，
-核验是③，三条缺一不可、顺序不能换。
+一行网络都不走，状态迁移序列在任何机器上逐条一致。生成证据是①一条，
+核验是②，两条缺一不可、顺序不能换。全新克隆到 7/7，实测五秒四。
 
 **可核验证据**
-- `README.md:140-148`（§4 5 分钟快速开始：三条命令 + `521 passed` + `exit=0`）
-- `README.md:89-92`（①②③ 三条命令原文）
-- `README.md:117-121`（⚠️ 只跑 ①③ 会撞的那个坑：`scenario-R5` 归 ② 单产，
-  **②不能省**，已记 `docs/BACKLOG.md ## task-W5`）
-- 编排侧在基线 `42822fc` 上实跑：`python3 -m pytest maos/tests -q` → **521 passed**；
-  `python3 run.py` → **exit=0**，跑完 `git status --porcelain` 仍 0 行
+- `README.md:170-177`（§4 5 分钟快速开始：pytest + run.py + 证据链两条 + `exit=0`）
+- `README.md:95-97`（①② 两条命令原文）
+- `README.md:119`（**①② 两条缺一不可，顺序不能换**；直接跑 ② 会报缺数据库并退出 2）
+- 编排侧整合轮 5 实跑：`python3 -m pytest maos/tests -q` → **571 passed**；
+  `python3 run.py` → **exit=0**，跑完 `git status --porcelain` 仍 0 行；
+  全新克隆 + 无任何 API key，`clone → ① → ②` **5.4 秒**到 `RESULT: 7/7 PASS`
 
 **对应评委要求编号**
 —（复现指引页，不单独扛要求；它是 P11 那条命令能被评委真的跑起来的前提）
 
 **不许说的话**
-- 不许说「一条命令就能从零跑到 7/7」。当前是三条，且顺序不能换（`README.md:113`）。
+- 不许说「一条命令就能从零跑到 7/7」。当前是两条，且顺序不能换（`README.md:119`）。
 - 不许说「七个场景都跑成功了」（`docs/submission-checklist.md:63`）。
-
-> ⚠️ Y 轮易变：上面这条「当前是三条命令」—— 见文末回填清单。
 
 ---
 
@@ -581,57 +580,29 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 
 ---
 
-# 待整合轮 5 回填
+# 整合轮 5 收口台账（2026-08-29）
 
-Y 轮四轨正在改代码，下面几处的说法会在整合轮 5 之后变。
-**合并后逐条回来改，不要等发现台上讲错了才找。**
+Y-1 / Y-2 / Y-3 已并入，下面四条**已按实跑回填**：
 
-| # | 页锚 | 现在写的是什么 | Y 合并后应改成什么 | 依据哪一轨 |
+| # | 页锚 | 原来写的 | 现在 | 依据 |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | **P11** | 「`trace-tree` 与 `business-outcome` 两项会附若干 `warn:` 行」，且台上要能答得出 warn 的内容 | `test_report` 补 `sandbox_mode` 后，编排侧口径是那 4 条 warn 会自动消失。**消失后要重跑一次 `verify.py` 拿新输出**，并把 P11「不许把 warn 行藏起来」那条改成实际剩余条数；若真的归零，改成「7/7 PASS 且零 warn」 | **Y-1** |
-| 2 | **P8b** | 「场景 6 当前 `candidate_count=0`，只证明到链路通、证明不到召回准」（`docs/BACKLOG.md:248`） | 语料播进场景 6 的 `seed_domain()` 后，`candidate_count` 会从 0 变成几十。届时 P8b 可以改用**场景 6 现场演召回**，不必只靠 R5 对照实验。**必须实测新数字再改口，不许推断**；一并确认 `test_kb_switch_does_not_change_the_dag` 仍绿 | **Y-2** |
-| 3 | **P8a / P8b** | 未提 `plan_id` 归属问题 | Y-2 修好 `plan_id` 归属后，检索事件能挂到正确的 plan 上，`kb-hits.json` 的可读性会变；若 P8b 的画面要素用到 `kb-hits.json`，需重新截图 | **Y-2** |
-| 4 | **P11 / P14** | 「①②③ 三条命令缺一不可、顺序不能换」，且 P14 标红「先跑 ①②」；P11 写「不许说一条命令就能从零跑到 7/7」 | 一条命令能复现全量证据后，P14 的命令块收敛成一条，标红那句删掉；P11 的「不许说的话」第三条整条作废。**改之前先实跑新命令确认 R5 也被产出**（当前 R5 得单独产，正是这条要修的） | **Y-3** |
-| 5 | **P10** | 「场景 7 走的是 `effect_risk=H` 那条 HITL 入口，不是换渠道 replan」；「不许说演示里能看到它自动换渠道重试到上限」 | 场景 7 真能在屏幕上演换渠道重试后，P10 的画面要素要加一段换渠道的输出，讲稿相应加一句；`docs/submission-checklist.md:62` 那条 A-4 禁语**届时也要一并改口**（那是 Z-4 的面，需同步告知） | **Y-4** |
-| 6 | **P5** | 「机制已落地并有 19 条测试守着，但演示里没有场景走这条路」 | 同第 5 条。Y-4 落地后这句话不再成立，改成实际演到的样子；测试条数若变，以实跑为准 | **Y-4** |
+| 1 | **P11** | 「会附若干 `warn:` 行」，条数未定 | **10 行 / 2 类**（`trace-tree` 6、`business-outcome` 4）；旧的 17 行 / 4 类里 B、C 两类归零 | Y-1 + Y-2 |
+| 2 | **P8** | 场景 6 `candidate_count=0`，只证明到链路通 | 场景 6 实测 `candidate_count=3` / `hit_count=3`，证明到「链路通 + 确实召回到东西」；「召回准」仍只由 R5 对照实验扛 | Y-2 |
+| 3 | **P8a / P8b** | 未提 `plan_id` 归属 | Y-2 修好归属，场景 6 的 `KbRetrieved` 已挂到实 plan 上（此前 `plan_id=''`），`kb-hits.json` 可读性变好 —— **若 P8b 用到该文件的截图，录制前重截一张** | Y-2 |
+| 4 | **P11 / P14** | 「①②③ 三条命令缺一不可」 | 收敛成 **①② 两条**；P11 第三条禁语与 P14 讲稿、证据锚、禁语全部改写。全新克隆实测 **5.4 秒**到 7/7 | Y-3 |
 
-**回填时的纪律**：每一条都要**先实跑拿到新输出**再改文案。
-本文件所有数字（521 passed / 7 项 / 33 / 4 / 74 / 18 / 9 / 1 / +46−2 / +273−7）
-都来自基线 `42822fc` 的真实输出，回填时同样只认实跑，不认推断。
+**数字口径**：本文件所有数字（571 passed / 7 项 / 33 / 7 / 77 / 18 / 9 / 1 / +46−2 / +273−7）
+都来自**整合轮 5 合并后**的真实输出，不是基线 `42822fc` 的旧值。
 
 ---
 
-# 核对台账
+# 待整合轮 6 回填
 
-**基线**：`42822fc`。本文件共 **63 条**去重后的 `文件:行号` 锚（正文中出现 87 次），
-外加 **8 条**可跑命令。
+**Y-4（场景 7 演换渠道重试）尚未合并**，下面两条等它：
 
-- **`文件:行号` 实际打开核对过：63/63 条。** 核法是机器化的：正则抽出全文每一个
-  `文件:行号` / `文件:起-止`，逐条打开目标文件、打印首行与末行比对内容，
-  **越界 0 条、缺文件 0 条**。首轮核对抓出 **15 条**行号偏差（README 的 §3/§4/数据口径
-  各段、`docs/agentteams-mapping.md` 的口径句、`docs/skill-catalog.md` 的表范围、
-  `docs/BACKLOG.md` 的两条、以及 4 条尾行落在空行的松区间），已全部按实际行号回改。
-- **可跑命令：8 条**。本轨实跑过 3 条 —— `python3 -m pytest maos/tests -q`（521 passed）、
-  `python3 run.py`（exit=0，含场景 6 与 7）、`python3 scripts/gen_docs.py --check`（exit=0）。
-  其余 5 条未跑的理由见下。
-- **因核不到而改弱：1 条** —— P8b 的护栏条数。`README.md:259` 与
-  `maos/kb/guardrails.py` 模块 docstring 都写「三条断言」，但 `check_all`
-  实际调用 **4 个** assert 函数。未按「三条」照抄，改写成
-  「三条护栏（代码里 4 个 assert 函数，`assert_no_dependency_removed` 是第 1 条
-  『只增不删』的依赖侧半条）」—— 这样台上被问「到底几条」答得上。已记
-  `docs/BACKLOG.md ## task-Z1`。
-- **本轨未跑的 5 条命令与理由**：`scripts/verify.py` 在干净工作区上**必然报缺数据库**
-  （`*.db` 不入库，设计行为，`README.md:113-115`）；要跑出 7/7 必须先跑
-  `scripts/make_evidence.py` + `python3 -m maos.kb.experiment`，而那两条会把
-  仓库里已入库的 `evidence/**` 改脏（编排侧实测 7 个文件变 M）。本轨是纯文档轨，
-  不该动 `evidence/`，故三条都不跑。`run.py --scenario 6` / `--scenario 7` 未单跑，
-  但无参 `run.py` 的缺省序列已含 1–7，两场都实跑到了。
-  **本文件 P11 引的七行 verify 输出、P10 引的场景 7 五行汇总，都标明了出处**：
-  前者是编排侧在同一基线上实跑的，非本轨自跑；后者本轨自跑复现，与派单逐字一致。
+| # | 页锚 | 现在写的是什么 | Y-4 合并后应改成什么 |
+| :-- | :-- | :-- | :-- |
+| 1 | **P10** | 「场景 7 走的是 `effect_risk=H` 那条 HITL 入口，不是换渠道 replan」；「不许说演示里能看到它自动换渠道重试到上限」 | 画面要素加一段换渠道的输出，讲稿相应加一句；`docs/submission-checklist.md` A-4 那条禁语**届时一并改口** |
+| 2 | **P5** | 「机制已落地并有 19 条测试守着，但演示里没有场景走这条路」 | 改成实际演到的样子；测试条数若变，以实跑为准 |
 
-**待确认（本轨拒绝编造的部分）**
-- 「评审四维」的官方名称与权重 → `docs/open-questions.md` **OQ-1**（Z-4 建立）。
-  仓库全文 grep 确认无任何官方四维口径，与 `docs/BACKLOG.md:306`、
-  `docs/DECISIONS.md:491`、`docs/submission-checklist.md:6-7` 已定的「不编」口径一致。
-- Demo 视频官方规格（时长上限 / 分辨率 / 格式 / 大小 / 字幕）同属 OQ 范围，
-  本文件不涉及（归 `docs/demo-script.md` 与 `docs/submission-checklist.md` C 段）。
+**回填时的纪律**：每一条都要**先实跑拿到新输出**再改文案，只认实跑，不认推断。

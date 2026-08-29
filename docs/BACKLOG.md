@@ -412,3 +412,20 @@ Demo 分镜逐镜实跑（基线 `42822fc`）时撞到的四条，全部**不在
 | 2026-08-29 | P7 | **`verify.py` 的 warn 没有汇总行。** 7/7 PASS 之后直接铺 17 行 `· warn:`，既不分类也不计数，`RESULT: 7/7 PASS` 又印在最下面 | 第一次跑的人（评委、新克隆冒烟的人）看到满屏 warn，第一反应是「这东西没跑过」。自查单只能用一张手写对照表兜住（A-2 的 17 行 / 4 类表），而**手写表会随 Y-1 补洞立刻过期** —— 本轨已把它列进「待整合轮 5 回填」第 1 条 | 建议在 `verify.py` 结尾加一行汇总，形如 `WARN: 17 行 / 4 类（已知缺口，见 docs/BACKLOG.md task-X4）`，并把 warn 按类折叠。`scripts/` 归 Y 轮 / Ω。**Y-1 补完洞后若 warn 归零，这条自然消失**；若还剩，就值得做 |
 | 2026-08-29 | P7 | 自查单 A-2 第 3 条要求「`INDEX.json` 里的 `git_sha` 与提交的 commit 一致」，但**它记的是「跑证据链那一刻」的 HEAD**。于是 D-0 选甲（`git add evidence/ && git commit`）之后 HEAD 前进一格，该判据必红 | 不是 bug，是这两条判据的语义天然差一个 commit。人类照自查单走「跑证据链 → commit → 核对齐」，必然在最后一步撞红一次 | 本轨的处置是在 D-0 甲选项下写明副作用与两种收敛办法（再跑一次再 commit / 接受落后一格且材料不引用它）。**更干净的修法**是让 `verify.py` 的对齐检查允许「`git_sha` == HEAD 或 HEAD 的父」，或让 `make_evidence.py` 支持 `--expect-sha`。属脚本面，交 Y 轮 / Ω |
 | 2026-08-29 | P7 | **仓库里已 commit 的 `evidence/` 落后 HEAD 3 个 commit。** 实测 `42822fc`：`INDEX.json` 的 `git_sha` = `df96fa8`，而 HEAD = `42822fc`。中间三个 commit（`8c2d598` / `002e4af` / `42822fc`）**全是文档改动**，证据内容并没过期 | 更普遍的问题：**任何一次纯文档 commit 都会让证据束的 sha 对齐失效**，而为了刷一行 README 就重跑一遍证据链并不现实。于是「`git_sha` == HEAD」这条判据在日常开发中长期是红的，人会习惯性忽略它 —— 等真的因为代码变更而失效时也就看不见了 | 两条路：①**提交前重跑一次**收口（本轨已写进自查单 D-4 的 🔴 提示，是提交前必做项）；②更根本的，让对齐判据只关心**代码面**的 sha —— 比如 `git rev-parse HEAD -- maos/ scripts/` 或证据生成时记录 `git log -1 --format=%H -- maos/`，这样纯文档 commit 不再触发红灯。**建议 ②**，属脚本面（`make_evidence.py` / `verify.py`），交 Y 轮 / Ω |
+
+## task-Z5
+
+新克隆冒烟（分支 `task/z5-clone-smoke`，基线 `42822fc`）时撞见、**README 救不了**的两条。
+本轨可改面只有 `README.md` 与本轨四份文档，`scripts/**` 与 `maos/**` 全在禁改面内。
+
+已有账不重开：**「只跑 ①③ 会在 `缺数据库: scenario-R5/maos.db` 上原地打转」这条属
+`## task-W5` 第 2 条**，本轨在全新克隆上又复现一次（照提示重跑 `make_evidence.py`
+第二次、第三次，报错一字不差），结论与出路与该条完全一致，故不另开条目 —— 只补一条
+实测读数供那条参考：**照提示重跑一次后工作区脏行从 43 涨到 50 再到 43+**，因为
+第二次生成时工作区已不干净，证据首行的 sha 变成 `-dirty`，把原本字节稳定的
+`scenario-1..4` 也一并改脏，观感上像「越修越坏」。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-29 | P7 | **`evidence/*.json` 入 git 而 `evidence/*/maos.db` 不入 git，两者会失同步；一旦评委用 `git checkout -- evidence/` 把跑脏的工作区「收拾干净」，`verify.py` 立刻从 7/7 掉到 `RESULT: 3/7 PASS`。** 本轨在标准路径上实测：clone → ①②③ → 7/7 PASS（脏 50 行）→ `git checkout -- evidence/`（脏 0 行）→ 再 `verify.py` → `[FAIL] hash-integrity 4/74`、`[FAIL] business-ref 0/33`、`[FAIL] business-outcome 0/10`、`RESULT: 3/7 PASS`、exit=1。根因是 checkout 只还原了入库的 json 快照，现跑出来的新库还在原地，核验器拿新库校验旧快照 | **这是本轨发现的最坏一条，比 W-5 第 2 条更伤**：W-5 那条的表现是 `exit=2` 加一句「缺数据库」，评委知道自己少跑了一步；这一条的表现是**七项里三项 FAIL、hash 完整性 4/74**，屏幕上写着「证据被篡改或事后手写」（README §3 的失败释义表原话）。一个刚跑出 7/7、顺手 `git checkout` 收拾了一下、又复核了一遍的评委，拿到的结论是**这个项目的证据束是伪造的**。而整件事只是两边不同步 | 三条路，建议 ①+③：①`verify.py` 在 `hash-integrity` 大面积失配时**先比对库与 json 的生成时间戳**，不一致就报「库与快照不同步，请重跑 ①② 或删库还原」而不是直接判 FAIL——它出现在评委正看着的那一屏上，与 `## task-W5` 第 2 条建议 ① 是同一类修法，宜一并做；②把 `evidence/*.json` 也移出 git（只留 `INDEX.json` 与目录骨架），让「证据只能现跑」变成结构上的事实，但这会动 `.gitignore` 与仓库形态，且 W-5 建立的「证据入库可被 diff 审计」这条好处会没掉，**不建议**；③`make_evidence.py` 跑完打一行提示，说明工作区会脏、以及不要单独 `git checkout`。**本轨已在 `README.md` §3 写了警告并给出两条实测过的出路（重跑 ①② / `find evidence -name 'maos.db' -delete && git checkout -- evidence/`），但那只在读了 README 的人身上生效** |
+| 2026-08-29 | P7 | **`python3 -m maos.kb.experiment` 没有 argparse，任何参数都被无视并直接开跑**：`--help` 不打用法、不退出，而是跑完对照实验、把 `evidence/scenario-R5/` 7 个文件落盘，工作区脏 7 行，`exit=0`。同一屏上并列的 `python3 scripts/make_evidence.py --help` 则是正规 argparse（`usage: make_evidence [-h] [--out OUT] ...`），打完用法即退、不写任何文件 | README 抬头与 §3 把这两条命令并列成 ①②，评委很自然会对两条都敲一次 `--help` 看有什么开关。结果是：一条给用法，另一条**默不作声地改了他的工作区**。踩到的人不会意识到是自己触发的，只会看到 `git status` 又多了 7 行 —— 与上一条叠加时尤其糟，因为他此刻正在琢磨「工作区怎么又脏了」。这也是「一条命令复现全量证据」这个卖点上最后一处不齐的接缝 | 与 `## task-W5` 第 2 条、本文件 `## task-X4` 段落里那条 `--out` 的账**同源**，一次做完：给 `maos/kb/experiment.py` 的 `__main__` 补一个真 argparse（`--out`，缺省 `evidence/`，带 `-h`）。`maos/kb/**` 不在本轨可改面内。**Y-3 若把 ①② 合并成一条命令，本条自动消解**（届时 `kb.experiment` 不再是评委直接敲的入口），故优先级跟着 Y-3 走 |

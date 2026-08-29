@@ -121,10 +121,40 @@ async def probe_encryption(client, room_id: str, label: str, expect: str,
 
 
 # --------------------------------------------------------------------------
+async def room_history_census(client, room_id: str, token: str) -> dict[str, int] | None:
+    """不经过 sync 回调，直接问房间「你到底有没有历史」。返回 msgtype -> 条数。
+
+    ②a 收到 0 条时有两种截然不同的原因：**房间真的没有可派发的历史**，和
+    **房间有历史却没派发**。前者只是没观察到，后者是 :meth:`_NioChannel.listen`
+    的「先同步、后挂回调」失去依据 —— 真事故。两者外观一模一样，而回调这条路
+    已经给出了 0，再拿它自证等于自说自话。所以这里换 ``/messages`` 这条
+    **只读回溯**通路交叉验证：它不发任何消息，也不动 ``next_batch``。
+
+    失败返回 ``None`` —— 查不出来就说查不出来，不许拿「查不到」冒充「房间是空的」。
+    """
+    try:
+        resp = await call(client.room_messages(room_id, start="", limit=50))
+    except Exception as exc:                               # noqa: BLE001
+        print(f"  /messages 回溯失败：{type(exc).__name__}: {mask(str(exc), token)}")
+        return None
+    chunk = getattr(resp, "chunk", None)
+    if chunk is None:
+        print(f"  /messages 回溯失败：{mask(describe(resp), token)}")
+        return None
+    census: dict[str, int] = {}
+    for ev in chunk:
+        content = (getattr(ev, "source", None) or {}).get("content") or {}
+        msgtype = content.get("msgtype")
+        if msgtype:
+            census[msgtype] = census.get(msgtype, 0) + 1
+    return census
+
+
+# --------------------------------------------------------------------------
 async def probe_sync(client, room_id: str, self_mxid: str, token: str,
                      report: Report, listen_seconds: int) -> None:
     """假设 ②：sync_forever、私有事件循环、首次 sync 会不会灌历史。"""
-    from nio import RoomMessageText
+    from nio import RoomMessageNotice, RoomMessageText
 
     history: list[tuple[str, str]] = []
 
@@ -134,8 +164,14 @@ async def probe_sync(client, room_id: str, self_mxid: str, token: str,
 
     client.add_event_callback(_collect, RoomMessageText)
 
+    # 冷启动必须是**显式**的。实测（H-5，1131795）：探针在 ②a 之前只做过 whoami /
+    # room_get_state_event / room_send，这三个都不碰 next_batch；nio 新建的
+    # AsyncClient 又把 next_batch 与 loaded_sync_token 都初始化成 ""
+    # （base_client.py:238-239），所以这一次**本来就是**冷启动。但「本来就是」
+    # 靠的是别人的内部初值，换个 nio 版本就可能不成立 —— 判据不许依赖缺省值。
+    client.next_batch = ""
     criterion = "首次 /sync（不带 since）会把房间 timeline 的历史消息派发给 add_event_callback"
-    request = "sync(timeout=0)  ← 不带 since、不带过滤器，即 bot 冷启动那一次"
+    request = "sync(timeout=0)  ← next_batch 已显式清空，即 bot 冷启动那一次"
     try:
         resp = await call(client.sync(timeout=0))
     except Exception as exc:                               # noqa: BLE001
@@ -149,9 +185,29 @@ async def probe_sync(client, room_id: str, self_mxid: str, token: str,
         print("  → 确认会灌历史。这就是 listen() 必须「先同步、后挂回调」的理由。")
         report.ok("②a 首次 sync 灌历史")
     else:
-        print("  → 本次没收到历史（房间可能是空的）。先在房间里发几句再重跑，"
-              "否则这条只是「没观察到」，不是「不会发生」。")
-        report.skip("②a 首次 sync 灌历史", "房间无历史消息，观察不到")
+        # 旧版在这里直接印「房间可能是空的」并 skip —— 那是拿回调的 0 去解释回调的 0。
+        # 换一条不经过回调的通路问清楚，再决定这是「没观察到」还是「判据被推翻」。
+        census = await room_history_census(client, room_id, token)
+        if census is None:
+            report.skip("②a 首次 sync 灌历史",
+                        "回调 0 条，且 /messages 回溯失败，空不空无法判断")
+        elif census.get("m.text"):
+            print(f"  → ✗ /messages 回溯到房间里有 {census['m.text']} 条 m.text 历史，"
+                  "首次 sync 却一条都没派发给回调。「首次 sync 会灌历史」当场被推翻，"
+                  "listen() 的「先同步、后挂回调」也就失去了依据。")
+            report.skip("②a 首次 sync 灌历史",
+                        f"房间有 {census['m.text']} 条 m.text 历史却未派发"
+                        "（判据被推翻，不是没观察到）")
+        else:
+            other = {k: v for k, v in census.items() if k != "m.text"}
+            print(f"  → 房间确实没有 m.text 历史（/messages 独立回溯核对：{census or '零条消息'}）。"
+                  "这是「没观察到」，不是「不会发生」。先在房间里发几句再重跑。")
+            if other:
+                print(f"     注意：房间里另有 {other} —— m.notice 是 bot 自己发的"
+                      "（含 ③c 那条连通性自检），而本条与 listen() 一样绑 RoomMessageText，"
+                      "按定义就收不到它们。房间非空 ≠ 有 m.text 历史。")
+            report.skip("②a 首次 sync 灌历史",
+                        f"房间无 m.text 历史（已用 /messages 独立核对：{census or '零条消息'}）")
 
     # 第二次：带过滤器，看能不能压到 0 条
     history.clear()
@@ -177,16 +233,25 @@ async def probe_sync(client, room_id: str, self_mxid: str, token: str,
 
     # 第三次：真起 sync_forever，等人在 Element 里发言
     live: list[tuple[str, str]] = []
-    dropped: list[tuple[str, str]] = []
+    dropped: list[tuple[str, str, str]] = []
+    notice_seen: list[tuple[str, str]] = []
 
     async def _live(room, event) -> None:
         pair = (event.sender, event.body)
+        if not isinstance(event, RoomMessageText):
+            # 探针**故意绑得比生产宽**。生产 listen() 只绑 RoomMessageText，而
+            # _NioChannel._send 发的是 m.notice（matrix_bus.py:353-357 写明理由）——
+            # 于是 bot 自己的回声在生产里被 nio 的类型过滤挡在更早一层，压根轮不到
+            # should_deliver 否决。只绑 RoomMessageText 的探针同样看不见它，就只能
+            # 一直印「丢弃 0 条」：判据没被触发，却长得跟通过一模一样。
+            notice_seen.append(pair)
         if should_deliver(room_id, self_mxid, room, event):
             live.append(pair)
         else:
-            dropped.append(pair)
+            why = "异房" if getattr(room, "room_id", None) != room_id else "回声"
+            dropped.append((event.sender, event.body, why))
 
-    client.add_event_callback(_live, RoomMessageText)
+    client.add_event_callback(_live, (RoomMessageText, RoomMessageNotice))
     task = asyncio.ensure_future(client.sync_forever(timeout=30_000))
     print(f"\n  ▸ sync_forever 已起。请在 Element 里往房间发一句（含 bot 自己发的），"
           f"等 {listen_seconds}s ……")
@@ -203,10 +268,23 @@ async def probe_sync(client, room_id: str, self_mxid: str, token: str,
            mask(f"收下 {len(live)} 条、按回声/异房丢弃 {len(dropped)} 条", token))
     for sender, body in live:
         print(f"             收下 sender={sender!r} body={mask(body, token)!r}")
-    for sender, body in dropped:
-        print(f"             丢弃 sender={sender!r} body={mask(body, token)!r}")
-    if live or dropped:
+    for sender, body, why in dropped:
+        print(f"             丢弃（{why}）sender={sender!r} body={mask(body, token)!r}")
+    if notice_seen:
+        print(f"  ！上列有 {len(notice_seen)} 条是 m.notice。本条绑的是"
+              " (RoomMessageText, RoomMessageNotice)，比生产 listen() 宽 ——"
+              "生产只绑 RoomMessageText，这些在生产里连回调都进不去。")
+    if dropped:
         report.ok("②c 实时监听 + 回声过滤")
+    elif live:
+        # 旧版这里写的是 `if live or dropped: report.ok(...)` —— 只要收到任何消息就判绿，
+        # 于是「两条否决一次都没被触发」被印成「按回声/异房丢弃 0 条」并当成通过。
+        # 一条永远印 0 的计数，绿和红长得一模一样，这条判据等于从来没验过。
+        print(f"  → ✗ {listen_seconds}s 内收下的 {len(live)} 条全部来自他人且同房，"
+              "should_deliver 的两条否决一条都没被触发 —— 这条判据**没有被激励**，不是通过。"
+              "要验回声：用 bot 账号往本房间发一句；要验异房：往 bot 在的另一个房间发一句。")
+        report.skip("②c 实时监听 + 回声过滤",
+                    f"收下 {len(live)} 条、丢弃 0 条，两条否决均未被触发（判据未激励）")
     else:
         report.skip("②c 实时监听 + 回声过滤", f"{listen_seconds}s 内房间没有任何消息")
 

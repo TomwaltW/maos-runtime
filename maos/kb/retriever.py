@@ -41,9 +41,13 @@ W-2 轨的 `maos/store/port.py` 落地后，`fts_search` / `vector_search` 由�
 2. **分词**。影子表存的是 `kb.fts_text()` 切过的文本（中文按字），端口不知道这个
    约定，把原查询串直接丢给 FTS5 就是「整串汉字一个 token」—— 一条都命不中，
    而且不报错。所以发给端口的 `q` 也先过 `kb.fts_text()`。
-3. **查询语义归端口所有**。端口把词间做 AND、且只查 `field` 那一列；本地实现是
-   跨列 OR。两条通道的召回集**本来就可以不同**，那是 F-2 把语义下放给后端的
-   结果，不是 bug。跨后端必须一致的只有附则那两条：分数越大越相关、次序确定。
+3. **查询语义归端口所有 —— 但「只查一列」那半条不是语义，是漏问。** 端口把词间
+   做 AND、且只查 `field` 那一列。词间 AND 归后端，认下；只查一列却是调用方少发了
+   一次 —— 本地实现跨 title + body 两列，只发 `body` 的后果是**标题命中的知识召不
+   回来**，症状是「换了后端之后 RAG 好像笨了一点」，两边都不报错。T16 轨按
+   `PORT_FTS_FIELDS` 逐列各发一次再合并（见 `_port_fts_scores`），把这半条差异抹平；
+   剩下的 AND vs OR **本来就可以不同**。跨后端必须一致的只有附则那两条：
+   分数越大越相关、次序确定。
 """
 
 from __future__ import annotations
@@ -318,6 +322,48 @@ def _local_fts_rows(store: Any, tenant_id: str, keyword: str,
     return [(r["doc_id"], -float(r["rank"])) for r in rows]
 
 
+#: 端口全文通道要问的列，与本地实现跨的那两列（title + body）同一份口径。
+#: **顺序即语义**：先问的那一列兼作这条通道的探针，它走不通就整条退化成本地实现。
+PORT_FTS_FIELDS = ("title", "body")
+
+
+def _port_fts_scores(store: Any, keyword: str, candidates: dict[str, dict],
+                     limit: int) -> dict[str, float] | None:
+    """走 StorePort 的全文通道：`PORT_FTS_FIELDS` 每列各问一次，合并成一份分数。
+
+    返回 `None` = 这条通道走不通，调用方回落本地实现。
+
+    **为什么要问两次。** F-2 的 `fts_search(table, field, q, limit)` 一次只认一列，
+    而本地实现跨 title + body。只问 `body` 那一次的后果是标题命中的知识召不回来，
+    而两边都不报错（原状记在 BACKLOG `## task-T13` 第 1 条）。代价是每次检索多一个
+    来回 —— PolarDB 上是真的网络往返，但它是**每列一次的常数**，不随候选集规模涨。
+    会把 PolarDB 打爆的是「按候选逐条去问后端」，那是另一回事，本函数不沾。
+
+    **合并前每列各自归一，不拿两列的 bm25 直接比大小。** bm25 的 IDF 与列长都是按列
+    算的：title 短、body 长，同一个词在两列上的原始分不同量纲，混在一起排名次等于让
+    短列恒赢。所以每列先过 `_rank_normalize` 拿列内名次分，再**逐文档取 max** ——
+    口径是「在任意一列里最靠前的那个名次代表这条知识」，与本地那条跨列 OR 的语义
+    对得上（命中任一列即召回）。取和 / 加权和都会让「两列都命中」压过「一列命中得
+    很靠前」，那是把召回口径悄悄改成了相关度口径，不在本轨要买的东西里。
+
+    **任一列走不通就整条退化**，不拿半份结果凑：只有一列通的话，召回集会在两次检索
+    之间飘（这次半份、下次退化成本地全份），而「连跑两次输出一致」是硬判据。
+    `_port_search` 的探测结论按通道记，所以第二列在第一列失手后会直接短路，
+    退化告警仍然只有一条。
+    """
+    query_text = kb.fts_text(keyword)
+    merged: dict[str, float] = {}
+    for field in PORT_FTS_FIELDS:
+        raw = _port_search(
+            store, "fts_search", ("kb_doc", field, query_text, int(limit)))
+        if raw is None:
+            return None
+        for doc_id, score in _rank_normalize(_to_doc_scores(raw, candidates)).items():
+            if score > merged.get(doc_id, 0.0):
+                merged[doc_id] = score
+    return merged
+
+
 def _fts_scores(store: Any, tenant_id: str, keyword: str,
                 candidates: dict[str, dict], limit: int) -> dict[str, float]:
     """BM25 通道。优先走 StorePort.fts_search（F-2），走不通就用本地 FTS5。
@@ -329,18 +375,19 @@ def _fts_scores(store: Any, tenant_id: str, keyword: str,
     跨租户不召回由阶段一的候选集兜住（`_to_doc_scores` 里那一句），
     这也正是「阶段一是硬约束而不是打分项」在实现上的样子。
 
-    发给端口的是 `kb.fts_text(keyword)` 而**不是**原查询串：影子表里存的就是这个
-    函数切过的文本，查询侧不走同一个函数，中文那一段一个字都对不上（缺省的
-    unicode61 把整串汉字当一个 token），而且不报错 —— 这正是 `kb.fts_text` 的
-    docstring 里写的那条「两边各写一份 = 召回恒为空」，端口这条路上同样成立。
+    发给端口的是 `kb.fts_text(keyword)` 而**不是**原查询串（在 `_port_fts_scores`
+    里过的）：影子表里存的就是这个函数切过的文本，查询侧不走同一个函数，中文那一段
+    一个字都对不上（缺省的 unicode61 把整串汉字当一个 token），而且不报错 ——
+    这正是 `kb.fts_text` 的 docstring 里写的那条「两边各写一份 = 召回恒为空」，
+    端口这条路上同样成立。
     """
     if not keyword:
         return {}
-    raw = _port_search(
-        store, "fts_search", ("kb_doc", "body", kb.fts_text(keyword), int(limit)))
-    if raw is None:
-        raw = _local_fts_rows(store, tenant_id, keyword, limit)
-    return _rank_normalize(_to_doc_scores(raw, candidates))
+    scores = _port_fts_scores(store, keyword, candidates, limit)
+    if scores is not None:
+        return scores
+    return _rank_normalize(
+        _to_doc_scores(_local_fts_rows(store, tenant_id, keyword, limit), candidates))
 
 
 def _vector_scores(store: Any, query_text: str,
@@ -432,11 +479,28 @@ def retrieve(store: Any, query: dict, *, limit: int = DEFAULT_LIMIT,
 def emit_kb_retrieved(store: Any, hits: list[dict], *, query: dict,
                       plan_id: str = "", task_id: str | None = None,
                       trace_id: str = "", duration_ms: float = 0.0,
-                      candidate_count: int = 0) -> dict:
+                      candidate_count: int = 0,
+                      event_sink: Any = None) -> dict:
     """把这次检索落成一条 `KbRetrieved`（F-3 冻结形状）。返回落库的 detail。
 
     走现有 `append_event_log`，**不加新 Topic** —— 冻结的事件契约里没有这个类型，
     也不许为此去加。
+
+    ## 检索走 `store`，落事件走 `event_sink`
+
+    `store` 这个位置从 T13 起可以是 StorePort（「RAG 真跑在 PolarDB 上」的前提），
+    而 F-2 那五个签名里**没有** `append_event_log`：事件日志是核心 Store 的冻结表
+    之一，不是端口的职责。于是检索这半条能走端口、落事件那半条不能，整条链路换不成
+    端口对象 —— 而且撞在检索**之后**，检索看起来是通的（原状记在 BACKLOG
+    `## task-T13` 第 2 条）。
+
+    解法是把两件事拆开，而**不是**给 StorePort 加第六个方法（那是动 F-2 冻结面）。
+    `event_sink` 缺省回落 `store`，所以今天所有调用方一个字节都不用改；把 `store`
+    换成端口的新调用方，点名给一个核心 Store 作 sink 即可。
+
+    sink 给了却落不了事件时**抛 TypeError 而不是静默跳过**：下面第三条「命中为空
+    也落」的前提是事件必落，悄悄不落会让「这次到底检没检」无从追溯，而 RAG 有无
+    对照实验（R5）正是拿 event_log 判的 —— 那种失效没有症状，只有结论变形。
 
     形状要点，三条都是消费侧写死的：
       · `detail["docs"]` 是数组，每项含 `doc_id` 与 `score`；核验器拿 doc_id
@@ -459,8 +523,17 @@ def emit_kb_retrieved(store: Any, hits: list[dict], *, query: dict,
         "query": {k: v for k, v in query.items() if v not in (None, "")},
         "weights": weights_snapshot(),
     }
-    if store is not None:
-        store.append_event_log({
+    sink = store if event_sink is None else event_sink
+    if sink is not None:
+        append = getattr(sink, "append_event_log", None)
+        if not callable(append):
+            raise TypeError(
+                f"{type(sink).__name__} 没有 append_event_log，KbRetrieved 落不下去。"
+                " 事件日志是核心 Store 的冻结表，不在 F-2 的五个方法里 —— 检索走"
+                " StorePort 时请另给一个核心 Store 作 event_sink，"
+                " 不要去给端口加第六个方法（那是动冻结契约面）。"
+            )
+        append({
             "event_id": "",
             "trace_id": trace_id or "",
             "plan_id": plan_id or "",
@@ -481,12 +554,16 @@ def weights_snapshot() -> dict[str, float]:
 
 def retrieve_and_log(store: Any, query: dict, *, limit: int = DEFAULT_LIMIT,
                      plan_id: str = "", task_id: str | None = None,
-                     trace_id: str = "", kinds: tuple[str, ...] | None = None
-                     ) -> list[dict]:
+                     trace_id: str = "", kinds: tuple[str, ...] | None = None,
+                     event_sink: Any = None) -> list[dict]:
     """检索 + 落 `KbRetrieved` 事件。KB 关闭时既不检索也不落事件。
 
     「关掉就一条事件都没有」是对照实验的判据之一：without_kb 那一跑的
     event_log 里不该有任何 KbRetrieved，否则「有无 RAG」这条线本身就不干净。
+
+    `store` 走检索、`event_sink` 走落盘，理由见 `emit_kb_retrieved`。缺省两者同体，
+    老调用方零改动；`store` 是 StorePort 时必须点名 sink，不点名就在检索之后
+    撞 TypeError —— 检索那半条看起来是通的，所以这条不能靠「跑一下试试」发现。
     """
     if store is None or not kb.kb_enabled():
         return []
@@ -498,5 +575,5 @@ def retrieve_and_log(store: Any, query: dict, *, limit: int = DEFAULT_LIMIT,
     emit_kb_retrieved(store, hits, query=query, plan_id=plan_id, task_id=task_id,
                       trace_id=trace_id,
                       duration_ms=(time.perf_counter() - started) * 1000,
-                      candidate_count=len(candidates))
+                      candidate_count=len(candidates), event_sink=event_sink)
     return hits

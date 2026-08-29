@@ -112,8 +112,14 @@ def test_retrieve_really_calls_both_store_port_channels():
     **只断言结果是不够的**：退化路径下召回一模一样。所以这里数的是调用次数。
     **只数调用次数也不够**：抛异常的通道同样被调用过一次，然后退化。所以调用数与
     探测结论两条一起断言，缺一条都能被「问了后端、后端报错、悄悄走本地」蒙混过去。
-    也顺带钉住「一次检索问一次」——按候选逐条去问后端是另一种没有症状的退化，
+    也顺带钉住「往返数是常数」——按候选逐条去问后端是另一种没有症状的退化，
     小库上只是慢一点，PolarDB 上是每条候选一个来回。
+
+    **本条的数字变过一次（T16）。** 原先写死「每条通道恰好一次」；T16 让全文通道对
+    title / body 各问一次（`retriever.PORT_FTS_FIELDS`），否则标题命中的知识召不
+    回来。所以现在断言的是「等于列数」—— 仍然是与候选集规模无关的常数，这条要拦的
+    东西一个字没变。数字对不上时先分清是「多了一列」还是「按候选发问」，
+    只有后者是退化。
     """
     port = _seed(_CountingPort(_core()))
 
@@ -125,8 +131,11 @@ def test_retrieve_really_calls_both_store_port_channels():
     assert retriever.port_channel_state(port) == {"fts_search": True,
                                                   "vector_search": True}, \
         "调用到了但没走通 —— 结果是本地实现给的，端口只是被问了一句然后退化了"
-    assert port.calls["fts_search"] == 1 and port.calls["vector_search"] == 1, \
-        f"一次检索每条通道只该问一次后端，实际 {dict(port.calls)}"
+    assert port.calls["fts_search"] == len(retriever.PORT_FTS_FIELDS), \
+        f"全文通道该按列各问一次（共 {len(retriever.PORT_FTS_FIELDS)} 次），" \
+        f"实际 {dict(port.calls)} —— 多出来的往返多半是按候选发问了"
+    assert port.calls["vector_search"] == 1, \
+        f"向量通道一次检索只该问一次后端，实际 {dict(port.calls)}"
 
 
 def test_port_channel_state_is_true_on_the_real_sqlite_store_port(ported):
@@ -294,17 +303,26 @@ def test_port_query_text_goes_through_the_same_tokenizer(ported):
 # 5. 端口与本地的查询语义**本来就不同** —— 钉成断言，别让下一个人去改错地方
 # ---------------------------------------------------------------------------
 def test_port_and_local_fts_semantics_differ_by_design(local, ported):
-    """端口：词间 AND、只查 `field` 一列。本地：跨列 OR。两者召回集不同**不是 bug**。
+    """端口是词间 AND，本地是 OR。差异变小了但**没有归零**，所以本条改判、不删。
 
-    F-2 把查询语义下放给后端（`sqlite_store.py` 原话：「要算子就另开方法，别动
-    F-2 那五个签名」），PG 的 tsquery 也会有它自己的一套。所以跨后端能要求的只有
-    附则那两条：分数越大越相关、次序确定 —— 那两条由第 2 节守。
+    **本条的口径变过一次（T16），名字留着是为了让 git blame 指得回去。** 原先它钉的
+    是两处差异：端口「词间 AND」+「只查 `field` 那一列」，本地「跨列 OR」。T16 认定
+    后半条不是查询语义、是调用方漏问 —— F-2 的 `fts_search` 一次只认一列，检索器就
+    该每列各问一次（`retriever.PORT_FTS_FIELDS`），只问 body 的后果是标题命中的知识
+    召不回来，而两边都不报错。所以**跨列那半条差异被抹平了**：本条第三段断言由
+    「端口召不回只在标题命中的那条」翻面成「端口召得回」。
 
-    这条钉的是现状，不是理想态。真要让两边召回一致，得给 F-2 加算子或加列表参数，
-    那是三轨一起改的事（账记在 BACKLOG `## task-T13`），不许在这一层偷偷抹平。
+    **前半条还在，且不该抹平。** 词间 AND 是后端自己的查询语义，F-2 把它下放给后端
+    （`sqlite_store.py` 原话：「要算子就另开方法，别动 F-2 那五个签名」），PG 的
+    tsquery 也会有它自己的一套。真要让两边召回逐条一致，得给 F-2 加算子或加列表
+    参数，那是三轨一起改的事（账记在 BACKLOG `## task-T13`），不许在这一层偷偷抹平。
+
+    跨后端能要求的仍然只有附则那两条：分数越大越相关、次序确定 —— 由第 2 节守。
     """
     zh = [("zh-both", "标题甲", "锈蚀 与 退款 都 在 正文", "AS-301"),
-          ("zh-one", "标题乙", "只 有 退款 两 个 字", "AS-302")]
+          ("zh-one", "标题乙", "只 有 退款 两 个 字", "AS-302"),
+          # 查询的四个字齐全地落在**标题**里，正文一个都不沾 —— T16 之前端口召不回它。
+          ("zh-title", "锈蚀 退款 都 在 标题", "正 文 与 查 询 无 关", "AS-303")]
     _seed(local, corpus=zh)
     _seed(ported, corpus=zh)
     query = {"tenant_id": TENANT_A, "keyword": "锈蚀退款"}
@@ -315,6 +333,10 @@ def test_port_and_local_fts_semantics_differ_by_design(local, ported):
                                                         weights=ONLY_FTS)}
 
     assert retriever.port_channel_state(ported)["fts_search"] is True
-    assert local_ids == {"zh-both", "zh-one"}, "本地是 OR：命中任一字就算召回"
-    assert port_ids == {"zh-both"}, "端口是 AND：四个字都得在 body 里"
-    assert port_ids < local_ids, "端口的召回集应当是本地的真子集（AND 比 OR 严）"
+    assert local_ids == {"zh-both", "zh-one", "zh-title"}, "本地是 OR：命中任一字就算召回"
+    assert "zh-title" in port_ids, \
+        "只在标题命中的知识端口召不回来 —— 跨列那半条差异回来了（多半是只问了 body）"
+    assert port_ids == {"zh-both", "zh-title"}, \
+        "端口仍是 AND：四个字要在**同一列**里齐全，zh-one 的正文缺「锈蚀」"
+    assert port_ids < local_ids, \
+        "AND 比 OR 严，差异不该归零 —— 归零多半是端口悄悄退化回本地实现了"

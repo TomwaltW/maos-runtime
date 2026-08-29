@@ -1019,3 +1019,16 @@ T7–T14 八轨并入 + 活数字回填 + 证据束全量重跑。基线 `4cfef3
 | 2026-08-30 | P7 | **`a9d0d93` 的标题写着 `merge:`，但它不是 merge 提交**：修 t10 归属错位时那次 `git commit --amend` 没有生效（原因未查清，同一批里 t9 的 `8450d97` 与 t11 的 `a5b33ea` 都 amend 成功了），于是变成挂在真 merge `4c6fc17` 之上的单父普通提交，标题却原样保留 | `git log --oneline` 上会看到**两条一模一样的 `merge: t10-pgstore-polardb`**，读历史的人会以为 t10 被并了两次。机器判据：`git log -1 --format=%p a9d0d93` 只有一个父，`4c6fc17` 才是两个父 | **不修，记账即可**。修它要 rebase，而 `evidence/` 42 份出处头钉死 `3d504b1`（整合轮 11 活数字回填提交），重写历史会让这些 sha 全部指向不存在的提交 —— A-2 那条「出处头必须是干净且真实存在的 sha」当场失效。代价对比：一个误导的标题 vs 整束证据的可追溯性。下一轮若要清理，只能在**证据束重跑之前**做 |
 | 2026-08-30 | P7 | **`review/DISPATCH-TEMPLATE.md` 的改动被卷进了 `a9d0d93`**：它本该是一个独立的编排侧提交（给 §1 补「环境变量自检判据 = 非空**且不含 `<` 占位符**」，堵 T14 踩的那个假通过信号），却因为并轨期间它一直躺在主干工作区未提交，在 merge 状态下 `git commit` 带上了整个索引 | 内容完好、判据实测过四种情形（未设 / 占位符原文 / 真串 / 只替换一半），只是从提交历史上看不出这条改动的存在 —— 按标题找它会找不到 | **不单独修**（同上，要 rebase）。下次并轨前先把主干工作区清空：并轨期间主干**不该有**任何未提交改动，否则它会随机粘到某个 merge 提交上 |
 
+## task-T16
+
+本轨（知识层整条链路走端口）持有 `maos/kb/retriever.py`、`maos/skills/builtin/kb_retrieve.py`、
+新建 `maos/tests/test_kb_port_link.py`，外加 `test_kb_pg_channel.py` 里两条**受本轮改动直接
+影响**的断言改判，与两份账本。销掉了 `## task-T13` 第 1、2 条（跨列召回按解法 ②、
+落事件按解法 ②）。下面四条都是白名单外发现的，按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P5 | **主链路 skill 仍然不能整体吃 StorePort，卡点已经从通路二挪到通路一。** 本轨把通路二（`kb_doc` 两阶段检索 + 落 `KbRetrieved`）整条打通了，但 `KbRetrieveSkill.run()` 的第一步是通路一 `ctx.store.list_knowledge(...)` —— 那是核心 Store 的具名方法，不在 F-2 五个签名里，也不在本轨白名单 | 把 `ctx.store` 换成 `SqliteStorePort` 仍然会炸，只是**炸的位置变了**：从「检索之后落事件那一步」提前到「检索之前取 knowledge 那一步」，而且这一次**不在** `_kb_docs` 的 `except Exception` 兜底范围内，会直接冒给 invoker。现状比改造前好在它当场炸、不再是「检索看起来通了而 docs 恒空」 | 归 skills 层持有轨。两条路：①`knowledge` 表也走 `kb.port_of()` 那套通用访问器（它已经能吃端口，`list_knowledge` 只是没走）；②给 skill 也开一个 `extras` 里的核心 Store 入口，与本轨的 `event_sink` 同构。**②与本轨口径一致、成本更低**，但两条都要先确认 `flows/**` 那几处调用点谁来传 |
+| 2026-08-30 | P5 | **端口全文通道走不通时的「本地退化路径」在 PG 后端上是死路。** `_local_fts_rows()` 发的是 `SELECT doc_id, bm25(kb_doc_fts) ... WHERE kb_doc_fts MATCH ?` —— `bm25()` 与影子表 `kb_doc_fts` 都是 SQLite FTS5 专有的，PG 上两样都没有 | 在 SQLite 上不咬人（影子表就在那儿），**PG 上是真问题**：端口通道一旦退化，本地这条也抛，被 `except` 吞掉记 0 分，于是 FTS 通道整条静默失效，检索只剩另外三个通道，不报错、召回悄悄变少。更难受的是这条 `log.warning` **每次检索都发一遍**（不像 `_port_search` 的探测只告警一次），PG 上退化之后日志会被刷满 | 归 T18 / `pg_store.py` 持有轨或整合轮。两条：①PG 侧把 `fts_search` 填实，让退化路径压根用不上（本来就该这样）；②给 `_local_fts_rows` 也加一次性的失败记账，别每次检索都刷一条。**①是正解，②是止血** |
+| 2026-08-30 | P5 | **`retriever.PORT_FTS_FIELDS` 与 `kb/schema.sql` 里影子表实际索引的列是两处口径，没有机器校验。** 本轨写死 `("title", "body")`，恰好等于影子表当前索引的两列（`id`/`doc_id`/`tenant_id` 都是 UNINDEXED） | 哪天有人给影子表加一个参与索引的列（比如 `tags`），**本地那条 MATCH 会自动跨到新列，端口这条不会** —— 跨列差异原样回归，而且两边都不报错，症状与本轨修掉的那个一模一样。这次的断言（`test_kb_port_link.py::test_both_columns_are_asked_and_the_count_is_a_constant`）守的是「问的列 == `PORT_FTS_FIELDS`」，守不住「`PORT_FTS_FIELDS` == 影子表的索引列」 | 归 T17（`schema.sql` 持有轨）或整合轮。改法：加一条测试，从 `PRAGMA table_info(kb_doc_fts)` 或建表语句里取出参与索引的列，与 `PORT_FTS_FIELDS` 对齐。成本一条测试，不动任何生产代码 |
+| 2026-08-30 | P5 | **`_kb_docs()` 的 `except Exception` 会把本轨新加的「sink 没接」`TypeError` 也吞成 `docs: []` + 一行 warning。** 那层兜底是有意的（「检索不阻塞」），本轨没去动它 | 配置错误（忘了传 sink）与业务空结果（真没检到）在 skill 出参上**长得一模一样**，都是 `docs: []`。本轨已把报错信息写得能指路，但它只出现在 warning 日志里，不出现在返回值里 | 归 skills 层持有轨。可选改法：兜底里对 `TypeError`（接线错误）与其余异常（运行期故障）分开处置 —— 前者是「这套系统装错了」，本就不该被「空结果不阻塞」这条覆盖。**不急**，眼下有报错文案兜着 |

@@ -357,3 +357,174 @@ git checkout -- evidence/`）：跑完后 `git status` **脏行归 0**，确实�
 6.57 / 6.44 / 5.4 / 6.89 秒，而第一遍有 6 处卡点、第四遍零卡点，秒数却看不出差别。
 §5 早就提过「建议把『≤ 15 分钟』补一句『且全程零非零退出、不需要跨节拼路径』」，
 这条建议至今没有落到 `docs/submission-checklist.md` 的 A-1 里。
+
+---
+
+## 第五遍冒烟（T8 轨，2026-08-29）—— 基线 `4cfef38`，本地源 + 远端源各跑一遍
+
+> 📌 **本节记的是 `4cfef38`（整合轮 10，T1–T6 六轨已全部合入，`802 passed`）。
+> 上面几节记的是各自当时的基线，两者不可互相覆盖。** 本节一个字都没动前四遍的读数
+> —— 那是本报告从整合轮 6 起定死的口径：**历史快照，只增不改**（见上一节）。
+> 想比较的话对着看，不要合并成一张表。
+
+| 项 | 值 |
+| :-- | :-- |
+| 基线 sha | `4cfef38fa0c2deb824e2293285d9642a2204c6b3` |
+| 跑的日期 | 2026-08-29 |
+| 克隆源 A（本地） | `git clone --single-branch -b goai-restructure <本 worktree 路径> maos` |
+| 克隆源 B（远端） | `git clone --single-branch -b goai-restructure https://github.com/TomwaltW/maos-runtime.git maos` |
+| 两遍的 clone HEAD | **都是 `4cfef38…`**，与基线逐字符一致 |
+| `python3 --version` | `Python 3.11.7`；`which python` 仍不存在 |
+
+**为什么两个源都跑**：本地源快且不依赖网络，但它只能证明「本机这份代码是好的」；
+**只有远端 URL 才验得了「评委 clone 到的东西对不对」**。两遍结果若不同，
+那个差本身就是最重要的发现 —— 这一遍确实发现了一个，见 §卡点 7。
+
+**环境清洁**：先显式 unset 27 个变量（历史节那 20 个，加上代码里实际读到的
+`MAOS_EVIDENCE_PINNED_SHA` / `MAOS_PROBE_*` / `MATRIX_HOMESERVER` / `MATRIX_USER` /
+`MATRIX_ROOM_ID` / `MATRIX_ROOM_ID_ENCRYPTED`），再按通配规则
+（`MAOS_*` / `MATRIX_*` / 含 `API_KEY` / `BASE_URL` / `LLM`）兜一遍，最后校验残留为空。
+
+🔴 **和第四遍一样，实测抹掉 0 个 —— 环境里本来就一个都没有。**
+结论（无 key 能跑完全程）不变，但**它这次同样不是被 unset 保证的，是恰好没有**。
+带 key 的机器上要复现本节，仍须显式 unset。
+
+顺带一条值得记的：`make_evidence.py` 开跑时打印
+`脱敏哨兵：['CLAUDE_CODE_MESSAGING_TOKEN']（值不打印）` ——
+环境里**确实有**一个名字带 `TOKEN` 的变量，它不是 MAOS 读的任何一个，
+而出口脱敏机制**已经把它纳入哨兵反查**。这正是那道闸该有的样子：
+它防的不是「我们自己的 key」，是「跑证据的那台机器上碰巧有的任何密钥」。
+
+### 逐步耗时表 —— 源 A（本地）
+
+| # | 命令原文 | 耗时 | exit | 脏行 | 与 README 是否一致 |
+| :-- | :-- | --: | --: | --: | :-- |
+| 1 | `git clone …` | 1.888s | 0 | 0 | ✅ |
+| 2 | `python3 scripts/verify.py`（**出厂态直接跑**） | 0.045s | **2** | 0 | ✅ 与 README 抬头写的「直接跑会报缺数据库并退出 2」逐字相符 |
+| 3 | `python3 -m pytest maos/tests -q` | 13.669s | 0 | 0 | ✅ `802 passed`，与 README §4 写的条数一致 |
+| 4 | `python3 run.py` | 2.583s | 0 | 0 | ✅ 场景 1–7 跑满；**跑完仍 0 行脏**（它不产证据） |
+| 5 | `python3 run.py --scenario 7` | 0.273s | 0 | 0 | ✅ |
+| 6 | `python3 scripts/make_evidence.py`（①） | 5.228s | 0 | **50** | ✅ 「8 场景落盘，0 场景缺模块」 |
+| 7 | `python3 scripts/verify.py`（②） | 0.099s | 0 | 50 | ✅ `RESULT: 7/7 PASS` |
+| 8 | `python3 scripts/gen_docs.py --check` | 0.148s | 0 | 50 | ✅ 三份代码生成文档与代码逐字节一致 |
+| | **掐表：clone → `RESULT: 7/7 PASS`** | **6.972s** | 0 | | 独立复跑的最短路径（clone + ① + ②） |
+| | 全程（八条跑满） | **23.9s** | | | |
+
+### 逐步耗时表 —— 源 B（远端 URL）
+
+| # | 命令原文 | 耗时 | exit | 脏行 |
+| :-- | :-- | --: | --: | --: |
+| 1 | `git clone …`（走网络） | 3.659s | 0 | 0 |
+| 2 | `python3 scripts/verify.py`（出厂态直接跑） | 0.060s | **2** | 0 |
+| 3 | `python3 -m pytest maos/tests -q` | 13.746s | 0 | 0 |
+| 4 | `python3 run.py` | 3.154s | 0 | 0 |
+| 5 | `python3 run.py --scenario 7` | 0.322s | 0 | 0 |
+| 6 | `python3 scripts/make_evidence.py`（①） | 5.102s | 0 | 50 |
+| 7 | `python3 scripts/verify.py`（②） | 0.100s | 0 | 50 |
+| 8 | `python3 scripts/gen_docs.py --check` | 0.155s | 0 | 50 |
+| | **掐表：clone → `RESULT: 7/7 PASS`** | **8.690s** | 0 | |
+| | 全程（八条跑满） | **26.3s** | | |
+
+**两个源逐条对齐**：exit code 全同、脏行数全同、七项分子分母全同、`802 passed` 全同。
+唯一的差是网络带来的 clone 耗时（1.888s → 3.659s）与随之抬高的掐表读数。
+**远端那份代码与本地这份是同一个东西 —— 只要你指定了分支。**
+
+### 七项读数（两遍逐字节一致）
+
+```
+[PASS] hash-integrity       86/86
+[PASS] business-ref         35/35
+[PASS] authoritative-fact   3/3
+[PASS] trace-tree           19/19
+[PASS] kb-hit               7/7
+[PASS] business-outcome     10/10
+[PASS] history-case         1/1
+
+RESULT: 7/7 PASS
+```
+
+`warn` **12 行 / 3 类**（A 6 行 / D 4 行 / E 2 行），与 `docs/submission-checklist.md` A-2
+写的判据一致。`pytest` **802 passed**（第四遍是 645，其间隔着整合轮 8 的 58 条、
+整合轮 9 的 46 条、整合轮 10 的 53 条）。
+
+**没变的**：`git status` 跑完仍是 **50 行 M**；`git status` 里**一个 `*.db` 都没有**。
+**变了的**：`scenario-R5` 的首行 sha **不再带 `-dirty`** —— 八个场景全干净，
+整合轮 9 的 H-7 修复在全新克隆上同样成立，它不是某个工作区的特产。
+
+### 卡点 7 —— 🔴 本遍唯一的新发现：裸 `git clone` 落在 `main` 上，而 `main` 是 TypeScript 时代的骨架
+
+前四遍的克隆命令**都显式带了 `-b <分支>`**，于是这个问题四遍都没被看见。
+这一遍多做了一步：**不带 `-b`，照评委最可能的敲法裸 clone 一次。**
+
+```
+$ git ls-remote --symref https://github.com/TomwaltW/maos-runtime.git HEAD
+ref: refs/heads/main    HEAD
+3f2d5d12ac73d2a1d2668fa71609ac770f99afa1        HEAD
+4cfef38fa0c2deb824e2293285d9642a2204c6b3        refs/heads/goai-restructure
+```
+
+**仓库的 GitHub 默认分支是 `main`，HEAD 停在 `3f2d5d1`。** 裸 clone 拿到的是：
+
+| 项 | 裸 clone（`main` / `3f2d5d1`） | 指定分支（`goai-restructure` / `4cfef38`） |
+| :-- | :-- | :-- |
+| 入库文件数 | **44** | **279** |
+| 顶层长什么样 | `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`tsconfig.json`、`src/`、`tests/*.test.ts`、`python/` | `maos/`、`scripts/`、`evidence/`、`run.py`、`deploy/`、`scenarios/`… |
+| 有 `maos/` 包吗 | **没有** | 有 |
+| 有 `scripts/verify.py` 吗 | **没有** | 有 |
+| README 里的命令 | 英文 TS 版 MVP 说明 | 当前这一份 |
+
+- **卡在哪**：README §4 第一行写的是 `git clone <本仓库地址> maos && cd maos`。
+  「本仓库地址」这个占位符**掩盖了分支这件事**。照抄它，落地的是一份
+  没有 `maos/` 包、没有 `scripts/`、没有 `evidence/` 的 TypeScript 骨架 ——
+  README 里**此后的每一条命令都会 command-not-found 或 No such file**。
+- **量**：这是评委的**第 0 条命令**。前四遍的六个卡点全都发生在 clone 之后，
+  这一条发生在 clone 那一刻，且没有任何输出提示他走错了分支 ——
+  `git clone` 会安安静静地成功。
+- **没有上下文的人会怎么误解**：他会打开 README，看到里面讲的东西
+  在自己的目录里一个都找不到，然后合理地推断「这份 README 描述的不是这个仓库」。
+  **这比前四遍任何一个卡点都靠前、都致命**：它发生在他还没跑过一条命令的时候。
+- **顺带解释了一处遗留**：`main` 上的 `CONTRIBUTING.md` 与 `goai-restructure` 上的
+  **一字不差**（都写着 `pnpm test` / `pnpm typecheck`）。它就是 TS 时代留下来的，
+  从没跟着 Python 重构改过 —— 本轨已重写（见该文件）。
+- **最小修法**：两条路，**都不在本轨可改面内**。
+  甲：在 GitHub 上把默认分支改成 `goai-restructure`（一次性设置，最省事，且评委
+  裸 clone 就对）。乙：README §4 那行写死 `git clone -b goai-restructure <地址> maos`。
+  甲乙都做最稳。**已记 `docs/BACKLOG.md ## task-T8`。**
+  `SECURITY.md` 本轨已先补上一段显式警告（安全报告人对着 `main` 报，报的是一份没在跑的实现）。
+
+### 与 README 不符的其它两处（都属数字过期，不属故障）
+
+| # | README 位置 | 写的 | 实测（`4cfef38`） |
+| :-- | :-- | :-- | :-- |
+| 1 | 第 16 行「clone + 这两条共约 **5 秒**」 | 5 秒 | **6.97s**（本地源）/ **8.69s**（远端源） |
+| 2 | 第 179 行「以上全部跑完约 **18 秒**，最短路径约 **5 秒**」 | 18 秒 / 5 秒 | **23.9s**（本地）/ **26.3s**（远端）；最短路径同上 |
+
+两处都是整合轮 5（`571 passed`）留下的读数，`pytest` 涨到 802 条之后自然变长
+（9.17s → 13.7s，占了涨幅的绝大部分）。**这不是回归，是数字过期。**
+`README.md` 是整合轮的面，本轨不改，**已记 `docs/BACKLOG.md ## task-T8`**。
+
+### 五条结构性结论逐条复核
+
+上面第 10–11 行列的那五条，在 `4cfef38` 上逐条实测：
+
+| # | 结论 | 是否仍成立 | 实测 |
+| :-- | :-- | :-- | :-- |
+| 1 | 零出网 | ✅ 成立 | 口径与前几遍一致：**代码路径 + 实跑**两重判据（`maos/model/client.py:select_model_client` 在三个 LLM 变量缺任一时降级 `ScriptedModelClient`；无 key 环境下 clone→7/7→pytest→run.py 全部 exit=0）。**本轨同样没有做物理断网测试，不宣称做过。** |
+| 2 | 无任何 API key 可跑 | ✅ 成立 | 27 个变量 unset + 通配兜底 + 残留校验为空；实测抹掉 0 个（环境本来就没有），见上文口径说明 |
+| 3 | 从全新克隆一次通到 `RESULT: 7/7 PASS` | ⚠️ **有条件地成立** | 指定 `-b goai-restructure` 时两个源都一次通过、零卡点、零非零退出（那条 `exit=2` 是刻意跑的设计行为）。**裸 clone 不成立** —— 落在 `main` 上，一条命令都跑不了，见卡点 7 |
+| 4 | 跑完工作区 50 行脏 | ✅ 成立 | 两个源都是 50 行，全是 `evidence/**` 的 `M`，`*.db` 一个都没混进来 |
+| 5 | 掐表远在 15 分钟预算内 | ✅ 成立 | 6.972s / 8.690s，约占预算的 **0.8% / 1.0%** |
+
+**第 3 条从「成立」降到「有条件地成立」，是本遍最要紧的一行。**
+前四遍写下这条时，执行者每次都自己带了 `-b`，于是这个条件一直是隐含的、没被写出来的。
+把它写出来之后，修法就很显然了（改默认分支）—— 隐含条件的代价从来不是它难修，
+是**没人知道它存在**。
+
+### 对 15 分钟预算的结论（第五遍）
+
+五遍的掐表读数：6.57 / 6.44 / 5.4 / 6.89 / **6.97（本地）· 8.69（远端）** 秒。
+上一节说「A-1 那条判据仍然只量机器时间」—— 本遍再添一个证据：
+卡点 7 让评委根本跑不到第一条命令，而**它对掐表读数的影响是 0**，
+因为掐表是从「clone 对了分支」之后才开始的。
+判据里那句「且全程零非零退出、不需要跨节拼路径」应该再补一句
+**「且用评委最可能敲的那条命令 clone」**。已记 `docs/BACKLOG.md ## task-T8`。

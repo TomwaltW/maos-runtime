@@ -11,8 +11,10 @@
 > `RESULT: 7/7 PASS`、跑完工作区 50 行脏、掐表远在 15 分钟预算内。
 > 这几条编排侧已在 `c1049c2` 上复跑确认仍成立。
 >
-> <!-- PENDING-R6: pytest 条数，整合轮 6 按合入后 HEAD 实跑填入 -->
-> <!-- PENDING-R6: verify.py 七项分子分母与各步耗时，整合轮 6 按合入后 HEAD 实跑复核，并与 README §3 引的读数对齐 -->
+> <!-- PENDING-R9: 本报告的读数**只能由一次仓库外全新 clone 的冒烟实跑**产出。
+>      整合轮 8 没有做第四遍冒烟，因此**不填** —— 拿仓库内的 703 passed 冒充一次
+>      没做过的克隆冒烟，正是本报告 §5 与 DECISIONS 反复禁的那件事。
+>      待办已记进 docs/BACKLOG.md 的 ## integrate-round-8。 -->
 
 对应 `docs/submission-checklist.md` A-1 的两条：「新克隆冒烟，严格按 README 从零跑到
 `verify.py` 7/7，掐表 ≤ 15 分钟」与「冒烟用的是没有任何 API key 的环境」。

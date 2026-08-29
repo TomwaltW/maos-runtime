@@ -508,7 +508,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 ```bash
 git clone <repo> && cd maos-runtime
-python3 -m pytest maos/tests -q     # 645 passed
+python3 -m pytest maos/tests -q     # 703 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/
@@ -525,7 +525,7 @@ python3 scripts/verify.py           # ③ 七项逐条重放校验 → 7/7 PASS
 - `README.md:170-177`（§4 5 分钟快速开始：pytest + run.py + 证据链两条 + `exit=0`）
 - `README.md:95-97`（①② 两条命令原文）
 - `README.md:119`（**①② 两条缺一不可，顺序不能换**；直接跑 ② 会报缺数据库并退出 2）
-- 编排侧整合轮 6 实跑：`python3 -m pytest maos/tests -q` → **645 passed**；
+- 编排侧整合轮 8 实跑：`python3 -m pytest maos/tests -q` → **703 passed**；
   `python3 run.py` → **exit=0**，跑完 `git status --porcelain` 仍 0 行；
   全新克隆 + 无任何 API key，`clone → ① → ②` **5.4 秒**到 `RESULT: 7/7 PASS`
 
@@ -603,8 +603,10 @@ Y-1 / Y-2 / Y-3 已并入，下面四条**已按实跑回填**：
 | 3 | **P8a / P8b** | 未提 `plan_id` 归属 | Y-2 修好归属，场景 6 的 `KbRetrieved` 已挂到实 plan 上（此前 `plan_id=''`），`kb-hits.json` 可读性变好 —— **若 P8b 用到该文件的截图，录制前重截一张** | Y-2 |
 | 4 | **P11 / P14** | 「①②③ 三条命令缺一不可」 | 收敛成 **①② 两条**；P11 第三条禁语与 P14 讲稿、证据锚、禁语全部改写。全新克隆实测 **5.4 秒**到 7/7 | Y-3 |
 
-**数字口径**：本文件所有数字（645 passed / 7 项 / 35 / 7 / 86 / 19 / 10 / 1 / +62−4 / +273−7）
-都来自**整合轮 6 合并 D-1 + D-2 后**的真实输出（实测于 `2474c56`），不是基线 `42822fc` 的旧值。
+**数字口径**：本文件所有数字（703 passed / 7 项 / 35 / 7 / 86 / 19 / 10 / 1 / +62−4 / +273−7）
+都来自**整合轮 8 两条整合线收敛后**的真实输出（实测于 `4d691fc`），不是基线 `42822fc` 的旧值。
+pytest 条数由 645 涨到 703（C/E/G1 侧 46 条 + G-2 的 12 条并入）；verify 七项分子分母
+（35 / 7 / 86 / 19 / 10 / 1）与 warn 12 行 3 类**一个没变**，收敛没有改变任何证据读数。
 ⚠️ 末尾两组 diff 统计（`+62−4` / `+273−7`）本轮**没有重算** —— D-2 给 `maos/runtime/gate.py`
 加了约 +200 行，这两个数多半已偏小。已记进 `docs/BACKLOG.md` 的 `## integrate-round-6`。
 

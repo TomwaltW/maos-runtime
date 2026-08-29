@@ -933,12 +933,6 @@ T5 轨把 `docs/ppt-outline.md` 渲染成 `artifacts/` 下的演示稿（HTML �
 本轨（容器内真跑通）只持有 `deploy/docker-compose.yml`、`deploy/sandbox.Dockerfile`、
 新建的 `deploy/README.md`，外加两份账本，**一行 `maos/**` 源码都没改**。
 下面都是把「一键起」第一次真的 `up` 起来时撞见的，均在本轨白名单外，
-
-## task-T10
-
-本轨（`pg_store` 填实 + PolarDB 迁移说明）只持有 `maos/store/pg_store.py`、
-`maos/store/pg_schema.sql`（新建）、`maos/tests/test_pg_store_live.py`（新建）、
-`deploy/polardb.md`（新建），外加两份账本。下面都是**白名单外**发现的，
 按铁律 4 记账不当场改。基线 `4cfef38`。
 
 | 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
@@ -949,6 +943,15 @@ T5 轨把 `docs/ppt-outline.md` 渲染成 `artifacts/` 下的演示稿（HTML �
 | 2026-08-29 | P6 | **compose 的 `name: maos` 让多 worktree 并行时容器落进同一个 project**。本轨验收当天实测：`maos-pgvector-1` 是 **T10 轨** 从 `/Users/…/.worktrees/task-t10/deploy` 起的（`docker inspect` 的 `com.docker.compose.project.working_dir` 标签为证），却和本轨的 `maos-maos-1` 同属 project `maos` | 任何一轨敲 `docker compose … down`（哪怕**不加** `--remove-orphans`），都会把别轨正在用的容器一并停掉、删掉。派单 §5.3 原本就让本轨跑 `--profile pg down` —— 照做的话会当场拔掉 T10 正在写 `pg_store.py` 用的库。本轨因此**没有执行那条命令**，改用独立 project + 换端口验证。**这不是假想：同一轮里它反方向真的发生了一次** —— 验收跑到一半时 `maos-pgvector-1` 与本轨的 `maos-maos-1` 双双消失（本轨 compose 日志里从头到尾没出现过 pgvector，`maos_pgdata` 卷完好，且本轨这次 `up` 打的是 `Container maos-maos-1 Creating` 而不是上一次的 `Recreate`），即 T10 那边跑了一次 `down`，把本轨的容器一并删了。本轨的容器是一次性的、删了无所谓，但换成 T10 的库就是丢工作 | 归整合轮定口径。两条路：①保留 `name: maos`，在 `deploy/README.md` 写死「多会话并行时一律带 `-p <自己的 project>`」（本轨已按这条写了）；②把 project name 改成可覆盖 `name: ${COMPOSE_PROJECT_NAME:-maos}`。②更彻底但会改变现有容器命名，得先确认没有别的脚本按 `maos-*` 认容器 |
 | 2026-08-29 | P6 | **`deploy/.env.example` 仍然写不进去**（本轨复现：与根目录 `.env.example` 同一条权限 deny 规则）。键名清单仍只存在于 `docs/BACKLOG.md ## task-omega` | 评委手上没有可配置项的全量样例，只能从 compose 注释和 BACKLOG 里拼。这是**材料完整度**的缺口，不是功能缺口 | 归人类：那条 deny 规则是本机权限配置，不是仓库里的东西，只有人类能放行。放行后把 `## task-omega` 的键名清单原样落成文件即可。**本轨与前一轨一样，没有绕道换文件名** |
 
+## task-T10
+
+本轨（`pg_store` 填实 + PolarDB 迁移说明）只持有 `maos/store/pg_store.py`、
+`maos/store/pg_schema.sql`（新建）、`maos/tests/test_pg_store_live.py`（新建）、
+`deploy/polardb.md`（新建），外加两份账本。下面都是**白名单外**发现的，
+按铁律 4 记账不当场改。基线 `4cfef38`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
 | 2026-08-29 | P5 | **`maos/store/__init__.py` 的 `create_store()` 仍无条件拒绝 postgres**（`:69-76` 抛 `NotImplementedError`，理由写的是「P5 才填」）。本轨已把 `PgStorePort` 填实并在真库上实测跑通，但工厂没跟着开口 —— 拿 PG 后端只能绕过工厂直接 `PgStorePort(dsn)` 构造（工厂自己的 docstring 正是这么指引的） | 「后端可插拔」目前只在类一级成立，**公共入口一级不成立**。评委若照 `MAOS_STORE_BACKEND=postgres` 试，拿到的仍是一句「P5 才填」，与 `deploy/polardb.md` 里「代码一行都不用改」的说法对不上 | 归持有 `maos/store/__init__.py` 的轨。⚠️ **改之前必须先解决一个冲突**：`maos/tests/test_store_port.py:199` 的 `test_postgres_backend_raises_and_never_falls_back` 断言工厂在 `MAOS_STORE_BACKEND=postgres` 时抛 `NotImplementedError`，而那 28 条是冻结的。可行解：工厂返回 `PgStorePort()`，让它在 DSN 未配 / 连不上时抛 `PgBackendUnavailable`（本轨已确保它是 `NotImplementedError` 的子类）—— 但**环境里恰好配了可用 DSN 时那条测试仍会红**，所以要连测试一起重新设计，得人类拍板 |
 | 2026-08-29 | P5 | **`docs/submission-checklist.md:129` 的 §A-4 口径已可改写**：现写「有地基、未接线；PG 后端是空壳且拒绝回落」「✅ 五个方法全 `raise NotImplementedError`」。本轨之后五个方法已是真实现，在本机 Docker PG 16.15 + pgvector 0.8.6 上 22 条 live 测试全绿 | 保守口径本身不会被问穿，但**证据栏那句「五个方法全 `raise NotImplementedError`」现在是错的**（实测只剩 `PgBackendUnavailable` 这一条不可用路径会抛）。一个能被 `grep` 当场证伪的自查单条目，比口径保守更伤 | 归 T8／整合轮（该文件是它们的面）。建议措辞：「PG 后端已在本机 Docker Postgres 16 + pgvector 0.8.6 上实测跑通（`maos/tests/test_pg_store_live.py` 22 条，无库自动 skip），全文走 `to_tsvector`/`ts_rank`、向量走 pgvector `<=>`；**PolarDB 实例本身未连过**，兼容性是推断，见 `deploy/polardb.md` 的「未实测」栏；工厂 `create_store()` 仍拒绝 postgres（见上一条）」。**不要**改成「后端已可插拔切 PolarDB」—— 那正是该表点名的会被问穿的说法 |
 | 2026-08-29 | P5 | **`pyproject.toml` 没有 PG 驱动的 optional extras**。核心零依赖（`dependencies = []`）是对的、必须保持，但 `hiclaw` / `obs` / `dev` 三组 extras 里没有 `pg`，装驱动只能手工 `pip install "psycopg[binary]"` | 迁移文档里多一步手工命令，且没有任何机器可校验的地方写着「PG 后端要什么驱动、什么版本」。版本漂了只会在运行期报错 | 归人类拍板（派单 §0.2 契约乙划为「要改先停下来问」）。建议只加 `pg = ["psycopg[binary]>=3.1"]` 到 `[project.optional-dependencies]`，**绝不动 `dependencies`**。⚠️ 动之前先确认对 T9 容器无影响：`deploy/docker-compose.yml` 的 maos 服务不 build 镜像、只挂源码，extras 装不进容器，所以容器里跑 PG 后端仍需另想办法。**✅ 已于 2026-08-29 收尾解**：人类拍板，照建议加 `pg = ["psycopg[binary]>=3.1"]`，`dependencies` 仍为 `[]`（`tomllib` 复核过）。⚠️ 那条前提**已被 T9 改掉**：T9 这轮把 maos 服务改成了 build 镜像（`image: maos-runtime:local` + `dockerfile_inline`），「不 build 镜像」不再成立。但结论没变、理由换了 —— 那份 inline Dockerfile **一个文件都不 COPY**（上下文取 `deploy/` 只为走过场），没有 `pyproject.toml` 可装，`pip install` 那行也只装 `pytest`。容器里跑 PG 后端现在有了正规入口：在那行后面接 `psycopg[binary]`，或 COPY 一份 pyproject 再 `pip install -e '.[pg]'`。**归 T9 合入后的整合轮**（build 段是 T9 的面，本轨不越界改，且改完要重跑一遍容器内核验才算数）|

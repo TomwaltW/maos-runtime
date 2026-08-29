@@ -63,13 +63,45 @@ class EvidenceError(RuntimeError):
 # ---------------------------------------------------------------------------
 # 出处与脱敏
 # ---------------------------------------------------------------------------
+#: 钉住的出处 sha 存在**环境变量**里，而不是模块全局变量里。
+#: 不得不这样：``python3 scripts/make_evidence.py`` 让本文件成为 ``__main__``，
+#: 而 ``maos/kb/experiment.py`` 走的是 ``from scripts.make_evidence import git_sha`` ——
+#: 那是**另一个模块实例**，两份各有各的全局变量，钉在模块里对 R5 一侧根本不可见。
+#: 环境变量是进程级的，两个实例看到的是同一个值。
+_PIN_ENV = "MAOS_EVIDENCE_PINNED_SHA"
+
+
+def pin_sha() -> str:
+    """在**动任何文件之前**取一次 sha 钉住，之后本进程内所有取值都返回它。返回钉住的值。
+
+    非钉不可的理由：``evidence/`` 是**入库**的（``.gitignore`` 只排掉 ``*.db``），
+    所以本脚本写完 ``scenario-1..7``，工作区自己就脏了。而 ``scenario-R5`` 由
+    ``maos.kb.experiment.write_evidence`` 产，那边自算一次 sha —— 于是同一次生成里，
+    前七束记干净 sha，R5 记 ``<sha>-dirty``：八份证据自称出自两个版本，
+    而它们明明出自同一次运行。读者每一轮都要被解释一次这个后缀不算数。
+
+    钉住而不是「先全算后全写」：``-dirty`` 要指示的是「跑这批证据的代码与 HEAD 不一致」，
+    那是**开跑那一刻**的事实，不是落盘落到一半时的事实。落盘顺序不该改变出处。
+    """
+    pinned = os.environ.get(_PIN_ENV)
+    if not pinned:
+        pinned = git_sha()
+        os.environ[_PIN_ENV] = pinned
+    return pinned
+
+
 def git_sha() -> str:
     """当前提交 sha；**被跟踪文件**有改动时带 ``-dirty``。取不到就抛，不给「unknown」兜底。
 
     脏判定刻意用 ``--untracked-files=no``：``evidence/`` 本身就是这个脚本正在生成的
     未跟踪产物，把它算进「脏」会让每一次生成都自称 dirty，于是这个标记恒为真、
     再也指示不了任何东西 —— 而它要指示的是「跑这批证据的代码与 HEAD 不一致」。
+
+    ``pin_sha()`` 钉过之后一律返回钉住的值：同一次生成里落盘有先后，出处不该跟着变。
     """
+    pinned = os.environ.get(_PIN_ENV)
+    if pinned:
+        return pinned
     try:
         sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
                              capture_output=True, text=True).stdout.strip()
@@ -107,17 +139,45 @@ def redact(text: str, secrets: dict[str, str]) -> str:
     return text
 
 
+#: 这些格式里，密钥可能以**像素**形式存在（截图），字节扫描从原理上就抓不到。
+#: 位图把文字压成图像数据，``Bearer <token>`` 在文件里根本不以该字节序列存在 ——
+#: 扫字节扫不到，换成扫文本一样扫不到，扫得再狠也扫不到。所以对这些格式
+#: 唯一诚实的回答是「无法核验」，不是「没查到」。PDF 同理（文字常在压缩流里）。
+#: ``.svg`` 刻意不在此列：它是文本，哨兵串扫得到。
+_UNVERIFIABLE_EXT = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".ico", ".pdf"})
+
+
+def is_unverifiable(filename: str) -> bool:
+    """这个文件名的扩展名是否属于「字节扫描核验不了」那一类。"""
+    return os.path.splitext(filename)[1].lower() in _UNVERIFIABLE_EXT
+
+
 def scan_for_secrets(directory: str, secrets: dict[str, str]) -> list[str]:
     """拿哨兵串把目录逐字节反查一遍，返回命中描述（空 = 干净）。
 
     按字节查而不是按行读文本：证据里可能有二进制（sqlite 库文件就在同一目录），
     按文本读会因为解码失败而**跳过**那个文件，于是漏查得悄无声息。
+
+    **字节扫描堵不住截图**（见 ``_UNVERIFIABLE_EXT``）：位图里的密钥是像素不是字节。
+    所以遇到图像/版式格式一律记一条「无法核验」当命中处理 —— 由调用方销毁目录并失败。
+    宁可拒收，也不要让一份「扫过了、干净」的报告盖住一个扫不到的洞：
+    静默通过比不扫更坏，它给了假的安全感。
+
+    只在**有哨兵串**时才这么判：``secrets`` 为空说明环境里根本没有要防的密钥，
+    没有「核验」这回事，也就谈不上「无法核验」—— 否则没配密钥的机器天天报警，
+    真出事那次反而没人看。
     """
     hits: list[str] = []
     needles = {name: value.encode("utf-8") for name, value in secrets.items()}
     for base, _dirs, files in os.walk(directory):
         for fn in files:
             path = os.path.join(base, fn)
+            if needles and is_unverifiable(fn):
+                hits.append(
+                    f"{os.path.relpath(path, directory)}: 图像/版式格式，密钥若以像素形式"
+                    f"存在于其中，任何字节扫描都查不到 —— 无法核验，拒收")
+                continue
             try:
                 with open(path, "rb") as fh:
                     blob = fh.read()
@@ -507,6 +567,52 @@ def _bundle_info(scenario, final: str, bundle: dict) -> dict:
     }
 
 
+def scan_aux_bundles(out_root: str) -> list[dict]:
+    """登记 ``evidence/`` 下**不叫 scenario-\\* 的那些目录**，按目录名排序。
+
+    ``evidence/room/`` 就是一例：房间侧的人机交互证据由别的流程落盘，从前 INDEX 里
+    一个字都没有 —— 一份自称是索引的东西，漏登记了一整个目录。
+
+    索引 ≠ 核验器：``verify.py`` 按 ``scenario-`` 前缀挑核验对象，这些目录本来就不该
+    被它当证据束扫（它们没有 ``maos.db``，也没有 trace）。这里只负责**登记在册**，
+    让「evidence/ 里有什么」这个问题有一个地方能一次答全。
+
+    每个文件顺带记两件读者关心的事：出处首行有没有（``sourced``），
+    以及它是不是字节扫描核验不了的图像（``secret_scan`` 见 ``scan_for_secrets``）。
+    """
+    aux: list[dict] = []
+    for name in sorted(os.listdir(out_root)):
+        path = os.path.join(out_root, name)
+        if not os.path.isdir(path) or name.startswith("scenario-") or name.startswith("."):
+            continue
+        files = []
+        for fn in sorted(os.listdir(path)):
+            fp = os.path.join(path, fn)
+            if not os.path.isfile(fp):
+                continue
+            unverifiable = is_unverifiable(fn)
+            sourced = None
+            if not unverifiable:
+                try:
+                    with open(fp, encoding="utf-8") as fh:
+                        sourced = fh.readline().startswith(HEADER_PREFIX)
+                except (OSError, UnicodeDecodeError):
+                    sourced = None
+            files.append({
+                "name": fn,
+                "bytes": os.path.getsize(fp),
+                "sourced": sourced,
+                "secret_scan": "无法核验（图像，密钥是像素不是字节）" if unverifiable else "可扫",
+            })
+        aux.append({
+            "name": name,
+            "dir": os.path.relpath(path, ROOT),
+            "file_count": len(files),
+            "files": files,
+        })
+    return aux
+
+
 def _flag_suffix(info: dict) -> str:
     flags = []
     if info["unsourced_artifacts"]:
@@ -580,7 +686,10 @@ def main(argv: list[str] | None = None) -> int:
     # 指定了 --scenarios 就是奔着某几场去的，别拖上 R5；全量跑则缺省带上。
     want_r5 = args.r5 if args.r5 is not None else not args.scenarios
 
-    sha = git_sha()
+    # 钉在动任何文件**之前**：往下每写一个证据文件，工作区就更脏一分，
+    # 而这一批证据的出处只有一个 —— 开跑那一刻的 HEAD。R5 由别的模块自算 sha，
+    # 也靠这次钉住跟前七束对齐（见 pin_sha）。
+    sha = pin_sha()
     secrets = secret_values()
     os.makedirs(args.out, exist_ok=True)
     print(f"证据束生成 · sha={sha} · 场景={wanted}{' + R5' if want_r5 else ''} · 输出={args.out}")
@@ -607,16 +716,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [OK] {info['dir']}  spans={info['span_count']} "
               f"events={info['event_count']}{_flag_suffix(info)}")
 
+    aux = scan_aux_bundles(args.out)
     write_json(os.path.join(args.out, "INDEX.json"), {
         "git_sha": sha,
         "requested": [*wanted, "R5"] if want_r5 else wanted,
         "produced": produced,
         "missing_scenarios": missing,
+        "aux_bundles": aux,
         "note": ("missing_scenarios 是 ALL_SCENARIOS 声明了但流程模块尚未落地的场景，"
                  "它们不生成目录、也不写占位数据。"
                  "R5 不在 ALL_SCENARIOS 里（由 maos.kb.experiment 产），"
-                 "缺省一并产出，--no-r5 可关掉。"),
+                 "缺省一并产出，--no-r5 可关掉。"
+                 "aux_bundles 是 evidence/ 下不叫 scenario-* 的目录（如 room/）："
+                 "它们不由本脚本产、verify.py 也不把它们当证据束扫，"
+                 "但索引要登记在册 —— 漏登记一整个目录的索引不叫索引。"),
     }, sha=sha, secrets=secrets)
+
+    for bundle in aux:
+        print(f"  [AUX] {bundle['dir']}  文件 {bundle['file_count']}（不由本脚本产，仅登记）")
 
     if missing:
         print(f"\n注意：{missing} 已在 ALL_SCENARIOS 中声明但模块未落地，本次未生成其目录。")

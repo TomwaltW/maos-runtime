@@ -17,10 +17,10 @@ MAOS 的做法是**装饰器镜像**：进程内 EventBus 照常跑，`MatrixEve
 
 | # | AgentTeams 概念 | MAOS 落点 | 代码位置 | 状态 |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | **Team / 房间** | 一个 Matrix 房间 = 一条流水线的全部事件；配置四项走环境变量 `MATRIX_HOMESERVER` / `MATRIX_USER` / `MATRIX_TOKEN` / `MATRIX_ROOM_ID`，缺一即降级 | `hiclaw/matrix_bus.py:70`（`MatrixBusConfig`）<br>`hiclaw/matrix_bus.py:85`（`from_env`）<br>`hiclaw/matrix_bus.py:55`（`REQUIRED_ENV`） | 代码就绪；真房间未接通（见下） |
+| 1 | **Team / 房间** | 一个 Matrix 房间 = 一条流水线的全部事件；配置四项走环境变量 `MATRIX_HOMESERVER` / `MATRIX_USER` / `MATRIX_TOKEN` / `MATRIX_ROOM_ID`，缺一即降级 | `hiclaw/matrix_bus.py:70`（`MatrixBusConfig`）<br>`hiclaw/matrix_bus.py:85`（`from_env`）<br>`hiclaw/matrix_bus.py:55`（`REQUIRED_ENV`） | ✅ **真房间已接通**（本机自建 Synapse v1.159.0 的非加密房，`evidence/room/` 五张图 + 41 条逐字副本） |
 | 2 | **Member / Worker** | 可插拔 Agent 池：role → Agent 类，投放一个文件即注册；Worker 收到 `TaskAssignment` 按 role 取执行者 | `maos/agents/base.py:101`（`AGENT_POOL`）<br>`maos/agents/base.py:104`（`@register`）<br>`maos/runtime/worker.py:34`（一行构造全池） | ✅ 已跑通（10 个 Agent 身份，其中 9 个可被派单，见 [`agent-identity.md`](agent-identity.md)） |
-| 3 | **事件链 / 消息流** | `publish()` 先走 inner bus，再镜像进房间：一行人话摘要 + 折叠的 Envelope JSON | `hiclaw/matrix_bus.py:321`（`publish`）<br>`hiclaw/matrix_bus.py:132`（`summarize` 人话摘要）<br>`hiclaw/matrix_bus.py:147`（`render_mirror` 摘要 + JSON） | 代码就绪；降级路径有单测，真房间未接通 |
-| 4 | **人工介入 / HITL** | 房间里 `/approve <task_id>`、`/reject <task_id> [原因]` → `HumanApprovalQueue.decide()`；只认 `MAOS_APPROVERS` 名单内的用户，名单外回「无审批权限」**并落一条 event_log** | `hiclaw/matrix_bus.py:420`（`parse_approval_command`）<br>`hiclaw/matrix_bus.py:435`（`RoomApprovalBridge`）<br>`hiclaw/matrix_bus.py:452`（`handle_message` 先查名单再解析）<br>`hiclaw/matrix_bus.py:483`（越权落库） | 代码就绪 + 单测覆盖（合法 / 非法 / 越权三种） |
+| 3 | **事件链 / 消息流** | `publish()` 先走 inner bus，再镜像进房间：一行人话摘要 + 折叠的 Envelope JSON | `hiclaw/matrix_bus.py:321`（`publish`）<br>`hiclaw/matrix_bus.py:132`（`summarize` 人话摘要）<br>`hiclaw/matrix_bus.py:147`（`render_mirror` 摘要 + JSON） | ✅ **真房间实测**：两轮跑出 41 条房间消息，逐字副本 `evidence/room/transcript.md`；迁移逐条镜像见 `02-transitions.png` |
+| 4 | **人工介入 / HITL** | 房间里 `/approve <task_id>`、`/reject <task_id> [原因]` → `HumanApprovalQueue.decide()`；只认 `MAOS_APPROVERS` 名单内的用户，名单外回「无审批权限」**并落一条 event_log** | `hiclaw/matrix_bus.py:420`（`parse_approval_command`）<br>`hiclaw/matrix_bus.py:435`（`RoomApprovalBridge`）<br>`hiclaw/matrix_bus.py:452`（`handle_message` 先查名单再解析）<br>`hiclaw/matrix_bus.py:483`（越权落库） | ✅ **三种在真房间各实测一次**：`/approve`→DONE（`03`）、`/reject`→FAILED（`04`）、intern 越权两次被拒且闲聊零回复（`05`） |
 | 5 | **可观测 / 回放** | 事件链的权威记录不在房间里，在 `event_log` 表；`maos/obs/trace.py` 把它转成 OTel 对齐的 span 树，`scripts/verify.py` 第 4 项重放校验「无孤儿、无环、与库逐字节一致」 | `maos/obs/trace.py`<br>`scripts/verify.py:318`（第 4 项 trace-tree） | ✅ 已跑通（7 场景证据束，见 `evidence/`） |
 
 ### 为什么第 5 项要单列
@@ -51,18 +51,39 @@ MAOS 的做法是**装饰器镜像**：进程内 EventBus 照常跑，`MatrixEve
 
 ### 当前真实状态（不吹）
 
-截至基线 `df96fa8`：
+截至基线 `27c9e18`（T 轮实跑改写；上一版停在 `df96fa8`，那时确实还没接通）：
 
-- **真房间未接通。** Synapse 账号需要人类手工注册（这一步 Claude 做不了），
-  该任务仍未开工。
-- 因此 `_NioChannel` 那条活路径（`hiclaw/matrix_bus.py:178`）**在本机走不到**：
-  matrix-nio 未安装，恒走 `ImportError` → 降级 `log_only`。这条路径**未经真房间实测**，
-  已记 `docs/BACKLOG.md ## task-E`，模块 docstring 里也写着同一句。
-- 已经被测试覆盖的是**降级路径的等价性**：同样的 publish 序列，`MatrixEventBus`
-  降级模式与 inner bus 的 `drain` 结果必须完全一致 —— 这条是可断言的，且是 CI 常态路径。
-- 所以演示材料里的口径只能是：**「镜像层已实现，降级路径实测等价；真房间截图待补」**，
-  不能说成「全过程在 Element 里跑通了」。真房间接通后，把 Element 截图存进
-  `evidence/scenario-7/` 即可，代码一行不用改。
+- **真房间已接通。** 本机自建 Synapse v1.159.0（容器 `maos-synapse`），
+  房间「MAOS 审批」为**非加密**房（`m.room.encryption` 查得 `M_NOT_FOUND`），
+  `@boss` / `@intern` / `@maos-bot` 三人在房。三个账号全部由
+  `register_new_matrix_user` 脚本注册，**没有一步需要人类点 GUI** ——
+  上一版写的「需人类手工注册所以未开工」是个错误前提，`docs/hiclaw-probe.md` §1 已纠正。
+- `_NioChannel` 那条活路径（`hiclaw/matrix_bus.py:178`）**走到了**，
+  两轮 `room_demo` 实跑证据在 `evidence/room/`。
+- ⚠️ **但上一版那句「matrix-nio 未安装，恒走 ImportError」并没有全错，只是漏了主语。**
+  精确说法是：**系统 `python3` 至今没装 matrix-nio**（实测
+  `pip show matrix-nio` → `Package(s) not found`），拿它跑就是 `ImportError` → 降级；
+  matrix-nio 0.26.0 装在 `~/.maos-matrix/venv/`，**用那个解释器才走得到活路径**。
+  这一条是本轮最容易把人坑住的地方，已写进
+  `docs/matrix-room-runbook.md` 抬头那一节。
+- 仍然被测试覆盖的是**降级路径的等价性**：同样的 publish 序列，`MatrixEventBus`
+  降级模式与 inner bus 的 `drain` 结果必须完全一致 —— 这条是可断言的、CI 常态路径，
+  **且仍然是主路径**（见本文抬头：房间是旁路，房间挂了流水线照跑）。
+- 所以演示材料里的口径现在可以是：**「镜像层已实现，降级路径实测等价，
+  真房间三条路径实测通过、截图与逐字副本在 `evidence/room/`」**。
+
+**仍然不许说的三句**（实测证不到，说了会被问穿）：
+
+| 不许说 | 实际是什么 |
+| :-- | :-- |
+| 「退款全过程在 Element 里跑通了」 | 房间里跑的是 `room_demo`，一个 `role=coding` 的**软件域**任务（标题「变更生产环境配置」）。退款域场景 6/7 的证据在 `evidence/scenario-6,7/`，那是**机器侧**证据，没进过房间 |
+| 「`/reject` 之后补偿在房间里可见」 | `CompensationExecuted` 只落 `event_log`、从不 publish，**永不进房间**。`04` 那张图证明的是「驳回生效 + Plan FAILED」，不是补偿 |
+| 「房间镜像稳定可靠」 | Synapse 默认限流会打穿：一轮 approve 实测 4 条 429，且 `_NioChannel` 的 10s 超时会因此误报 `房间回话失败（）`（消息其实送达了）。见 runbook §7.6 |
+
+> `docs/submission-checklist.md` §A-4「Matrix 房间」那一行仍写着
+> 「镜像层已实现，降级路径实测等价，真房间待接通」+ 复核结论「真房间未接通」——
+> **该行已过期**，但那份文件是整合轮的面，本轮只读不改，已记
+> `docs/BACKLOG.md` 的 `## task-T4`。
 
 ---
 

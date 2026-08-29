@@ -3,13 +3,34 @@
 从零到截图的完整重跑手册。目标读者是**没跑过这套东西的人**：照着做一遍，
 应当拿到 `evidence/room/` 下那五张图，以及与之逐字对应的 `transcript.md`。
 
-- 适用版本：基线 `f42ea83`（C 轮）
+- 适用版本：基线 `f42ea83`（C 轮）写就；**`27c9e18`（T 轮）照本手册真跑过一遍**，
+  与实跑对不上的步骤已按实跑改正，逐条见文末「修订记录」
 - 依赖三轨：C-1 出房间与凭证、C-2 修 `hiclaw/matrix_bus.py` 的真连通、C-3 出 `hiclaw/room_demo.py`
 - 本机没有 `python` 命令，一律 `python3`
 
+## 🔴 开跑前必读：用哪个 python 决定了这一整轮是真是假
+
+**跑 `room_demo` 必须用 `~/.maos-matrix/venv/bin/python`，不是系统 `python3`。**
+
+系统 `python3` **没装 matrix-nio**，`_NioChannel` 构造即 `ImportError`，上游当场降级
+log-only —— 于是场景照跑、exit=0、终端上「房间消息」一条不落地全打出来，
+而房间里一条都没有。这是 §0 那张表的第一行，且是本手册最容易踩、后果最贵的一步：
+截那个终端窗口当证据，形态与真房间证据**无法分辨**。
+
+T 轮实测（同一份 env，只换解释器）：
+
+```
+$ python3                        <check_wiring>   matrix-nio = 不可导入 -> No module named 'nio'
+$ ~/.maos-matrix/venv/bin/python <check_wiring>   matrix-nio = 可导入
+```
+
+⚠️ `MatrixBusConfig.from_env()` 两边都报 `log_only=False` —— **配置对不等于通道通**。
+`log_only` 只看四个 env 齐不齐，装没装 nio 它不知道。别拿这个字段当「接通了」的判据，
+判据是**房间里真出现了消息**。
+
 ---
 
-## 0. 先读这一节：三种「安静地什么都没发生」
+## 0. 先读这一节：五种「安静地什么都没发生」
 
 这套链路**所有的失败都是静默降级**，没有一个会打红字、没有一个会卡住。
 屏幕上看起来一切正常，只是 Element 房间里一条消息都不出现。
@@ -20,9 +41,14 @@
 | 房间里**什么都没有**，终端照常跑完 exit=0 | 房间开了端到端加密（E2EE）。`_NioChannel._verify_room()` 查到 `m.room.encryption` 状态事件就抛 `RoomEncrypted`，上游当场降级 log-only | 终端有一行 `WARNING maos.matrix`；房间设置里「加密」是开的 | §7.1 |
 | 同上 | 四个必填 env 漏了任意一个 | 终端首行 `WARNING maos.matrix  Matrix 配置缺 <变量名>，降级 log-only（不进房间，行为等同进程内总线）` | §7.2 |
 | 房间有消息，但 `/reject` 回的是**「审批未生效」** | `MAOS_SANDBOX_WORKDIR` 没设。补偿执行器**硬失败** | 回执原文含 `审批未生效：<task_id> —— ` | §7.3 |
+| 同上，但用的是**系统 `python3`** | 没装 matrix-nio，`_NioChannel` 构造即 `ImportError` | 见本文抬头那一节；`~/.maos-matrix/venv/bin/python` 重跑 | 抬头 |
+| 房间里消息**齐的**，终端却打 `房间回话失败（）`（括号里是空的） | **虚警**。Synapse 限流 429 让单次 send 超过 `_NioChannel` 的 10s 超时，`concurrent.futures.TimeoutError` 的 `str()` 恰好是空串 | 去房间里数一遍消息：一条不少就是虚警 | §7.6 |
 
 **记住这条判据**：`log_only=True` 时行为**等同进程内总线**，场景照跑、退出码照样是 0。
 「跑通了」和「进房间了」是两件事，退出码只证明前者。
+
+**还有一条反向判据**（T 轮加的）：终端打了 `房间回话失败` 也**不**代表消息没进房间。
+两个方向都不能只看终端 —— 唯一算数的判据是**去房间里数消息**。
 
 ---
 
@@ -34,20 +60,26 @@
 
 ```
 ~/.maos-matrix/STATUS      # 一行状态；这里必须是 READY <ISO8601>
-~/.maos-matrix/room.env    # 七个键，可 source
+~/.maos-matrix/room.env    # 八个键，可 source
 ~/.maos-matrix/creds.txt   # boss / intern 的 Element 登录口令
 ```
 
-`room.env` 的键名（值一律由 C-1 现取，**不许占位符**）：
+`room.env` 的键名（值一律由 C-1 现取，**不许占位符**）。
+⚠️ 早期版本写「七个键」，T 轮实测是 **8 个** —— 后来补了 `MATRIX_ROOM_ID_ENCRYPTED`：
 
 | 键 | 用途 | 缺了会怎样 |
 |---|---|---|
 | `MATRIX_HOMESERVER` | 宿主机跑 python 时是 `http://localhost:8008` | 降级 log-only |
 | `MATRIX_USER` | `@maos-bot:maos.local` | 降级 log-only |
 | `MATRIX_TOKEN` | bot 的 access token | 降级 log-only |
-| `MATRIX_ROOM_ID` | `!xxxx:maos.local` | 降级 log-only |
+| `MATRIX_ROOM_ID` | `!xxxx:maos.local`，**非加密**的那间，演示用的就是它 | 降级 log-only |
 | `MAOS_APPROVERS` | `@boss:maos.local`，逗号分隔 | **不降级**，但所有审批命令都被拒 |
-| `MAOS_MATRIX_OUTSIDER` | `@intern:maos.local`，越权用例用 | 只影响 §5 那一步 |
+| `MAOS_MATRIX_OUTSIDER` | `@intern:maos.local`，越权用例用 | 只影响 §6 那一步 |
+| `MAOS_ELEMENT_URL` | `http://localhost:8080`，截图时开的那个地址 | 只影响人，代码不读 |
+| `MATRIX_ROOM_ID_ENCRYPTED` | 一间**特意开了 E2EE** 的房，用来验「撞加密房会当场降级」这条 | 只影响那条针对性测试 |
+
+🔴 **别把 `MATRIX_ROOM_ID_ENCRYPTED` 当演示房。** 它存在的意义正好相反 ——
+拿它跑 `room_demo` 的结果就是 §0 第一行：终端一切正常、房间里一条消息都没有。
 
 ⚠️ `MATRIX_HOMESERVER` 有两个口径且**都对**：宿主机跑是 `http://localhost:8008`，
 容器内跑是 `http://host.docker.internal:8008`。用错场合的症状就是 §0 第一行 —— 静默降级。
@@ -61,7 +93,23 @@ curl -s -H "Authorization: Bearer $MATRIX_TOKEN" \
 # 期望 M_NOT_FOUND —— 查不到才是「未加密」。查得到就是加密房，本轨不装 matrix-nio[e2e]，必须重建一个非加密房
 ```
 
-🔴 这条命令会把 token 打进 scrollback。**跑完立刻 `clear`，再开始截图**（见 §6）。
+T 轮实测输出（`MATRIX_ROOM_ID` 这间）：
+
+```
+HTTP 404  {"errcode":"M_NOT_FOUND","error":"Event not found."}
+```
+
+顺带把另外两条也验了（都不回显 token，可以放心截）：
+
+```
+GET $MATRIX_HOMESERVER/_matrix/client/versions            -> HTTP 200
+GET $MATRIX_HOMESERVER/_matrix/client/v3/account/whoami   -> HTTP 200  user_id=@maos-bot:maos.local
+```
+
+`whoami` 这条值得单跑：它是**唯一**能当场分清「token 失效」和「房间不对」的探针。
+两者的最终症状都是降级，但一个该去换 token，一个该去查房间 id。
+
+🔴 这条命令会把 token 打进 scrollback。**跑完立刻 `clear`，再开始截图**（见 §7）。
 
 ---
 
@@ -84,6 +132,39 @@ mkdir -p "$MAOS_SANDBOX_WORKDIR"
 按 C-3 的约定，`room_demo --case reject` 在**启动时**就检查这个 env，缺了当场报错退出，
 不会让人在 Element 里打完 `/reject` 才发现。
 
+### 🔴 但「目录存在」只够过启动检查，不够让补偿真成功
+
+T 轮实测：照上面这三行做（`mkdir -p` 一个**空目录**），`/reject` 之后
+`event_log` 里那条 `CompensationExecuted` 是 **`ok=false`**：
+
+```json
+{"mode": "reverse", "ok": false, "files": 1,
+ "workdir": "/private/tmp/maos-room-demo",
+ "error": {"stage": "apply", "path": "auth/session.py", "hunk": null,
+           "message": "error: auth/session.py: No such file or directory"}}
+```
+
+原因不难懂：补偿是**把正向补丁反着打一遍**（`git apply -R`），而 `room_demo`
+从头到尾**没有把正向补丁打进这个目录**过 —— 它用的是 `seed_scripted_report`
+预置报告，不走 `verify_patch_in_sandbox`。空目录里没有 `auth/session.py`，
+反向应用当然失败。
+
+**这不是配置错了，是 `room_demo` 本来就到不了 `ok=true`。** 已记
+`docs/BACKLOG.md` 的 `## task-T4`。
+
+对照实测：把 workdir 备成「靶场基线 + 已打正向补丁」，同一条驳回路径就是 `ok=true`：
+
+```json
+{"mode": "reverse", "ok": true, "files": 1, "error": null}
+```
+
+（这一条是**离线台架**量的，不是 `room_demo` 的行为 —— 台架自己先
+`prepare_sandbox_workdir()` 再 `sandbox_git_apply(patch_set, workdir)` 打了正向补丁。
+写在这里是为了说明「ok=false 不是补偿坏了」，别照抄成演示步骤。）
+
+🔴 **最要命的是这件事没有任何人看得见**：`ok` 是 `true` 还是 `false`，
+终端不打、房间不显、退出码一样是 0。见 §5 与 §7 对 `04` 那张图的说明。
+
 ---
 
 ## 3. 登 Element
@@ -91,7 +172,7 @@ mkdir -p "$MAOS_SANDBOX_WORKDIR"
 用 **boss** 账号（口令在 `~/.maos-matrix/creds.txt`），加入 C-1 建的那间房。
 
 🔴 **不要打开设置页 / 账号页** —— 那里有 access token，一截屏就进了 git 历史，
-而 PNG 是二进制，`make_evidence.py::scan_for_secrets` 一个字都扫不到（见 §6）。
+而 PNG 是二进制，`make_evidence.py::scan_for_secrets` 一个字都扫不到（见 §7）。
 
 ---
 
@@ -106,51 +187,79 @@ mkdir -p "$MAOS_SANDBOX_WORKDIR"
 每条镜像消息都是 **`m.notice`**（不触发推送提醒），形态是「一行人话摘要 + 折叠的 Envelope JSON」。
 折叠是必需的：一个 plan 跑几十条事件，不折叠的话人翻不到那条要审批的。
 
-首行摘要的**逐字形态**（下面四行是 `hiclaw.matrix_bus.summarize` 的真实输出）：
+🔴 **T 轮更正**：本节原先逐字列的是 `task-s7-payment` 那一串（`role=payment`、
+`status=FAILED`、`verdict=REWORK`、`amount_claimed`、`api_key`）。那是**退款域场景 7**
+的形态，`room_demo` 根本不产 —— 它建的是一个 `role=coding`、标题「变更生产环境配置」、
+id 形如 `task_<12位hex>` 的任务。照原样去房间里找 `task-s7-payment` 会一无所获。
+下面全部换成 T 轮从**真房间历史**抄回的逐字输出（完整 41 条见
+`evidence/room/transcript.md`）。
+
+一次 `--case approve` 房间里依次出现 23 条。开头三条是总线自己的订阅回执，
+不是业务事件，别当成漏跑：
 
 ```
-[task-s7-payment] TaskAssignment → plan.tasks attempt=1 role=payment
-[task-s7-payment] TaskResult → task.result attempt=1 status=FAILED
-[task-s7-payment] ReviewVerdict → review.verdict attempt=1 verdict=REWORK
-[task-s7-payment] Rework → plan.rework attempt=2 reason=gateway_unavailable
+订阅 maos.task.result（group=control-plane）
+订阅 maos.review.verdict（group=control-plane）
+订阅 maos.task.assignment（group=worker-w1）
 ```
+
+首行摘要的**逐字形态**（`hiclaw.matrix_bus.summarize` 的真实输出）：
+
+```
+[task_5a1469c54bbe] TaskAssignment → maos.task.assignment attempt=1 role=coding
+[task_5a1469c54bbe] TaskResult → maos.task.result attempt=1 status=ok
+[task_5a1469c54bbe] ReviewVerdict → maos.review.verdict attempt=1 verdict=pass
+[task_5a1469c54bbe] StateTransition → AWAITING_REVIEW → BLOCKED attempt=1
+[task_5a1469c54bbe] HumanApprovalRequired → 待人工审批 attempt=1
+```
+
+中间还夹着几条 `drain 处理 N 条事件` —— 同样是总线回执，不是业务事件。
 
 展开折叠块后是完整 Envelope（`render_mirror` 真实输出，注意 `api_key` 已被出口脱敏成 `***`）：
 
 ````
-[task-s7-payment] TaskAssignment → plan.tasks attempt=1 role=payment
+[task_5a1469c54bbe] TaskAssignment → maos.task.assignment attempt=1 role=coding
 ```json
 {
   "event_type": "TaskAssignment",
-  "plan_id": "plan_4d0fc98be697",
-  "task_id": "task-s7-payment",
-  "idempotency_key": "idem-s7-payment-1",
+  "plan_id": "plan_a9e5af33ed5b",
+  "task_id": "task_5a1469c54bbe",
+  "idempotency_key": "assign:task_5a1469c54bbe:1",
   "payload": {
-    "role": "payment",
-    "risk_level": "H",
-    "effect_risk": "H",
-    "goal": "对渠道发起退款付款",
-    "amount_claimed": "6800.00",
-    "api_key": "***"
+    "role": "coding",
+    "inputs": {
+      "repo": "demo/app"
+    },
+    "acceptance": [
+      "build 通过"
+    ],
+    "risk_level": "M",
+    "rework_findings": []
   },
-  "event_id": "evt_27e61487b1c3",
-  "trace_id": "trace_088bd7d82beb",
+  "event_id": "evt_da6cc029962e",
+  "trace_id": "trace_975966814b80",
   "attempt": 1,
-  "occurred_at": "2026-08-29T05:11:44.714392+00:00"
+  "occurred_at": "2026-08-29T09:00:00.487693+00:00"
 }
 ```
 ````
 
-> 上面这段是**渲染器输出**，用来告诉你「该长什么样」，
-> **不是房间截图，也不能当证据**。证据只认 `evidence/room/` 下的真实截图。
+> 上面这段是 T 轮从真房间抄回的**其中一条**，用来告诉你「该长什么样」。
+> **它本身不是证据** —— 证据只认 `evidence/room/` 下的真实截图与
+> `evidence/room/transcript.md`（那份是从房间消息历史整份拉的，不是从终端抄的）。
+
+⚠️ 注意 `risk_level` 是 **M** 而 `effect_risk` 才是 **H**。停在 BLOCKED 靠的是后者：
+Agent 产出补丁是 M 级、在其授权内，但这个补丁**合进生产**是 H 级，必须人工放行。
+去房间里按 `risk_level=H` 找审批卡是找不到的。
 
 ### 在哪一步打命令
 
-等到房间里出现那条高风险任务的审批卡（`risk_level=H` / `effect_risk=H`），
+等到房间里出现那条 `HumanApprovalRequired → 待人工审批` 的审批卡
+（卡片正文里 `effect_risk` 是 `H`，末尾逐字写着可用指令），
 **从卡片里复制 `task_id`**，在房间发：
 
 ```
-/approve task-s7-payment
+/approve task_5a1469c54bbe        # ← 你那一轮的 id 不是这个，每次运行都重新生成
 ```
 
 不要手打 task_id。打错的那条命令**不会**被猜成相近的任务 ——
@@ -165,6 +274,24 @@ mkdir -p "$MAOS_SANDBOX_WORKDIR"
 | 任何非 `/approve`、`/reject` 开头的闲聊 | **一声不吭**（机器人不该给房间发用法提示） |
 
 终态：任务放行继续执行，Plan 走到 **DONE**。
+
+T 轮实测（终端最后一行 + 房间最后三条）：
+
+```
+终态: task=DONE  plan=DONE  （镜像发出 7 条迁移）
+exit=0
+```
+
+```
+[task_5a1469c54bbe] StateTransition → BLOCKED → DONE attempt=1
+已批准 task_5a1469c54bbe（操作人 @boss:maos.local）
+[plan_a9e5af33ed5b] PlanTransition → RUNNING → DONE attempt=1
+```
+
+⚠️ **回执与迁移的先后不固定**。上面这一轮里 `BLOCKED → DONE` 排在
+`已批准 …` 前面 —— 因为判定先落库、镜像线程再把迁移推进房间，
+而回话本身走的是另一次 send。截 `03` 那张图时把这三条一起框进去，
+别只截「已批准」一条然后纳闷终态在哪。
 
 ---
 
@@ -186,17 +313,54 @@ mkdir -p "$MAOS_SANDBOX_WORKDIR"
 | `/reject <task_id> <原因>` | `已驳回 <task_id>（操作人 @boss:maos.local），原因：渠道回执异常，转人工` |
 | 同上但 `MAOS_SANDBOX_WORKDIR` 没设 | `审批未生效：<task_id> —— MAOS_SANDBOX_WORKDIR 未设置` ← **这就是 §0 第三行，证据作废，回 §2 重来** |
 
-### 期望终态（三条都要核，缺一条这个用例就不成立）
+### 🔴 期望终态 —— 本节整段被 T 轮推翻重写
 
-```sh
-sqlite3 <db> "select biz_status from refund_case where case_id='<R2 的 case>'"          # compensated
-sqlite3 <db> "select count(*) from payment_observation where observed_state='settled'"  # 0
-sqlite3 <db> "select count(*) from event_log where event_type='CompensationExecuted'"   # >0
+原先这里写着三条 `sqlite3 <db> …` 判据（`refund_case.biz_status='compensated'`、
+`payment_observation` 里 `settled` 计数为 0、`event_log` 里 `CompensationExecuted > 0`）。
+**三条对 `room_demo` 一条都跑不了**，逐条说明为什么：
+
+| 原判据 | 为什么跑不了 |
+|---|---|
+| `select … from refund_case` | **这张表不存在**。`room_demo` 跑的是 `role=coding` 的软件域任务，`refund_case` 是退款域（场景 6/7）的表。T 轮实测 `no such table: refund_case` |
+| `select … from payment_observation` | 同上，`no such table: payment_observation` |
+| `sqlite3 <db> …` 这个动作本身 | **压根没有 `<db>` 这个文件**。`flows/common.py::build()` 用的是 `SqliteStore()`，缺省路径 `":memory:"` —— 进程一退，库就没了 |
+
+那三条判据说的是 **`python3 run.py --scenario 7`** 的事，不是这里的事。
+`docs/submission-checklist.md` 的 P10 那一行也是这么挂的（「`run.py --scenario 7`
+→ Plan 终态 FAILED、`biz_status=compensated`、`settled` 观察 0 条」）。
+两件事被混成一件，是本手册 C 轮写就时的错，T 轮改正。
+
+### `--case reject` 真正能核的终态
+
+```
+终态: task=FAILED  plan=FAILED  （镜像发出 7 条迁移）
+exit=0
 ```
 
-- Plan 终态 **FAILED**，原因 `human_reject`
-- `refund_case.biz_status = 'compensated'`
-- **从未进入 `settled`** —— 这条是铁律 8 的现场证明：没问出终态就一条 settled 观察都不该有
+房间里最后三条（T 轮逐字）：
+
+```
+已驳回 task_02695e4aac86（操作人 @boss:maos.local），原因：渠道回执异常，转人工
+[task_02695e4aac86] StateTransition → BLOCKED → FAILED attempt=1
+[plan_546534bf2ccc] PlanTransition → RUNNING → FAILED attempt=1
+```
+
+终端里那一跳的原因逐字是 `BLOCKED -> FAILED (human_reject)`。
+
+### 补偿：跑了，但你**看不见**它跑没跑
+
+`human_decision(approved=False)` 确实先调 `_execute_compensation` 再改状态
+（`maos/core/control_plane.py:654-657`，「先回滚再改状态」）。它也确实往 `event_log`
+写了一条 `CompensationExecuted`。但是：
+
+- **终端不打。** 成功路径上一行日志都没有，只有 `sandbox_unavailable` 那条老分支会 warn。
+- **房间不显。** 房间镜像只镜像状态迁移与总线事件；`CompensationExecuted` 走的是
+  `append_event_log`，从不 publish，因此永远不会出现在房间里。
+- **退出码一样。** `ok=true` 和 `ok=false` 都是 exit=0。
+
+所以照本手册跑一遍，你对补偿唯一能说的话是「它被调用了」，
+**不能**说「它成功了」。想看 `ok` 值只有一条路：进程内把 `event_log` 拉出来看
+（T 轮是拿离线台架量的，读数见 §2）。已记 `docs/BACKLOG.md` 的 `## task-T4`。
 
 ---
 
@@ -214,17 +378,40 @@ sqlite3 <db> "select count(*) from event_log where event_type='CompensationExecu
 无审批权限：@intern:maos.local 不在 MAOS_APPROVERS 名单内
 ```
 
-同时 `event_log` 落一行：
+T 轮实测，房间回执与上面一字不差；终端同步打 `[房间回执] 无审批权限：…`。
 
-```sh
-sqlite3 <db> "select event_type, reason, detail from event_log where event_type='ApprovalDenied'"
-# ApprovalDenied | sender 不在 MAOS_APPROVERS 名单内 | {"sender": "@intern:...", "command": "approve", "task_id": "..."}
+同时 `event_log` 落一行 `ApprovalDenied`
+（`hiclaw/matrix_bus.py::RoomApprovalBridge._record_denied`）：
+
 ```
+ApprovalDenied | sender 不在 MAOS_APPROVERS 名单内 |
+  {"sender": "@intern:maos.local", "command": "approve", "task_id": "…"}
+```
+
+⚠️ **别照 `sqlite3 <db> "select … from event_log"` 去查** —— 本手册原先是这么写的，
+但 `room_demo` 的 store 是 `":memory:"`，没有库文件（同 §5 那张表）。
+这一条落库在**进程内**成立，进程一退就查不到了。
+房间回执是它在演示现场唯一可核的外化形态，截图截的就是这个。
 
 > 判定顺序是**先认命令词、再查名单、最后校参数**，三步不可换序。
 > 所以名单外的人哪怕把参数打错了，也照样记一条越权证据 ——
 > 先校参数会把越权尝试降级成一句用法提示，那条证据就没了。
 > 想验这一点：用 intern 发一条**缺 task_id** 的 `/approve`，回执仍应是「无审批权限」，不是用法提示。
+
+T 轮把这一条真验了。房间里逐字（`transcript.md` 第 15–19 条）：
+
+```
+@intern:maos.local   /approve task_5a1469c54bbe
+@maos-bot:maos.local  无审批权限：@intern:maos.local 不在 MAOS_APPROVERS 名单内
+@intern:maos.local   /approve                       ← 缺参数
+@boss:maos.local     hello 大家好，这条是闲聊，机器人不该回
+@maos-bot:maos.local  无审批权限：@intern:maos.local 不在 MAOS_APPROVERS 名单内
+```
+
+三件事一次坐实：**缺参数的越权仍判越权**（不是用法提示）、
+**闲聊零回复**（boss 那条至今没有回音）、
+以及回执**不按发言顺序紧跟**（第 19 条回的是第 17 条，中间隔着第 18 条）——
+最后这点是 429 限流导致的，截 `05` 时别以为自己截漏了。
 
 ---
 
@@ -237,10 +424,23 @@ sqlite3 <db> "select event_type, reason, detail from event_log where event_type=
 | `01-approval-card.png` | 审批卡：一行人话摘要 + 展开的 Envelope 折叠块 | 「Element 里看到全过程」——镜像进房间这件事成立 |
 | `02-transitions.png` | 状态迁移轨迹，含 `RUNNING → AWAITING_REVIEW` | 同上；且证明迁移是逐条镜像的，不是跑完补一条总结 |
 | `03-approve-effect.png` | `/approve` 后的回执 + 放行 + 终态 DONE | 「发 `/approve` → DONE」 |
-| `04-reject-compensation.png` | `/reject` 回执 → 补偿执行 → Plan FAILED(human_reject) | 「`/reject` → 补偿」 |
-| `05-denied-outsider.png` | intern 打 `/approve` 被拒的房间回执 | 「只接受 `MAOS_APPROVERS` 名单内用户，其余回『无审批权限』并记 event_log」 |
+| `04-reject-compensation.png` | `/reject` 回执 → `BLOCKED → FAILED` → Plan `RUNNING → FAILED` | 「`/reject` → 驳回生效、Plan 落 FAILED」。**注意它证不了「补偿执行」**，见下 |
+| `05-denied-outsider.png` | intern 打 `/approve` 被拒的房间回执（两条：带参数的与缺参数的） | 「只接受 `MAOS_APPROVERS` 名单内用户，其余回『无审批权限』并记 event_log」 |
 
 **证明不了任何一条的图就别放。**
+
+### 🔴 `04` 这个文件名比它能证明的东西大
+
+文件名叫 `04-reject-compensation.png`，但**房间里拍不到补偿**：`CompensationExecuted`
+只落 `event_log`、从不 publish，因此永远不进房间镜像（详见 §5 末节）。
+这张图能证明的是「驳回生效 + Plan 落 FAILED」，**不是**「补偿执行了」。
+
+文件名 T 轮**没有改** —— `docs/EXECUTION.md:499/502` 与
+`evidence/room/README.md` 的截图清单都按这个名字引它，改名要一起动三处，
+而那两处不在本轨可改面内。已记 `docs/BACKLOG.md` 的 `## task-T4`。
+
+**写材料时别把这张图说成「补偿的证据」。** 补偿的证据在
+`evidence/scenario-7/`（机器侧、有库、进 `verify.py` 七项核验），不在这里。
 
 ### 🔴 脱敏：必须在按快门那一刻做掉
 
@@ -278,7 +478,23 @@ bash deploy/synapse/down.sh
 然后确认 `python3 scripts/verify.py` **仍能开始核验**：
 
 ```sh
-python3 scripts/verify.py 2>&1 | tail -2
+python3 scripts/make_evidence.py            # ← 这一行不能省，理由见下
+python3 scripts/verify.py 2>&1 | tail -3
+# 期望 RESULT: 7/7 PASS，exit=0
+```
+
+🔴 **`make_evidence.py` 这一行是判据成立的前提，不是可选的。**
+干净检出里没有 `evidence/scenario-*/maos.db`（`.gitignore` 挡着），
+直接跑 `verify.py` 会在第一个证据束上就 `[FAIL] 无法开始核验：缺数据库 …`、`exit=2`。
+报错里当然也不会出现 `room` 字样 —— 于是这条自检**永远通过、却什么都没验到**，
+恰恰漏掉它唯一要防的那件事。这条是 H 轮记在 `docs/BACKLOG.md` 里的账，T 轮补上。
+
+跑完记得把证据束还原，别把重跑产物混进提交：
+
+```sh
+git checkout -- evidence/scenario-1 evidence/scenario-2 evidence/scenario-3 \
+                evidence/scenario-4 evidence/scenario-5 evidence/scenario-6 \
+                evidence/scenario-7 evidence/scenario-R5
 ```
 
 报错里出现 `scenario-R1` / `scenario-R2` / `room` 任意一个，说明有人把截图放错了目录 ——
@@ -332,3 +548,56 @@ python3 scripts/verify.py 2>&1 | tail -2
 - **原因**：连续镜像失败 `MAX_MIRROR_FAILURES = 3` 次后**永久降级**，不再重试
 - 这是有意的：房间挂一整场时不该把控制台刷成告警墙，那会淹掉真正的业务日志
 - **下一步**：翻终端最早那条镜像失败的 WARNING，它才是根因；后面没有告警不代表恢复了
+
+### 7.6 终端打 `房间回话失败（）`，可房间里消息一条不少（T 轮新增）
+
+- **症状**：终端出现若干条 `WARNING maos.matrix  房间回话失败（），判定已生效`，
+  括号里**是空的**。但去房间里数，回执与迁移一条不差。
+- **原因**：**虚警**，而且是两个东西叠出来的：
+  1. Synapse 默认 `rc_message` 限流。演示开头那一串镜像是**连发**的，
+     直接打穿限流，nio 打出 `Got 429 response (ratelimited), sleeping for 4854ms`
+     并自行退避重试（T 轮一次 approve 跑出 4 条 429）。
+  2. `_NioChannel._await()` 用的是 `run_coroutine_threadsafe(...).result(self._timeout)`，
+     而 `_timeout` 缺省 **10.0 秒**。一次 send 被退避拖过 10 秒，这里就抛
+     `concurrent.futures.TimeoutError` —— 而**它的 `str()` 恰好是空字符串**，
+     于是 `log.warning("房间回话失败（%s）", exc)` 打出来就是一对空括号。
+  3. 关键在于：协程还在私有事件循环上**继续跑**，退避结束后消息照样送达。
+     调用方已经放弃，消息其实成功了。
+- **怎么确认**：数房间，不看终端。T 轮 R1 那一轮打了 3 条这个警告，
+  房间里 23 条消息一条不少。
+- **不要**因为看到这条警告就重跑 —— 重跑只会再撞一次限流，并且把房间灌得更满。
+- 已记 `docs/BACKLOG.md` 的 `## task-T4`（空括号的报错信息本身也是个坑：
+  它把「超时」显示成了「没有原因」）。
+
+### 7.7 跑完退出时刷一屏 asyncio 报错（T 轮新增）
+
+- **症状**：终态已经打出来了、`exit=0`，屏幕上却还刷出
+  `RuntimeError: Event loop is closed`、`Task was destroyed but it is pending!`、
+  `Exception ignored in: <coroutine object AsyncClient.sync_forever …>`
+- **原因**：收口时私有事件循环先关，`sync_forever` 那条常驻协程后死。
+  发生在**终态之后**，不影响任何判定，也不影响退出码。
+- **下一步**：忽略。但演示当天**别把终端留在这一屏**上 —— 观众看不出它无害。
+  截图前先滚回终态那一行。已记 `docs/BACKLOG.md` 的 `## task-T4`。
+
+---
+
+## 修订记录（T 轮，基线 `27c9e18`）
+
+照本手册真跑了三条路径（approve / reject / 越权），改了下面这些步骤。
+**改动依据一律是实跑，不是推理。**
+
+| 节 | 原来写的 | 改成什么 | 依据 |
+|---|---|---|---|
+| 抬头 | 未提解释器 | 新增「必须用 `~/.maos-matrix/venv/bin/python`」整节 | 系统 `python3` 无 matrix-nio，实测静默降级 |
+| §0 | 三种静默症状 | 补两行：系统 python 降级、`房间回话失败（）`虚警 | 两条都在 T 轮真撞上了 |
+| §1 | `room.env`「七个键」 | **八个键**，补 `MAOS_ELEMENT_URL` / `MATRIX_ROOM_ID_ENCRYPTED` 两行与「别拿加密房当演示房」 | `room.env` 实读 8 个 |
+| §1 | 只给加密探测命令 | 补三条探针的**实测输出**（`M_NOT_FOUND` / `versions 200` / `whoami`） | 实跑 |
+| §2 | `mkdir -p` 空目录即可 | 新增整节：空目录会让补偿 `ok=false`，且**无人看得见** | 实测 `CompensationExecuted.ok=false`，台架对照 `ok=true` |
+| §4 | 逐字示例是 `task-s7-payment`（退款域） | 全换成 `room_demo` 真产的 `task_<hex>` / `role=coding`；补订阅与 drain 两类噪声行；补 `risk_level=M` vs `effect_risk=H` 的提醒 | 房间历史 |
+| §4 | 无终态实测 | 补终端终态行与房间末三条，并说明回执与迁移**先后不固定** | 实跑 |
+| §5 | 三条 `sqlite3 <db>` 判据 | **整段推翻**：两张表不存在、库是 `:memory:` 没有文件；那三条说的是 `run.py --scenario 7` | 实测 `no such table` + `SqliteStore()` 缺省 `":memory:"` |
+| §5 | 「`/reject` → 补偿执行」 | 改成「补偿被调用了，但终端不打、房间不显、退出码相同 —— 只能说被调用，不能说成功」 | 代码路径 + 实跑 |
+| §6 | `sqlite3 <db>` 查 `ApprovalDenied` | 标注同样查不到（`:memory:`），房间回执才是可核的外化形态；补两条越权的逐字实测 | 实跑 |
+| §7 | `04` 证明「`/reject` → 补偿」 | 改成「驳回生效 + Plan FAILED」，并写明文件名比它能证明的东西大、为什么没改名 | 同 §5 |
+| §8 | 直接跑 `verify.py` | 前面补 `make_evidence.py`，否则这条自检**永远通过却什么都没验到**；补还原命令 | H 轮已记账，T 轮补上 |
+| §9 | 五条排错 | 补 7.6（429 + 10s 超时导致的空括号虚警）、7.7（退出时 asyncio 噪声） | 实跑 |

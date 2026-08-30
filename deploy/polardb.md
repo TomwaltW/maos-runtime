@@ -143,8 +143,18 @@ pgvector 的 `<=>` 是余弦**距离**（越小越近），而 F-2 要求分数�
 | `pg_schema.sql` 灌库 | `CREATE EXTENSION / CREATE TABLE / CREATE INDEX x2` 全成功 |
 | GIN / HNSW 索引落地 | `gin (to_tsvector('simple'::regconfig, body))`、`hnsw (embedding vector_cosine_ops)` |
 | `test_pg_store_live.py` + `test_kb_pg_channel.py` | **33 passed** |
-| 全量 | **932 passed, 0 skipped**（有库）/ **903 passed, 29 skipped**（无库；29 条全是 DSN 门控） |
+| 全量 | **1098 passed, 10 skipped**（有库）/ **1069 passed, 39 skipped**（无库）。差的 **29 条全是 DSN 门控**（22 条 `test_pg_store_live.py` + 7 条 `test_pg_rank_parity.py`）。2026-08-31 实测 |
 | 地基冒烟五步 | 5/5，且每个数值与本机 pgvector **逐字节相同** |
+
+🔴 **跑全量前先起 Docker**，并确保镜像在：
+`docker build -t maos-sandbox -f deploy/sandbox.Dockerfile .`。
+没有它，`test_verify_warn` 的两条会红 —— 沙箱容器隔离（`--network none` / `--read-only` /
+`--user 1000:1000`）会**静默降级**，test_report 照样产出、只在 `verify.py` 的 warn 里留一行。
+那不是回归，但**降级跑出来的证据在隔离性这一维是空的**，别拿它当交付证据。
+
+有库档那 10 条 skip 是 RocketMQ / Nacos 的门控，**不是 PG 的**。判据是
+「`SKIPPED` 行里不许出现 `test_pg_`」，不是「skipped 必须为 0」——
+写死数字会随下一组门控测试作废，要守的不变量始终是「PG 那 29 条一条都不许被饿死」。
 
 逐条对照与差异分析在 `deploy/polardb-live.md`，那份文档只管数据库这一侧。
 
@@ -180,7 +190,7 @@ pgvector 的 `<=>` 是余弦**距离**（越小越近），而 F-2 要求分数�
 | `vector` 能不能建、建到哪版 | ✅ 能，**0.8.3.1**；不需要在控制台启用什么，但**必须高权限账号** |
 | 读写分离地址会不会把 DDL 路由到只读节点 | ✅ 不会。走 `rwlb` 地址时 `pg_is_in_recovery() = false`，`CREATE EXTENSION` 与建索引都实际生效 |
 | 公网地址 / 白名单 | ✅ 公网地址 + IP 白名单实测可连（白名单不放行时的症状是 **TCP 静默超时**，不是拒绝，容易误判成网络故障） |
-| `sslmode=require` | ❌ **连不上：该实例不支持 SSL**（`SHOW ssl` = `off`）。详见 `polardb-live.md` §3.5 |
+| `sslmode=require` | ✅ 可用。**该实例支持 SSL，2026-08-31 已在控制台开启**（`SHOW ssl` = `on`，`ssl_in_use = True`）。开启前的实测确为 `off`、`require` 连不上，那段明文期的实录与**口令未轮换**这个残留风险见 `polardb-live.md` §3.5 |
 
 🔴 **一条推断被实测推翻，要点名改掉**：原文写「`zhparser` / `pg_jieba` 这类中文分词扩展
 **大概率装不了**（托管实例通常只允许白名单内的扩展）」。实测该实例共 **189** 个可用扩展，

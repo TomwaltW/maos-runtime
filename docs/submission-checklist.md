@@ -56,12 +56,57 @@ git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动
 > 掐表 **6.97s**（本地）/ **8.69s**（远端），全序列 23.9s / 26.3s。
 > 见 [`docs/clone-smoke-report.md`](clone-smoke-report.md) 的**第五遍**一节。
 >
-> 🔴 **但上面那条新可勾项当前是红的**：仓库的 GitHub **默认分支是 `main`，
+> ~~🔴 **但上面那条新可勾项当前是红的**~~ → **✅ 2026-08-30 已转绿，见下方 ⑧。**
+> 存档，因为它记着这个条件当初为什么一直没被写出来：仓库的 GitHub **默认分支曾是 `main`，
 > 而 `main` 上是已封存的 TypeScript 骨架**（44 个文件，没有 `maos/` 包）。
 > 裸 `git clone <地址>` 拿到的是它，README 里此后每一条命令都跑不了。
 > 前四遍冒烟每次都自己带了 `-b`，这个条件一直是隐含的，从没被写出来过。
 > 修法两条（甲：GitHub 上改默认分支；乙：README §4 那行写死 `-b goai-restructure`），
 > 都不在任何单轨的可改面内 —— 见 `docs/BACKLOG.md ## task-T8` 第 1 条。
+> **人类走的是甲**，2026-08-30 在 T21 执行途中改的。
+
+#### 冷启动两条（⑧⑨，补在掐表**之前**）
+
+上面所有冒烟读数都是从**「clone 对了分支之后」**开始掐的表，于是
+「裸 clone 拿错分支」与「远端落后于本地」这两件事对它们的影响都是 **0** ——
+18.3 秒、6.97s、`7/7 PASS` 照样全绿，而评委在自己机器上第一条命令就卡住。
+这两条不是定性描述，各自可跑、各自有期望输出：
+
+```bash
+# ⑧ 裸 clone 到手的是哪个分支？（不带 -b / --branch —— 评委最可能敲的那条）
+git ls-remote --symref origin HEAD | head -1
+
+# ⑧' 落地版：真裸 clone 一次，看拿没拿到 maos/ 包（评委的真实经历）
+git clone <仓库地址> /tmp/judge-clone && test -d /tmp/judge-clone/maos && echo OK || echo FAIL
+
+# ⑨ 远端 goai-restructure 与本地同 sha？（两行 40 位 sha 逐字符比）
+git ls-remote --heads origin goai-restructure | cut -f1    # 远端
+git rev-parse goai-restructure                             # 本地
+# ⑨ 的一行自判版（不想用眼睛比 40 位就用这条）
+[ "$(git ls-remote --heads origin goai-restructure | cut -f1)" = "$(git rev-parse goai-restructure)" ] && echo SAME || echo DIFF
+```
+
+- [ ] ⑧ 打印 `ref: refs/heads/goai-restructure`。
+      ✅ **2026-08-30 已转绿**，而且是**在 T21 那一轮执行途中翻的** ——
+      同一天同一个 worktree 里，开工自检还是 `ref: refs/heads/main`（HEAD `3f2d5d1`），
+      二十分钟后复跑已是 `ref: refs/heads/goai-restructure`（HEAD `8492c56`）：
+      人类在 GitHub Settings → General 里把默认分支改过来了。
+      三处交叉印证（本地 `origin` 别名 / 裸 clone 出来那份自己的 `origin` / 直连 URL 不经别名）读数一致。
+      **判据留着，因为它会再红**：默认分支是网页设置，改回去不留 git 痕迹，
+      任何单轨也测不到 —— 只有这条命令能量出来。
+- [ ] ⑧' 打印 `OK`。✅ **2026-08-30 实测 `OK`**：裸 clone（不带 `-b`）检出的就是
+      `goai-restructure`，`maos/` 在，顶层 19 项齐全，README 里 `goai-restructure` 命中 4 次。
+      跑完删掉 `/tmp/judge-clone` 再跑下一遍。
+- [ ] ⑨ 两行 sha **逐字符相同**（自判版打 `SAME`）。不同即红 —— 评委 clone 到的
+      不是你验过的那份代码，上面那些冒烟读数验的也就不是评委手上的东西。
+      🔴 **当前仍红**（2026-08-30 T21 实测打 `DIFF`）：远端 `8492c56…`、本地 `129e71d…`，
+      **本地领先一个 commit**（`129e71d` 那条 PolarDB 真连补跑还没 push）。
+      push 归人类（铁律 5），任何单轨不许代劳。
+
+> ⑨ **故意不写成「落后 N 个 commit」**：N 每 push 一次就变，写死当天就过期 ——
+> `docs/BACKLOG.md` 的 `## task-T19` 记的 21 个、`## integrate-round-12` 记的 27 个，
+> 到 2026-08-30 已双双作废（那两条都把远端记作 `4cfef38`，当天实测远端已是 `8492c56`，
+> 只差 1 个）。**「同 sha」是判据自己会算的**，不需要谁去维护那个数字。
 
 ### A-2 证据束
 
@@ -159,7 +204,7 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 | 政策数据与历史案例 | 「按行业惯例构造的合成数据」 | 「真实企业政策」 | ✅ 仍成立 |
 | 支付网关 | 「错误码与异步时序对齐支付宝开放平台公开规范；演示用模拟实现」 | 「接入了支付宝」 | ✅ `maos/tools/gateway.py` 明写字段对齐 `alipay.trade.refund`，未接通时 `raise NotImplementedError`，**不静默返回假数据** |
 | Matrix 房间 | 「镜像层已实现，降级路径实测等价，真房间待接通」 | 「全过程在 Element 里跑通」 | ✅ `hiclaw/matrix_bus.py` 在，真房间未接通 |
-| StorePort / PolarDB | 「PG 后端已在本机 Docker Postgres 16 + pgvector 上实测跑通；**PolarDB 实例本身未连过**，兼容性是推断」 | 「后端已可插拔切 PolarDB」 | ✅ `maos/store/pg_store.py` 五个方法已填实：全文走 `to_tsvector`/`ts_rank`，向量走 pgvector `<=>`；本机 Docker PostgreSQL 16.15 + pgvector 0.8.6 上 `maos/tests/test_pg_store_live.py` **22 条**实测绿（无库自动 skip）。PolarDB 实例未连过，差异见 `deploy/polardb-live.md`。后端不可用时抛 `PgBackendUnavailable(NotImplementedError)`，**仍不回落 sqlite** |
+| StorePort / PolarDB | 「PG 后端已在本机 Docker PostgreSQL 16.15 + pgvector 0.8.6 上实测跑通（`maos/tests/test_pg_store_live.py` 22 条）；**阿里云 PolarDB PostgreSQL 版真实例也已连通实测**（2026-08-30，冒烟五步 5/5，`ts_rank` 与向量距离与本机 Docker 逐字节相同）。后端不可用时抛 `PgBackendUnavailable(NotImplementedError)`，**仍不回落 sqlite**」 | 「PolarDB 上生产可用」——**该实例当前 `ssl=off`，公网链路明文，未做加固**（出处 `docs/BACKLOG.md` 的 `## polardb-live` 第 1 条）｜「支持中文分词检索」——`zhparser` / `pg_jieba` **只验到「在可用扩展列表里」，一个都没装**、没建文本检索配置、没测过召回（同上第 2 条） | ✅ 2026-08-30 T21 复核，每一句都能落到出处。`maos/store/pg_store.py` 五个方法已填实：全文走 `to_tsvector`/`ts_rank`，向量走 pgvector `<=>`；`test_pg_store_live.py` **22 条**（本轮复跑确认条数；无 DSN 时 22 条全 skip，不伪装成绿）。PolarDB 真连的原始输出在 `deploy/polardb-live.md` §1.2（五步 5/5，版本串 `PostgreSQL 16.14 (PolarDB 16.14.20.0 build 1f03f15d)`、pgvector `0.8.3.1`），「逐字节相同」的比对表在 §3.2（命中集 `['d1']`、`ts_rank=0.099103`、余弦距离 `0.000000 / 0.006116 / 1.000000`，两边全等）。「不许这么说」两条各自的出处：`ssl=off` 见 §3.5（`SHOW ssl` -> `off`，且 `sslmode=require` 被服务端直接拒），分词扩展见 §3.1 的表（`zhparser 2.2`、`pg_jieba 1.1.2` 在可用列表里，**「已安装」一栏四个全是「否」**）。**还有一条没进上面三格、被追问时要接得住**：这五步是**高权限账号**跑的，控制台建的普通账号跑出来是 **2/5**（`CREATE EXTENSION vector` 与 `public` 建表两处 `InsufficientPrivilege`，见 §1.3） |
 | AutoGen | 「可插拔内核之一，未在复赛演示中启用」 | 「基于 AutoGen 构建」 | ✅ 全仓 `*.py` grep 不到 `autogen` 的实现，只在 `maos/runtime/worker.py` 注释里提及 |
 | replan 换渠道 | 「场景 7 演到了：撞 `40005` 触发一次 replan 换备用渠道，再撞 `ACQ.SYSTEM_ERROR` 一票否决落人工，全程没有自旋」 | 「重试到上限才转人工」（**只重试了一次**，不是打满上限）｜「换了渠道就成功了」 | ✅ 整合轮 5 合入 Y-4 后实测：`run.py --scenario 7` 屏幕上打出 `换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）`，状态轨迹里有 `AWAITING_REVIEW -> REWORK [gate_rework]` → `REWORK -> PENDING [requeue]`；`test_replan_gateway.py` 仍 **19 passed**，一条没少 |
 | 场景覆盖 | 「`run.py` 无参跑全部七个场景，含失败路径」 | 「七个场景都跑成功了」（场景 7 的 Plan 终态是 FAILED，那正是它要演的） | ✅ `maos/main.py:29` 实测 `DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)` |

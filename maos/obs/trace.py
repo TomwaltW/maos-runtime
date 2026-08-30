@@ -277,11 +277,123 @@ def _seeded_index(events: list[dict]) -> dict[str, dict]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 成本视图（T29）—— 按 trace_id 聚合 model_usage
+# ---------------------------------------------------------------------------
+#: 这句话必须跟着数字一起进证据束。缺省路径全是 ``ScriptedModelClient``，它的
+#: token 数是 ``len(user) // 4``（``maos/model/client.py``）—— 字符数除以 4 的估算，
+#: 不是任何一家的计费口径。把它印成「本次演示花了多少钱」，是在评委面前给出一个
+#: 虚假的精确信号，比不做成本量化更坏。所以 ``estimated`` 逐行落库，这里逐层汇总。
+ESTIMATED_NOTE = (
+    "estimated=1 的行是估算不是计费：缺省路径用 ScriptedModelClient，其 token 数为 "
+    "len(user)//4（maos/model/client.py），非任何计费口径。all_estimated=true 时"
+    "这些数字只能读作调用规模，不能读作金额。"
+)
+
+#: 一条用量都没记到时**必须**跟着的一句话。``calls=0`` 有两种成因，而它们在屏幕上
+#: 长得一模一样：真的一次模型都没调，和调了但没记。后者的成因是构造 Agent 时没传
+#: ``store=``（``BaseAgent.__init__`` 的 store 缺省 None，此时
+#: ``record_model_usage`` 直接跳过），演示主线上确实还有这么写的场景。
+#: 不加这句，``calls=0`` 就会被读成「这条链路没花钱」—— 那是本模块最不该产生的
+#: 那类假象（同 ``verify.py`` 文件头「空转也算没跑」）。
+ZERO_CALLS_NOTE = (
+    "本 trace 一条用量都没记到。这不等于没花：构造 Agent 时未传 store= 的场景里，"
+    "模型照常被调用，只是记账被跳过（见 docs/BACKLOG.md ## task-T29）。"
+    "「真的没调」与「调了没记」在这个数字上分不开，不要读成零成本。"
+)
+
+
+def _bucket(dst: dict, key: Any, row: dict) -> None:
+    b = dst.setdefault(key, {"calls": 0, "tokens_in": 0, "tokens_out": 0,
+                             "tokens_total": 0, "latency_ms": 0})
+    b["calls"] += 1
+    b["tokens_in"] += int(row.get("tokens_in") or 0)
+    b["tokens_out"] += int(row.get("tokens_out") or 0)
+    b["tokens_total"] = b["tokens_in"] + b["tokens_out"]
+    b["latency_ms"] += int(row.get("latency_ms") or 0)
+
+
+def _ranked(buckets: dict, label: str) -> list[dict]:
+    """按 tokens_total 降序、同分按 key 升序 —— 排序必须确定。
+
+    ``verify.py`` 第 4 项拿库重放一遍与 ``trace.json`` **逐字节**比对，
+    任何不稳定的顺序都会让那一项在没人动过证据的情况下变红。
+    """
+    return [{label: k, **v} for k, v in sorted(
+        buckets.items(), key=lambda kv: (-kv[1]["tokens_total"], str(kv[0])))]
+
+
+def cost_view(rows: list[dict], *, unavailable: str = "") -> dict:
+    """一组 ``model_usage`` 行的成本聚合。形状恒定，取不到就 ``available=false``。
+
+    「取不到」和「一次都没花」必须分得开：两者都能让总数是 0，但前者是**不知道**，
+    后者是**知道且为零**。合成一个 0 会让「成本记账没接上」长得像「这条链路很省」。
+    """
+    roles: dict = {}
+    tasks: dict = {}
+    sites: dict = {}
+    totals = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "tokens_total": 0,
+              "latency_ms": 0}
+    estimated = 0
+    for r in rows:
+        _bucket(roles, r.get("agent_role") or "unknown", r)
+        _bucket(sites, r.get("call_site") or "unknown", r)
+        if r.get("task_id"):
+            _bucket(tasks, r["task_id"], r)
+        totals["calls"] += 1
+        totals["tokens_in"] += int(r.get("tokens_in") or 0)
+        totals["tokens_out"] += int(r.get("tokens_out") or 0)
+        totals["latency_ms"] += int(r.get("latency_ms") or 0)
+        estimated += 1 if r.get("estimated") else 0
+    totals["tokens_total"] = totals["tokens_in"] + totals["tokens_out"]
+
+    by_task = _ranked(tasks, "task_id")
+    return {
+        "available": not unavailable,
+        "unavailable_reason": unavailable or None,
+        **totals,
+        "estimated_calls": estimated,
+        "measured_calls": totals["calls"] - estimated,
+        # 全是估算时这面旗子必须为真 —— 它是「别把这串数字当钱读」的机器可读版本。
+        "all_estimated": totals["calls"] > 0 and estimated == totals["calls"],
+        "by_role": _ranked(roles, "role"),
+        "by_call_site": _ranked(sites, "call_site"),
+        "by_task": by_task,
+        # 「哪个 task 最贵」。task_id 为空的行进不了这张榜（它们连 task 都归不上），
+        # 但仍然计进 totals —— 榜上无名不等于没花。
+        "top_task": by_task[0] if by_task else None,
+        "note": ESTIMATED_NOTE,
+        # 只在 calls==0 时非空 —— 形状恒定，有话说的时候才有话。
+        "zero_calls_note": None if (unavailable or totals["calls"]) else ZERO_CALLS_NOTE,
+    }
+
+
+def _cost_rows(store: Any, trace_id: str) -> tuple[list[dict], str]:
+    """取一条 trace 的用量行。返回 ``(rows, 取不到的理由)``，理由为空即取到了。
+
+    三种取不到都如实说：后端没有这个方法（早于 T29 的实现）、表还没建（旧库）、
+    以及 plan 自己就没有 trace_id。最后一种尤其要拦住 —— 拿空串去查会把所有
+    **归属不上**的用量行一股脑算进这棵树，那正好是本模块最不该干的事：给指不到
+    出处的东西安一个出处。
+    """
+    if not trace_id:
+        return [], "plan 没有 trace_id，无法按 Run id 归集用量"
+    fn = getattr(store, "list_model_usage", None)
+    if fn is None:
+        return [], "store 未实现 list_model_usage（后端早于 T29 的成本记账）"
+    try:
+        return list(fn(trace_id=trace_id)), ""
+    except Exception as exc:                    # noqa: BLE001 —— 旧库没有 model_usage 表
+        return [], f"读 model_usage 失败：{type(exc).__name__}"
+
+
 def export_trace(store: Any, plan_id: str) -> dict:
     """把一个 Plan 的全部事件与产物导成 span 树。
 
-    ``store`` 只用到 ``get_plan / list_tasks / list_artifacts / list_event_log`` 四个
-    只读方法 —— 任何实现了 ``maos.core.store.Store`` 的后端都能喂进来。
+    ``store`` 用到 ``get_plan / list_tasks / list_artifacts / list_event_log`` 四个
+    只读方法 —— 任何实现了 ``maos.core.store.Store`` 的后端都能喂进来。第五个
+    ``list_model_usage`` 是**可选**的（成本视图，T29）：后端没有它就把 ``cost``
+    标成 ``available=false`` 并说明理由，不影响 span 树本身。
     """
     plan = store.get_plan(plan_id)
     if plan is None:
@@ -455,6 +567,7 @@ def export_trace(store: Any, plan_id: str) -> dict:
 
     spans.sort(key=lambda s: (s.get("start") or "", s["kind"], s["span_id"]))
     errors = check_span_tree(spans)
+    usage_rows, usage_gap = _cost_rows(store, trace_id)
     return {
         "schema": SCHEMA,
         "plan_id": plan_id,
@@ -462,6 +575,9 @@ def export_trace(store: Any, plan_id: str) -> dict:
         "plan_state": plan.get("state"),
         "goal": plan.get("goal"),
         "spans": spans,
+        # 成本挂在 trace_id 上，与 span 树、event_log 同一个关联键 —— 复赛规则要的
+        # 「trace / Log / Metrics 关联到同一个 Run id」就是这一个键，不另造。
+        "cost": cost_view(usage_rows, unavailable=usage_gap),
         "summary": {
             "span_count": len(spans),
             "task_count": len(tasks),
@@ -520,6 +636,30 @@ def stray_events(db_path: str) -> list[dict]:
         conn.close()
 
 
+def unattributed_usage(db_path: str) -> list[dict]:
+    """``trace_id`` 为空的用量行 —— 它们挂不上任何一棵树（口径同 ``stray_events``）。
+
+    现实里确实有：``ManagerAgent.plan()`` 跑在 ``create_plan`` **之前**
+    （``flows/scenario_1.py`` 等把 ``mgr.plan(GOAL)`` 当作 ``create_plan`` 的入参），
+    那一刻还没有 plan 行、也没有 trace_id 可挂。这些调用照旧花掉了 token，
+    所以既不丢掉、也不硬安一个 trace_id，而是在这里单独点名。
+
+    表不存在（早于 T29 的库）返回空清单 —— 那是「没有这项记账」，由每棵树自己的
+    ``cost.available=false`` 说清楚，不在这里重复报错。
+    """
+    conn = _connect_ro(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT seq, agent_role, call_site, model, tier, tokens_in, tokens_out,"
+            " latency_ms, estimated, created_at FROM model_usage WHERE trace_id=''"
+            " ORDER BY seq").fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
     """整库导出：每个 plan 一棵树，外加不属于任何 plan 的游离事件清单。
 
@@ -533,14 +673,31 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
     store = factory(db_path)
     traces = [export_trace(store, pid) for pid in list_plan_ids(db_path)]
     strays = stray_events(db_path)
+    orphan_usage = unattributed_usage(db_path)
+    attributed = [t["cost"] for t in traces if t["cost"]["available"]]
+    estimated_calls = (sum(c["estimated_calls"] for c in attributed)
+                       + sum(1 for r in orphan_usage if r.get("estimated")))
+    total_calls = sum(c["calls"] for c in attributed) + len(orphan_usage)
     return {
         "schema": SCHEMA,
         "db": os.path.basename(db_path),
         "plan_count": len(traces),
         "traces": traces,
         "stray_events": strays,
+        # 归属不上的用量单列，不并进任何一棵树的 cost（见 unattributed_usage）。
+        "unattributed_usage": orphan_usage,
         "summary": {
             "span_count": sum(t["summary"]["span_count"] for t in traces),
+            # 成本汇总。`model_calls` 含归属不上的那些，`attributed_*` 只数挂上了
+            # Run id 的 —— 两个数分开，「记了账」与「归得上账」不是一回事。
+            "model_calls": total_calls,
+            "attributed_model_calls": sum(c["calls"] for c in attributed),
+            "unattributed_model_calls": len(orphan_usage),
+            "attributed_tokens_total": sum(c["tokens_total"] for c in attributed),
+            "estimated_model_calls": estimated_calls,
+            "measured_model_calls": total_calls - estimated_calls,
+            "all_estimated": total_calls > 0 and estimated_calls == total_calls,
+            "cost_note": ESTIMATED_NOTE,
             "event_count": sum(t["summary"]["event_count"] for t in traces),
             "unsourced_artifacts": sum(t["summary"]["unsourced_artifacts"] for t in traces),
             "seeded_artifacts": sum(t["summary"]["seeded_artifacts"] for t in traces),

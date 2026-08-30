@@ -7,7 +7,7 @@
 **这是给评委的答案。** 检索不准顶多说效果一般；无法核验就是零分。所以本文件的
 每一项都必须能被外人独立跑一遍，且失败时说得出「失败意味着什么」。
 
-七项：
+八项：
 
     1 hash-integrity      每个 skill/tool 调用的 input_digest / output_hash 与
                           event_log 一致          -> 失败 = 证据被篡改或事后手写
@@ -26,6 +26,10 @@
     7 history-case        本库晋升的 history_case 都能追溯到 outcome='success'
                           的真实 case（外部导入的知识不在判据内，但不许全空）
                                                   -> 失败 = 知识层被污染
+    8 cost-attribution    每条 model_usage 都挂得到 plan 的 trace_id、task_id 回查得到，
+                          estimated 标记与 model 列相符，归属不上的逐条点名
+                                                  -> 失败 = 成本归因是假的，或估算被
+                                                     印成了真实计费
 
 **SKIP 的纪律**：上游能力没落地的项输出 ``[SKIP]`` 并在结尾显式列名，
 **不计进 PASS 的分子**。静默跳过等于谎报 —— 一个 7/7 里藏着两个没跑的，
@@ -956,6 +960,110 @@ def check_history_case(cases: list[Case]) -> Check:
     return chk
 
 
+# ---------------------------------------------------------------------------
+# 第 8 项：cost-attribution
+# ---------------------------------------------------------------------------
+#: ``ScriptedModelClient`` 写进 ``model_usage.model`` 的前缀，出处
+#: ``maos/model/client.py``（``model=f"scripted-{tier}"``）。它是判「这一行是不是估算」
+#: 的**第二个独立来源**：``estimated`` 列由调用点按 client 的**类型**写
+#: （``maos/core/store.py::usage_is_estimated``），两者同源就等于自己跟自己对账。
+#: 照抄而不 import 的理由同 AUTHORITATIVE_WRITER。
+SCRIPTED_MODEL_PREFIX = "scripted-"
+
+
+def check_cost_attribution(cases: list[Case]) -> Check:
+    """每一行模型用量都挂得到 Run id，且没把估算印成真实计费。
+
+    四条判据，各自「失败意味着什么」：
+
+    a. ``trace_id`` 非空的行，该 trace_id 必须在 ``plan`` 表里存在 —— **不悬空**。
+       失败 = 成本挂在了一条不存在的 run 上，归因是假的。
+    b. ``task_id`` 非空的行，该 task_id 必须在 ``task`` 表里存在。
+       失败 = 「哪个 task 最贵」指着一个库里没有的任务，分摊是编的。
+    c. ``estimated`` 必须与 ``model`` 列相符（``scripted-*`` ⟺ ``estimated=1``）；
+       ``model`` 为空时印证不了，只有「声称真实计费却说不出是哪个模型」判负。
+       失败 = 估算被印成了真实计费 —— 在评委面前给出一个虚假的精确信号。
+    d. ``trace_id`` 为空的行，必须逐条出现在 ``trace.json`` 的 ``unattributed_usage`` 里。
+       失败 = 归属不上的成本被藏起来了。这一条是 a 的看门人：没有它，把所有
+       trace_id 清空就能让 a 无条件全绿，而成本归因整个消失。
+
+    空串 ``trace_id`` 本身**不判负**：``ManagerAgent.plan()`` 跑在 ``create_plan``
+    之前，那一刻确实没有 Run id 可挂。如实记录再点名，好过编一个让它看起来有归属。
+    """
+    chk = Check("cost-attribution", "模型用量挂得到 trace_id，且估算没被印成计费")
+    live = [c for c in cases if "model_usage" in c.tables]
+    if not live:
+        chk.skip("成本记账未落地：本轮证据束里没有一张 model_usage 表（T29 才建）")
+        return chk
+
+    orphans = 0
+    blind = 0
+    for case in live:
+        plans = {r[0] for r in case.conn.execute("SELECT trace_id FROM plan")}
+        tasks = {r[0] for r in case.conn.execute("SELECT task_id FROM task")}
+        # trace.json 里点了名的那些（按 seq 认，seq 是 model_usage 的主键）
+        named = {r.get("seq") for t in [case.trace] for r in t.get("unattributed_usage", [])}
+
+        for r in case.conn.execute(
+                "SELECT seq, trace_id, task_id, agent_role, call_site, model, estimated"
+                " FROM model_usage ORDER BY seq"):
+            where = f"{case.name} seq={r['seq']} ({r['agent_role']}@{r['call_site']})"
+
+            if r["trace_id"]:
+                if r["trace_id"] in plans:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: trace_id={r['trace_id']!r} 在 plan 表里不存在"
+                            f" —— 成本挂在了一条不存在的 run 上")
+            else:
+                orphans += 1
+                if r["seq"] in named:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: trace_id 为空却没出现在 trace.json 的"
+                            f" unattributed_usage 里 —— 归属不上的成本被藏起来了")
+
+            if r["task_id"]:
+                if r["task_id"] in tasks:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: task_id={r['task_id']!r} 在 task 表里不存在")
+
+            # 三态，不是两态。空 model 是真实存在的第三种：
+            # flows/scenario_2.py 的 FlakyModel 直接 `ModelResponse(text=...)`，
+            # 不填 model —— 它是 ScriptedModelClient 的子类，estimated=1 没错，
+            # 但 model 列这个**独立来源**说不出话，印证不了也否定不了。
+            model = str(r["model"] or "")
+            if not model:
+                if r["estimated"]:
+                    blind += 1          # 方向安全：已经标成估算了，只是印证不了
+                else:
+                    chk.bad(f"{where}: 声称真实计费（estimated=0）却说不出是哪个模型"
+                            f"（model 为空）—— 这正是「虚假的精确信号」")
+            elif model.startswith(SCRIPTED_MODEL_PREFIX) == bool(r["estimated"]):
+                chk.ok()
+            else:
+                chk.bad(f"{where}: estimated={r['estimated']} 与 model={model!r} 不符"
+                        f" —— 估算与真实计费的标记对不上，成本口径不可信")
+
+    if chk.total == 0:
+        # 不走 _idle_skip：它的补跑提示是 RAG 专用的（scenario-R5），
+        # 对成本这一项会把人指错方向。纪律同它 —— 0/0 不许判 PASS。
+        chk.skip("空转：证据束里一条 model_usage 都没有，本项判据一次都没执行"
+                 "；跑 python3 scripts/make_evidence.py 重产证据束")
+        return chk
+    if orphans:
+        # info 不是 warn：这些行是**如实记录**的已知缺口，不是新出现的问题。
+        # 印出来是要紧的 —— 「有多少成本归不上账」正是评委该看见的那个数。
+        chk.info(f"{orphans} 条用量归属不上任何 Run id（trace_id 为空），已在"
+                 f" trace.json 的 unattributed_usage 里逐条点名")
+    if blind:
+        chk.info(f"{blind} 条用量的 model 列为空（判据 c 无法交叉印证，方向安全："
+                 f"这些行都已标成 estimated=1）—— 出处 flows/scenario_2.py 的 FlakyModel"
+                 f" 直接构造 ModelResponse 不填 model，见 docs/BACKLOG.md ## task-T29")
+    return chk
+
+
 CHECKS = [
     check_hash_integrity,
     check_business_ref,
@@ -964,6 +1072,7 @@ CHECKS = [
     check_kb_hit,
     check_business_outcome,
     check_history_case,
+    check_cost_attribution,
 ]
 
 

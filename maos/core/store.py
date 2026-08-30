@@ -7,11 +7,14 @@ Store 是抽象基类，PolarStore 照着实现同样的方法即可，上层零
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any
+
+log = logging.getLogger("maos.store")
 
 
 def _now() -> str:
@@ -91,6 +94,13 @@ class Store(ABC):
     @abstractmethod
     def list_knowledge(self, *, tags: list[str] | None = None,
                        keyword: str | None = None) -> list[dict]: ...
+
+    # -- 模型用量（T29 新增表；既有六表不受影响） ----------------------------
+    @abstractmethod
+    def insert_model_usage(self, row: dict) -> None: ...
+
+    @abstractmethod
+    def list_model_usage(self, *, trace_id: str | None = None) -> list[dict]: ...
 
 
 class SqliteStore(Store):
@@ -180,6 +190,23 @@ class SqliteStore(Store):
                     created_at  TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_knowledge_plan ON knowledge(plan_id);
+
+                CREATE TABLE IF NOT EXISTS model_usage (
+                    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trace_id    TEXT NOT NULL,
+                    plan_id     TEXT NOT NULL DEFAULT '',
+                    task_id     TEXT,
+                    agent_role  TEXT NOT NULL,
+                    call_site   TEXT NOT NULL,
+                    model       TEXT NOT NULL,
+                    tier        TEXT NOT NULL,
+                    tokens_in   INTEGER NOT NULL DEFAULT 0,
+                    tokens_out  INTEGER NOT NULL DEFAULT 0,
+                    latency_ms  INTEGER NOT NULL DEFAULT 0,
+                    estimated   INTEGER NOT NULL DEFAULT 1,
+                    created_at  TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_model_usage_trace ON model_usage(trace_id);
                 """
             )
             self._conn.commit()
@@ -420,3 +447,92 @@ class SqliteStore(Store):
             want = set(tags)
             out = [d for d in out if want & set(d["tags"])]
         return out
+
+    # -- 模型用量 -----------------------------------------------------------
+    def insert_model_usage(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO model_usage (trace_id, plan_id, task_id, agent_role,"
+                " call_site, model, tier, tokens_in, tokens_out, latency_ms, estimated,"
+                " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row.get("trace_id", ""), row.get("plan_id", ""), row.get("task_id"),
+                    row["agent_role"], row["call_site"], row.get("model", ""),
+                    row.get("tier", ""), int(row.get("tokens_in") or 0),
+                    int(row.get("tokens_out") or 0), int(row.get("latency_ms") or 0),
+                    1 if row.get("estimated", True) else 0, _now(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_model_usage(self, *, trace_id: str | None = None) -> list[dict]:
+        """按 trace_id 取用量行；不给 trace_id 就取全部。恒按 seq 升序。
+
+        `trace_id=""` 是**有意义的查询**（取归属不上的那些），所以判的是 ``is None``
+        而不是真值 —— 用真值判会让空串悄悄退化成「取全部」，成本视图里那几行
+        「挂不上任何一棵树」的用量就会被算进每一棵树。
+        """
+        sql = "SELECT * FROM model_usage"
+        params: list[Any] = []
+        if trace_id is not None:
+            sql += " WHERE trace_id=?"
+            params.append(trace_id)
+        sql += " ORDER BY seq"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# 模型用量记账（T29）
+# ---------------------------------------------------------------------------
+def usage_is_estimated(client: Any) -> bool:
+    """这一次调用的 token 数是**估算**还是网关回的真实计费。**全仓唯一一处判定。**
+
+    ``ScriptedModelClient`` 算的是 ``len(user) // 4``（``model/client.py``）——
+    字符数除以 4，不是任何一家的计费口径；而缺省路径（没配
+    ``MAOS_LLM_*`` 三件套）全都是 Scripted。把这种数字印成「本次演示花了多少钱」，
+    是在评委面前给出一个虚假的精确信号，比不做成本量化更坏。
+
+    判 client 的**类型**而不是判 ``ModelResponse.model`` 的字符串前缀，是有意的：
+    落库那行的 ``model`` 列同样由 client 写，两者若同源，``scripts/verify.py``
+    第 8 项的第三条判据就退化成自己跟自己对账。类型与字符串是两个独立来源，
+    对不上就说明有人手改过其中一个。
+
+    延迟 import：存储层不该在模块级依赖模型层（依赖方向同 ``skills/invoker.py``
+    对 ``maos.agents`` 的处理）。
+    """
+    from maos.model.client import ScriptedModelClient
+    return isinstance(client, ScriptedModelClient)
+
+
+def record_model_usage(store: Any, response: Any, *, client: Any, agent_role: str,
+                       call_site: str, tier: str, latency_ms: int,
+                       trace_id: str = "", plan_id: str = "",
+                       task_id: str | None = None) -> None:
+    """把一次模型调用的用量挂到 ``trace_id`` 上。``store=None`` 就跳过（不抛）。
+
+    ``trace_id`` 空串是**如实记录**，不是缺省值填错：调用点确实拿不到归属时
+    （``ManagerAgent.plan()`` 跑在 ``create_plan`` 之前，那时还没有 plan 行），
+    就让这一行以空 trace_id 落库，由成本视图与核验器**点名**它挂不上任何一棵树。
+    随手编一个 trace_id 让它看起来有归属，才是这里能犯的最坏的错。
+
+    落库失败只 warning 不抛：一次已经成功的模型调用不该因为记账挂掉
+    （口径同 ``model/client.py::_safe_int``）。但必须留声 —— 静默吞掉等于
+    成本统计凭空偏低，而屏幕上看不出来。
+    """
+    if store is None:
+        return
+    try:
+        store.insert_model_usage({
+            "trace_id": trace_id or "", "plan_id": plan_id or "", "task_id": task_id,
+            "agent_role": agent_role, "call_site": call_site,
+            "model": getattr(response, "model", "") or "",
+            "tier": tier or "",
+            "tokens_in": getattr(response, "tokens_in", 0) or 0,
+            "tokens_out": getattr(response, "tokens_out", 0) or 0,
+            "latency_ms": latency_ms,
+            "estimated": usage_is_estimated(client),
+        })
+    except Exception as exc:                    # noqa: BLE001 —— 见 docstring
+        log.warning("模型用量落库失败（call_site=%s trace_id=%s）：%s；"
+                    "本次成本统计会偏低", call_site, trace_id, exc)

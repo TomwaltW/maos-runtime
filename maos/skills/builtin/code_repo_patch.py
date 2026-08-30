@@ -22,11 +22,16 @@ from __future__ import annotations
 
 import json
 import posixpath
+import time
 from typing import Any
 
+from maos.core.store import record_model_usage
 from maos.model.client import Tier
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
+
+#: 落 ``model_usage`` 时写进 ``call_site`` 列的值。
+CALL_SITE = "maos/skills/builtin/code_repo_patch.py::CodeRepoPatchSkill.run"
 
 # 受保护目录名：路径按 / 分段后任一段命中即安全事件。"tests" 挡的是「改测试让测试通过」。
 #
@@ -180,11 +185,25 @@ class CodeRepoPatchSkill(Skill):
             # 与 req.normalize 不同：补丁没有规则兜底可言，无模型就是接线错了。
             raise RuntimeError("code.repo-patch 需要 ctx.model，调用方必须传 extras={'model': ...}")
 
-        raw = ctx.model.complete(
+        # 接住整个 ModelResponse 再取 .text（口径同 req_normalize）：补丁产出是本仓
+        # 最贵的一类调用，用量在这一行丢掉，成本视图里最大的那一块就是空的。
+        tier = ctx.extras.get("tier") or Tier.MEDIUM
+        started = time.perf_counter()
+        resp = ctx.model.complete(
             system=SYSTEM,
             user=self._build_prompt(payload, ctx),
-            tier=ctx.extras.get("tier") or Tier.MEDIUM,
-        ).text
+            tier=tier,
+        )
+        record_model_usage(
+            ctx.store, resp, client=ctx.model,
+            agent_role=getattr(ctx.identity, "role", "") or "unknown",
+            call_site=CALL_SITE, tier=tier,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            trace_id=ctx.extras.get("trace_id") or "",
+            plan_id=ctx.extras.get("plan_id") or "",
+            task_id=ctx.extras.get("task_id"),
+        )
+        raw = resp.text
 
         try:
             patch = json.loads(raw)

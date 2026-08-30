@@ -8,9 +8,9 @@
 
 分域：软件交付域 6 个；制造售后退款域 5 个。
 
-**字段顺序即冻结契约附录 A 的声明顺序**，由 `dataclasses.fields(AgentIdentity)` 取（maos/agents/base.py:20）：`agent_id`、`role`、`duty`、`allowed_skills`、`allowed_tools`、`write_scope`、`max_risk`、`model_tier`、`max_self_repair`。本文件不另抄一份顺序。
+**字段顺序即冻结契约附录 A 的声明顺序**，由 `dataclasses.fields(AgentIdentity)` 取（maos/agents/base.py:59）：`agent_id`、`role`、`duty`、`allowed_skills`、`allowed_tools`、`write_scope`、`max_risk`、`model_tier`、`max_self_repair`。本文件不另抄一份顺序。
 
-Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_tool / check_risk / check_write`（maos/agents/base.py:64）在越权时抛 `PermissionDenied`；Skill 白名单由 `SkillInvoker` 在调用前校验。
+Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_tool / check_risk / check_write`（maos/agents/base.py:103）在越权时抛 `PermissionDenied`；Skill 白名单由 `SkillInvoker` 在调用前校验。
 
 ## 一览
 

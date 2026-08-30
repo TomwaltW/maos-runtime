@@ -194,18 +194,85 @@ def prefilter(store: Any, query: dict, *, limit: int = MAX_CANDIDATES) -> list[d
 
 
 # ------------------------------------------------------ 阶段二：四通道混合召回
-#: 每个 store 上两条 StorePort 通道的可用性判定，探一次记一次。
+#: 每个 store 上各条检索通道的可用性判定，探一次记一次。
 #: 用 `WeakKeyDictionary` 而不是 `id(store)` 做键：id 会被回收后的新对象复用，
 #: 那就成了把 A 的判定按在 B 头上，而症状是「换了个库检索忽然全走本地」。
 _PORT_STATE: Any = weakref.WeakKeyDictionary()
 
+#: 上面那张判定表**成立的前提**：记下判定时知识层 schema 的版本号。
+#: 单独一张表而不是塞进判定表里 —— 判定是 bool，版本是 int，混在一起
+#: `False in state.values()` 会被版本 0 撞上（`0 == False`）。
+_PORT_STATE_SCHEMA: Any = weakref.WeakKeyDictionary()
 
-def port_channel_state(store: Any) -> dict[str, bool]:
-    """这个 store 上两条 StorePort 通道各自探过没有、通不通。只读，供自证与测试用。"""
+#: 判定表里属于 StorePort 的两个键 —— 就是端口方法名，`_port_search` 按它取用。
+PORT_CHANNELS = ("fts_search", "vector_search")
+
+#: 本地 FTS5 退化通道在**同一张**判定表里的键。**不是端口方法名**，所以
+#: `port_channel_state()` 不把它算进去。它要的只是同一套「只告警一次 + 版本一动
+#: 就作废」的记账，不是第二套机制 —— 两套记账迟早在「到底告警过没有」上打架。
+LOCAL_FTS_CHANNEL = "local_fts"
+
+#: 读不到版本号时的占位。老库还没建 `kb_schema_version` 表，或这个 store 压根
+#: 查不了库，都落在这一档。`-1` 而不是 `0`：0 是「表在、还没记过账」的真实版本。
+_SCHEMA_UNKNOWN = -1
+
+
+def _schema_stamp(store: Any) -> int:
+    """这个 store 上知识层 schema 的当前版本。读不到就是 `_SCHEMA_UNKNOWN`。"""
     try:
-        return dict(_PORT_STATE.get(store) or {})
+        return kb.applied_schema_version(store)
+    except Exception:                                  # noqa: BLE001 —— 探测用
+        return _SCHEMA_UNKNOWN
+
+
+def _port_state(store: Any) -> dict[str, bool]:
+    """这个 store 的通道判定表，**就地可写**（调用方改它就是改记下来的那份）。
+
+    判定是粘性的（探出 False 就一直 False，「只告警一次」正是靠这个），所以它
+    必须跟着 schema 版本走：T17 之后老库能就地升到目标形状，升完端口通道其实
+    通了，而这张表还按「不通」走 —— 库已经好了检索却没跟上，且没有任何红灯。
+    所以每次要用一条 False 判定之前先看版本动没动，动了就整张作废、下一次调用
+    重新探。**作废而不是直接翻成 True**：通没通只有真调一次才知道。
+
+    版本**只在存在 False 判定时才去读**。True 判定不短路（每次仍旧真调端口，
+    端口坏了自会抛出来翻成 False），作废它买不到任何东西，却要在热路径上多发
+    一条 SQL —— PolarDB 上那是一次真的网络往返。
+    """
+    try:
+        state = _PORT_STATE.setdefault(store, {})
     except TypeError:                                  # 不支持弱引用的 store
         return {}
+    if False in state.values() and _PORT_STATE_SCHEMA.get(store) != _schema_stamp(store):
+        state.clear()
+        _PORT_STATE_SCHEMA.pop(store, None)
+    return state
+
+
+def _remember_degraded(store: Any, state: dict[str, bool], channel: str) -> None:
+    """记下「这条通道在这个 store 上不通」，连同当时的 schema 版本一起。
+
+    版本就是这条判定的**有效期**：库就地升级之后它自动作废（见 `_port_state`）。
+    """
+    state[channel] = False
+    try:
+        _PORT_STATE_SCHEMA[store] = _schema_stamp(store)
+    except TypeError:                                  # 不支持弱引用，判定本来就不粘
+        pass
+
+
+def port_channel_state(store: Any) -> dict[str, bool]:
+    """这个 store 上两条 StorePort 通道各自探过没有、通不通。只读，供自证与测试用。
+
+    只报端口那两条：本地 FTS5 的退化判定共用同一张表，但它不是端口通道，
+    混进来会让「换后端之后端口通没通」这个判据读起来含糊。它走 `local_fts_state`。
+    """
+    state = _port_state(store)
+    return {ch: state[ch] for ch in PORT_CHANNELS if ch in state}
+
+
+def local_fts_state(store: Any) -> bool | None:
+    """本地 FTS5 退化通道在这个 store 上试过没有、通不通。`None` = 没试过。"""
+    return _port_state(store).get(LOCAL_FTS_CHANNEL)
 
 
 def _port_search(store: Any, channel: str, args: tuple) -> list[tuple[str, float]] | None:
@@ -223,14 +290,15 @@ def _port_search(store: Any, channel: str, args: tuple) -> list[tuple[str, float
     探测通过之后，端口返回的**空列表就是真的没命中**，不再回落本地实现 ——
     F-2 原话「『后端没准备好』不许伪装成『没命中』」，反过来同样成立：
     把「后端说没有」偷偷换成本地实现的结果，两条通道的口径就再也对不上了。
+
+    **判定粘，但不粘过一次 schema 迁移**：老库上探出的 False 在库升上去之后
+    自动作废（`_port_state`），下一次调用重新探。否则长跑进程里就地升级库
+    永远不自愈，得重开进程 —— 而这件事同样没有任何红灯。
     """
     method = getattr(store, channel, None)
     if not callable(method):
         return None                                    # 能力探测不成立：没有这个方法
-    try:
-        state = _PORT_STATE.setdefault(store, {})
-    except TypeError:                                  # 不支持弱引用，退化成每次都探
-        state = {}
+    state = _port_state(store)
     if state.get(channel) is False:
         return None
     try:
@@ -241,7 +309,7 @@ def _port_search(store: Any, channel: str, args: tuple) -> list[tuple[str, float
                 "StorePort.%s 在 %s 上走不通（%s），本次起这条通道退化为本模块的本地实现。"
                 " 两层口径不一致不会报错，只会让召回悄悄变少，所以这条只告警一次并记住判定。",
                 channel, type(store).__name__, exc)
-        state[channel] = False
+        _remember_degraded(store, state, channel)
         return None
     state[channel] = True
     return rows
@@ -306,10 +374,21 @@ def _local_fts_rows(store: Any, tenant_id: str, keyword: str,
     所以这里**没有** trigram 那条「<3 字符查询恒返回空集」的坑（W-2 的
     BACKLOG 第 1 条），两字词「退款」照常召回。要点在于查询侧必须走同一个
     `kb.tokenize`：换成把原文整串丢进 MATCH，中文那一段一个字都对不上。
+
+    **这条路在 PG 后端上是死的**：`bm25()` 与影子表 `kb_doc_fts` 两样都是
+    SQLite FTS5 专有的。正路是端口的 `fts_search`（PG 侧走 tsvector，T18 已填实），
+    这里只有在「PG 后端 + 端口通道也走不通」这个组合下才会走到，然后每次检索
+    失败一次。所以失败按 store 只告警一次，口径与 `_port_search` 同一套记账
+    （`_port_state`）—— 每次刷一条只会把日志淹掉，而淹掉的正是上面那条真告警。
+
+    **失败之后仍然照试不误**，不像端口通道那样短路：它是 SQLite 上的正路，
+    库刚建好、影子表刚迁移完这类「这一刻不行下一刻行」是常态，短路掉等于
+    把 SQLite 的兜底也一并拆了。记账只管住日志，不管住调用。
     """
     match = " OR ".join(f'"{t}"' for t in kb.tokenize(keyword))
     if not match:
         return []
+    state = _port_state(store)
     try:
         rows = kb.query(
             store,
@@ -317,8 +396,14 @@ def _local_fts_rows(store: Any, tenant_id: str, keyword: str,
             " WHERE kb_doc_fts MATCH ? AND tenant_id = ? ORDER BY rank LIMIT ?",
             (match, tenant_id, int(limit)))
     except Exception as exc:                           # noqa: BLE001 —— 检索不阻塞
-        log.warning("本地 FTS5 检索失败（%s），本通道记 0 分", exc)
+        if state.get(LOCAL_FTS_CHANNEL) is not False:
+            log.warning(
+                "本地 FTS5 检索失败（%s），本通道记 0 分。"
+                " `bm25()` 与影子表都是 SQLite FTS5 专有的，PG 后端上这条退化路径本来就走不通；"
+                " 所以这条按 store 只告警一次并记住判定，检索本身照常继续。", exc)
+        _remember_degraded(store, state, LOCAL_FTS_CHANNEL)
         return []
+    state[LOCAL_FTS_CHANNEL] = True
     return [(r["doc_id"], -float(r["rank"])) for r in rows]
 
 

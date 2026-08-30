@@ -46,7 +46,7 @@ from maos.artifacts import KIND_PATCH_SET, KIND_TEST_REPORT
 from maos.contracts.events import new_id
 from maos.contracts.states import PlanState, TaskState
 from maos.core.control_plane import ControlPlane
-from maos.core.eventbus import EventBus, InMemoryEventBus
+from maos.core.eventbus import EventBus, create_event_bus
 from maos.core.store import SqliteStore
 from maos.model.client import ModelClient, ScriptedModelClient
 from maos.runtime.gate import ReviewerGate
@@ -84,10 +84,18 @@ def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | 
     script：喂给缺省 ScriptedModelClient 的「关键字 -> 应答」表。
     model ：传实例则原样注入（场景 2 的 FlakyModel 由此进入），不再按 script 构造。
     matrix：True 时事件总线经 HiClaw(Matrix) 转发，不可用则自动降级。
+
+    总线由 `core/eventbus.py::create_event_bus` 按 `MAOS_EVENTBUS_BACKEND` 造。
+    **不设这个环境变量时它返回的就是 `InMemoryEventBus`**，所以「裸 clone 不用任何
+    key 跑到 7/7」这条卖点一个字节都没动；设了才走 RocketMQ，并接受它的 drain 地板。
+
+    接这一行之前，`create_event_bus` 全仓只有测试调用过 —— 于是「总线层可替换」
+    是被证过的，而**生产路径从没走过那个开关**：可替换性停在测试里，演示链路仍然
+    写死内存版。差别不在默认行为（逐字节相同），在于这句话到底能不能说。
     """
     store = SqliteStore()
     store.init_schema()
-    bus = InMemoryEventBus()
+    bus = create_event_bus()
     if matrix:
         bus = _wrap_matrix(bus)
     cp = ControlPlane(store, bus)

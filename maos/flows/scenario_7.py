@@ -472,9 +472,14 @@ def drive(*, matrix: bool = False) -> dict:
     # 控制面只认这个回调，不认识 ManagerAgent（同 scenario_5）。
     cp.set_replanner(_switch_channel)
 
-    mgr = ManagerAgent(model)
-    trace_id = new_id("trace")
-    plan_id = cp.create_plan(goal=GOAL, trace_id=trace_id, tasks=mgr.plan(GOAL))
+    # 先生成两个 id 再规划（口径同 scenario_1/5/6）：`mgr.plan()` 是 create_plan
+    # 的入参，跑在建 Plan 之前。不带 store 就一条用量都不落 —— 本场景「Metrics
+    # 关联同一 Run id」那条承诺原先在这里是空的（cost.calls 恒为 0）。
+    trace_id, plan_id = new_id("trace"), new_id("plan")
+    mgr = ManagerAgent(model, store=store)
+    cp.create_plan(goal=GOAL, trace_id=trace_id, plan_id=plan_id,
+                   tasks=mgr.plan(GOAL, context={"plan_id": plan_id,
+                                                 "trace_id": trace_id}))
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)
 
@@ -487,7 +492,8 @@ def drive(*, matrix: bool = False) -> dict:
     finance_task = pending[0]
     print(f"\n[1] 待主管审批: {finance_task['title']}")
 
-    reviewer = ReviewerAgent(model)
+    # 带 store（同 scenario_6）：run() 那层已经把归属绑好了，缺的只是落库这一步。
+    reviewer = ReviewerAgent(model, store=store)
     note = review_after_gate(reviewer, cp, plan_id, host_task=finance_task)
     print(f"    语义审查: {note.artifacts[0]['content']['conclusion']}")
 

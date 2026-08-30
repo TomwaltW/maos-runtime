@@ -163,7 +163,10 @@ def run(*, matrix: bool = False) -> int:
     goal, aggregated = _intake_goal(store, plan_id=plan_id, trace_id=trace_id)
     print(f"多源信号聚合：{aggregated['summary']}")
 
-    mgr = ManagerAgent(model)
+    # 带 store 构造，规划期烧掉的 token 才落得进 model_usage；两个 id 上面已经
+    # 拿到手，随 context 传进 plan()，这笔账就挂在它真正属于的那棵树上。
+    mgr = ManagerAgent(model, store=store)
+    plan_context = {"plan_id": plan_id, "trace_id": trace_id}
 
     def replanner(*, goal: str, findings: list[dict], open_tasks: list[dict]) -> list[dict]:
         """带全部 findings 让 Manager 重规划剩余工作。
@@ -171,9 +174,13 @@ def run(*, matrix: bool = False) -> int:
         控制面不认识 ManagerAgent，只认这个回调（control_plane.set_replanner）——
         模型调用留在场景层，控制面那边一行模型代码都没有。
         """
+        # 重规划这一次 ask() 跑在 create_plan **之后**，但控制面调的是这个回调、
+        # 不是 Agent.run()，`_ATTRIBUTION` 那层包装够不着它 —— 所以照样得把
+        # context 传进去，否则重规划的成本又成了一条认领不了的用量。
         specs = mgr.plan(
             f"重新规划：原目标「{goal}」的首版方案被判定不可行，"
-            f"累计 {len(findings)} 条问题，请给出替代方案")
+            f"累计 {len(findings)} 条问题，请给出替代方案",
+            context=plan_context)
         # 下一轮的报告在这里预置：本回调跑在 _apply_replan 与 start_plan 之前，
         # 此刻 attempt 还是旧值，派发时才 +1（control_plane.py:169）。
         for task in open_tasks:
@@ -183,7 +190,8 @@ def run(*, matrix: bool = False) -> int:
 
     cp.set_replanner(replanner)
 
-    cp.create_plan(goal=goal, trace_id=trace_id, tasks=mgr.plan(goal), plan_id=plan_id)
+    cp.create_plan(goal=goal, trace_id=trace_id, plan_id=plan_id,
+                   tasks=mgr.plan(goal, context=plan_context))
     _seed_report(store, plan_id, 1)          # 方案甲这一轮
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)

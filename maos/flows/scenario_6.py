@@ -299,7 +299,9 @@ def run(*, matrix: bool = False) -> int:
     print(f"\n待主管审批: {blocked['title']}")
 
     # —— Reviewer 零改动复用：挂在 Gate 之后、审批之前 ——
-    reviewer = ReviewerAgent(model)
+    # 带 store：`review_after_gate` 直接调 `reviewer.run(ctx)`，`BaseAgent` 那层
+    # 包装会把 ctx 上的 trace_id 绑好 —— 但 store 是 None 的话这笔账压根不落库。
+    reviewer = ReviewerAgent(model, store=store)
     note = review_after_gate(reviewer, cp, plan_id, host_task=blocked)
     print(f"语义审查: {note.artifacts[0]['content']['conclusion']}")
 

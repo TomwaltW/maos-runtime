@@ -695,3 +695,51 @@ RESULT: 7/7 PASS
 执行者每次都在本地跑，于是「主干已推送」这个条件一直是隐含的、没被写出来的。
 隐含条件的代价从来不是它难修 —— 卡点 8 的修法只是一条 `git push` ——
 是**没人知道它存在**，于是没人会去做那一条。
+
+## 第七遍冒烟（整合轮 13，2026-08-30）—— 基线 `ce52069`，**第一次在裸 `git clone` 下跑**
+
+前六遍的第 3 条结论都是「有条件地成立」，条件有两个：**得敲对分支**（卡点 7）、
+**主干得已推送**（卡点 8）。本遍是这两条都闭合之后的第一次复核，
+于是**这一遍不带任何条件**：照评委最可能的敲法，`git clone <地址>`，一个参数都不加。
+
+```
+$ git clone https://github.com/TomwaltW/maos-runtime.git smoke7
+$ git rev-parse --abbrev-ref HEAD        -> goai-restructure
+$ git rev-parse HEAD                     -> ce52069ae910807c769a1b4f12c09b7697557c12
+$ ls -A | wc -l                          -> 24        （maos/ run.py scripts/ evidence/ 都在）
+```
+
+本地 `goai-restructure` 同为 `ce52069…`，**逐字符相同** —— 卡点 8 的自判命令打 `SAME`。
+
+| 步 | 命令 | 结果 | exit |
+| :-- | :-- | :-- | :-- |
+| ① | `python3 -m pytest maos/tests -q` | **935 passed, 29 skipped** in 18.54s | 0 |
+| ② | `python3 run.py` | 场景 1–7 端到端 | 0 |
+| ③ | `python3 scripts/make_evidence.py` | 8 场景落盘，0 场景缺模块 | 0 |
+| ④ | `python3 scripts/verify.py` | **RESULT: 7/7 PASS** | 0 |
+| ⑤ | `python3 scripts/gen_docs.py --check` | 生成物与源码一致 | 0 |
+
+### 五条结构性结论逐条复核（第七遍）
+
+| # | 结论 | 是否仍成立 | 实测 |
+| :-- | :-- | :-- | :-- |
+| 1 | 零出网 | ✅ 成立 | 口径与前几遍一致；本遍同样没做物理断网测试 |
+| 2 | 无任何 API key 可跑 | ✅ 成立 | 全程 ScriptedModelClient 路径，未配任何密钥 |
+| 3 | 从全新克隆一次通到 `RESULT: 7/7 PASS` | ✅ **无条件成立**（六遍以来第一次） | 裸 clone，不带 `-b`、不带任何参数，五步全 0 退出 |
+| 4 | 跑完工作区 50 行脏 | ✅ 成立 | 与前两遍同，全是 `evidence/**` 的出处头 |
+| 5 | 掐表远在 15 分钟预算内 | ✅ 成立 | 五步合计约 40 秒 |
+
+**第 3 条从「有条件」转成「无条件」，是本遍唯一的变化，也是六遍以来最实的一步。**
+但两个卡点的修法性质不同，别把它们记成同一类：卡点 8（推送）在 git 历史里留得下痕迹，
+**卡点 7（默认分支）是仓库设置，在网页上改回去不留任何痕迹** —— 所以 README §4
+的 `-b goai-restructure` 一个字都没删，判据 ⑧ 也照旧留在清单里。
+它下一次会红在「有人把默认分支改回去了」，而那件事没有任何 git 信号会告诉你。
+
+### 一条执行顺序上的坑（本遍实撞，不是缺陷）
+
+裸克隆里**先跑 `verify.py`** 会 `exit=2`，报 `缺数据库: evidence/scenario-1/maos.db
+（先跑 python3 scripts/make_evidence.py）`。原因是 `evidence/*/maos.db` 不入 git，
+克隆下来只有快照没有库。**README 第 120 行早已写明这一点**，报错本身也直接给了修法 ——
+记在这里只是因为它是「照 README 正序跑」与「挑着跑」的第一处分岔：
+③ 必须在 ④ 之前，两条命令不能对调。
+

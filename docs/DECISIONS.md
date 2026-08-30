@@ -1150,3 +1150,15 @@ verify 第 6 项自述层收口。派单 §5 只说了「补 FAILED 分支的 st
 | 2026-08-30 | P7 | T18 是六轨里唯一没建 `## task-T18` 节的：4 条 DECISIONS 直接追加到文件末尾，落在 `## integrate-round-11` 名下，只靠 Phase 列写 `P5 (T18)` 标归属 | **摘出来建 `## task-T18` 节**（排在 T17 与 T19 之间），正文一字未动，只把 Phase 列的 `(T18)` 去掉 | 这正是 `## integrate-round-11` 那条「双向归属校验」要防的静默错账：git 不报错、测试不变红，只有下一个读账本的人把 T18 的四条判断算到整合轮头上。归属由节标题承担是全库通例（其余五轨、以及此前十四轨都如此），留着 `(T18)` 反而是第二套口径。摘回后逐条比对分支原文，四条逐字一致、节内无别轨条目 |
 | 2026-08-30 | P7 | 并轨后 `pytest` 由 860 涨到 903，仓库里七处写着 860。其中 `README.md:188` 与 `docs/clone-smoke-report.md` 通篇的 860 是**第六遍冒烟当时的基线读数** | **只回填「活数字」，历史读数一个字不动**：改 README §4 命令注释、submission-checklist、demo-script、ppt-outline 三处、`demo_preflight.sh` 的 `EXPECT_TESTS`；不改 clone-smoke-report 与 README 那句「第六遍冒烟读数」 | 两类数字的语义不同：活数字答「你现在跑应该看到什么」，过期就是错的；历史读数答「那一次实测跑出了什么」，改了就是篡改证据（铁律 3）。判据是看它有没有钉基线 sha —— 钉了的是历史读数。**秒数同理不动**：README 的「28 秒 / 7 秒」标注了出处（第六遍冒烟），本轮没有重跑第七遍冒烟，编一个新秒数就是造证据；实测 `pytest` 仍是 18s 量级，与第六遍的 18.150s 同档，不改也不失真 |
 | 2026-08-30 | P7 | `scripts/demo_preflight.sh` 的 `EXPECT_TESTS` 缺省值是**机器判据**，不是文档 | 一并回填到 903 | 它是 `!=` 就非 0 退出的硬判据，漏掉这处的后果不是「文档过期」而是「演示前置检查必红」。配了 `MAOS_PG_DSN` 的环境下它仍会对不上（那时是 932）—— 那条已由 T18 记在 `## task-T18`，本轮不重复处理 |
+
+## polardb-live
+
+拿到一台真实的阿里云 PolarDB PostgreSQL 版实例后，把 `deploy/polardb-live.md` 里
+「未实测」那一栏补成实测。手册没覆盖真连一台云库的操作面，下面四条是自行判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-30 | P7 | 铁律 6 写的是「连接串只从环境变量 `MAOS_PG_DSN` 读，禁止落进任何文件」。但补跑要跨十几条互相独立的命令复用同一条 DSN，而每条命令都是新 shell，`export` 不跨命令留存；把 DSN 直接写进命令行则会进 shell 历史与 `ps`（`polardb_smoke.py` 的 docstring 明令禁止这条） | 放在**仓库外**的 `~/.config/maos/pg.env`（权限 600），每条命令用 `set -a; . 该文件; set +a` 载入 | 铁律 6 要防的是「连接串进仓库、进 git、进文档」，这三条一条没破：全程 `git status` 干净，收尾扫描确认两份文档与 `scripts/polardb_smoke.py` 里零命中真实 host／账号／口令。两个替代方案都更差 —— 进命令行等于进 shell 历史，每条命令手打则无法自动化且更容易误贴。口令只落到使用者自己的家目录，不进仓库 |
+| 2026-08-30 | P7 | 控制台建的普通账号装不了 `vector`（要 `polar_superuser`），在 `public` 里也建不了表（PG15 起普通用户只有 `USAGE`），且对库没有 `CREATE`，**连自建一个模式绕开都不行** | 请人类在控制台新建高权限账号，只用它跑 `CREATE EXTENSION vector` 与 `GRANT CREATE ON SCHEMA public TO <普通账号>` **两条**，之后全程退回普通账号 | 这两条是不可绕的前置，不做则五步冒烟只能到 2/5。把高权限的用途压到最小两条、用完即弃，是为了不滑向「以后干脆都用高权限连库」那种更省事但更危险的走法。实录与两个坑的分辨见 `deploy/polardb-live.md` §1.3 |
+| 2026-08-30 | P7 | `deploy/polardb.md` 第 2 步写的灌库命令是 `psql "$MAOS_PG_DSN" -f maos/store/pg_schema.sql`，而本机没装 PG 客户端（`command -v psql` 空） | 不装 psql，改用 psycopg 按 `;` 切分逐条执行，逐条打印 `statusmessage`（等价于 psql 的 `CREATE TABLE` / `CREATE INDEX` 命令标记），执行后再用 `information_schema.columns` + `pg_indexes` 核对落地形状 | 不为一次灌库装一套客户端。逐条执行 + 核对落地比 psql 的原样输出更能证明「索引到底建成了什么形状」（实测拿到 `hnsw (embedding vector_cosine_ops)` 与 `gin (to_tsvector('simple'::regconfig, body))`）。**顺带避开了一个安全问题**：psql 只能从命令行接 URI，那会让 DSN 出现在 `ps` 里 |
+| 2026-08-30 | P7 | 回填 `deploy/polardb-live.md` 时，§1.1 的本机 Docker 对照组输出与 §2.1 里「DSN 是占位符所以没跑成」的失败原因段，都属于此前那一轮的历史读数 | **一字不动地保留**，只新增 §1.2／§1.3／§3.5，并把 §2.1 的标题改成删除线 + 指向 §1.2；失败原因段作为存档留在原处 | 铁律 3：历史读数改了就是篡改证据。而且那条「占位符没换」的坑**在本轮又复发了一次**（高权限账号那份 DSN 只换了口令、用户名那格还留着 `<ADMIN_USER>`，被脚本内建的检测当场拦下），留着比删掉有用，已把这次复发追记在 §2.1 末尾 |

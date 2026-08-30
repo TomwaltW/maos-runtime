@@ -30,6 +30,24 @@ docker compose -f deploy/docker-compose.yml --profile pg up -d pgvector
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
+🔴 **托管实例上这一步要用高权限账号**（本机 Docker 不会遇到，因为容器里的账号就是
+superuser）。PolarDB 实测：控制台建的普通账号执行这条会得到
+
+```
+permission denied to create extension "vector"
+HINT:  Must be superuser or user with all of polar_superuser to create this extension.
+```
+
+而且它**在 `public` 里也建不了表**（PG15 起 `public` 只给普通用户 `USAGE`）。所以托管实例
+上要先用高权限账号跑两条，跑完之后全程用普通账号即可：
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+GRANT CREATE ON SCHEMA public TO <普通账号>;
+```
+
+细节与实录见 `deploy/polardb-live.md` §1.3。
+
 然后把 `maos/store/pg_schema.sql` 灌进去（建 F-2 形状的表、tsvector 的 GIN 索引、
 向量的 HNSW 索引）：
 
@@ -114,32 +132,56 @@ pgvector 的 `<=>` 是余弦**距离**（越小越近），而 F-2 要求分数�
 适配器取 `1 - 距离`。取反了的症状是排序整个倒过来而**仍然有结果**，肉眼看不出来，
 所以两个方向都测。
 
+### 追加：真 PolarDB 实例上的复测（2026-08-30）
+
+上面那一栏跑在本机 Docker 上。同一份代码在**阿里云 PolarDB PostgreSQL 版**实例上又跑了一遍：
+
+| 项 | 实测结果 |
+| :-- | :-- |
+| 实例 | `PostgreSQL 16.14 (PolarDB 16.14.20.0 build 1f03f15d)` on x86_64-linux-gnu |
+| `CREATE EXTENSION vector` | `vector 0.8.3.1`（需高权限账号，见上面第 2 步） |
+| `pg_schema.sql` 灌库 | `CREATE EXTENSION / CREATE TABLE / CREATE INDEX x2` 全成功 |
+| GIN / HNSW 索引落地 | `gin (to_tsvector('simple'::regconfig, body))`、`hnsw (embedding vector_cosine_ops)` |
+| `test_pg_store_live.py` + `test_kb_pg_channel.py` | **33 passed** |
+| 全量 | **932 passed, 0 skipped**（有库）/ **903 passed, 29 skipped**（无库；29 条全是 DSN 门控） |
+| 地基冒烟五步 | 5/5，且每个数值与本机 pgvector **逐字节相同** |
+
+逐条对照与差异分析在 `deploy/polardb-live.md`，那份文档只管数据库这一侧。
+
 ---
 
 ## 未实测
 
-🔴 **PolarDB PostgreSQL 版的实例本身没有连过。** 本页「已实测」栏的全部输出都来自
-本机 Docker 的 `pgvector/pgvector:pg16`。
+~~PolarDB PostgreSQL 版的实例本身没有连过。~~ **2026-08-30 已连过并跑通**，
+所以这一栏收窄成两半：先是当初列的清单里**已经验掉的那几条**（连带一条推断被推翻），
+然后是**仍然没验的**。
 
-兼容性依据是**推断，不是验证**，依据有两条：
+### 当初列的清单里，已经验掉的
 
-1. PolarDB PostgreSQL 版兼容 PostgreSQL 协议与 SQL 语法，标准 libpq 驱动（psycopg）
-   可以直连 —— 本层没有用任何 PG 私有特性，用到的只有 `to_tsvector` / `ts_rank` /
-   `plainto_tsquery` 与 pgvector 的 `<=>`。
-2. pgvector 在其可用扩展列表中。
+| 当初的疑问 | 实测结论 |
+| :-- | :-- |
+| 兼容性只是推断 | ✅ 变成验证：协议兼容、psycopg 直连、`to_tsvector` / `ts_rank` / `<=>` 全部按预期工作 |
+| `vector` 能不能建、建到哪版 | ✅ 能，**0.8.3.1**；不需要在控制台启用什么，但**必须高权限账号** |
+| 读写分离地址会不会把 DDL 路由到只读节点 | ✅ 不会。走 `rwlb` 地址时 `pg_is_in_recovery() = false`，`CREATE EXTENSION` 与建索引都实际生效 |
+| 公网地址 / 白名单 | ✅ 公网地址 + IP 白名单实测可连（白名单不放行时的症状是 **TCP 静默超时**，不是拒绝，容易误判成网络故障） |
+| `sslmode=require` | ❌ **连不上：该实例不支持 SSL**（`SHOW ssl` = `off`）。详见 `polardb-live.md` §3.5 |
 
-下面这些**一条都没在 PolarDB 上验过**，迁过去第一天就该逐条过：
+🔴 **一条推断被实测推翻，要点名改掉**：原文写「`zhparser` / `pg_jieba` 这类中文分词扩展
+**大概率装不了**（托管实例通常只允许白名单内的扩展）」。实测该实例共 **189** 个可用扩展，
+`zhparser 2.2`、`pg_jieba 1.1.2`、`pg_bigm 1.2`、`pgroonga 4.0.5` **四个都在可用列表里**。
+所以下面「中文全文」那条局限，在 PolarDB 上**有解的可能**——
+但「在可用列表里」离「装上了」再离「中文召回是好的」还有两步，**这两步都没做**。
 
-- 云上链路：`sslmode=require` / VPC 白名单 / 公网地址与内网地址的差别。
-- 连接治理：连接池、PgBouncer、以及 PolarDB 的读写分离地址会不会把
-  `CREATE EXTENSION` 这类 DDL 路由到只读节点。
-- 托管实例的扩展白名单：`vector` 能不能建、能建到哪个版本；
-  `zhparser` / `pg_jieba` 这类中文分词扩展**大概率装不了**（托管实例通常只允许
-  白名单内的扩展）—— 这直接决定下面「中文全文」那条局限在 PolarDB 上能不能解。
-- 数据量上来之后的 HNSW 参数（`m` / `ef_construction`）与索引构建耗时。
-  本机靶表只有 4 行，索引建得上，但**没有任何性能结论**。
+### 仍然没验的
+
+- **连接池 / PgBouncer / 并发**：全程单连接，连接治理一条没测。
+- **内网地址**：只连过公网地址。生产要走 VPC 内网（更快更省更安全），那条链路没验。
+- 数据量上来之后的 HNSW 参数（`m` / `ef_construction`）与索引构建耗时 ——
+  云上表是空的，索引建得上，**依然没有任何性能结论**。
 - 备份、主备切换期间连接断开后的重连行为（本层缓存连接，`connect()` 只在连接
   `closed` 时重建，主备切换的半开连接没测过）。
+- 中文分词扩展**实际安装**之后的行为：`CREATE EXTENSION zhparser` 能不能成、
+  建出来的配置召回质量如何、`MAOS_PG_FTS_CONFIG` 切过去之后本层是否真的不用改代码。
 
 ---
 
@@ -181,7 +223,10 @@ LookupError: 查询串含中日韩字符，而当前文本检索配置是 PG 内
 **升级路径是一个环境变量**，不用改代码：装好 `zhparser` / `pg_jieba`，
 `export MAOS_PG_FTS_CONFIG=zhcfg`，本层立刻把 CJK 查询也交给 PG。
 配套索引的建法见 `maos/store/pg_schema.sql` 的注释。
-但见上一栏：**托管 PolarDB 能不能装这类扩展没验过**。
+
+这条路径此前挂着一个前提问号「托管 PolarDB 能不能装这类扩展」，**现在答了一半**：
+`zhparser 2.2` / `pg_jieba 1.1.2` 都在该实例的可用扩展列表里（见上一栏）。
+另一半仍是问号 —— **没有实际安装过，也没测过装上之后的中文召回质量**。
 
 ### 2. 占位符方言：`?` vs `%s`
 

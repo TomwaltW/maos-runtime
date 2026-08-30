@@ -480,7 +480,7 @@ bash deploy/synapse/down.sh
 ```sh
 python3 scripts/make_evidence.py            # ← 这一行不能省，理由见下
 python3 scripts/verify.py 2>&1 | tail -3
-# 期望 RESULT: 7/7 PASS，exit=0
+# 期望 RESULT: 8/8 PASS，exit=0
 ```
 
 🔴 **`make_evidence.py` 这一行是判据成立的前提，不是可选的。**

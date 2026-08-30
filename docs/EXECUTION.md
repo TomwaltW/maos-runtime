@@ -47,9 +47,22 @@
 >
 > ### 5. 手册已写、但仓库尚未落地的地基（记账，勿当既成事实）
 >
-> - **P1 第 7 步的 `maos/store/port.py`（StorePort 抽象）从未落地**，`maos/store/` 目录不存在。
->   P5 的「RAG 后端可插拔 SQLite / Postgres+pgvector / PolarDB」**没有地基**。
->   不阻塞退款域本轮，但 **P5 之前必须补**。见 `docs/BACKLOG.md`。
+> - ~~**P1 第 7 步的 `maos/store/port.py`（StorePort 抽象）从未落地**，`maos/store/` 目录不存在。~~
+>   ✅ **已闭环**（2026-08-31 复核）：`maos/store/` 现有 `port.py` / `sqlite_store.py` /
+>   `pg_store.py` / `pg_schema.sql`，P5 的「RAG 后端可插拔」有地基了。
+>   仍未闭环的是**退款域**那一截 —— `maos/domain/refund/objects.py` 取 `SqliteStore`
+>   的私有属性，整层仍绑死 SQLite，见 `docs/BACKLOG.md ## task-T26`。
+>
+> ### 6. 正文里的 `7/7 PASS` 是 v4 定稿时的口径，核验器现为 **8 项**
+>
+> `scripts/verify.py` 在 v4 定稿时是 7 项；第 8 项 `cost-attribution`（模型用量归到
+> Run id）于 2026-08-30 落地。**正文逐字保真，所以下面四处的 `7/7` 一个字没改**，
+> 读的时候按 8 项换算：Phase 6 步骤 1 的示例输出、Phase 6「验收」的 `verify.py` 注释、
+> Phase 7 Demo 分镜 `04:00` 那一镜、附录「评审四维映射」表的 Evidence Bundle 行。
+>
+> 当前实测（2026-08-31，基线 `dd3edff`）：主机与容器内各跑一次，两次都是
+> `RESULT: 8/8 PASS`、exit=0，证据来源 8 束（场景 1–7 + R5）。
+> 逐项读数以 `README.md` §3 那段为准 —— 那一段是刷新的，本文件不是。
 
 ---
 
@@ -135,6 +148,22 @@ v4 的改动全部指向第 2、3 条，且**采取"加轨道"而非"换轨道"*
 
 理由：评委三段建议的核心诉求就三个字——**可核验**。RAG 对照证明"知识影响了规划"，verify.py 证明"这一切能被别人独立重放"，settled guard 证明"你知道权威边界在哪"。其余都是丰满度。
 
+> **以下非手册原文 · 2026-08-31（基线 `dd3edff`）实际执行回填。**
+> 上面这张表是 D1 写死的预案；七天跑完，**六项里实际只动了两项**，四项一个都没砍。
+> 判据是当场 `ls` / `grep` / `git log` 出来的，不是回忆。
+>
+> | 砍序 | 预案 | 实际 | 判据 |
+> | :-- | :-- | :-- | :-- |
+> | 1 | `obs/otel.py` 真 span | ✅ **砍了** | `maos/obs/` 只有 `trace.py`，全仓 `grep otel` 仅剩一条测试名 `test_every_span_has_otel_fields`（span 字段与 OTel 对齐，但不产 OTLP） |
+> | 2 | 软件域场景 4 | ❌ **没砍** | `maos/flows/scenario_4.py` 在，且在 `DEFAULT_SCENARIOS = (1,…,7)` 里，`run.py` 缺省就跑 |
+> | 3 | PolarDB 上云 | ❌ **没砍，而且真上了云** | 不是降级 Docker 了事：`deploy/polardb-live.md` 是**真实 PolarDB 实例**上的逐条记录（含没跑通的），`deploy/polardb.md` 才是本机 Docker 那一档 |
+> | 4 | 政策版本对照 R6 | ❌ **没砍** | `maos/flows/contrast.py` 的 `("R6", "policy_version", …)`，产 `evidence/contrast-R6/` |
+> | 5 | 渠道对照 R4 | ❌ **没砍** | 同上，`("R4", "channel", …)`；租户对照 R3 也在 |
+> | 6 | 软件域场景 3 的 reject 补偿 | ✅ **砍了**（按预案，不重复） | `scenario_3.py` 只演 `hq.decide(..., approved=True)`；`/reject` → 补偿这条路在退款域 `scenario_7.py` 走完整 |
+>
+> 「永不砍」五项**一项都没动**：settled guard、R5 对照、Evidence Bundle + `verify.py`、
+> 退款顺利/失败两场（= 场景 6 / 7）、软件域场景 1 与 2，全部在且被 `verify.py` 覆盖。
+
 ---
 
 ## 0.C 排期总表
@@ -153,6 +182,24 @@ v4 的改动全部指向第 2、3 条，且**采取"加轨道"而非"换轨道"*
 **文档不要等到 D8**：`scripts/gen_docs.py` 从代码生成的部分（Identity 清单、Skill 目录、ToolPort 契约）在 P1/P3 写完对应代码时顺手生成一次；人写的部分（架构、映射、README）从 P4 开始每天收工写 20 分钟。D8 只做汇总和冒烟。
 
 **落后 ≥ 半天** → 立刻执行 §0.B 砍序表，不拖到明天。
+
+> **以下非手册原文 · 2026-08-31（基线 `dd3edff`）实际进度回填。**
+> 上表的「状态」列是 D2 那天写下的原样（P1 那格的「今天」指的是 8.27），本轮不改它。
+> 实际进度以下表为准 —— 日期取自 `git log --grep='(pN)'` 的首末提交日，落点取自当场 `ls`：
+>
+> | Phase | 计划 | 实际提交区间 | 状态 | 落点 |
+> | :-- | :-- | :-- | :-- | :-- |
+> | P0 | D1 · 8.26 | 08-26 → 08-28 | ✅ 已完成 | 仓库重组；`docs/hiclaw-probe.md` |
+> | P1 | D2 · 8.27 | 08-27 → 08-29 | ✅ 已完成 | `maos/skills/`、`maos/model/client.py`、`maos/store/port.py` |
+> | P2 | D3 · 8.28 | 08-28 | ✅ 已完成 | `maos/tools/sandbox.py`；11 角色带 Identity、10 个进 `AGENT_POOL` |
+> | P3 | D4 · 8.29 | 08-28 | ✅ 已完成 | `maos/domain/refund/`；settled guard；`scenario_6.py` |
+> | P4 | D5 · 8.30 | 08-28 → 08-29 | ✅ 已完成 | `scenario_7.py` replan + 补偿；`hiclaw/matrix_bus.py`；`evidence/room/` 五图 + 41 条 |
+> | P5 | D6 · 8.31 | 08-28 → 08-30 | ✅ 已完成 | `maos/kb/`（两阶段检索 + R5 对照 + 晋升） |
+> | P6 | D7 · 9.1 | 08-29 → 08-30 | ✅ 已完成 | `maos/obs/trace.py`、`scripts/verify.py`（8 项）、`deploy/docker-compose.yml` |
+> | P7 | D8 · 9.2 | 08-29 → 08-31 | 🔄 **进行中**（整合轮 15） | `docs/demo-script.md`、`docs/submission-checklist.md`、`docs/ppt-outline.md`、`deploy/` 各手册 |
+>
+> **实际比排期快了约两天**（P6 在 8.30 就收口，计划是 9.1），所以 §0.B 砍序表始终没被
+> 「落后 ≥ 半天」这条触发 —— 六项里砍掉的两项是主动取舍，不是赶工削的。
 
 ---
 
@@ -509,8 +556,9 @@ sqlite3 <db> "select count(*) from event_log where event_type='CompensationExecu
 🔴 **截图落点不许写成 `evidence/scenario-R1/` / `evidence/scenario-R2/`（这两行原来就是那么写的，是错的）。**
 `scripts/verify.py::load_cases` 按 **`scenario-` 前缀**扫 `evidence/` 下的目录——只认前缀，不认场景号——
 凡是扫到的都当成一个证据束，逐个要求 `maos.db` + `trace.json` + `result.json`。截图目录这三样一样没有，
-于是**整个 verify 进不去核验**（不是某一项 FAIL，是七项一项都跑不到，「7/7 PASS」这条头号卖点当场没）。
-本仓库 `1131795` 实测，先 `python3 scripts/make_evidence.py` 再 `python3 scripts/verify.py`：
+于是**整个 verify 进不去核验**（不是某一项 FAIL，是八项一项都跑不到，「8/8 PASS」这条头号卖点当场没）。
+本仓库 `1131795` 实测，先 `python3 scripts/make_evidence.py` 再 `python3 scripts/verify.py`
+（**那时核验器还是 7 项**，下表第一行的 `7/7` 是当时的实测读数，不改；今天同一条路径跑出的是 `8/8`）：
 
 ```
 不建 scenario-R1/                    RESULT: 7/7 PASS                                    exit=0

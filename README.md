@@ -131,21 +131,22 @@ RESULT: 8/8 PASS
 
 **但不要用 `git checkout -- evidence/` 去「收拾干净」。** json 会被还原成入库的旧版本，
 而 `maos.db` 不入 git、不会跟着还原 —— 新库配旧快照，再跑 `verify.py` 会掉到
-`RESULT: 3/7 PASS`（`hash-integrity 6/86`、`business-ref 0/35`），看上去像证据被伪造，
+`RESULT: 4/8 PASS`（`hash-integrity 6/86`、`business-ref 0/35`、`trace-tree 21/29`、
+`business-outcome 0/11`），看上去像证据被伪造，
 其实只是两边不同步。实测过的两条出路，二选一：
 
 ```bash
-python3 scripts/make_evidence.py                                    # 甲：重跑，回到 7/7
+python3 scripts/make_evidence.py                                    # 甲：重跑，回到 8/8
 find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连库一起清，回到出厂态
 ```
 
-甲之后 `verify.py` 回到 7/7；乙之后工作区 0 行改动、`verify.py` 退 2（等同新克隆）。
+甲之后 `verify.py` 回到 8/8；乙之后工作区 0 行改动、`verify.py` 退 2（等同新克隆）。
 **只做 `git checkout` 而不删库，是唯一会得出错误结论的那条路。**
 
 **SKIP 的纪律**：上游能力没落地的项输出 `[SKIP]` 并在结尾显式列名，**不计进 PASS
-的分子**。静默跳过等于谎报 —— 一个 7/7 里藏着两个没跑的，比老实写 5/5 + 2 SKIP 更坏。
+的分子**。静默跳过等于谎报 —— 一个 8/8 里藏着两个没跑的，比老实写 6/6 + 2 SKIP 更坏。
 
-七项各自在验什么：
+八项各自在验什么：
 
 | # | 项 | 失败意味着 |
 | :-- | :-- | :-- |
@@ -156,6 +157,7 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 | 5 | `kb-hit` | RAG 命中是编的 |
 | 6 | `business-outcome` | 「Agent 都完成了」被当成业务成功 |
 | 7 | `history-case` | 知识层被污染 |
+| 8 | `cost-attribution` | 模型用量归不到 Run id，成本说不清是谁花的 |
 
 ---
 
@@ -311,8 +313,12 @@ evidence/
 - **支付网关的错误码与异步时序取自支付宝开放平台退款接口的公开规范**
   （`maos/tools/gateway_codes.py` 逐条核对后写入，禁止凭记忆编造）；
   演示环境用的是对齐该规范的**模拟实现**，网关适配层已实现但沙箱账号未接通。
-- **Matrix 真房间未接通**：镜像层已实现、降级路径实测等价，真房间截图待补。
-  详见 [`docs/agentteams-mapping.md`](docs/agentteams-mapping.md) 的「当前真实状态」。
+- **Matrix 真房间已接通**：镜像层已实现，降级路径实测等价；真房间三条路径各实测一次
+  （`/approve`→DONE、`/reject`→FAILED、名单外越权两次被拒且闲聊零回复），
+  五张截图 + 41 条逐字副本在 `evidence/room/`。房间自建于本机 Synapse v1.159.0 的
+  非加密房。**房间始终是旁路** —— 连不上 / 撞加密房一律降级 `log_only`，流水线照跑。
+  详见 [`docs/agentteams-mapping.md`](docs/agentteams-mapping.md) 的「当前真实状态」，
+  那里另有**仍然不许说的三句**（房间里跑的是软件域任务、补偿永不进房间、镜像会被限流打穿）。
 
 ---
 
@@ -324,21 +330,34 @@ evidence/
 | [`docs/domain-portability.md`](docs/domain-portability.md) | 换域零改动的论证与 `git diff --stat` 数字 | 人写 |
 | [`docs/authoritative-facts.md`](docs/authoritative-facts.md) | 权威事实边界、settled guard、核验器抓到的那次绕过 | 人写 |
 | [`docs/agentteams-mapping.md`](docs/agentteams-mapping.md) | 五项映射 + 采用哪一档 | 人写 |
+| [`docs/gateway-rationale.md`](docs/gateway-rationale.md) | **「推荐工具链未使用需说明理由」那一维的主文档**：八个组件逐个说清用没用、为什么、等价机制、接的话改哪个文件 | 人写 |
+| [`docs/matrix-room-runbook.md`](docs/matrix-room-runbook.md) | 真房间演示 runbook：从零起 Synapse 到重跑出 `evidence/room/` 那五张图 | 人写 |
+| [`docs/hiclaw-probe.md`](docs/hiclaw-probe.md) | HiClaw / 房间来源三档的探测记录：最终选哪档、为什么，附每步真实命令与输出 | 人写 |
 | [`docs/agent-identity.md`](docs/agent-identity.md) | 全部 Agent 的 Identity 逐字段 | **代码生成** |
 | [`docs/skill-catalog.md`](docs/skill-catalog.md) | 全部 Skill × 九要素 + 版本/发布/回滚 | **代码生成** |
 | [`docs/toolport-contract.md`](docs/toolport-contract.md) | ToolPort 九要素 + 已实现工具 + MCP 迁移 | **代码生成** |
 | [`docs/demo-script.md`](docs/demo-script.md) | Demo 分镜，每镜标注确切命令 | 人写 |
 | [`docs/submission-checklist.md`](docs/submission-checklist.md) | 提交自查单 | 人写 |
+| [`docs/ppt-outline.md`](docs/ppt-outline.md) | 方案 PPT 逐页大纲 + 讲稿禁语（每条卖点标注可核验证据） | 人写 |
+| [`docs/open-questions.md`](docs/open-questions.md) | 待确认清单：仓库答不了、必须由人类查官方通知的问题（单一真源） | 人写 |
+| [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md) | 裸 clone 冒烟逐遍实录，**含没跑通的那几遍**与逐步耗时 | 人写 |
+| [`deploy/README.md`](deploy/README.md) | 容器内从零跑到 `RESULT: 8/8 PASS`，三条命令 | 人写 |
 | [`deploy/polardb.md`](deploy/polardb.md) | **怎么做**：迁到 PolarDB PG 的三步（建库 → 装 pgvector → 换连接串）、怎么配、怎么降级 | 人写 |
 | [`deploy/polardb-live.md`](deploy/polardb-live.md) | **实际跑通了哪几条**：真实 PolarDB 实例上的逐条记录，**含没跑通的** | 人写 |
+| [`deploy/rocketmq.md`](deploy/rocketmq.md) | **怎么做**：内存 EventBus 换 RocketMQ 的接法与降级 | 人写 |
+| [`deploy/rocketmq-live.md`](deploy/rocketmq-live.md) | **实际跑通了哪几条**：真 broker 上「上层代码不用改」兑现了几条，**含没兑现的** | 人写 |
+| [`deploy/nacos.md`](deploy/nacos.md) | **怎么做**：四个治理旋钮搬上 Nacos 的接法、配置文档、连不上怎么降级 | 人写 |
+| [`deploy/nacos-live.md`](deploy/nacos-live.md) | **实际跑通了哪几条**：真 Nacos 上跑过的与没跑过的 | 人写 |
 | [`docs/EXECUTION.md`](docs/EXECUTION.md) | 执行手册 v4（原文保真） | 外部 |
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) / [`docs/DECISIONS.md`](docs/DECISIONS.md) | 发现但不当场改的问题 / 偏离手册的判断 | 人写 |
 
-🔴 **PolarDB 那两份别混着读，它们回答的不是同一个问题。**
-`polardb.md` 答的是「**MAOS 这侧怎么接**」（怎么配、怎么降级），它的实测天花板是
-本机 Docker `pgvector/pgvector:pg16`；`polardb-live.md` 答的是「**真 PolarDB 实例上
-到底跑通了哪几条**」（只验数据库那一侧，含没跑通的）。只读前者，容易把
-「本机 pgvector 跑通」误当成「PolarDB 跑通」—— 那是两件事。
+🔴 **`deploy/` 下三对「怎么做 / 实际跑通了哪几条」别混着读，它们回答的不是同一个问题。**
+以 PolarDB 那一对为例：`polardb.md` 答的是「**MAOS 这侧怎么接**」（怎么配、怎么降级），
+它的实测天花板是本机 Docker `pgvector/pgvector:pg16`；`polardb-live.md` 答的是
+「**真 PolarDB 实例上到底跑通了哪几条**」（只验数据库那一侧，含没跑通的）。只读前者，
+容易把「本机 pgvector 跑通」误当成「PolarDB 跑通」—— 那是两件事。
+`rocketmq.md` / `rocketmq-live.md` 与 `nacos.md` / `nacos-live.md` 同理：
+带 `-live` 的那一份才是「在真后端上兑现了几条」的实录，**且都如实写了没兑现的**。
 
 三份**代码生成**的文档由 `scripts/gen_docs.py` 产出，不许手改：
 

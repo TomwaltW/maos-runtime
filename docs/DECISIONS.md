@@ -1162,3 +1162,16 @@ verify 第 6 项自述层收口。派单 §5 只说了「补 FAILED 分支的 st
 | 2026-08-30 | P7 | 控制台建的普通账号装不了 `vector`（要 `polar_superuser`），在 `public` 里也建不了表（PG15 起普通用户只有 `USAGE`），且对库没有 `CREATE`，**连自建一个模式绕开都不行** | 请人类在控制台新建高权限账号，只用它跑 `CREATE EXTENSION vector` 与 `GRANT CREATE ON SCHEMA public TO <普通账号>` **两条**，之后全程退回普通账号 | 这两条是不可绕的前置，不做则五步冒烟只能到 2/5。把高权限的用途压到最小两条、用完即弃，是为了不滑向「以后干脆都用高权限连库」那种更省事但更危险的走法。实录与两个坑的分辨见 `deploy/polardb-live.md` §1.3 |
 | 2026-08-30 | P7 | `deploy/polardb.md` 第 2 步写的灌库命令是 `psql "$MAOS_PG_DSN" -f maos/store/pg_schema.sql`，而本机没装 PG 客户端（`command -v psql` 空） | 不装 psql，改用 psycopg 按 `;` 切分逐条执行，逐条打印 `statusmessage`（等价于 psql 的 `CREATE TABLE` / `CREATE INDEX` 命令标记），执行后再用 `information_schema.columns` + `pg_indexes` 核对落地形状 | 不为一次灌库装一套客户端。逐条执行 + 核对落地比 psql 的原样输出更能证明「索引到底建成了什么形状」（实测拿到 `hnsw (embedding vector_cosine_ops)` 与 `gin (to_tsvector('simple'::regconfig, body))`）。**顺带避开了一个安全问题**：psql 只能从命令行接 URI，那会让 DSN 出现在 `ps` 里 |
 | 2026-08-30 | P7 | 回填 `deploy/polardb-live.md` 时，§1.1 的本机 Docker 对照组输出与 §2.1 里「DSN 是占位符所以没跑成」的失败原因段，都属于此前那一轮的历史读数 | **一字不动地保留**，只新增 §1.2／§1.3／§3.5，并把 §2.1 的标题改成删除线 + 指向 §1.2；失败原因段作为存档留在原处 | 铁律 3：历史读数改了就是篡改证据。而且那条「占位符没换」的坑**在本轮又复发了一次**（高权限账号那份 DSN 只换了口令、用户名那格还留着 `<ADMIN_USER>`，被脚本内建的检测当场拦下），留着比删掉有用，已把这次复发追记在 §2.1 末尾 |
+
+## task-T25
+
+检索层三条卫生。派单在 §5.1 给了两条改法并推荐 ②，其余几处是口径选择，
+按铁律 7 逐条记账。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-30 | P5 | §5.1 两条改法：①给 `port_channel_state` 加「忘掉这个 store 的判定」入口、由 `ensure_schema()` 调一次；②判定改成带 schema 版本号的键 `(store, applied_schema_version)` | 走 ②，但**不是字面的复合键**：store 仍做弱键，版本戳另存一张 `_PORT_STATE_SCHEMA`（同样是 `WeakKeyDictionary`） | 元组当不了 `WeakKeyDictionary` 的键（弱引用要求键对象自身可被弱引用，元组不可），照字面实现就得把 `_PORT_STATE` 换回普通 dict —— 那正好把本轨要守的弱引用语义弄丢，判据 3 当场红。① 还要求调用方记得在 `ensure_schema()` 里调一次，而那个函数在 `maos/kb/__init__.py`（T24 持有，本轨只读），改不了；「要调用方记得」本身也正是派单说 ② 更省事的理由 |
+| 2026-08-30 | P5 | 版本戳什么时候读：每次 `_port_search` 都读，还是只在手上有 `False` 判定时读 | 只在判定表里存在 `False` 时才读 | `True` 判定**不短路** —— 每次仍旧真调端口，端口坏了自会抛出来翻成 `False`，所以作废 `True` 买不到任何东西。而每次调用都读一条 `SELECT MAX(version)`，是每次检索多 3 条 SQL（两列全文各一次 + 向量一次），PolarDB 上就是三次真实网络往返；本模块开头写死的开销约定是「每列一次的常数」。已加 `test_a_healthy_port_never_pays_for_the_version_lookup` 把这条取舍钉成机器判据 |
+| 2026-08-30 | P5 | §5.3 的记账要不要像端口通道那样，失败之后连调用一起短路掉 | 只管住日志，**不管住调用**：失败之后照试不误 | 本地 FTS5 在 SQLite 上是正路而非退化路径，「这一刻不行、下一刻行」（影子表刚重建完）是常态；短路等于把 SQLite 的兜底一并拆了，而派单明令不许删这条路。端口通道能短路是因为它坏了就是坏了 —— 两条通道的性质不同，记账口径可以一样，短路口径不该一样。已加 `test_accounting_does_not_short_circuit_the_local_path` |
+| 2026-08-30 | P5 | 本地通道的判定放哪：派单要求「别造第二套记账」，但 `port_channel_state()` 是既有三束共同引用的自证判据，混进第三条通道会改它的返回形状 | 共用 `_PORT_STATE` 同一张表（同一套弱引用生命周期、同一条版本作废规则），但 `port_channel_state()` 只投影两条端口通道，本地那条另开只读入口 `local_fts_state()` | 一套机制、两个读口。真混进去的话，`test_kb_pg_channel.py` 与 `test_kb_port_link.py` 里那几条 `== {"fts_search": …, "vector_search": …}` 的等值断言会集体变红 —— 它们守的是「换后端之后端口通没通」，与本地退化通道不是一回事，为省一个函数名去改它们的判据是本末倒置 |
+| 2026-08-30 | P5 | §5.2 从哪取「影子表真正参与索引的列」：派单给了 `PRAGMA table_info(kb_doc_fts)` 与建表语句两条路，让实跑决定 | 解析 `sqlite_master` 里的建表语句；另加一条 FTS5 **行为**交叉验证（每列塞一个独一无二的 token 再逐个 MATCH） | 实测 `PRAGMA table_info` 把五列报得一模一样（`type` 全是空串、`notnull` 全是 0），`UNINDEXED` 一点痕迹都不留 —— 拿它做判据会把三列 UNINDEXED 也算成索引列，断言恒绿，等于没加。`table_xinfo` 也一样，只多出 `kb_doc_fts` / `rank` 两个隐藏列。行为那条兜的是另一种错法：解析写歪了（比如把 `UNINDEXED` 认成列名的一部分），字面判据会跟着一起错 |

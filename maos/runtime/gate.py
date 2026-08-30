@@ -50,6 +50,7 @@ from maos.artifacts import (
     resolve_patch_ref,
     validate_artifact,
 )
+from maos.config import get_config_source
 from maos.contracts import events as E
 from maos.contracts.events import Topic
 from maos.contracts.states import Risk, TaskState
@@ -166,13 +167,17 @@ GATEWAY_SEVERITY: dict[str, str] = {
 
 
 def _finance_threshold() -> float:
-    """每次判定现读 env，不在 import 时固化 —— 否则改阈值得重启进程。
+    """每次判定现读一次，不在 import 时固化 —— 否则改阈值得重启进程。
+
+    T28 起「现读」这个动作走 `maos.config` 的配置面：缺省源就是
+    `os.environ.get`，取值逐字节不变；`MAOS_CONFIG_SOURCE=nacos` 时同一句改从
+    Nacos 取，于是「不重启就能改阈值」从本进程扩到了整个部署面。
 
     读不出数就回落默认值并告警，不抛：Gate 的异常会掀掉整个 plan（见
     ``_dry_run_reverse`` 的同款理由）。回落方向是**收严**（默认 5000 通常低于
     误配的那个大数），宁可多拦一次，也不因为配置写错而漏掉财务复核。
     """
-    raw = os.environ.get(FINANCE_THRESHOLD_ENV)
+    raw = get_config_source().get(FINANCE_THRESHOLD_ENV, "")
     if raw is None or not str(raw).strip():
         return DEFAULT_FINANCE_THRESHOLD
     try:

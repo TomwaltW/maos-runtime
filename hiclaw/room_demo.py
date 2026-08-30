@@ -42,6 +42,7 @@ from dataclasses import replace
 from html import escape as _esc
 
 from maos.agents.testing import make_test_report, seed_scripted_report
+from maos.config import attach_config_audit
 from maos.contracts.events import Envelope, new_id
 from maos.contracts.states import TaskState
 from maos.core.control_plane import ENV_SANDBOX_WORKDIR
@@ -237,6 +238,14 @@ def run_demo(case: str, *, timeout: float, auto_approve: bool) -> int:
     print(f"\n待人工审批: {task['title']}（{task_id}，effect_risk="
           f"{task['effect_risk']}，state={task['state']}）")
 
+    # 审批人名单在演示途中被改掉时，把这件事落成一条 event_log 的 ConfigChanged
+    # （T28 §5.3）。挂在这次演示的 plan_id 上，`list_event_log(plan_id)` 一把捞得出
+    # 「谁在什么时候把名单从 X 改成 Y」，与状态迁移在同一条时间线上。
+    #
+    # **缺省什么都不会落**：`MAOS_CONFIG_SOURCE` 未设时配置源是 env，名单不会中途变，
+    # 也就没有变更可记 —— 这一行不改变任何现有演示的输出。
+    detach_audit = attach_config_audit(store, plan_id=plan_id)
+
     mirror = TransitionMirror(store, plan_id, channel)
     mirror.poll_once()                      # 先把停到 BLOCKED 为止的轨迹补齐
     channel.send(*approval_card(task))
@@ -278,6 +287,7 @@ def run_demo(case: str, *, timeout: float, auto_approve: bool) -> int:
     if not got:
         print(f"\n未等到审批（{timeout:.0f}s 超时）—— 任务仍停在 "
               f"{store.get_task(task_id)['state']}", file=sys.stderr)
+        detach_audit()
         _close(bus, channel, degraded)
         return EXIT_TIMEOUT
 
@@ -285,6 +295,7 @@ def run_demo(case: str, *, timeout: float, auto_approve: bool) -> int:
     final_plan = store.get_plan(plan_id)
     print(f"\n终态: task={final_task['state']}  plan={final_plan['state']}  "
           f"（镜像发出 {mirror.mirrored} 条迁移）")
+    detach_audit()
     _close(bus, channel, degraded)
     return EXIT_OK
 

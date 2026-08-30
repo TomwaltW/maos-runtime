@@ -169,6 +169,41 @@ def _all_subclasses(cls: type) -> list[type]:
     return out
 
 
+def _assert_scan_covers_pool(found: dict, pool: dict[str, type]) -> None:
+    """自洽断言：`AGENT_POOL` 注册的每个类，都必须被上面那趟扫描扫到。
+
+    生成物守卫（`maos/tests/test_generated_docs.py`）只守一个方向 —— 它断言
+    「docs/ 三份 == 现在重跑生成器的输出」，**没有任何东西守着生成器本身扫得对**。
+    `collect_agents()` 若漏扫一类 Agent（将来有人不从 `BaseAgent` 继承、或注册进池的
+    是抽象类、或两个域撞了 `__qualname__` 互相覆盖），文档与生成器会**一致地错**，
+    守卫照样全绿。这里从注册表反向查一遍：池里有、扫描面里没有，当场点名炸掉。
+
+    判据按**类身份**而不是 role 名 —— 「role 在，但池里那个类不是扫到的这个」同样是
+    漏扫，只不过症状更隐蔽。炸了先修 `collect_agents()` 的扫描面，**不要改这条断言**：
+    它红的时候，docs/agent-identity.md 正在漏掉一个真实存在的角色。
+    """
+    scanned = {a["cls"] for a in found.values()}
+    missing = sorted(role for role, cls in pool.items() if cls not in scanned)
+    if missing:
+        named = "、".join(
+            f"{role}（{pool[role].__module__}.{pool[role].__qualname__}）"
+            for role in missing
+        )
+        raise RuntimeError(
+            f"gen_docs 自洽断言失败：AGENT_POOL 注册了 {len(pool)} 个角色，"
+            f"_all_subclasses(BaseAgent) 只扫到 {len(found)} 个带 Identity 的类，"
+            f"漏了 {len(missing)} 个 —— {named}。"
+            "漏扫的角色进不了 docs/agent-identity.md，而生成物守卫只比对"
+            "「文档 == 生成器输出」，两边会一致地错。先修扫描面，别改断言。"
+        )
+    if len(found) < len(pool):
+        raise RuntimeError(
+            f"gen_docs 自洽断言失败：扫到 {len(found)} 个带 Identity 的类，"
+            f"少于 AGENT_POOL 的 {len(pool)} 个角色 —— 池里有多个 role 指向同一个类，"
+            f"或 __qualname__ 撞名把某个类挤掉了。池内 role：{'、'.join(sorted(pool))}。"
+        )
+
+
 def collect_agents() -> list[dict]:
     """扫全部带 Identity 的 Agent 类。**不读清单，只读运行时**。"""
     import maos.agents  # noqa: F401 —— import 即触发投放式注册
@@ -188,6 +223,7 @@ def collect_agents() -> list[dict]:
             "registered": AGENT_POOL.get(identity.role) is cls,
             "where": where_class(cls),
         }
+    _assert_scan_covers_pool(found, AGENT_POOL)
     return sorted(found.values(), key=lambda a: (a["domain"] != "software",
                                                  a["domain"], a["identity"].role))
 

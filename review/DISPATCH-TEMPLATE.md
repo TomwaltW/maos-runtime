@@ -28,6 +28,23 @@
    那一刻定死，而 hook 执行失败是**非阻塞放行且不报警**。所以 §1 末条的守卫自检
    要子会话去 Read 守卫脚本，**被拦才算 hook 挂上了**。
 
+5. 🔴 **派单交出去之后，编排侧不许再动任何 worktree。** 尤其禁止
+   `git reset --hard` / `git checkout --` / `git clean -fd` —— 这些会**当场抹掉
+   子会话尚未提交的工作**，而那部分不进 reflog，**救不回来**。
+
+   2026-08-31 真踩过：编排侧为了把六轨基线从 `784aad7` 统一到 `dd3edff`（只差一个
+   纯文档 commit），对六个**已经在跑**的 worktree 逐个 `reset --hard`，抹掉了 T31
+   已完成的 9 个文件；四轨被迫在新基线重做，另一轨整轮零提交（时间全花在排查上）。
+   完整记录见 `docs/DECISIONS.md ## orchestration-incident-2026-08-31`。
+
+   **基线中途需要变更时的无损做法**（按成本排序）：
+
+   1. **什么都不做** —— 新 commit 与各轨零交集时，让它们在旧基线上跑完，并轨时再合
+   2. 在派单里**写明「某节账本落在 `<sha>`，你的基线看不到，用 `git log -p <sha>` 读」**
+   3. 真要换基线，**发消息让子会话自己 `git stash` / 提交后再 rebase**，由它决定时机
+
+   编排侧对活跃 worktree 的唯一安全动作是**只读**（`git -C <wt> log/status/diff`）。
+
 ---
 
 ## 二、模板正文
@@ -107,6 +124,12 @@ worktree 根启动的（项目级 hook 只在仓库根加载）。
   建新 worktree / 动别的 worktree。**
 - `git add` **逐文件点名**，禁止 `git add -A` / `git add .` / `git commit -a`。
 - 提交格式：`<feat|fix|docs>(p<N>): <一句话>`。
+- 🔴 **每做完一个 `§5.<i>` 小节就 WIP commit 一次**，别攒到最后一次性提交。
+  收尾时按需 `git reset --soft` 压成一条再写正式 message —— 压缩是无损的，
+  而未提交的工作区改动**不进 reflog、救不回来**。2026-08-31 编排侧对六个正在跑的
+  worktree 做了 `reset --hard`，攒着没提交的那一轨当场丢了 9 个文件
+  （见 `docs/DECISIONS.md ## orchestration-incident-2026-08-31`）。
+  逐节提交把「可能丢掉的窗口」从**整轮**缩短到**一节**。
 - 本机**没有 `python` 命令**，一律 `python3`。
 - **铁律 4**：白名单外的问题记进 `docs/BACKLOG.md` 尾部**另起** `## task-<轨号>` 小节，
   **不要顺手修**。

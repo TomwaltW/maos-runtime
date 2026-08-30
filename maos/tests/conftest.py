@@ -51,3 +51,49 @@ def _no_ambient_matrix_env(monkeypatch):
     """每条用例开跑前删掉 Matrix 环境变量，跑完由 monkeypatch 自动还原。"""
     for name in MATRIX_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+#: 逐字对齐 ``maos/store/__init__.py`` 的 ``BACKEND_ENV`` 与 ``maos/store/pg_store.py``
+#: 的 ``DSN_ENV``。同上不 import：``maos.store`` 本身没有可选依赖，但从 conftest
+#: import 生产模块会让 collection 依赖它的导入链，取向与上面那条一致。
+#:
+#: **这一组比 Matrix 那五个更危险**。Matrix 那组漏网时最坏是往房间多发几条消息；
+#: 这一组漏网时 ``create_store()`` 会按 ambient 的 ``MAOS_STORE_BACKEND`` 去连
+#: ``MAOS_PG_DSN`` 指的那个库，于是一次 ``pytest`` 就**往真库写表**。P5 的工厂放行
+#: PG 之后这条路才通，所以它是「放行带出来的新欠账」，不是老问题的复述
+#: （出处 ``docs/BACKLOG.md`` 的 ``## task-T15`` 第 1 条）。
+STORE_ENV_VARS = (
+    "MAOS_STORE_BACKEND",
+    "MAOS_PG_DSN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_store_env(monkeypatch):
+    """每条用例开跑前删掉存储后端的环境变量，跑完由 monkeypatch 自动还原。
+
+    **这一条必须给 live 测试留活路，否则它买到的是假干净**。
+    ``test_pg_store_live.py`` 与 ``test_pg_rank_parity.py`` 那 22 + 7 条靠
+    ``MAOS_PG_DSN`` 决定跑不跑；无条件 delenv 若把它们一并饿死，有库环境的全量会从
+    932 悄悄掉回 903 —— 症状是「测试变干净了」而不是红灯，没有人会去查。
+
+    **它们没被饿死，靠的是时序而不是运气**：两个模块都在**模块级**写
+    ``pytestmark = pytest.mark.skipif(_live_dsn() is None, ...)``，而 ``_live_dsn()``
+    带 ``functools.lru_cache`` —— 这一句在 **collection 期（import 那一刻）**就求了值
+    并把 DSN 缓存住了。本 fixture 是 function scope，最早也要等到第一条用例 setup
+    才跑，比那一刻晚得多；用例执行期再调 ``_live_dsn()`` 命中的是缓存，读不到
+    ``os.environ``。**delenv 够不着一个已经做完的决定。**
+
+    所以这里刻意**不**给 live 测试开后门（不加 opt-in 参数、不改那两个文件）：
+    冻结契约 B 把「有库 932」钉成判据，判据本体不该为了适配起跑线而松动。
+
+    **代价（照实记，别当它不存在）**：这条活路依赖上面那个时序，而时序**没有任何
+    断言钉着**。把 live 那两个模块的 ``pytestmark`` 换成用例内的 ``pytest.skip()``、
+    或者摘掉 ``_live_dsn()`` 的 ``lru_cache``，判定就挪进了用例执行期 —— 那时
+    ``os.environ`` 已被本 fixture 清空，29 条当场全 skip，而且**无库环境跑不出这个
+    差别**（无库时它们本来就 skip，读数一模一样）。钉住它要新起一个测试文件，
+    那超出 T26 白名单，已记 ``docs/BACKLOG.md`` 的 ``## task-T26`` 第 1 条。
+    在那之前，唯一的哨兵是有库环境的全量必须是 932。
+    """
+    for name in STORE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)

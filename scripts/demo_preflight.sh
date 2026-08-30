@@ -11,9 +11,9 @@
 #    只会打印不会失败的前置脚本等于没写。
 #
 # 2. **期望值可用环境变量覆盖**，不必改文件：
-#      MAOS_EXPECT_TESTS=935         第 1 步的测试条数
+#      MAOS_EXPECT_TESTS=1069        第 1 步的测试条数
 #      MAOS_EXPECT_BUNDLES=8         第 4 步落盘的证据束个数
-#      MAOS_EXPECT_VERIFY='RESULT: 7/7 PASS'   第 5 步的核验结论行
+#      MAOS_EXPECT_VERIFY='RESULT: 8/8 PASS'   第 5 步的核验结论行
 #    负例自证就靠它：MAOS_EXPECT_TESTS=999 bash scripts/demo_preflight.sh
 #    → 非 0 退出并指出是第 1 步。
 #    第 1 步的条数**自己认环境分两档**（见下面 EXPECT_TESTS_NOPG / _PG），
@@ -42,12 +42,14 @@ cd "$REPO_ROOT"
 # 契约 B 把有库钉成 932，而同轮 T24/T25/T26 各自加了 7/13/12 条测试，两个数一起作废——
 # 症状是「配了 DSN 的机器上第 1 步报回归」，恰恰是本档要治的那个病。改成算式之后，
 # 以后谁加测试都只需改 EXPECT_TESTS_NOPG 一个数，29 这个差值才是真正要守的不变量。
-# 整合轮 13 实测：935 passed / 29 skipped（无库）、964 passed / 0 skipped（有库），935+29=964。
+# 整合轮 14 实测（合并态 T27–T30）：1069 passed / 39 skipped（无库）。39 = PG 门控 29
+#（22 live + 7 parity）+ 非 PG 门控 10（RocketMQ 8 条 + Nacos 2 条，有库时同样 skip）。
+# 有库档 1069+29=1098 由算式得出，本机无 PG **未实测**（见 docs/BACKLOG.md ## integrate-round-14）。
 PG_GATED_TESTS=29
-EXPECT_TESTS_NOPG=935
+EXPECT_TESTS_NOPG=1069
 EXPECT_TESTS_PG=$((EXPECT_TESTS_NOPG + PG_GATED_TESTS))
 EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
-EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 7/7 PASS}"
+EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 8/8 PASS}"
 
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
@@ -110,15 +112,15 @@ pick_expect_tests() {
     if [ -n "${MAOS_EXPECT_TESTS:-}" ]; then
         EXPECT_TESTS="$MAOS_EXPECT_TESTS"
         EXPECT_TESTS_WHY='人为指定 MAOS_EXPECT_TESTS，已盖过自动判断'
-        EXPECT_SKIPPED_ZERO=0          # 人自己指定条数时不替他多判一层
+        REQUIRE_PG_TESTS_RAN=0         # 人自己指定条数时不替他多判一层
     elif pg_reachable; then
         EXPECT_TESTS="$EXPECT_TESTS_PG"
         EXPECT_TESTS_WHY='有可连的 PG —— live 22 条 + parity 7 条会真跑'
-        EXPECT_SKIPPED_ZERO=1
+        REQUIRE_PG_TESTS_RAN=1
     else
         EXPECT_TESTS="$EXPECT_TESTS_NOPG"
         EXPECT_TESTS_WHY='无可连的 PG —— live 22 条 + parity 7 条 skip'
-        EXPECT_SKIPPED_ZERO=0
+        REQUIRE_PG_TESTS_RAN=0
     fi
 }
 
@@ -129,10 +131,10 @@ printf '\n本脚本\033[1m零出网、不读任何 API key\033[0m：全程走 Sc
 printf '拿到仓库的人在没有任何密钥的机器上跑，得到的是同一份确定性结果。\n'
 
 # --- 第 1 步：全量测试 --------------------------------------------------------
-banner '全量测试　python3 -m pytest maos/tests -q'
+banner '全量测试　python3 -m pytest maos/tests -q -rs'
 pick_expect_tests
 printf '      期望 %s passed（%s）\n' "$EXPECT_TESTS" "$EXPECT_TESTS_WHY"
-if ! python3 -m pytest maos/tests -q > "$LOG_DIR/pytest.log" 2>&1; then
+if ! python3 -m pytest maos/tests -q -rs > "$LOG_DIR/pytest.log" 2>&1; then
     die '存量测试没有全绿' "$(tail -3 "$LOG_DIR/pytest.log" | tr '\n' ' ')" \
         "${EXPECT_TESTS} passed，0 failed" "$LOG_DIR/pytest.log"
 fi
@@ -145,11 +147,16 @@ fi
 # 有库那档还要守另半条不变量：29 条 live/parity 一条都不许被饿死。
 # 只查条数守不住它 —— conftest 的 delenv 若把 DSN 清早了，29 条会从 passed 掉回 skipped，
 # 那时 passed 正好等于无库那档的数，「测试变干净了」而不是红灯（docs/BACKLOG.md 的 ## task-T26 第 2 条）。
-skipped="$(grep -Eo '[0-9]+ skipped' "$LOG_DIR/pytest.log" | tail -1 | grep -Eo '^[0-9]+' || true)"
-skipped="${skipped:-0}"
-if [ "$EXPECT_SKIPPED_ZERO" = 1 ] && [ "$skipped" != 0 ]; then
-    die '有可连的 PG，却仍有用例被 skip' "${skipped} skipped" \
-        '0 skipped（22 条 live + 7 条 parity 必须真跑）' "$LOG_DIR/pytest.log"
+#
+# 判据**不再是「0 skipped」**：整合轮 14 起 RocketMQ（8 条）与 Nacos（2 条）两组门控
+# 在有库时同样 skip，那个写法会把它们误报成回归 —— 与写死 935 是同一个病，投影变了
+# 判据就作废。要守的一直是「PG 那两个文件一条都没被饿死」，所以直接判 SKIPPED 行里
+# 有没有 test_pg_，这个判据不随别的门控组增减而过期。-rs 就是为它加的。
+pg_skipped="$(grep -c '^SKIPPED.*test_pg_' "$LOG_DIR/pytest.log" || true)"
+if [ "$REQUIRE_PG_TESTS_RAN" = 1 ] && [ "${pg_skipped:-0}" != 0 ]; then
+    die '有可连的 PG，PG 用例却仍被 skip' "${pg_skipped} 处 test_pg_* 仍是 SKIPPED" \
+        'test_pg_store_live.py 22 条 + test_pg_rank_parity.py 7 条必须真跑' \
+        "$LOG_DIR/pytest.log"
 fi
 ok "${passed} passed"
 

@@ -386,7 +386,7 @@ docker compose -f deploy/rocketmq/docker-compose.yml down -v
 
 ```bash
 python3 -m pytest maos/tests -q      # 新增测试自动 skip，944 passed / 37 skipped
-python3 run.py                       # 7/7 PASS，不受影响
+python3 run.py                       # 七个场景全过，exit=0，不受影响
 ```
 
 ⚠️ 靶 topic 上会累积往次消息（消费位点是 broker 状态，见 `rocketmq.md` 局限 5）。

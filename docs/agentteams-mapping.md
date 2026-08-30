@@ -17,11 +17,17 @@ MAOS 的做法是**装饰器镜像**：进程内 EventBus 照常跑，`MatrixEve
 
 | # | AgentTeams 概念 | MAOS 落点 | 代码位置 | 状态 |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | **Team / 房间** | 一个 Matrix 房间 = 一条流水线的全部事件；配置四项走环境变量 `MATRIX_HOMESERVER` / `MATRIX_USER` / `MATRIX_TOKEN` / `MATRIX_ROOM_ID`，缺一即降级 | `hiclaw/matrix_bus.py:70`（`MatrixBusConfig`）<br>`hiclaw/matrix_bus.py:85`（`from_env`）<br>`hiclaw/matrix_bus.py:55`（`REQUIRED_ENV`） | ✅ **真房间已接通**（本机自建 Synapse v1.159.0 的非加密房，`evidence/room/` 五张图 + 41 条逐字副本） |
-| 2 | **Member / Worker** | 可插拔 Agent 池：role → Agent 类，投放一个文件即注册；Worker 收到 `TaskAssignment` 按 role 取执行者 | `maos/agents/base.py:101`（`AGENT_POOL`）<br>`maos/agents/base.py:104`（`@register`）<br>`maos/runtime/worker.py:34`（一行构造全池） | ✅ 已跑通（11 个角色带 Identity，其中 10 个注册进 `AGENT_POOL`、可被 Worker 按 role 派单，见 [`agent-identity.md`](agent-identity.md)） |
-| 3 | **事件链 / 消息流** | `publish()` 先走 inner bus，再镜像进房间：一行人话摘要 + 折叠的 Envelope JSON | `hiclaw/matrix_bus.py:321`（`publish`）<br>`hiclaw/matrix_bus.py:132`（`summarize` 人话摘要）<br>`hiclaw/matrix_bus.py:147`（`render_mirror` 摘要 + JSON） | ✅ **真房间实测**：两轮跑出 41 条房间消息，逐字副本 `evidence/room/transcript.md`；迁移逐条镜像见 `02-transitions.png` |
-| 4 | **人工介入 / HITL** | 房间里 `/approve <task_id>`、`/reject <task_id> [原因]` → `HumanApprovalQueue.decide()`；只认 `MAOS_APPROVERS` 名单内的用户，名单外回「无审批权限」**并落一条 event_log** | `hiclaw/matrix_bus.py:420`（`parse_approval_command`）<br>`hiclaw/matrix_bus.py:435`（`RoomApprovalBridge`）<br>`hiclaw/matrix_bus.py:452`（`handle_message` 先查名单再解析）<br>`hiclaw/matrix_bus.py:483`（越权落库） | ✅ **三种在真房间各实测一次**：`/approve`→DONE（`03`）、`/reject`→FAILED（`04`）、intern 越权两次被拒且闲聊零回复（`05`） |
-| 5 | **可观测 / 回放** | 事件链的权威记录不在房间里，在 `event_log` 表；`maos/obs/trace.py` 把它转成 OTel 对齐的 span 树，`scripts/verify.py` 第 4 项重放校验「无孤儿、无环、与库逐字节一致」 | `maos/obs/trace.py`<br>`scripts/verify.py:318`（第 4 项 trace-tree） | ✅ 已跑通（7 场景证据束，见 `evidence/`） |
+| 1 | **Team / 房间** | 一个 Matrix 房间 = 一条流水线的全部事件；配置四项走环境变量 `MATRIX_HOMESERVER` / `MATRIX_USER` / `MATRIX_TOKEN` / `MATRIX_ROOM_ID`，缺一即降级 | `hiclaw/matrix_bus.py::MatrixBusConfig`<br>`hiclaw/matrix_bus.py::MatrixBusConfig.from_env`<br>`hiclaw/matrix_bus.py::REQUIRED_ENV` | ✅ **真房间已接通**（本机自建 Synapse v1.159.0 的非加密房，`evidence/room/` 五张图 + 41 条逐字副本） |
+| 2 | **Member / Worker** | 可插拔 Agent 池：role → Agent 类，投放一个文件即注册；Worker 收到 `TaskAssignment` 按 role 取执行者 | `maos/agents/base.py::AGENT_POOL`<br>`maos/agents/base.py::register`（`@register` 装饰器）<br>`maos/runtime/worker.py::Worker.__init__`（一行构造全池） | ✅ 已跑通（11 个角色带 Identity，其中 10 个注册进 `AGENT_POOL`、可被 Worker 按 role 派单，见 [`agent-identity.md`](agent-identity.md)） |
+| 3 | **事件链 / 消息流** | `publish()` 先走 inner bus，再镜像进房间：一行人话摘要 + 折叠的 Envelope JSON | `hiclaw/matrix_bus.py::MatrixEventBus.publish`<br>`hiclaw/matrix_bus.py::summarize`（人话摘要）<br>`hiclaw/matrix_bus.py::render_mirror`（摘要 + JSON） | ✅ **真房间实测**：两轮跑出 41 条房间消息，逐字副本 `evidence/room/transcript.md`；迁移逐条镜像见 `02-transitions.png` |
+| 4 | **人工介入 / HITL** | 房间里 `/approve <task_id>`、`/reject <task_id> [原因]` → `HumanApprovalQueue.decide()`；只认 `MAOS_APPROVERS` 名单内的用户，名单外回「无审批权限」**并落一条 event_log** | `hiclaw/matrix_bus.py::parse_approval_command`<br>`hiclaw/matrix_bus.py::RoomApprovalBridge`<br>`hiclaw/matrix_bus.py::RoomApprovalBridge.handle_message`（先查名单再解析）<br>`hiclaw/matrix_bus.py::RoomApprovalBridge._record_denied`（越权落库） | ✅ **三种在真房间各实测一次**：`/approve`→DONE（`03`）、`/reject`→FAILED（`04`）、intern 越权两次被拒且闲聊零回复（`05`） |
+| 5 | **可观测 / 回放** | 事件链的权威记录不在房间里，在 `event_log` 表；`maos/obs/trace.py` 把它转成 OTel 对齐的 span 树，`scripts/verify.py` 第 4 项重放校验「无孤儿、无环、与库逐字节一致」 | `maos/obs/trace.py`<br>`scripts/verify.py::check_trace_tree`（第 4 项 trace-tree） | ✅ 已跑通（8 束证据 = 场景 1–7 + R5，见 `evidence/`） |
+
+> **代码位置为什么写 `file::symbol` 而不是 `file:line`。** 这张表原来给的是行号，
+> 到 T31 复核时 16 处里有 15 处已经漂了（偏 +1 到 +152 行），照着翻会翻到不相干的行 ——
+> 给了行号就是在邀请人核，核不上比不给更伤。符号名不随插行漂移，定位方式也不比行号麻烦：
+> `grep -n 'def publish' hiclaw/matrix_bus.py`，或在编辑器里直接跳转符号。
+> `A.b` 表示类 `A` 的方法 `b`。
 
 ### 为什么第 5 项要单列
 
@@ -31,7 +37,7 @@ MAOS 的做法是**装饰器镜像**：进程内 EventBus 照常跑，`MatrixEve
 - **房间** = 人的可见性与介入面（第 1、3、4 项）
 - **`event_log` + `trace.json`** = 审计与回放的权威记录（第 5 项）
 
-镜像失败不影响后者 —— `_mirror()` 吞掉任何异常只记日志（`hiclaw/matrix_bus.py:348`）。
+镜像失败不影响后者 —— `_mirror()` 吞掉任何异常只记日志（`hiclaw/matrix_bus.py::MatrixEventBus._mirror`）。
 
 ---
 
@@ -58,7 +64,7 @@ MAOS 的做法是**装饰器镜像**：进程内 EventBus 照常跑，`MatrixEve
   `@boss` / `@intern` / `@maos-bot` 三人在房。三个账号全部由
   `register_new_matrix_user` 脚本注册，**没有一步需要人类点 GUI** ——
   上一版写的「需人类手工注册所以未开工」是个错误前提，`docs/hiclaw-probe.md` §1 已纠正。
-- `_NioChannel` 那条活路径（`hiclaw/matrix_bus.py:178`）**走到了**，
+- `_NioChannel` 那条活路径（`hiclaw/matrix_bus.py::_NioChannel`）**走到了**，
   两轮 `room_demo` 实跑证据在 `evidence/room/`。
 - ⚠️ **但上一版那句「matrix-nio 未安装，恒走 ImportError」并没有全错，只是漏了主语。**
   精确说法是：**系统 `python3` 至今没装 matrix-nio**（实测

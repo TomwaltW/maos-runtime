@@ -15,7 +15,7 @@ docstring、`maos/contracts/events.py` 第 4 行、`maos/flows/common.py:104`。
 
 **`MAOS_EVENTBUS_BACKEND` 未设 = `InMemoryEventBus`，行为与今天逐字节一致。**
 
-本仓库最大的卖点是「无需任何 API key、裸 clone 跑到 7/7 PASS」，那正是复赛 30%
+本仓库最大的卖点是「无需任何 API key、裸 clone 跑到 8/8 PASS」，那正是复赛 30%
 维度红线「无法在合理环境中复现」的正面防守。RocketMQ 一旦变成跑通场景的前提，
 这个卖点当场作废，得不偿失。所以：
 
@@ -117,7 +117,7 @@ OpenTelemetry 全家桶的包放进主依赖，等于让每个只想跑 `python3
 都为一个可选后端付出装包时间和版本冲突风险。
 
 判据很直接：**没装客户端、没起 broker 的机器上，`python3 -m pytest maos/tests -q`
-必须照常全绿**（新增测试自动 skip），`python3 run.py` 必须照常 `7/7 PASS`。
+必须照常全绿**（新增测试自动 skip），`python3 run.py` 必须照常七个场景全过、exit=0。
 
 ---
 
@@ -155,7 +155,7 @@ OpenTelemetry 全家桶的包放进主依赖，等于让每个只想跑 `python3
 | 本轨测试 | `test_eventbus_rocketmq.py` **17 passed**（有 broker）/ **9 passed, 8 skipped**（无） |
 | 全量（无 broker） | **944 passed, 37 skipped**，exit=0 |
 | 全量（有 broker） | **951 passed, 30 skipped**，exit=0 |
-| `python3 run.py` | exit=0，7/7 不受影响 |
+| `python3 run.py` | exit=0，七个场景不受影响 |
 
 ---
 

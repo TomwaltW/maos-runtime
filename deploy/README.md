@@ -1,9 +1,12 @@
-# 容器内跑 MAOS —— 从零到 `RESULT: 7/7 PASS`
+# 容器内跑 MAOS —— 从零到 `RESULT: 8/8 PASS`
 
 写给**只装了 docker、没读过这个仓库**的人。照着敲，三条命令。
 
 本文里所有耗时、版本、体积都是 2026-08-29 在一台机器上**实跑量出来的**，
 不是估的；哪一项没量到，下面会直说「未实测」，不拿「大约」糊过去。
+核验项数由 7 项涨到 8 项（第 8 项 `cost-attribution` 于 2026-08-30 落地），
+**四处 `8/8` 是 2026-08-31 在容器里重跑 `run --rm verify` 当场看到的**，不是按主机读数推的；
+上表的耗时与体积仍是 08-29 那次的量值，本轮没有重新掐表。
 
 ---
 
@@ -63,7 +66,7 @@ up (裸)                   -> exit=0        # 同一次崩溃，却报成功
 | `build --no-cache`（冷） | **47s** | 0 | 装 git + pytest，产出 `maos-runtime:local` 390MB |
 | `build`（buildkit 有层缓存） | **1s** | 0 | 命中缓存，什么都不做 |
 | ① `up --exit-code-from maos` | **0–1s**（镜像已在） | 0 | 场景 1 端到端；沙箱回归 **5 过 / 0 挂 / 0 错** |
-| ② `run --rm verify` | **4–5s** | 0 | 现产 8 束证据 + 重放校验 → `RESULT: 7/7 PASS` |
+| ② `run --rm verify` | **4–5s** | 0 | 现产 8 束证据 + 重放校验 → `RESULT: 8/8 PASS` |
 | ③ `--profile pg up -d pgvector` | **0s**（镜像已缓存） | 0 | PostgreSQL 16.15 + vector 0.8.6，健康检查立即 healthy |
 
 首次跑 ① 或 ② 时 compose 会自动先构建，所以第一条命令实际要等 47s + 拉镜像的时间；
@@ -71,7 +74,8 @@ up (裸)                   -> exit=0        # 同一次崩溃，却报成功
 
 > ①② 各跑了 4 次（本仓库工作区 2 次 + 两份**全新 clone** 各 1 次），
 > 上表给的是观察到的区间，不是某一次的单点。两份 clone 都是**零环境变量**、
-> 完全照本节命令敲的，两次都跑到 `RESULT: 7/7 PASS`。
+> 完全照本节命令敲的，两次都跑到全项 PASS（08-29 那两次核验器还是 7 项）。
+> 2026-08-31 第 8 项落地后在一份全新 clone 上又跑了一次，读数是 `RESULT: 8/8 PASS`。
 
 ### ① `up` 跑完长这样
 
@@ -95,7 +99,7 @@ maos-1 exited with code 0
 ### ② `verify` 跑完最后两行
 
 ```
-RESULT: 7/7 PASS
+RESULT: 8/8 PASS
 证据来源：scenario-1, scenario-2, scenario-3, scenario-4, scenario-5, scenario-6, scenario-7, scenario-R5
 ```
 

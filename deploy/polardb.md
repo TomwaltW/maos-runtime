@@ -148,6 +148,22 @@ pgvector 的 `<=>` 是余弦**距离**（越小越近），而 F-2 要求分数�
 
 逐条对照与差异分析在 `deploy/polardb-live.md`，那份文档只管数据库这一侧。
 
+### 追加二轮：中文分词与向量索引（2026-08-30）
+
+| 项 | 实测结果 |
+| :-- | :-- |
+| `CREATE EXTENSION zhparser` | ✅ **装得上**，`zhparser 2.2`。建 `zhcfg` 配置后中文真的切开（`退款/政策/超时/到/账`） |
+| 中文召回（24 条真语料，6 条查询） | `zhcfg` 全文 **8/10**；向量 top-5 **10/10**；`simple` 配置下**一条都查不了**（全部抛 `LookupError`） |
+| `MAOS_PG_FTS_CONFIG=zhcfg` 是否要改代码 | ✅ **不用**。库代码一行没改，CJK 查询立刻走 PG。唯一变红的是那条断言「CJK 必须抛错」的测试 —— 它写死了「配置一定是内置的」这个前提，账记在 `docs/BACKLOG.md ## polardb-live-r2` |
+| HNSW 查询性能（20 万行） | 顺序扫描 p50 **72.5 ms** → HNSW `ef_search=40` p50 **0.62 ms**，**117 倍**，召回 99.3% |
+| HNSW 延迟随规模 | 数据 4 倍（5 万→20 万），HNSW p50 几乎不动（0.58→0.62 ms）；顺序扫描线性涨（16.1→72.5 ms） |
+| HNSW 构建耗时 | 5 万行 8.7 s → 20 万行 **77.9 s**（**超线性**：数据 4 倍，耗时 9 倍） |
+| HNSW 索引体积 | 20 万行 **109 MB**，堆表 123 MB —— 接近 1:1 |
+
+🔴 后两行的数据是**合成的**（真语料句子重组 + 真实 `embed()`），真语料只有 24 条，
+撑不起规模测试。完整表格、方法与一条「低 `ef_search` 召回随构建波动」的教训
+见 `deploy/polardb-live.md` §1.4 / §1.5 / §3.6。
+
 ---
 
 ## 未实测
@@ -176,12 +192,10 @@ pgvector 的 `<=>` 是余弦**距离**（越小越近），而 F-2 要求分数�
 
 - **连接池 / PgBouncer / 并发**：全程单连接，连接治理一条没测。
 - **内网地址**：只连过公网地址。生产要走 VPC 内网（更快更省更安全），那条链路没验。
-- 数据量上来之后的 HNSW 参数（`m` / `ef_construction`）与索引构建耗时 ——
-  云上表是空的，索引建得上，**依然没有任何性能结论**。
 - 备份、主备切换期间连接断开后的重连行为（本层缓存连接，`connect()` 只在连接
   `closed` 时重建，主备切换的半开连接没测过）。
-- 中文分词扩展**实际安装**之后的行为：`CREATE EXTENSION zhparser` 能不能成、
-  建出来的配置召回质量如何、`MAOS_PG_FTS_CONFIG` 切过去之后本层是否真的不用改代码。
+- HNSW 的**调参**：`m` / `ef_construction` 全程用 pgvector 缺省值（16 / 64），没调过。
+- **并发下**的向量检索性能：§1.5 那些数字全是单连接单查询。
 
 ---
 
@@ -224,9 +238,16 @@ LookupError: 查询串含中日韩字符，而当前文本检索配置是 PG 内
 `export MAOS_PG_FTS_CONFIG=zhcfg`，本层立刻把 CJK 查询也交给 PG。
 配套索引的建法见 `maos/store/pg_schema.sql` 的注释。
 
-这条路径此前挂着一个前提问号「托管 PolarDB 能不能装这类扩展」，**现在答了一半**：
-`zhparser 2.2` / `pg_jieba 1.1.2` 都在该实例的可用扩展列表里（见上一栏）。
-另一半仍是问号 —— **没有实际安装过，也没测过装上之后的中文召回质量**。
+这条路径此前挂着一个前提问号「托管 PolarDB 能不能装这类扩展」，**现在答完了**：
+`zhparser 2.2` 已在该实例上**实际安装并实测**，建 `zhcfg` 配置后中文真的切开，
+`MAOS_PG_FTS_CONFIG=zhcfg` 之后本层**一行代码没改**，CJK 查询立刻走 PG，
+24 条真语料上全文召回 8/10（漏的两条是 `plainto_tsquery` 的 AND 语义，不是分词的锅）。
+详见 `deploy/polardb-live.md` §1.4。
+
+⚠️ 一处连带：`maos/tests/test_pg_store_live.py::test_chinese_query_raises_instead_of_silently_missing`
+断言「CJK 查询必抛 `LookupError`」，它写死了「配置一定是 PG 内置的」这个前提，
+所以在 `MAOS_PG_FTS_CONFIG=zhcfg` 下会红（39 passed, 1 failed）。**库代码没问题，
+是这条测试没有跟着配置走**，账记在 `docs/BACKLOG.md ## polardb-live-r2`。
 
 ### 2. 占位符方言：`?` vs `%s`
 

@@ -41,6 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from maos.config import get_config_source
+
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 #: 英数按词、中文按字。FTS5 的 unicode61 分词器不切中文，写入与查询两侧都先过它。
@@ -63,6 +65,10 @@ POSITIVE_KINDS = (KIND_POLICY, KIND_HISTORY_CASE, KIND_ERROR_CODE_PLAYBOOK)
 
 KB_ENABLED_ENV = "MAOS_KB_ENABLED"
 KB_WEIGHTS_ENV = "MAOS_KB_WEIGHTS"
+
+#: `kb_enabled()` 认的那几个关值。抽出来只为让两条分支（显式 env / 配置面）
+#: 共用同一份口径 —— 两处各写一份的后果是「显式传字典时开关失灵」，而那不报错。
+_KB_OFF_VALUES = ("0", "false", "no", "off")
 
 #: `kb_doc.id` 的拼接分隔符。与 schema.sql 里那条生成列表达式是同一份口径。
 DOC_ROW_ID_SEP = ":"
@@ -126,11 +132,19 @@ def kb_enabled(env: dict | None = None) -> bool:
     识别的关值：0 / false / no / off（大小写无关）。其余一律当启用 ——
     读不懂的配置值回落到「启用」而不是「关闭」：静默关掉 RAG 的症状是
     「效果不好」而不是报错，那是最难被发现的一种失效。
+
+    T35 起「现读」这个动作走 `maos.config` 的配置面。缺省源就是 `os.environ.get`，
+    取值逐字节不变 —— 未设与设成空串在改之前就都落在「其余一律当启用」那一支上，
+    所以把 `None` 换成 `""` 这个 sentinel 不改变任何一格取值表。
+    `MAOS_CONFIG_SOURCE=nacos` 时同一句改从 Nacos 取，于是这个开关**不重启就能改**。
+
+    显式 `env` 那一支不走配置面是刻意的，口径照抄 `current_approvers`：
+    `kb_enabled({...})` 的语义是「就按我给的这份读」，改成读配置面会让
+    `experiment.py` 的对照实验拿到一份自己没给过的开关值。
     """
-    raw = (env if env is not None else os.environ).get(KB_ENABLED_ENV)
-    if raw is None:
-        return True
-    return str(raw).strip().lower() not in ("0", "false", "no", "off")
+    if env is not None:
+        return str(env.get(KB_ENABLED_ENV) or "").strip().lower() not in _KB_OFF_VALUES
+    return get_config_source().get(KB_ENABLED_ENV, "").strip().lower() not in _KB_OFF_VALUES
 
 
 # ---------------------------------------------------------------- 底层连接

@@ -90,8 +90,13 @@ class ConfigAuditor:
             # 按 event_type 认领这两列，借用会让配置变更混进状态轨迹里。
             "from_state": "",
             "to_state": "",
+            # 被闸门拒掉的那一次，`reason` 这一行必须自己说清楚 —— 否则一眼看去
+            # 它和一次真的生效了的变更长得一模一样，而 `detail.rejected` 藏在 JSON 里
+            # （T35 §5.2）。
             "reason": (f"{change.key}: {redact(change.key, change.old)!r}"
-                       f" -> {redact(change.key, change.new)!r}"),
+                       f" -> {redact(change.key, change.new)!r}"
+                       + ("（已拒绝采用，沿用旧值）"
+                          if change.detail.get("rejected") else "")),
             "detail": change.as_detail(),
         }
         try:

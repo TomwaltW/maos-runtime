@@ -62,6 +62,7 @@ import weakref
 from typing import Any
 
 from maos import kb
+from maos.config import get_config_source
 
 log = logging.getLogger("maos.kb")
 
@@ -105,8 +106,14 @@ def load_weights(env: dict | None = None) -> dict[str, float]:
 
     检索是锦上添花的一环，配置写错不该掀掉主链路；但也不能静默 —— 权重
     悄悄回落到默认值，与权重被悄悄清零，在效果上分不出来。
+
+    T35 起走 `maos.config` 的配置面（口径同 `kb.kb_enabled`）：缺省源就是
+    `os.environ.get`，未设与设成空串在改之前就都落在「回落默认值」那一支上，
+    取值逐字节不变；`MAOS_CONFIG_SOURCE=nacos` 时同一句改从 Nacos 取。
+    显式 `env` 那一支仍读它自己给的那份字典。
     """
-    raw = (env if env is not None else os.environ).get(kb.KB_WEIGHTS_ENV)
+    raw = (env.get(kb.KB_WEIGHTS_ENV) if env is not None
+           else get_config_source().get(kb.KB_WEIGHTS_ENV, ""))
     if not raw or not str(raw).strip():
         return dict(DEFAULT_WEIGHTS)
     try:

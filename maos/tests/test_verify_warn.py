@@ -148,11 +148,16 @@ def test_retired_warn_classes_stay_retired(verify_report):
             f"再出现是回归，不是已知缺口。")
 
 
-def test_verify_still_seven_of_seven(verify_report):
-    """收口 warn 的过程中一次都不许把判据判坏 —— 7 项全 PASS，一项都不许 SKIP。"""
+def test_verify_still_eight_of_eight(verify_report):
+    """收口 warn 的过程中一次都不许把判据判坏 —— 8 项全 PASS，一项都不许 SKIP。
+
+    T29 把 `cost-attribution` 加成第 8 项后从 7 改到 8（人类授权改本文件这一个函数，
+    见 `docs/DECISIONS.md`）。这个数字是**下限守卫**：它防的是有人为了让某一项别红
+    而把它从 `CHECKS` 里摘掉 —— 那样屏幕上照旧一屏 PASS，判据却一次都不执行。
+    """
     bad = [c["key"] for c in verify_report["checks"] if c["status"] != "PASS"]
     assert not bad, f"这些项不是 PASS：{bad}"
-    assert len(verify_report["checks"]) == 7, "核验器应恰好 7 项"
+    assert len(verify_report["checks"]) == 8, "核验器应恰好 8 项"
 
 
 # ===========================================================================

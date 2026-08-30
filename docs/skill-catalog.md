@@ -14,7 +14,7 @@
 
 | skill | 版本 | 域 | 归属角色 | 失败策略 | 依赖工具 | 声明位置 |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:146` |
+| `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:151` |
 | `finance.settle` | `1.0.0` | 制造售后退款域 | `refund_finance` | escalate | （空） | `maos/skills/builtin/refund/finance.py:55` |
 | `issue.aggregate` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/issue_aggregate.py:66` |
 | `kb.retrieve` | `1.1.0` | 软件交付域 | `manager`、`coding` | escalate | （空） | `maos/skills/builtin/kb_retrieve.py:88` |
@@ -25,14 +25,14 @@
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:62` |
 | `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:65` |
 | `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:59` |
-| `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:46` |
+| `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:51` |
 | `test.verify` | `1.0.0` | 软件交付域 | `testing` | escalate | `sandbox` | `maos/skills/builtin/test_verify.py:30` |
 
 ## 逐个 skill × 九要素
 
 ### code.repo-patch @ 1.0.0
 
-实现：`CodeRepoPatchSkill` @ `maos/skills/builtin/code_repo_patch.py:146`
+实现：`CodeRepoPatchSkill` @ `maos/skills/builtin/code_repo_patch.py:151`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -219,7 +219,7 @@
 
 ### req.normalize @ 1.0.0
 
-实现：`ReqNormalizeSkill` @ `maos/skills/builtin/req_normalize.py:46`
+实现：`ReqNormalizeSkill` @ `maos/skills/builtin/req_normalize.py:51`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

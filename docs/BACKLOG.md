@@ -1218,3 +1218,22 @@ T21–T26 六轨并入。基线 `129e71d`，并轨时主干已由另一会话推
 | 2026-08-30 | P7 | （承接 `## task-T26` 第 3 条）**`## task-T17` 第 2 条写的「退款域 18 张表」仍是错的**，实测业务表 14 张、加 T26 的迁移记账表共 15 张 | 它是被后轨直接引用的事实，照抄会拿到 18 | 本轮未改：`## task-T17` 是历史实录节，按惯例不改历史行。下次有人正当持有该节时顺手更正 |
 | 2026-08-30 | P7 | **`maos/tests/conftest.py` 那条 delenv 的时序仍没有断言钉着**（`## task-T26` 第 2 条原文） | 本轮把「有库必须 0 skipped」钉进了 `demo_preflight.sh` 第 1 步，比只查条数强：29 条被饿死时 passed 会正好等于无库那档，只查条数看不出来。**但这仍是环境哨兵不是单元断言** —— 无库机器上跑不出这个差别 | 仍需一个 `test_conftest_env_baseline.py` 把时序钉死。归下一轨，与 `## task-T26` 第 2 条合并处理 |
 | 2026-08-30 | P7 | **`docs/clone-smoke-report.md` 的六遍冒烟没有第七遍**：卡点 7 已转绿、卡点 8 本轮推送后也闭合，但报告里没有一遍是在「两条都绿」之后跑的 | 报告的结论行仍写着「裸 clone 不成立」，与仓库当前状态相反。本轮已在卡点 7 一节顶上加了转绿注记，并**已补跑第七遍**（裸 clone，五步全 0 退出，见该文件末节） | ✅ 本轮已做：第 3 条结论六遍以来第一次转为**无条件成立**。仍未做的是**物理断网**下的零出网复核（七遍都没做过） |
+
+## task-T29
+
+成本与 Metrics 挂 `trace_id`。基线 `d98b9d1`。本轮实测：**970 passed / 29 skipped**
+（935 + 本轨新增 35），`verify.py` **8/8 PASS**、exit=0。
+
+以下七条都是**在本轨白名单外**发现的，一条都没有当场改（铁律 4）。
+前四条共同的后果是一样的：成本数字偏低或归不上账，而屏幕上看不出来 ——
+所以每一条都在 `trace.json` 或 `verify.py` 第 8 项里留了显式出口，不是静默缺失。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P5 | **`maos/flows/**` 多处构造 Agent 不传 `store=`**：`scenario_1.py:121`／`scenario_2.py:119`／`scenario_5.py:166`／`scenario_7.py:475,490` 的 `ManagerAgent(model)`、`ReviewerAgent(model)`。`BaseAgent.__init__` 的 store 缺省 None，此时 `record_model_usage` 直接跳过 | **scenario-7 整场一条用量都没记到**，`cost.calls=0`。「真的没调」与「调了没记」在这个数字上分不开 —— 已由 `obs/trace.py::ZERO_CALLS_NOTE` 在 `trace.json` 里写明，但那只是让洞看得见，不是把洞补上 | 归持有 `maos/flows/**` 的那一轨（本轨明令不许动）。改法是构造时一律带 `store=store`，与 `scenario_6.py:285` 已有的写法一致 |
+| 2026-08-30 | P5 | **`ManagerAgent.plan()` 结构上拿不到 `trace_id`**：它跑在 `cp.create_plan()` **之前**（`mgr.plan(GOAL)` 是 `create_plan` 的入参），那一刻还没有 plan 行 | 本轮实测 **4 条用量归属不上任何 Run id**（scenario-6 一条、scenario-R5 三条），落空 `trace_id` 后由 `unattributed_usage` 逐条点名。规则要的「Metrics 关联到同一个 Run id」在这几条上没兑现 | 与上一条同轨。改法是让 flows 先生成 `plan_id`／`trace_id` 再规划并放进 `context`（`scenario_6.py` 的 `_kb_prefetch` 路径已经这么做了一半），本轨不许扩 `plan()` 签名 |
+| 2026-08-30 | P5 | **`flows/scenario_2.py:98` 的 `FlakyModel` 直接 `ModelResponse(text=...)`，不填 `model=`** | 落库那行 `model` 为空，`verify.py` 第 8 项判据 c（`estimated` 与 `model` 两个独立来源交叉印证）在这 2 条上**印证不了**，只能记 info。方向仍安全（都已标 `estimated=1`），但交叉印证少了一半 | 与上一条同轨。一行的事：`ModelResponse(..., model=f"scripted-{tier}")` |
+| 2026-08-30 | P5 | **`model_usage.latency_ms` 是整毫秒**，Scripted 调用一律取整成 0 | 「快到测不出」与「没测」在这一列上分不开 —— 本轮八个场景全是 0。真模型接上后自然有值，但在 Scripted 缺省路径上这一列不承载信息 | 要么换成微秒列（改表结构，只能新增列或新表），要么在成本视图里显式标「本束全 Scripted，latency 不承载信息」。不急，接真网关那一轨顺手定 |
+| 2026-08-30 | P7 | **`maos/tests/test_verify_warn.py:155` 写死 `len(checks) == 7`**，与派单 §5.4 要求新增第 8 项直接冲突 | 该文件不在本轨白名单内。本轨已实测：除这一行外全绿（969 passed），warn 基线 `{"authoritative-fact": 1}` 一行不变（第 8 项只出 info 不出 warn） | **已停手问人类**，等授权后改这一行（`== 7` → `== 8`）并把函数名一并改掉。不许为了让它绿而不注册第 8 项 |
+| 2026-08-30 | P7 | **`docs/agentteams-mapping.md:21` 的两处行号已过期**：`maos/agents/base.py:101`（`AGENT_POOL`）、`:104`（`@register`），本轨改动后应为 `:140` / `:143` | 该文件是**手写**的，不在 `gen_docs.py` 的 TARGETS 里，`--check` 发现不了 —— 这类漂移没有任何机器守卫 | 归 T21／T22 文档轨。更根本的是：手写文档里嵌行号本身没有守卫，值得让 `gen_docs --check` 覆盖到它 |
+| 2026-08-30 | P7 | **「七项 / 7/7」的口径散在四份文档里**：`README.md`（§3 那段实跑输出、共 8 处）、`docs/EXECUTION.md`、`docs/ppt-outline.md`、`docs/architecture.md:153` | 第 8 项落地后这四处全部过期，而它们正是评委会读的那几份。`README.md` §3 那段贴的是逐项 PASS 实跑输出，需要整段重贴 | 归 T21／T22／Y 轨。本轮刻意没动：四份都在别轨的面上，且要等第 8 项注册这件事定下来才谈得上改 |

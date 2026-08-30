@@ -43,7 +43,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 
 **不许说的话**
 - 不许说「基于 AutoGen 构建」—— 只能说「AutoGen 是可插拔内核之一，未在复赛演示中启用」
-  （`docs/submission-checklist.md:61`、`docs/agentteams-mapping.md:69-79`）。
+  （`docs/submission-checklist.md §A-4`、`docs/agentteams-mapping.md:69-79`）。
 
 ---
 
@@ -68,7 +68,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 它正是我们这一版的主线，第十页专讲。
 
 **可核验证据**
-`docs/submission-checklist.md:183-190`（三条诊断的原文与要求指向的落点）
+`docs/submission-checklist.md §B`（「三条诊断」表 —— 三条诊断的原文与要求指向的落点）
 
 **对应评委要求编号**
 —（本页扛的是三段反馈诊断，不是十三条要求）
@@ -103,9 +103,9 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 **6**（业务对象关联到同一案例）
 
 **不许说的话**
-- 不许说「真实企业政策」—— 只能说「按行业惯例构造的合成数据」（`docs/submission-checklist.md:57`）。
+- 不许说「真实企业政策」—— 只能说「按行业惯例构造的合成数据」（`docs/submission-checklist.md §A-4`）。
 - 不许说「接入了支付宝」—— 只能说「错误码与异步时序对齐支付宝开放平台公开规范；
-  演示用模拟实现」（`docs/submission-checklist.md:58`）。
+  演示用模拟实现」（`docs/submission-checklist.md §A-4`）。
 
 ---
 
@@ -132,8 +132,15 @@ Skill、ToolPort 和业务对象。最下面是旁路 —— 缺席也不阻塞�
 —（架构页是后续各页的地基，不单独扛要求）
 
 **不许说的话**
-- 不许说「后端已可插拔切 PolarDB」—— 只能说「StorePort 有地基、未接线；
-  PG 后端是空壳且拒绝回落」（`docs/submission-checklist.md:60`）。
+- 不许说「PolarDB 上生产可用」——**该实例当前 `ssl=off`，公网链路明文，未做加固**
+  （出处 `docs/BACKLOG.md` 的 `## polardb-live` 第 1 条）；也不许说「支持中文分词检索」——
+  `zhparser` / `pg_jieba` **只验到「在可用扩展列表里」，一个都没装**、没建文本检索配置、
+  没测过召回（同上第 2 条）。
+  只能说「PG 后端已在本机 Docker PostgreSQL 16.15 + pgvector 0.8.6 上实测跑通
+  （`maos/tests/test_pg_store_live.py` 22 条）；**阿里云 PolarDB PostgreSQL 版真实例也已连通实测**
+  （2026-08-30，冒烟五步 5/5，`ts_rank` 与向量距离与本机 Docker 逐字节相同）。后端不可用时抛
+  `PgBackendUnavailable(NotImplementedError)`，**仍不回落 sqlite**」
+  （`docs/submission-checklist.md §A-4`）。
 - 图里 `KERNEL` 那块不许标成「零改动」。零改动的是 `maos/contracts/`；
   `core/` 与 `runtime/` 不是零，读法见 P12。
 
@@ -196,7 +203,7 @@ HITL 是房间里的斜杠命令，第五项是可观测。第五项要单说：
 
 **不许说的话**
 - 🔴 不许说「全过程在 Element 里跑通」。只能说「镜像层已实现，降级路径实测等价，
-  真房间待接通」（`docs/submission-checklist.md:59`、`docs/agentteams-mapping.md:63`）。
+  真房间待接通」（`docs/submission-checklist.md §A-4`、`docs/agentteams-mapping.md:63`）。
 - 这一页必须自己把「真房间未接通」说出来，不要等评委问。
 
 ---
@@ -228,7 +235,7 @@ Skill 和 ToolPort 都是九要素 dataclass，失败形态和安全边界是必
 
 **不许说的话**
 - 不许说「接入了支付宝」。`gateway.refund` / `gateway.query` 两个 ToolPort 是
-  对齐公开规范的模拟实现（`docs/submission-checklist.md:58`）。
+  对齐公开规范的模拟实现（`docs/submission-checklist.md §A-4`）。
 
 ---
 
@@ -258,7 +265,7 @@ Skill 和 ToolPort 都是九要素 dataclass，失败形态和安全边界是必
 **8**（RAG 面向 workflow 规划 —— 机制侧）、**9**（先结构化过滤再组合召回）
 
 **不许说的话**
-- 不许说「后端已可插拔切 PolarDB」（`docs/submission-checklist.md:60`）。
+- 不许说「后端已可插拔切 PolarDB」（`docs/submission-checklist.md §A-4`）。
 - 不许把场景 6 的检索说成「召回准」。见 P8b 的易变提示。
 
 ---
@@ -324,7 +331,7 @@ FAIL 输出片段。
 **7**（外部系统保留权威事实，区分已提出 / 处理中 / 已到账）
 
 **不许说的话**
-- 不许说「接入了支付宝」（`docs/submission-checklist.md:58`）。
+- 不许说「接入了支付宝」（`docs/submission-checklist.md §A-4`）。
 - 不许把「抓到过一次绕过」讲成「我们从没出过错」。这一页最值钱的恰恰是
   **核验器自己抓到了**，讲的时候要把它当正面证据讲，不要淡化。
 
@@ -371,7 +378,7 @@ FAIL 输出片段。
 
 **不许说的话**
 - 🔴 不许说「七个场景都跑成功了」。场景 7 的 Plan 终态是 FAILED，**那正是它要演的**
-  （`docs/submission-checklist.md:63`）。
+  （`docs/submission-checklist.md §A-4`）。
 - 🔴 不许说「重试到上限」。整合轮 5 合入 Y-4 后场景 7 **能演换渠道**了，屏幕上打的是
   `换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）`，
   状态轨迹里有 `AWAITING_REVIEW -> REWORK [gate_rework]` → `REWORK -> PENDING [requeue]`。
@@ -418,7 +425,7 @@ RESULT: 7/7 PASS
 **12**（以到账 / 客户确认 / 人工纠错验证 DAG —— verify 第 6 项）
 
 **不许说的话**
-- 不许说「七个场景都跑成功了」（`docs/submission-checklist.md:63`）。
+- 不许说「七个场景都跑成功了」（`docs/submission-checklist.md §A-4`）。
 - 不许把 `warn:` 行藏起来。`trace-tree` 与 `business-outcome` 两项会附若干 `warn:`，
   它们不改判定但是真的（`README.md:116-117`）。台上被问到要能直接答。
 - 不许说「新克隆的仓库直接跑 `verify.py` 就有 7/7」—— `*.db` 不入库，
@@ -464,7 +471,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
   （整合轮 4 / X-2 的网关码四象限、第六第七道闸），**不是退款域改的**
   （`docs/domain-portability.md:50-52`、`docs/BACKLOG.md:317`）。
 - 不许说「基于 AutoGen 构建」、不许说「后端已可插拔切 PolarDB」
-  （`docs/submission-checklist.md:60-61`）。
+  （`docs/submission-checklist.md §A-4`）。
 
 ---
 
@@ -474,7 +481,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 合成数据、公开规范、模拟实现 —— 三者分清楚，这是最容易被问穿也最伤的一处。
 
 **画面要素**
-`docs/submission-checklist.md:119-137` 的 A-4 表照搬上版，但**只留两列**：
+`docs/submission-checklist.md §A-4` 那张表照搬上版，但**只留两列**：
 「只能这么说」和「不许这么说」，右列全部灰掉加删除线。这一页是全场唯一一页
 主动列自己不能说什么的页，视觉上要显得坦白，不要藏在角落。
 
@@ -485,7 +492,7 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 **可核验证据**
 - `README.md:295-303`（§8 数据口径小节：合成数据 / 公开规范 / 模拟实现 / Matrix 未接通 四条）
-- `docs/submission-checklist.md:119-137`（A-4 口径一致性七行表，本页即这张表的上版）
+- `docs/submission-checklist.md §A-4`（A-4 口径一致性七行表，本页即这张表的上版）
 - `maos/tools/gateway_codes.py`（错误码逐条核对后写入的落点，
   `README.md:297-299` 明写「禁止凭记忆编造」）
 
@@ -540,7 +547,7 @@ python3 scripts/verify.py           # ② 七项逐条重放校验 → RESULT: 7
 
 **不许说的话**
 - 不许说「一条命令就能从零跑到 7/7」。当前是两条，且顺序不能换（`README.md:119`）。
-- 不许说「七个场景都跑成功了」（`docs/submission-checklist.md:63`）。
+- 不许说「七个场景都跑成功了」（`docs/submission-checklist.md §A-4`）。
 
 ---
 

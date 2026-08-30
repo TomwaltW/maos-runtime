@@ -727,7 +727,7 @@ feat(p6): otel-aligned trace, evidence generator, verify.py, docker-compose + po
      11 个角色都有 Identity（白名单同样被 `SkillInvoker` 强制），其中 **10 个注册进 `AGENT_POOL`**（Worker 收到
      TaskAssignment 后按 role 找得到的执行者），`manager` 是规划者、由流程层直接构造并调 `plan()`、不接派单，
      所以有 Identity 但不进池。软件域 6 = 5 个可派单（architecture / coding / requirement / reviewer / testing）+ manager。
-     生成物自己 `docs/agent-identity.md:7` 会如实印出「10 个 / 9 个 / 1 个」并解释差在哪，**引用时别把 10 直接挂在 `AGENT_POOL` 后面**
+     生成物自己 `docs/agent-identity.md:7` 会如实印出「11 个 / 10 个 / 1 个」并解释差在哪，**引用时别把 10 直接挂在 `AGENT_POOL` 后面**
    - `docs/skill-catalog.md`：全部 Skill × 九要素，从 SkillContract 实例生成；末尾加"版本 / 发布 / 回滚 / 质量评估"一节
    - `docs/toolport-contract.md`：ToolPort 九要素 + 已实现工具契约表 + "迁移到 MCP = 换 entrypoint 传输层，schema 与审计不变"
 

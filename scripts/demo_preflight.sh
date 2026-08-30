@@ -16,9 +16,13 @@
 #      MAOS_EXPECT_VERIFY='RESULT: 7/7 PASS'   第 5 步的核验结论行
 #    负例自证就靠它：MAOS_EXPECT_TESTS=999 bash scripts/demo_preflight.sh
 #    → 非 0 退出并指出是第 1 步。
+#    第 1 步的条数**自己认环境分两档**（见下面 EXPECT_TESTS_NOPG / _PG），
+#    显式传 MAOS_EXPECT_TESTS 仍然盖过自动判断 —— 覆盖能力是负例自证的地基。
 #
 # 3. **零出网、不依赖任何 API key。** 全程走 ScriptedModelClient 路径，
 #    评委在没有任何密钥的机器上照样跑得出同一份结果 —— 这是卖点，第 0 步会显式打出来。
+#    唯一一次网络动作是第 1 步的 PG 探测，且**只在人自己配了 MAOS_PG_DSN 时发生**：
+#    没配就一个包都不发，与 API key 无关。
 #
 # 4. **本脚本不替人做决定。** 第 4 步必然把 evidence/ 弄脏（出处头每跑一次都变），
 #    脚本只统计脏行数并给出二选一提示，**绝不自动还原** ——
@@ -31,7 +35,10 @@ set -euo pipefail
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-EXPECT_TESTS="${MAOS_EXPECT_TESTS:-903}"
+# 第 1 步的测试条数按环境分两档。差的 29 条 = 22（maos/tests/test_pg_store_live.py）
+# + 7（maos/tests/test_pg_rank_parity.py）：没库时它们整个 skip，有库时全部真跑。
+EXPECT_TESTS_NOPG=903
+EXPECT_TESTS_PG=932
 EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
 EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 7/7 PASS}"
 
@@ -61,6 +68,50 @@ die() {
     exit "$step_no"
 }
 
+# 有没有一台**连得上**的 PG？—— 判据与 test_pg_store_live.py / test_pg_rank_parity.py
+# 自己的 skipif **同源**：那两个模块的 `_live_dsn()` 也是拿 PgStorePort 当场 connect
+# 一次，连不上就当没库。这里照走同一条码路，两边判据不会漂。
+#
+# 为什么不是「DSN 非空」就算有库：DSN 配了而库没起（容器没起、白名单没放行）时，
+# 那 29 条照样 skip，条数仍是无库那档；按「非空」判会让第 1 步在**配了 DSN 的机器上**
+# 误红，而那正是本档要治的病（docs/BACKLOG.md 的 ## task-T18 第 4 条）。
+# 代价（实测）：本机拒连 0.2 秒就回来；最坏是防火墙静默丢包，吃满
+# maos/store/pg_store.py 的 DEFAULT_CONNECT_TIMEOUT = 5 秒。第 1 步本身要跑 20 秒
+# 测试，这点开销买的是「配了 DSN 的机器上不误红」，值。且只在 DSN 已配时发生。
+pg_reachable() {
+    python3 - <<'PY' 2>/dev/null
+import os, sys
+
+dsn = os.environ.get("MAOS_PG_DSN", "")
+if not dsn:
+    sys.exit(1)
+try:
+    from maos.store.pg_store import PgStorePort
+    port = PgStorePort(dsn)
+    try:
+        port.connect()
+    finally:
+        port.close()
+except Exception:          # 驱动缺失 / 连不上 / DSN 形状不对，一律按「没库」
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# 选档。显式传的 MAOS_EXPECT_TESTS 永远盖过自动判断（负例自证靠它）。
+pick_expect_tests() {
+    if [ -n "${MAOS_EXPECT_TESTS:-}" ]; then
+        EXPECT_TESTS="$MAOS_EXPECT_TESTS"
+        EXPECT_TESTS_WHY='人为指定 MAOS_EXPECT_TESTS，已盖过自动判断'
+    elif pg_reachable; then
+        EXPECT_TESTS="$EXPECT_TESTS_PG"
+        EXPECT_TESTS_WHY='有可连的 PG —— live 22 条 + parity 7 条会真跑'
+    else
+        EXPECT_TESTS="$EXPECT_TESTS_NOPG"
+        EXPECT_TESTS_WHY='无可连的 PG —— live 22 条 + parity 7 条 skip'
+    fi
+}
+
 # --- 第 0 步：说清楚这一跑不需要任何密钥 ------------------------------------
 printf '\033[1mMAOS Demo 录制前置\033[0m　仓库根 %s\n' "$REPO_ROOT"
 printf '提交 %s\n' "$(git rev-parse --short HEAD)"
@@ -69,6 +120,8 @@ printf '拿到仓库的人在没有任何密钥的机器上跑，得到的是同
 
 # --- 第 1 步：全量测试 --------------------------------------------------------
 banner '全量测试　python3 -m pytest maos/tests -q'
+pick_expect_tests
+printf '      期望 %s passed（%s）\n' "$EXPECT_TESTS" "$EXPECT_TESTS_WHY"
 if ! python3 -m pytest maos/tests -q > "$LOG_DIR/pytest.log" 2>&1; then
     die '存量测试没有全绿' "$(tail -3 "$LOG_DIR/pytest.log" | tr '\n' ' ')" \
         "${EXPECT_TESTS} passed，0 failed" "$LOG_DIR/pytest.log"

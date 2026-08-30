@@ -1162,3 +1162,12 @@ verify 第 6 项自述层收口。派单 §5 只说了「补 FAILED 分支的 st
 | 2026-08-30 | P7 | 控制台建的普通账号装不了 `vector`（要 `polar_superuser`），在 `public` 里也建不了表（PG15 起普通用户只有 `USAGE`），且对库没有 `CREATE`，**连自建一个模式绕开都不行** | 请人类在控制台新建高权限账号，只用它跑 `CREATE EXTENSION vector` 与 `GRANT CREATE ON SCHEMA public TO <普通账号>` **两条**，之后全程退回普通账号 | 这两条是不可绕的前置，不做则五步冒烟只能到 2/5。把高权限的用途压到最小两条、用完即弃，是为了不滑向「以后干脆都用高权限连库」那种更省事但更危险的走法。实录与两个坑的分辨见 `deploy/polardb-live.md` §1.3 |
 | 2026-08-30 | P7 | `deploy/polardb.md` 第 2 步写的灌库命令是 `psql "$MAOS_PG_DSN" -f maos/store/pg_schema.sql`，而本机没装 PG 客户端（`command -v psql` 空） | 不装 psql，改用 psycopg 按 `;` 切分逐条执行，逐条打印 `statusmessage`（等价于 psql 的 `CREATE TABLE` / `CREATE INDEX` 命令标记），执行后再用 `information_schema.columns` + `pg_indexes` 核对落地形状 | 不为一次灌库装一套客户端。逐条执行 + 核对落地比 psql 的原样输出更能证明「索引到底建成了什么形状」（实测拿到 `hnsw (embedding vector_cosine_ops)` 与 `gin (to_tsvector('simple'::regconfig, body))`）。**顺带避开了一个安全问题**：psql 只能从命令行接 URI，那会让 DSN 出现在 `ps` 里 |
 | 2026-08-30 | P7 | 回填 `deploy/polardb-live.md` 时，§1.1 的本机 Docker 对照组输出与 §2.1 里「DSN 是占位符所以没跑成」的失败原因段，都属于此前那一轮的历史读数 | **一字不动地保留**，只新增 §1.2／§1.3／§3.5，并把 §2.1 的标题改成删除线 + 指向 §1.2；失败原因段作为存档留在原处 | 铁律 3：历史读数改了就是篡改证据。而且那条「占位符没换」的坑**在本轮又复发了一次**（高权限账号那份 DSN 只换了口令、用户名那格还留着 `<ADMIN_USER>`，被脚本内建的检测当场拦下），留着比删掉有用，已把这次复发追记在 §2.1 末尾 |
+
+## task-T23
+
+生成器自洽断言 + preflight 期望值双档。派单把两处判据明确留给本轨定，下面两条是自行判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-30 | P7 | §5.2 要 `scripts/demo_preflight.sh` 按环境切换期望条数，派单把判据留给本轨定：算「`MAOS_PG_DSN` 非空」就有库，还是要「非空**且连得上**」 | 选**非空且连得上**。探测拿 `PgStorePort.connect()` 当场连一次，连不上就当没库 | 判据必须与被门控的那 29 条测试**同源**：`maos/tests/test_pg_store_live.py` 与 `test_pg_rank_parity.py` 的 skipif 走的就是「未设 **或连不上**」，探测函数也是 `PgStorePort.connect()`。只看「非空」会在「DSN 配了、库没起（容器没起、白名单没放行）」时期望 932 而实得 903，**在配了 DSN 的机器上误红** —— 那正是本档要治的病（`## task-T18` 第 4 条）。代价实测可接受：本机拒连 0.24 秒就返回，最坏是防火墙静默丢包吃满 `maos/store/pg_store.py` 的 `DEFAULT_CONNECT_TIMEOUT = 5` 秒，而第 1 步本身要跑 20 秒测试。三种情形均实跑自证：无 DSN → 903 档 exit=0；起了 `t23-pg` 真库 → 932 档 exit=0；DSN 配着但库已删 → **回落** 903 档 exit=0 |
+| 2026-08-30 | P7 | §5.1 的自洽断言要不要再建一个 `maos/tests/test_gen_docs*.py` 来守（派单 §4 把它列为「若需」的可选项） | **不建**。只加断言本身；「能真红」用一次性探针在 scratchpad 里验完即弃，报错原文进回执 | 两条理由。其一，断言已被存量测试**天然覆盖**：`maos/tests/test_generated_docs.py` 的 `rendered` fixture 在干净子进程里真跑 `render()`，必然过一遍 `collect_agents()`；断言一炸，该测试当场报「生成器在子进程里跑挂了」并把 stderr 全文贴出来（里面就是被点名的 role）。其二，新增测试会把全量条数从 903 顶上去，而**冻结契约 B（T23 ↔ T26）把有库档钉死在 932**，preflight 两档期望值正建立在 903／932 这组数上；为一条已被覆盖的断言去动这两个数，代价远大于收益 |

@@ -1119,3 +1119,14 @@ T15–T20 六轨并入。基线 `f15e5dd`（整合轮 11 合并态），六轨�
 | 2026-08-30 | P7 | **`deploy/polardb.md` 的一条推断被实测推翻**：原文写「`zhparser` / `pg_jieba` 这类中文分词扩展**大概率装不了**（托管实例通常只允许白名单内的扩展）」。实测该实例共 **189** 个可用扩展，`zhparser 2.2`、`pg_jieba 1.1.2`、`pg_bigm 1.2`、`pgroonga 4.0.5` **四个都在可用列表里** | 这条推断此前是「中文全文在 PG 上无解」的最后一环。`polardb.md` 记着：`_port_search` 是「探一次记一次」，一次 CJK 查询抛 `LookupError` 就把该 store 的全文通道**永久**标记不可用，此后连英文查询也走本地实现 —— 在本仓库这种中文语料上，等于 PG 全文通道基本不会被用上。现在这个死结**有解的可能** | 单独一轨做，因为它是三步不是一步：`CREATE EXTENSION zhparser` 能不能成 → 建文本检索配置与配套 GIN 索引 → `MAOS_PG_FTS_CONFIG` 切过去后实测中文召回质量。本轮只验到「在可用列表里」，**装都没装**，三件事别混说。推断已在 `polardb.md` 与 `polardb-live.md` §3.1 两处点名改掉 |
 | 2026-08-30 | P7 | **白名单不放行时的症状是 TCP 静默超时，不是拒绝**。`dig` 能解析出公网 IP，`connect()` 挂满 8 秒超时，看起来跟「网络不通 / 实例没起来」完全一样 | 排障时极易误判方向。`polardb_smoke.py` 第 1 步刻意只报驱动异常类名不报 message（防 host 泄漏），所以从脚本输出上更看不出是白名单 | 若以后要省这一轮往返：给 `polardb_smoke.py` 第 1 步加一条判据 —— **DNS 解析成功 + TCP 超时 → 提示「大概率是白名单没放行本机出口 IP」**，并打印 `dig +short myip.opendns.com @resolver1.opendns.com` 拿到的出口 IP（这条不泄漏目标 host）。本轮不改脚本 |
 | 2026-08-30 | P7 | `scripts/demo_preflight.sh` 的 `EXPECT_TESTS` 在配了 `MAOS_PG_DSN` 的环境下对不上 —— 这条 T18 已记在 `## task-T18`，当时**预测**该值是 932 | **本轮实测确认：932**（`903 passed, 29 skipped` 无库 → `932 passed, 0 skipped` 有库；29 条 skip 全是 DSN 门控，22 条在 `test_pg_store_live.py`、7 条在 `test_pg_rank_parity.py`）。即预测值正确，不是新问题 | 处理时机仍归 `## task-T18` 那条。真要修，最省的改法是让 `demo_preflight.sh` 检测到 `MAOS_PG_DSN` 非空时把期望值切到 932 |
+
+## task-T23
+
+给 `scripts/gen_docs.py` 加自洽断言、给 `scripts/demo_preflight.sh` 加双档期望值时发现的，
+**本轮都不改**（铁律 4）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P7 | **期望条数从一个写死的数变成了两个**：`EXPECT_TESTS_NOPG=903` 与 `EXPECT_TESTS_PG=932`。本轨修的是「脚本认不认环境」，没修「数是写死的」 | 整合轮回填活数字时要**同时改两处**，而漏改有库那处**不会在无库机器上显形** —— 绝大多数回填恰恰发生在无库机器上，于是漏改要等到下一次真起库才炸。两数之间的差值 29（22 条 live + 7 条 parity）反倒是稳定的 | 下一轮可考虑只写死无库档，有库档写成「无库档 + 29」，把「两个各自漂的数」压成「一个数 + 一个差值」。本轮不做：差值本身也会随 live／parity 用例增删而变，换写法只是把维护点从一处挪到另一处，收益不明确，先观察一轮 |
+| 2026-08-30 | P7 | **本轨的自洽断言只守住三份生成物里的一份**。`_assert_scan_covers_pool()` 拿 `AGENT_POOL` 反查 `collect_agents()` 的扫描面；`collect_skills()`（skill-catalog）与 ToolPort 那份**没有等价的第二套注册口径可反查**，本轨也没去找 | `## task-T20` 第 3 条点名的就是 agents，本轨照做属范围内。但「文档与生成器一致地错」这个失效形态对另外两份同样成立，那两份目前无人看守 | 下一轮若要补：先确认 skill／tool 两侧存不存在与扫描面**互相独立**的第二套口径 —— agents 这侧能做，正是因为「扫 `BaseAgent` 子类」与「注册进 `AGENT_POOL`」是两套独立机制。找不到独立口径就别硬造：拿同一个来源自己验自己是个假守卫，比没有守卫更坏 |
+| 2026-08-30 | P7 | **判据同源，实现是两份**：`demo_preflight.sh` 的 `pg_reachable()` 内联一段 python 拿 `PgStorePort.connect()` 探测，`maos/tests/test_pg_store_live.py` 的 `_live_dsn()` 做的是同一件事。两边走同一条码路，但代码是各写各的 | 今天两边一致，无痛。将来若测试那侧收紧判据（例如再验一条「`vector` 扩展装了没」），preflight 不会跟着变严，于是出现「测试那 29 条 skip 了、preflight 仍按有库档期望 932」的误红 —— 与本轨刚治好的病同形，只是换了触发条件 | 要收敛就把探测提成 `maos/store/pg_store.py` 里一个公开小函数（如 `dsn_reachable()`），preflight 与测试都调它。本轨白名单外（`maos/store/**` 不归本轨），且当前无症状，只记账不改 |

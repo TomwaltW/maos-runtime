@@ -183,6 +183,10 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # 首次初始化时自动 CREATE EXTENSION vector，不必起完再手动连进去跑 DDL。
+      # 🔴 只在 pgdata 卷为空时执行（官方镜像行为）；卷里已有数据就安静跳过，
+      #    不报错。要重跑得 `docker compose --profile pg down -v` 先删卷。
+      - ./pg-initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       # 拿 pg_isready 而不是 `SELECT 1`：前者不需要密码，后者会因为鉴权失败
       # 把「库没起来」和「口令配错了」混成同一个症状。

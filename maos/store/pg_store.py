@@ -62,9 +62,12 @@ token**，「退款政策超时未到账」整条是一个词 —— 查「退�
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
+
+log = logging.getLogger("maos.store.pg")
 
 #: `dialect()` 的返回值，F-2 只认 "sqlite" | "postgres" 两个字面量。
 DIALECT = "postgres"
@@ -79,6 +82,26 @@ DEFAULT_CONNECT_TIMEOUT = 5
 #: 文本检索配置。缺省 `simple`；装了中文分词扩展的部署把它指过去即可。
 FTS_CONFIG_ENV = "MAOS_PG_FTS_CONFIG"
 DEFAULT_FTS_CONFIG = "simple"
+
+#: HNSW 的检索深度。**必须显式设**，不能吃服务端缺省 —— 这是本文件最容易
+#: 无声退化的一处。
+#:
+#: 症状（实测，见 deploy/polardb-live.md §3.6 与 BACKLOG `## polardb-live-r2`）：
+#: `ef_search=40` 时召回 **99.3%**、延迟 0.6ms；调到 10 就掉到 **85%–90%**，
+#: 而且**不稳定** —— 同一份数据、同一组查询，换一次索引构建就能从 100% 掉到
+#: 89.7%。也就是说低 `ef_search` 下的召回率是「这一次索引怎么建出来的」的
+#: 函数，不是数据的函数，复现性本身就没了。
+#:
+#: 不设的后果比数值本身更糟：换一台实例、换一个 pgvector 版本，或有人在实例
+#: 参数里改了这个值，**向量召回会静默变化 —— 不报错、不变慢，结果悄悄变差**。
+#: 这正是铁律 8 要防的那类无症状假象，也是最难被发现的一种退化。显式 SET 把它
+#: 从「环境的缺省」变成「代码的选择」。
+#:
+#: 取 40 是因为它就是 pgvector 的缺省值：在两个规模上都稳定 99.3%、延迟只有
+#: 0.6ms，**没有理由往下调**。留环境变量是给「召回要求更高、愿意换延迟」的
+#: 部署往上调用的，不是给往下调的。
+HNSW_EF_SEARCH_ENV = "MAOS_PG_HNSW_EF_SEARCH"
+DEFAULT_HNSW_EF_SEARCH = 40
 
 #: `ts_rank` 的 normalization 位掩码。**必须传** —— 缺省的 0 不做文档长度归一。
 #:
@@ -315,7 +338,47 @@ class PgStorePort:
                 " 这里抛错而不是回落 sqlite —— 契约甲：选了 postgres 就必须是"
                 " postgres，回落的后果是你以为验过了 PG，其实一行都没跑。"
             ) from exc
+        self._apply_session_params(self._conn)
         return self._conn
+
+    def _apply_session_params(self, conn: Any) -> None:
+        """把检索行为钉成代码的选择，而不是环境的缺省。见 HNSW_EF_SEARCH_ENV。
+
+        **失败只记 warning，不抛** —— 这不违反上面那句「绝不回落 sqlite」：
+
+        那条契约管的是**后端身份**（选了 postgres 就必须是 postgres，不许偷偷
+        换成别的后端把人骗过去）。`SET hnsw.ef_search` 失败时后端身份没有任何
+        变化 —— 这仍是一条真 postgres 连接，全文通道、KV 通道、向量通道全都
+        照常工作，向量召回只是回到服务端缺省，也就是**这次改动之前的现状**。
+
+        为它抛错会把整个 store 打死，连根本不碰向量的调用方一起打死；
+        「装了 PG 但没装 pgvector」的部署会因此完全不能用 —— 那是比问题
+        本身大得多的破坏。而静默吞掉又回到了正要治的病（召回静默变化）。
+        所以取中间档：warning 可见、可被测试钉住、不阻断。这与 `verify.py`
+        对沙箱降级的处置是同一个取舍 —— 判成失败会让证据根本产不出来，
+        静默通过会让这一维凭空消失，warn 正好卡在两者之间。
+        """
+        ef = self.hnsw_ef_search()
+        try:
+            with conn.cursor() as cur:
+                # 值已过 int()，不是拼进来的外部字符串。
+                cur.execute(f"SET hnsw.ef_search = {ef}")
+        except Exception as exc:  # noqa: BLE001 —— 调优参数不该打死连接
+            log.warning(
+                "SET hnsw.ef_search = %s 失败：%s。向量召回将回落到服务端缺省值，"
+                "换实例 / 换版本时召回可能静默变化。连接本身正常，其余通道不受影响。",
+                ef,
+                _redact(exc),
+            )
+
+    def hnsw_ef_search(self) -> int:
+        """检索深度。取值同 connect_timeout()：非法或非正数一律回缺省。"""
+        raw = os.environ.get(HNSW_EF_SEARCH_ENV, "")
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_HNSW_EF_SEARCH
+        return value if value > 0 else DEFAULT_HNSW_EF_SEARCH
 
     def close(self) -> None:
         """关掉缓存的连接。不在 F-2 里，给测试和一次性脚本收尾用。"""

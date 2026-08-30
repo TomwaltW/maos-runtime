@@ -1,4 +1,5 @@
--- 退款业务对象层 —— 14 张全新表，由 objects.py::ensure_schema(store) 读本文件建表。
+-- 退款业务对象层 —— 14 张业务表 + 1 张迁移记账表，
+-- 由 objects.py::ensure_schema(store) 读本文件建表。
 --
 -- 三条硬约束（派单 R-1 步骤 1，改这个文件前先读）：
 --   1. 全部是**新增**表。maos/core/store.py 的现有表结构一字不改，本文件不碰它们。
@@ -12,6 +13,33 @@
 --   submitted -> approved -> gateway_accepted -> processing -> settled
 --   分支：rejected（审批否决）/ compensated（失败后补偿收口）
 -- settled 只能由 payment.observe 写入，见 guard.py。
+--
+-- 本文件只描述**目标形状**，它自己搬不动老库：整份都是 `IF NOT EXISTS`，
+-- 表已存在就整段跳过，于是**改列静默无效** —— 加表可以（新表直接生效），改列不行：
+-- 往已建好的表加一列，`IF NOT EXISTS` 直接跳过，跑起来一切正常，直到某条 INSERT
+-- 报 no such column（BACKLOG `## task-R1` 第 5 条、`## task-T17` 第 2 条）。
+--
+-- 把老库搬到目标形状的是 `objects.py` 里的 `_MIGRATIONS`，记账落在下面的
+-- `refund_schema_version` 表。**改列要动两处**：这里写进目标形状，那边补一条
+-- 迁移步骤。只改这里的后果不是报错，是老库永远升不上来 —— 演示期的库都是
+-- `:memory:` 或每次新建，所以不咬人；PolarDB 是持久库，上线第一天就咬，
+-- 而且咬得没有声音。
+
+-- 迁移记账表。**一条已应用的迁移一行**，不是「一行存当前版本」：
+-- 前者的 INSERT 天然幂等（版本号是主键，重复插会响），后者是读-改-写，
+-- 两个进程同时升级会互相盖掉。当前版本 = MAX(version)，一行都没有就是 0。
+--
+-- 本表**不能**用来判断「这库是新的还是老的」—— 新库刚建完它同样是空的。
+-- 判据在每条迁移步骤自己的探针里（该干的事干没干），版本号只是
+-- 「不必再探一遍」的快路径。顺序上它必须排在数据表前面：迁移读它决定跑什么。
+--
+-- 它是这 15 张表里唯一一张**不带 tenant_id** 的：schema 版本是库级事实，
+-- 不是租户级事实。同一个库上跑的所有租户共享一份表结构。
+CREATE TABLE IF NOT EXISTS refund_schema_version (
+    version    INTEGER NOT NULL,
+    applied_at TEXT NOT NULL,
+    PRIMARY KEY (version)
+);
 
 -- ---------------------------------------------------------------- 租户与渠道
 CREATE TABLE IF NOT EXISTS tenant (

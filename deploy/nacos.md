@@ -41,7 +41,7 @@
 
 ## 2. 🔴 一条压倒一切的约束：缺省路径一个字节都不变
 
-本仓库的卖点是「无需任何 key、裸 clone 7 秒跑到 `7/7 PASS`、核心零依赖」。
+本仓库的卖点是「无需任何 key、裸 clone 7 秒跑到 `8/8 PASS`、核心零依赖」。
 `nacos-sdk-python` 是 **63 个包 / 135MB**（会拉进 `alibabacloud_kms`、`a2a-sdk`、
 `google-api-core`、`grpcio`）。把它塞进主依赖，「核心零依赖」当场作废，
 `clone → pytest` 从秒级变成分钟级 —— 直接撞上 30% 维度红线「无法在合理环境中复现」。

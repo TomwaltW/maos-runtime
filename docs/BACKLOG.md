@@ -1278,3 +1278,17 @@ Nacos 配置治理（T28）执行期间发现的，**本轮都不改**（铁律 
 | 2026-08-30 | P7 | **`README.md` §9 的文档索引里没有 `docs/gateway-rationale.md` 这一行**（`grep -c gateway-rationale README.md` → 0） | 新文档补的是「推荐工具链未使用需说明理由」那一维的判分条件本身，进不了文档索引就等于评委找不到它 | 归整合轮，与上面第 1 条一起改 README。建议插在 `docs/toolport-contract.md` 那一行之后，来源栏写「人写」 |
 | 2026-08-30 | P7 | **本 BACKLOG `2026-08-28` 那条（第 40 行）对自己的描述不够准**：它写「key 会进 repr / pytest 对象打印 / traceback」，但实测**改之前 `repr()` 里也查不到 key** —— 默认的 `object.__repr__` 只打类名和内存地址，属性一个都不打（实测输出 `<maos.model.client.HigressModelClient object at 0x102dab710>`） | 真正的泄漏面是两条：① 公开属性 `api_key` 本身（`vars()` / `__dict__` / 任何遍历属性的序列化都带出值）；② 「将来」—— 谁给这个类加一个 `@dataclass` 或自己的 `__repr__`，key 当场进 repr。所以那条的**结论（对齐 `GatewayModelClient`）是对的，理由写偏了**。本轮已按结论执行并补了 6 条回归（`maos/tests/test_model_client_hardening.py`，10 个用例），其中一条专门钉「repr 必须是显式格式」—— 因为「repr 里没有 key」在没写 `__repr__` 时也恒真，单靠它防线被删掉了也照样绿 | **本轮不改那一行**：它是 2026-08-28 的历史实录行，按仓库惯例不改历史条目（同 `## integrate-round-13` 对 `## task-T17` 的处理）。下次有人正当持有该节时顺手把理由更正为「公开属性 + 将来加 `__repr__` 的风险」 |
 | 2026-08-30 | P7 | **`docs/BACKLOG.md` 第 39 行那条 301/302/303 仍然定不了**（同 origin 的 301/302/303 被 urllib 默认 handler 把 POST 静默改写成 GET） | 该条原文写着候选修法「同 origin 也只放行 307/308」会缩小兼容面，**需要拿真 Higress 的行为定**；而本轮编排侧已定**不接 Higress**（派单 §0.2 三条实测理由）。判据来源没有，所以这一轮仍然不动 —— 在没有判据的情况下拍板比留着这条账更糟 | 与 Higress 接入同轮做（Track B）。已在 `docs/gateway-rationale.md` §5⑤ 把「接之前必须先定这一条」写进迁移路径，接的人不会漏掉 |
+
+## integrate-round-14
+
+T27–T30 并轨发现的，**本轮都不改**（铁律 4）。合并态实测：`1069 passed / 39 skipped`
+（935 + T27 9 + T28 80 + T29 35 + T30 10），`run.py` exit=0，`verify.py` **8/8 PASS**
+exit=0，`gen_docs.py --check` exit=0，`demo_preflight.sh` 5 步全过 exit=0。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P7 | **有库那档（`EXPECT_TESTS_PG=1098`）本轮没有实测**：本机无 PG，`demo_preflight.sh` 走的是无库档。1098 = 1069 + 29 由算式得出，新判据「SKIPPED 行里不许出现 `test_pg_`」也只在有库时才启用 | 配了 `MAOS_PG_DSN` 的机器上第 1 步是否真绿，本轮给不出实测背书。方向安全（算式与判据都比原来写死的更宽），但没验过就是没验过 | 归下一个有 PG 环境的轨：起一次 pgvector 容器跑 `bash scripts/demo_preflight.sh`，把实测读数补进 `scripts/demo_preflight.sh:45` 的注释 |
+| 2026-08-30 | P7 | **`RoomApprovalBridge._effective_approvers()` 有一处行为变化没被测试钉住**：它返回 `current_approvers() or self.config.approvers`，即**进程环境的名单优先于构造时传入的那份**。显式 `MatrixBusConfig.from_env({...})` / `replace(config, approvers=...)` 给的名单，在进程环境也配了 `MAOS_APPROVERS` 时会被盖掉 | 现有三条路都不触发：`room_demo.py:230` 的 replace 有 `not config.approvers` 守卫、测试有 conftest 的 `delenv`、真部署里两者本来同源。T28 的 docstring 已如实写明这一点，属于已知取舍不是缺陷 | 归下一轮配置面轨：补一条测试钉住「环境有名单 + 显式 config 有另一份」时取哪个，把口径从 docstring 升成断言。现在改判据反而会动到已绿的三条路 |
+| 2026-08-30 | P7 | **`maos/tools/sandbox.py:46` 的 import 被拆成两段**（`from maos.config import get_config_source` 与 `from maos.tools.port import ToolPort` 之间空了一行），isort/ruff 口径下应合并 | 纯风格。仓库没有 lint 门禁，不影响任何判据 | 谁下次动这个文件时顺手并掉，不值当为它单起一轨 |
+| 2026-08-30 | P7 | **派单模板缺一条**：T28 / T29 / T30 三轨都往 `DECISIONS.md` 裸追加表格行、没带 `## task-TNN` 小节标题（三轨的 BACKLOG 侧都带了）。三轨独立犯同一个错，说明不是个人疏忽而是模板没写 | 每次并轨都要人工补标题并把条目从上一节名下移出；漏补一次就永久挂错名，且 Markdown 渲染正常、没有红灯 | 归派单模板轨：`review/DISPATCH-TEMPLATE.md` 的账本一节补一句「往 BACKLOG **和** DECISIONS 追加时都必须先起 `## task-<轨号>` 小节标题 + 表头，不许直接接在上一节的表格后面」，并把「每节恰好一个表头 + 一个分隔行」那个机器判据写进回执格式 |
+| 2026-08-30 | P7 | **容器手册与多份文档的 `7/7 PASS` / `935` 读数仍过期**，本轮刻意没刷：`deploy/README.md`（标题 + 4 处）、`docs/matrix-room-runbook.md:483`、`deploy/rocketmq.md:18,120`、`deploy/rocketmq-live.md:389`、`docs/gateway-rationale.md:405`、`docs/EXECUTION.md` 6 处 | 评委若走容器路径或读这几份，看到的仍是 7/7。方向上不致命（实际跑出来是 8/8，比文档写的多一项 PASS），但「照着做数字不符」这个症状本身就是要治的病 | 容器那几处**必须在有 docker 的环境实跑后再刷**，不许照抄本机读数（本轮没跑 docker，按「只认可复现的输出」没替它断言）。`EXECUTION.md` 与 runbook 那几处是叙述面，可随下一轮文档轨一起刷 |

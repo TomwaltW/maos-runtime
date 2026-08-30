@@ -82,11 +82,11 @@ T 轮把原来那 5 条人肉命令收敛成了一条脚本。它**不是跑完�
 
 | 步 | 跑什么 | 断言 |
 | :-- | :-- | :-- |
-| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望（当前 935），且 0 failed |
+| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望（当前 1069），且 0 failed |
 | 2 | `python3 run.py` | exit=0 |
 | 3 | `python3 run.py --scenario 7` | exit=0，且屏幕上**仍有**镜 5 的 `disposition=replan_channel` 与镜 6 的 `业务状态  : compensated` |
 | 4 | `python3 scripts/make_evidence.py` | 落盘 **8 束**（数出来的，不是假定的） |
-| 5 | `python3 scripts/verify.py` | 输出含 `RESULT: 7/7 PASS` 且 exit=0 |
+| 5 | `python3 scripts/verify.py` | 输出含 `RESULT: 8/8 PASS` 且 exit=0 |
 
 **任一条不符 → 非 0 退出，退出码就是出错的步号**，并打印「实际 vs 期望」+ 日志末 5 行
 （失败时日志目录保留，成功时清理）。第 3 步那两条 `grep` 是**分镜的哨兵**：
@@ -547,9 +547,9 @@ python3 scripts/verify.py
 读数变过三次：17 条（整合轮 5 前）→ 10 条（Y-1/Y-2 各消掉一类）→ 11 条（Y-4）→ **12 条**
 （`authoritative-fact` 下从 1 条变 2 条：场景 7 的两个 plan 各留一条
 「有回执但 `biz_status` 不是 settled」）。
-**别照抄旧读数**；这些行是**预期内**的，判定仍 7/7。
-录制时**往下滚到 `RESULT: 7/7 PASS` 那一行再停住**，镜头给结论行。
-被问到 warn 就照实答：**warn 不影响判定，七项全 PASS，退出码 0**；
+**别照抄旧读数**；这些行是**预期内**的，判定仍 8/8。
+录制时**往下滚到 `RESULT: 8/8 PASS` 那一行再停住**，镜头给结论行。
+被问到 warn 就照实答：**warn 不影响判定，八项全 PASS，退出码 0**；
 warn 说的是产物来源可审计性，出处已记在 `docs/BACKLOG.md task-X4`。
 
 七行实跑值（`27c9e18` 实测，T 轮重跑复核 —— 与上一轮 `2474c56` 逐字一致）：
@@ -562,8 +562,9 @@ warn 说的是产物来源可审计性，出处已记在 `docs/BACKLOG.md task-X
 [PASS] kb-hit               7/7
 [PASS] business-outcome     10/10
 [PASS] history-case         1/1
+[PASS] cost-attribution     39/39
 
-RESULT: 7/7 PASS
+RESULT: 8/8 PASS
 ```
 
 末尾还有一行，一并给到镜头：

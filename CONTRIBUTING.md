@@ -21,7 +21,7 @@ git clone -b goai-restructure <本仓库地址> maos && cd maos
 python3 -m pytest maos/tests -q     # 全量测试
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 scripts/make_evidence.py    # ① 生成证据束
-python3 scripts/verify.py           # ② RESULT: 7/7 PASS
+python3 scripts/verify.py           # ② RESULT: 8/8 PASS
 ```
 
 🔴 **`-b goai-restructure` 不能省。** 仓库的 GitHub 默认分支目前是 `main`，

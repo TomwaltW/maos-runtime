@@ -58,7 +58,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 
 | 评委诊断 | 落在 | 证据 |
 | :-- | :-- | :-- |
-| 没有可执行制品和运行证据 | **P11** | `python3 scripts/verify.py` → 7/7 PASS |
+| 没有可执行制品和运行证据 | **P11** | `python3 scripts/verify.py` → 8/8 PASS |
 | 现实业务锚点不足 | **P3 + P10** | 退款域纵切（场景 6 / 7），不是软件域自证 demo |
 | 「所有 Agent 都回复完成」≠ 业务成功 | **P10** | 场景 7：`biz_status=compensated`，`settled` 观察 **0 条** |
 
@@ -415,8 +415,9 @@ RAG 命中是真的、Agent 完成没被当成业务成功、知识层没被污�
 [PASS] kb-hit               7/7
 [PASS] business-outcome     10/10
 [PASS] history-case         1/1
+[PASS] cost-attribution     39/39
 
-RESULT: 7/7 PASS
+RESULT: 8/8 PASS
 ```
 
 **对应评委要求编号**
@@ -517,11 +518,11 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 
 ```bash
 git clone <repo> maos && cd maos
-python3 -m pytest maos/tests -q     # 935 passed
+python3 -m pytest maos/tests -q     # 1069 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/ 与 -R5/（缺省一并产 R5）
-python3 scripts/verify.py           # ② 七项逐条重放校验 → RESULT: 7/7 PASS
+python3 scripts/verify.py           # ② 八项逐条重放校验 → RESULT: 8/8 PASS
 ```
 
 🔴 **是 ①② 两条，不是三条。** `python3 -m maos.kb.experiment` 曾经要单独敲才产
@@ -563,7 +564,7 @@ python3 scripts/verify.py           # ② 七项逐条重放校验 → RESULT: 7
 | 2 | AgentTeams 事件链 | **P6** | — | `docs/agentteams-mapping.md:16-24` 五项映射（每项带行号） |
 | 3 | 关键 Skill 的真实调用 | **P7** | P3 | `docs/skill-catalog.md:15-29`（13 skill，含退款域 7 个） |
 | 4 | 返工 / HITL Trace | **P5** | P10 | `maos/runtime/gate.py:254-260` + 场景 7 的 `BLOCKED → FAILED` 轨迹 |
-| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py:859-866` → 7/7 PASS |
+| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py:859-866` → 8/8 PASS |
 | 6 | 业务对象关联到同一案例 | **P11** | P3 | verify 第 2 项 `business-ref 35/35` |
 | 7 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | **P9** | P10 | `maos/domain/refund/guard.py:33` + `:307-315` |
 | 8 | RAG 面向 workflow 规划 | **P8a** | P8b | `maos/kb/retriever.py:151-163` + `evidence/scenario-R5/dag-diff.json` |
@@ -721,7 +722,7 @@ Y 轮四轨与 Z 轮五轨全部合入，本文件的断言**本轮已全部对�
 
 | 数字 | 跑的命令 | 实测 | 大纲原值 |
 | :-- | :-- | :-- | :-- |
-| 测试条数 | `python3 -m pytest maos/tests -q` | **935 passed**，exit=0 | 903 ⚠️ 已刷为 935（整合轮 13 六轨 +32）|
+| 测试条数 | `python3 -m pytest maos/tests -q` | **1069 passed**，exit=0 | 903 ⚠️ 已刷为 1069（整合轮 13 六轨 +32 到 935，整合轮 14 T27–T30 再 +134）|
 | 证据束 | `ls evidence/` | **8 束**（`scenario-1..7` + `-R5`）／**50** 个证据文件 | 8 ✅ 一致 |
 | Skill 数 | `docs/skill-catalog.md:7` | **13** | 13 ✅ 一致 |
 | ToolPort 数 | `docs/toolport-contract.md:7` | **4** 个已实现 | 4 ✅ 一致 |

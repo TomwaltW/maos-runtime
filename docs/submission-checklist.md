@@ -21,7 +21,7 @@
 
 ```bash
 # ①
-python3 -m pytest maos/tests -q          # □ 935 passed，个位数秒
+python3 -m pytest maos/tests -q          # □ 1069 passed，个位数秒
 # ②
 python3 run.py                           # □ exit=0，个位数秒；跑完 git status 仍空（它不产证据）
 # ③
@@ -31,7 +31,7 @@ python3 scripts/gen_docs.py --check      # □ exit=0，打印「3 份文档与�
 # ⑤
 python3 scripts/make_evidence.py         # □ 「8 场景落盘，0 场景缺模块」（含 R5）；⚠️ 之后工作区 50 行脏
 # ⑥
-python3 scripts/verify.py                # □ 7/7 PASS，exit=0，另有 1 行 warn（1 类，见 A-2）
+python3 scripts/verify.py                # □ 8/8 PASS，exit=0，另有 1 行 warn（1 类，见 A-2）
 # ⑦
 git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动过）
 ```
@@ -264,7 +264,7 @@ Z-1 允许拆子页（`P8a`/`P8b`），但**不许改 P1–P14 的编号**，所
 
 | 诊断（P2 提出） | 回应页 | 台上跑这条 | ✓ |
 | :-- | :-- | :-- | :-- |
-| 没有可执行制品和运行证据 | P11 | `python3 scripts/verify.py` → 7/7 PASS | ☐ |
+| 没有可执行制品和运行证据 | P11 | `python3 scripts/verify.py` → 8/8 PASS | ☐ |
 | 现实业务锚点不足 | P3 | `python3 run.py --scenario 6` → 退款域纵切，不是软件域自证式 demo | ☐ |
 | 「所有 Agent 都回复完成」≠ 业务成功 | P10 | `python3 run.py --scenario 7` → Plan 终态 FAILED、`biz_status=compensated`、`settled` 观察 0 条 | ☐ |
 

@@ -8,12 +8,12 @@
 
 ```bash
 python3 scripts/make_evidence.py   # ① 跑 7 个场景 + RAG 对照，生成 evidence/scenario-1..7 与 -R5
-python3 scripts/verify.py          # ② 七项证据逐项重放校验 -> RESULT: 7/7 PASS
+python3 scripts/verify.py          # ② 八项证据逐项重放校验 -> RESULT: 8/8 PASS
 ```
 
 > **新克隆必须按 ①② 跑满两条，一条都不能省。** `*.db` 不入 git（`.gitignore` 挡着），
 > 核验器要的是库、不是快照 —— 直接跑 ② 会报 `缺数据库` 并**退出 2**。这是设计行为。
-> 全新克隆实测：clone + 这两条共约 **7 秒**，`RESULT: 7/7 PASS`，退出码 0。原委见
+> 全新克隆实测：clone + 这两条共约 **7 秒**，`RESULT: 8/8 PASS`，退出码 0。原委见
 > [§3](#3-一条命令核验这一节是给评委的)。
 
 ---
@@ -93,11 +93,11 @@ flowchart LR
 
 ```bash
 python3 scripts/make_evidence.py     # ① 跑全部 7 个场景 + RAG 有无对照，落成 evidence/scenario-{1..7,R5}/
-python3 scripts/verify.py            # ② 七项逐条重放校验
+python3 scripts/verify.py            # ② 八项逐条重放校验
 echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 ```
 
-本机实跑（整合轮 11，T7–T14 八轨并入后当场重跑；全新克隆 + 无任何 API key 的逐步耗时见
+本机实跑（整合轮 14，T27–T30 四轨并入后当场重跑；全新克隆 + 无任何 API key 的逐步耗时见
 [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
 
 ```
@@ -108,8 +108,9 @@ echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 [PASS] kb-hit               7/7
 [PASS] business-outcome     10/10
 [PASS] history-case         1/1
+[PASS] cost-attribution     39/39
 
-RESULT: 7/7 PASS
+RESULT: 8/8 PASS
 证据来源：scenario-1, scenario-2, scenario-3, scenario-4, scenario-5, scenario-6, scenario-7, scenario-R5
 ```
 
@@ -177,13 +178,13 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 ```bash
 git clone -b goai-restructure <本仓库地址> maos && cd maos
 git rev-parse --abbrev-ref HEAD     # 必须回 goai-restructure；不是它就停下，别往下跑
-python3 -m pytest maos/tests -q     # 935 passed
+python3 -m pytest maos/tests -q     # 1069 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 
-# 到这里只跑了代码；要看到评委关心的 7/7，还差证据链这两条：
+# 到这里只跑了代码；要看到评委关心的 8/8，还差证据链这两条：
 python3 scripts/make_evidence.py    # ① scenario-1..7 + scenario-R5
-python3 scripts/verify.py           # ② RESULT: 7/7 PASS，exit=0
+python3 scripts/verify.py           # ② RESULT: 8/8 PASS，exit=0
 ```
 
 全新克隆 + 无任何 API key 实测：以上全部跑完约 **28 秒**，其中「clone + 证据链两条」
@@ -294,7 +295,7 @@ evidence/
 | AgentTeams 事件链 | `MatrixEventBus` 镜像 + `event_log` | [`docs/agentteams-mapping.md`](docs/agentteams-mapping.md)、`trace.json` |
 | 关键 Skill 的真实调用 | 退款域 7 个 skill 全部真调 | `event_log` 里的 `SkillInvoked` |
 | 返工 / HITL Trace | Gate 返工 + `BLOCKED` 审批 + replan | `evidence/scenario-2,3,5,7/trace.json` |
-| Evidence Bundle | `make_evidence.py` + `verify.py` | 7/7 PASS |
+| Evidence Bundle | `make_evidence.py` + `verify.py` | 8/8 PASS |
 | 业务对象关联到同一案例 | `business_ref`（只存引用不存副本） | verify 第 2 项 |
 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | settled guard + 业务状态机三段 | verify 第 3 项 + 越权拒绝单测 |
 | RAG 面向 workflow 规划 | 两阶段检索：结构化预过滤 + 混合召回 | `kb-hits.json` |
@@ -381,7 +382,7 @@ bash scripts/make_release.sh        # 产出 dist/maos-runtime-<sha7>.zip
 ```
 
 它只打版本库里的东西（走 `git clone --depth 1`，未跟踪文件一个都进不来），
-**打完当场解压跑一遍** pytest + ①② 到 `7/7 PASS`，再做一遍密钥自查 ——
+**打完当场解压跑一遍** pytest + ①② 到 `8/8 PASS`，再做一遍密钥自查 ——
 任一不过就非 0 退出，不产出跑不起来的交付物。`dist/` 被 `.gitignore` 挡着，
 包不入版本库，**提交前现打一次**单独上传。
 

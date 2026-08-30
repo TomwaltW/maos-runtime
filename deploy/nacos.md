@@ -116,6 +116,7 @@ export MAOS_NACOS_PASSWORD=<口令>          # 铁律 6：只从环境变量读�
 | `MAOS_NACOS_DATA_ID` | `maos-governance` | 四个旋钮装在同一个 dataId 里 |
 | `MAOS_NACOS_USERNAME` / `MAOS_NACOS_PASSWORD` | 空 | 开了鉴权就必填 |
 | `MAOS_NACOS_TIMEOUT_MS` | `5000` | |
+| `MAOS_NACOS_HEALTH_INTERVAL_S` | `30` | 探活心跳节拍（秒，T35）。**演示才调低，部署里别动**；`<=0` 关掉心跳；低于 `1` 会被抬到 `1` |
 
 ---
 
@@ -151,6 +152,11 @@ MAOS_SANDBOX_TIMEOUT=300
 | ① | SDK 没装 | `WARNING 配置面降级 env：nacos-sdk-python 未安装…` | `os.environ` |
 | ② | 连不上 / 拉不到 | `WARNING 配置面降级 env：Nacos 不可达（…）server=… dataId=…` | `os.environ` |
 | ③ | 该项在 Nacos 没有 | `INFO <key> 在 Nacos（…）无此项，本次取值来自 env` | `os.environ` |
+| ④ | **接通之后**服务端挂了（T35） | `WARNING 配置面降级 env：Nacos 探活失败（…）；仍按最后一份快照（N 项）继续跑` | **仍是 Nacos 那份快照**（见下） |
+
+④ 与 ①②③ 有一条关键差别：**它不改变取值来源**。快照仍是最后一份好配置，照读 ——
+last-known-good 这个行为本身是对的，反过来等于「配置中心一抖动所有人都批不了钱」。
+④ 补的只有**可观测性**：在它之前，「配置中心挂了」这件事在 MAOS 侧完全无症状。
 
 🔴 **降级必须是「静默失败之外的第三态」。** 静默降级会让人以为治理生效了，而实际上
 没有 —— 那比不接更坏。所以除了日志，还有两个**可写进断言**的出口：
@@ -167,6 +173,35 @@ src.explain(key)      # 上一次 get(key) 的来源："nacos" / "env" / "defaul
 
 **沿用最后一次拿到的那份配置继续跑**（last-known-good），审批名单不会被清空。
 实测记录见 `nacos-live.md` §1.6。
+
+**T28 收工时这里有个洞，T35 补上了**：`degraded` 那时只在**构造那一刻**置位，
+连上之后 Nacos 挂掉，MAOS 侧不报错、不变慢、日志里一行都没有，`degraded` 一直是
+`False` —— 你以为在读 Nacos，实际读的是几小时前的快照。这类缺陷不会被测试发现，
+只会在演示当天发现。
+
+补法是一条**低频探活线程**：缺省 30s 一次（`MAOS_NACOS_HEALTH_INTERVAL_S` 可调），
+把结果并进 `degraded`，**两个方向的翻转各落一行日志**：
+
+```
+WARNING 配置面降级 env：Nacos 探活失败（就绪端点不可达（URLError））—— server=… ；仍按最后一份快照（2 项）继续跑
+INFO    配置面已恢复（就绪端点 HTTP 200）—— 此前降级原因：Nacos 探活失败（…）
+```
+
+三条约束刻在代码里：
+
+* **低频**。它是健康探测不是配置轮询 —— 配置怎么生效不归它管，SDK 自己那条 5s
+  的长轮询才是配置通路，探得再密也不会让新配置早一秒到。写成秒级买到的只是一个
+  没人看的小数点，付出的是给 Nacos 的 N 倍连接压力。
+* **心跳自身失败不掀主流程**。探活抛什么都只是「这一轮没探成」。配置中心挂了
+  该让 MAOS 降级，不是让 MAOS 陪葬。
+* **缺省路径连一个线程都不起**。`MAOS_CONFIG_SOURCE` 未设时
+  `NacosConfigSource` 一个实例都不会造。
+
+探活优先用 SDK 的 `server_health()`；SDK 没暴露它就退到 Nacos 自己的就绪端点
+`/nacos/v1/console/health/readiness`（与 `deploy/nacos/docker-compose.yml` 的
+healthcheck 同一个 URL，走 stdlib `urllib`，不引第二个依赖，请求里不带任何凭据）。
+**没有这个兜底的话，SDK 换个版本这条心跳就静默变成空转** —— 那又是同一类
+「没有症状的故障」，只是换了个位置重新长出来。
 
 ---
 
@@ -231,6 +266,59 @@ Nacos 记得下 `srcUser`；经 **SDK 的 gRPC `publish_config`** 改的，`srcU
 
 ---
 
+## 6.5 写入侧闸门：`MAOS_APPROVERS` 不许被一次手滑清空（T35）
+
+审批名单是安全面。控制台上一次手滑把它写成空串、或只剩逗号空格，采用了就是
+**所有人当场批不动**。落审计只解决「事后查得到」，不解决「当场就错了」。
+
+于是 `NacosConfigSource._apply` 里有一道**只针对这一个键**的闸门：
+
+| 旧名单 | 新名单 | 结果 |
+| :-- | :-- | :-- |
+| 非空 | 解析后一个人都不剩 | **拒绝采用**，快照沿用旧值，落一条**告警级**审计 |
+| 非空 | 非空（换人、增删） | 照常采用 |
+| 空 | 空 | 照常采用（没有「上一份好名单」可沿用，拦下来只会更难查） |
+| 空 | 非空 | 照常采用 |
+
+**闸门只拦「清空」这一个方向。** 它要挡的是一次手滑，不是「配置面说了不算」。
+
+判据只有一条：**这份名单解析完还剩不剩人**（口径与
+`hiclaw.matrix_bus.parse_approvers` 等价：逗号分隔、空白项丢弃）。
+**不判「这个人该不该有权限」** —— 那件事机器判不了，只能靠审计事后追。
+也**不判 Matrix ID 形态** —— `parse_approvers` 明写不做格式校验，在这里补一道
+会让一份合法但不走 Matrix 的名单被拒，那是把一个没有的洞堵成一个新的洞。
+
+被拒的那一次**照样进审计**，否则就成了另一种静默：
+
+```
+WARNING 拒绝采用配置变更 MAOS_APPROVERS：解析后一个审批人都不剩 —— 采用它等于所有人当场批不动 —— 沿用旧值 '@boss:example.org,@cfo:example.org'（操作人 未知）
+```
+
+```json
+{
+  "event_type": "ConfigChanged",
+  "reason": "MAOS_APPROVERS: '@boss:example.org,@cfo:example.org' -> ''（已拒绝采用，沿用旧值）",
+  "detail": {
+    "severity": "warning",
+    "rejected": true,
+    "reject_reason": "解析后一个审批人都不剩 —— 采用它等于所有人当场批不动",
+    "attempted": "",
+    "effective": "@boss:example.org,@cfo:example.org"
+  }
+}
+```
+
+同一次推送里**别的键照常采用，不连坐** —— 一次保存里同时改了阈值和名单时，
+阈值该生效还是生效。
+
+> **「拒绝采用」还是「采用并告警」是人类拍的板**（2026-08-31）。
+> 另一条路（采用并告警）符合「配置中心是权威」的直觉，代价是空名单一旦生效，
+> `_effective_approvers()` 会回落到构造时那份快照 —— 而真部署里那份同样可能是空的，
+> 于是审批全线阻塞，且现场没人知道是这次配置改动造成的。取舍记在
+> `docs/DECISIONS.md` 的 `## task-T35`。
+
+---
+
 ## 7. 可选依赖（**不进 `pyproject.toml`**）
 
 ```
@@ -249,8 +337,14 @@ nacos-sdk-python==3.2.0        # 顶层模块名是 v2；63 个包 / 135MB
 不重启改审批人名单、下一条审批按新名单判；变更落审计且带操作人；
 Nacos 停机时沿用最后一份配置；三档降级。
 
+**T35 补测**（无真 Nacos / 无 SDK 的机器上，见 `nacos-live.md` §3.2）：
+接通之后服务端不可达时 `degraded` 会翻成 `True`、服务端回来会翻回 `False`，两个方向
+各落一行日志；空审批名单被闸门拒绝采用且照样落审计；`MAOS_KB_ENABLED` /
+`MAOS_KB_WEIGHTS` 两个旋钮已接上配置面（六个旋钮**读取点全接完**）。
+
 **未实测**：阿里云 MSE 托管 Nacos、命名空间隔离、Nacos 的灰度（beta）发布、
-多实例同时监听、`maos/kb/**` 那两个旋钮（归 T24 / T25，这一轮没接）。
+多实例同时监听、**探活心跳在真 SDK 3.2.0 + 真 Nacos 上的表现**（T35 那台机器没装
+SDK，`server_health()` 那一支是用桩验的）。
 
 ---
 
@@ -264,4 +358,6 @@ Nacos 停机时沿用最后一份配置；三档降级。
 * 审计行里的值过一层脱敏：key 名含 `KEY` / `TOKEN` / `SECRET` / `PASSWORD` / `DSN` /
   `CREDENTIAL` 的只落长度不落内容（`maos/config/source.py::redact`）。
   本轮四个旋钮都不是密钥，这条是护栏不是功能。
+* 探活心跳（T35）的兜底请求打的是 `/nacos/v1/console/health/readiness`，
+  **不带任何凭据**，响应只读前 64 字节且不落任何文件。
 * Nacos 端口只绑 `127.0.0.1`。

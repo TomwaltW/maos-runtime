@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from maos.config import get_config_source
+
 from maos.tools.port import ToolPort
 
 log = logging.getLogger("maos.tools.sandbox")
@@ -91,8 +93,13 @@ _APPLY_PATH = re.compile(r"error: (?P<path>[^:]+): (?:patch does not apply|No su
 # 环境与工作目录
 # ---------------------------------------------------------------------------
 def sandbox_timeout() -> int:
-    """`MAOS_SANDBOX_TIMEOUT`，默认 300 秒。非法值告警回退，不抛。"""
-    raw = os.environ.get("MAOS_SANDBOX_TIMEOUT")
+    """`MAOS_SANDBOX_TIMEOUT`，默认 300 秒。非法值告警回退，不抛。
+
+    走 `maos.config` 的配置面而不是直接读 `os.environ`（T28）：缺省源就是
+    `os.environ.get`，取值逐字节不变；`MAOS_CONFIG_SOURCE=nacos` 时同一句
+    改从 Nacos 取，超时秒数因此可以不重启进程就调。
+    """
+    raw = get_config_source().get("MAOS_SANDBOX_TIMEOUT", "")
     if not raw:
         return DEFAULT_TIMEOUT
     try:

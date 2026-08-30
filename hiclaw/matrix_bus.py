@@ -37,6 +37,7 @@ from dataclasses import asdict, dataclass, field, replace
 from html import escape as _esc
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
+from maos.config import get_config_source
 from maos.contracts.events import Envelope, EventType
 from maos.core.eventbus import EventBus, Handler
 
@@ -72,6 +73,20 @@ def parse_approvers(raw: str | None) -> frozenset[str]:
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
+def current_approvers(env: dict[str, str] | None = None) -> frozenset[str]:
+    """**现读**一次审批人名单（T28）。`env` 显式传就读它，否则走 `maos.config`。
+
+    缺省配置源就是 `os.environ.get`，所以取值与 `parse_approvers(os.environ.get(...))`
+    逐字节一致；`MAOS_CONFIG_SOURCE=nacos` 时同一句改从 Nacos 取。
+
+    显式 `env` 那一支不走配置面是刻意的：`from_env({...})` 的语义是「就按我给的这份
+    读」，把它改成读进程环境会让测试与降级自检拿到一份自己没给过的名单。
+    """
+    if env is not None:
+        return parse_approvers(env.get(ENV_APPROVERS))
+    return parse_approvers(get_config_source().get(ENV_APPROVERS, ""))
+
+
 @dataclass
 class MatrixBusConfig:
     """Matrix 接入配置。只读环境变量，**禁止写进任何文件**（铁律 6）。
@@ -104,7 +119,7 @@ class MatrixBusConfig:
             user=vals[ENV_USER],
             token=vals[ENV_TOKEN],
             room_id=vals[ENV_ROOM_ID],
-            approvers=parse_approvers(src.get(ENV_APPROVERS)),
+            approvers=current_approvers(env),
             log_only=bool(missing),
         )
 
@@ -593,7 +608,7 @@ class RoomApprovalBridge:
             return ""
 
         cmd = parse_approval_command(text)
-        if sender not in self.config.approvers:
+        if sender not in self._effective_approvers():
             action = text.split(maxsplit=1)[0][1:].lower()
             self._record_denied(sender, action, cmd.task_id if cmd else "")
             return self._say(f"无审批权限：{sender} 不在 MAOS_APPROVERS 名单内")
@@ -617,6 +632,22 @@ class RoomApprovalBridge:
         return self._say(reply)
 
     # -- 内部 -------------------------------------------------------------
+    def _effective_approvers(self) -> frozenset[str]:
+        """每次判定现读一次名单（T28）—— **改审批人不必重启进程**。
+
+        口径照抄 `gate._finance_threshold` 那条已定的决策（`docs/DECISIONS.md`
+        2026-08-28 P3）：在 import 时固化，改一次配置就得重启；现读则让
+        `MAOS_CONFIG_SOURCE=nacos` 下 Nacos 推来的新名单在**下一条审批命令**上
+        就生效。这是 §5.4 那个动态治理演示成立的地方。
+
+        读到空就回落构造时那份快照。这一条留着三处活路，都不是假设：
+        `MatrixBusConfig.from_env({...})` 显式给字典造的 config、
+        `room_demo.py` 降级自检里 `replace(config, approvers=...)` 换过的 config、
+        以及测试里直接 `MatrixBusConfig(approvers=...)` 构造的那些。
+        进程环境没配名单时，它们仍按自己那份判 —— 与 T28 之前逐字节一致。
+        """
+        return current_approvers() or self.config.approvers
+
     def _record_denied(self, sender: str, action: str, task_id: str) -> None:
         """把越权尝试写进 event_log。写不进去也不许把异常抛给房间监听循环。"""
         store = getattr(self.queue, "store", None)

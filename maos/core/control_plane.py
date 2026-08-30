@@ -20,6 +20,7 @@ from maos.artifacts import (
     resolve_patch_ref,
     validate_artifact,
 )
+from maos.config import get_config_source
 from maos.contracts import events as E
 from maos.contracts.events import Envelope, Topic
 from maos.contracts.states import (
@@ -574,8 +575,12 @@ class ControlPlane:
         return False
 
     def _max_replan(self) -> int:
-        """MAOS_MAX_REPLAN，默认 2。非法值回退默认并告警，不让配置笔误变成自旋。"""
-        raw = (os.environ.get(ENV_MAX_REPLAN) or "").strip()
+        """MAOS_MAX_REPLAN，默认 2。非法值回退默认并告警，不让配置笔误变成自旋。
+
+        走 `maos.config` 的配置面而不是直接读 `os.environ`（T28）：缺省源就是
+        `os.environ.get`，取值逐字节不变。
+        """
+        raw = get_config_source().get(ENV_MAX_REPLAN, "").strip()
         if not raw:
             return DEFAULT_MAX_REPLAN
         try:

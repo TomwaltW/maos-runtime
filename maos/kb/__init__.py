@@ -5,12 +5,15 @@
 `kb_doc` 是新增表，只能从 `SqliteStore` 的连接上走 —— 与退款域 `objects.py` 同一套做法，
 理由也一样：冻结面一个字不动，新增表由使用方自己建。
 
-**两条底层路径**：知识层既要能吃核心 `Store`（有 `_conn`），也要能吃 StorePort
-（F-2 的 `execute` / `query`）—— 后者是「RAG 真跑在 PolarDB 上」的前提，
-不接上的话检索器里那条端口分支在真链路上一次都走不到。判据集中在 `port_of()`
-一个函数里，**不散在各调用点**：散开的后果是某几处走了新路、某几处还走老路，
-而两边都不报错。口径是「`_conn` 优先」—— 现在能用的对象一律走原路径，
-缺省行为一个字节不变；新分支只接此前必然抛 TypeError 的那类对象。
+**两条底层路径**：知识层既要能吃核心 `Store`（`_conn` 上挂着一条 sqlite 连接），
+也要能吃 StorePort（F-2 的 `execute` / `query`）—— 后者是「RAG 真跑在 PolarDB 上」
+的前提，不接上的话检索器里那条端口分支在真链路上一次都走不到。判据集中在
+`port_of()` 一个函数里，**不散在各调用点**：散开的后果是某几处走了新路、某几处
+还走老路，而两边都不报错。口径是「**`_conn` 可调用**才走老路径」，**不是**「有
+`_conn` 就走老路径」—— 后一种写法会把连上库的 `PgStorePort` 判成核心 store
+（它的 `_conn` 是存连接的属性，连上后是 psycopg 连接），于是 PG 后端一连上，
+`ensure_schema()` 就拿这条连接去调 sqlite 专有的 `executescript()` 当场炸。
+换判据之后缺省行为仍是一个字节不变，为什么分得开见 `port_of()` 的 docstring。
 
 **依赖方向**：本模块**不** import `maos.kb.retriever`，也不 import `maos.skills` /
 `maos.agents` 任何一层。retriever 与 guardrails 反过来 import 本模块 ——
@@ -134,19 +137,33 @@ def kb_enabled(env: dict | None = None) -> bool:
 def port_of(store: Any) -> Any | None:
     """「这个 store 该走 StorePort 还是走 `_conn`」的**唯一**判据。返回端口或 None。
 
-    口径是 **`_conn` 优先**，不是「谁的方法多听谁的」：
+    口径是 **可调用的 `_conn` 优先**，不是「有 `_conn` 就优先」，也不是「谁的方法多
+    听谁的」：
 
-    · 暴露了 `_conn` 的对象一律返回 None，走下面的老路径 —— 核心 `SqliteStore`
+    · `_conn` **可调用**的对象一律返回 None，走下面的老路径 —— 核心 `SqliteStore`
       以及测试里那些继承它的 store 全在此列，缺省行为因此一个字节都不变。
-    · 只有「没有 `_conn`、却有 `execute` + `query`」的对象才认作 StorePort。
-      这类对象在本函数出现之前一律撞 `_conn()` 的 TypeError，所以新分支是
-      **严格增量**：以前跑得通的没有一条改道，以前跑不通的现在跑得通。
+    · `_conn` 不可调用（**含压根没有 `_conn`**）、却有 `execute` + `query` 的对象
+      才认作 StorePort。`PgStorePort` 正在此列：它的 `_conn` 是存连接的实例属性，
+      未连接时是 None、连上后是 psycopg 连接，两种形态都不可调用。
+
+    **为什么判「可不可调用」而不是判「有没有」**：老判据是「有 `_conn` 就走老路径」，
+    它在 `PgStorePort` 连上库的那一刻判反 —— `_conn` 从 None 变成 psycopg 连接，
+    `port_of()` 于是改口说「这是核心 store」，`ensure_schema()` 拿这条连接去调
+    sqlite 专有的 `executescript()` 当场 `AttributeError`。这种失效**没连库时判得对、
+    一连上就错**，是最难查的一类，别再把它改回「有没有」。
+
+    **「可不可调用」这条为什么分得开**（换 Python 版本 / 换驱动时先复核这几行）：
+    `SqliteStore._conn` 存的是 `sqlite3.Connection`，该类自带 `__call__`（建预编译
+    语句的老接口），所以可调用；`psycopg.Connection` 整条 MRO 都没有 `__call__`，
+    所以不可调用。退一步说，就算哪天 sqlite 把 `__call__` 摘了，核心 `SqliteStore`
+    也没有 `execute` / `query` 两个方法，仍旧落回 None —— 两道防线各自都够，
+    这条判据不是只押在那个 `__call__` 上。
 
     只探 `execute` / `query` 两个方法，不探满 F-2 五个：知识层的 SQL 访问器只用
     这两个，`fts_search` / `vector_search` 由检索器自己按能力探测（那两条通道
     走不通要退化，而 execute/query 走不通没有退化路径可言）。
     """
-    if store is None or getattr(store, "_conn", None) is not None:
+    if store is None or callable(getattr(store, "_conn", None)):
         return None
     if callable(getattr(store, "execute", None)) and callable(getattr(store, "query", None)):
         return store

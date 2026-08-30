@@ -1162,3 +1162,13 @@ verify 第 6 项自述层收口。派单 §5 只说了「补 FAILED 分支的 st
 | 2026-08-30 | P7 | 控制台建的普通账号装不了 `vector`（要 `polar_superuser`），在 `public` 里也建不了表（PG15 起普通用户只有 `USAGE`），且对库没有 `CREATE`，**连自建一个模式绕开都不行** | 请人类在控制台新建高权限账号，只用它跑 `CREATE EXTENSION vector` 与 `GRANT CREATE ON SCHEMA public TO <普通账号>` **两条**，之后全程退回普通账号 | 这两条是不可绕的前置，不做则五步冒烟只能到 2/5。把高权限的用途压到最小两条、用完即弃，是为了不滑向「以后干脆都用高权限连库」那种更省事但更危险的走法。实录与两个坑的分辨见 `deploy/polardb-live.md` §1.3 |
 | 2026-08-30 | P7 | `deploy/polardb.md` 第 2 步写的灌库命令是 `psql "$MAOS_PG_DSN" -f maos/store/pg_schema.sql`，而本机没装 PG 客户端（`command -v psql` 空） | 不装 psql，改用 psycopg 按 `;` 切分逐条执行，逐条打印 `statusmessage`（等价于 psql 的 `CREATE TABLE` / `CREATE INDEX` 命令标记），执行后再用 `information_schema.columns` + `pg_indexes` 核对落地形状 | 不为一次灌库装一套客户端。逐条执行 + 核对落地比 psql 的原样输出更能证明「索引到底建成了什么形状」（实测拿到 `hnsw (embedding vector_cosine_ops)` 与 `gin (to_tsvector('simple'::regconfig, body))`）。**顺带避开了一个安全问题**：psql 只能从命令行接 URI，那会让 DSN 出现在 `ps` 里 |
 | 2026-08-30 | P7 | 回填 `deploy/polardb-live.md` 时，§1.1 的本机 Docker 对照组输出与 §2.1 里「DSN 是占位符所以没跑成」的失败原因段，都属于此前那一轮的历史读数 | **一字不动地保留**，只新增 §1.2／§1.3／§3.5，并把 §2.1 的标题改成删除线 + 指向 §1.2；失败原因段作为存档留在原处 | 铁律 3：历史读数改了就是篡改证据。而且那条「占位符没换」的坑**在本轮又复发了一次**（高权限账号那份 DSN 只换了口令、用户名那格还留着 `<ADMIN_USER>`，被脚本内建的检测当场拦下），留着比删掉有用，已把这次复发追记在 §2.1 末尾 |
+
+## task-T24
+
+`kb.port_of()` 判据修正。手册给了两条路要求各算代价再定，下面三条是自行判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-30 | P5 | `port_of()` 把连上库的 `PgStorePort` 判成核心 store。BACKLOG 给了两条修法：①判据换成 `callable(_conn)`；②让 `PgStorePort` 把连接改名 `_pg_conn` | **选 ①**，一行：`if store is None or callable(getattr(store, "_conn", None))` | ② 要改 `maos/store/pg_store.py` —— 本轨白名单外（要停手问人类），且是 T18 刚填实的文件，并轨期动它徒增冲突面。更关键的是**② 只堵住 PG 这一个实现**：判据仍是「有 `_conn` 就走老路径」，下一个把连接命名为 `_conn` 的 StorePort 会原样再踩一遍。① 修的是判据本身，对所有后端一次到位 |
+| 2026-08-30 | P5 | 手册要求自证「① 真的够」。实测：`SqliteStore._conn` 是**存 sqlite 连接的属性**（`store.py:98`），不是手册所说的方法；它可调用只因 `sqlite3.Connection` 自带 `__call__`。即判据成立压在一条驱动实现细节上 | **仍选 ①，但把两道防线都写进 docstring，并新增测试直接钉住那两条驱动事实** | 实测确认 ① 有**两个各自都够**的理由：`sqlite3.Connection` 可调用（第一道）；核心 `SqliteStore` 压根没有 `execute` / `query`，摘掉 `__call__` 也仍落回 None（第二道）。所以 ① 不是「押在一个巧合上」。语义更硬的 `isinstance(conn, sqlite3.Connection)` 已记进 BACKLOG `## task-T24`，等钉驱动事实那条测试真红再换 —— 现在换的收益只是理由好听，代价是动三轨共用的分叉点 |
+| 2026-08-30 | P5 | 回归测试要不要连「建表→写→读」整条也跑一遍，还是只钉判据的三个返回值 | **两者都做**：判据三条 + 端口形状上的 `ensure_schema` → `upsert_doc` → `get_doc`/`list_docs` 整条，替身的连接**故意不实现 `executescript`** | 只钉返回值不够：判据对了不等于整层通，`port_of()` 之后每个调用点各有自己的老路径分支（本轮 AST 查出 5 处）。替身不实现 `executescript` 是为了让判据一旦判反，抛的是线上那条一模一样的 `AttributeError`，而不是一句「断言失败」—— 实测退回老判据时确实红成了原症状 |

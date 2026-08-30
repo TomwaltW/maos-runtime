@@ -57,6 +57,8 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import socket
+import subprocess
 import sys
 import traceback
 from urllib.parse import urlsplit
@@ -181,6 +183,103 @@ def resolve_dsn(args: argparse.Namespace) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# 两条观察项：链路是否加密、连不上时是不是白名单
+#
+# 两者都走 rep.note()，**不进 self.rows** —— 不改任何断言、不改退出码语义。
+# 五步的断言强度是这个脚本的价值所在，观察项只补它看不见的那两维。
+# --------------------------------------------------------------------------
+
+
+def _ssl_state(conn) -> str:
+    """这条连接**实际**有没有走 SSL。
+
+    为什么要单独报：五步全绿**不蕴含**链路是加密的。`sslmode=prefer` 下
+    五步同样全绿而链路是明文（deploy/polardb-live.md §3.5 记的正是这个坑），
+    也就是说冒烟报告作为证据，在加密这一维上本来是哑的。
+
+    只认客户端侧的事实。服务端 `SHOW ssl` = on 只说明它**支持** SSL，
+    不说明你这条连接真的用上了 —— 那正是 `prefer` 骗过所有人的方式。
+    """
+    for getter in (
+        lambda: conn.pgconn.ssl_in_use,  # psycopg3
+        lambda: conn.info.ssl_in_use,  # psycopg2
+    ):
+        try:
+            return "on" if getter() else "off"
+        except Exception:  # noqa: BLE001 —— 驱动差异不该让冒烟脚本挂掉
+            continue
+    return "unknown（驱动不报 ssl_in_use）"
+
+
+def _egress_ip() -> str:
+    """本机公网出口 IP。**不泄漏目标 host**，所以可以直接打印。
+
+    白名单是按出口 IP 放行的，报障时人第一个要查的就是这个值。
+    """
+    try:
+        out = subprocess.run(
+            ["dig", "+short", "myip.opendns.com", "@resolver1.opendns.com"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        ip = out.stdout.strip().splitlines()
+        if ip and ip[-1]:
+            return ip[-1]
+    except Exception:  # noqa: BLE001 —— 拿不到就拿不到，不影响主流程
+        pass
+    return "取不到（dig 不可用或网络不通）"
+
+
+def _diagnose_unreachable(dsn: str, rep: Reporter) -> None:
+    """连不上时分层诊断 DNS -> TCP，把「白名单没放行」从别的原因里择出来。
+
+    为什么必须单独择：白名单不放行时的症状是 **TCP 静默超时，不是拒绝** ——
+    `dig` 能解析出公网 IP，`connect()` 挂满超时，看起来跟「网络不通 /
+    实例没起来 / host 写错了」完全一样。而第 1 步刻意只报驱动异常类名
+    不报 message（防 host 泄漏），所以从脚本输出上**更看不出**是白名单。
+    这一段就是拿来省那一轮排障往返的。
+
+    全程不打印 host，也不打印解析到的 IP —— 那是目标 host 的地址，
+    打出来等于泄漏（铁律 6）。只报「解析到几个」。
+    """
+    try:
+        parts = urlsplit(dsn)
+        host, port = parts.hostname, parts.port or 5432
+    except ValueError:
+        return
+    if not host:
+        return
+
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        addrs = sorted({i[4][0] for i in infos})
+        rep.note("诊断 DNS", f"解析成功，{len(addrs)} 个 A 记录")
+    except Exception as exc:  # noqa: BLE001
+        rep.note("诊断 DNS", f"解析失败 -> {type(exc).__name__}（host 写错了？）")
+        return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(8)
+    try:
+        sock.connect((addrs[0], port))
+        rep.note("诊断 TCP", "握手成功 —— 网络通，问题在 PG 鉴权层（账号 / 库名 / SSL 策略）")
+    except socket.timeout:
+        rep.note("诊断 TCP", "静默超时（8s）")
+        rep.note(
+            "诊断结论",
+            f"DNS 通 + TCP 静默超时 = **大概率是白名单没放行本机出口 IP**。"
+            f"本机出口 IP: {_egress_ip()} —— 去控制台把它加进白名单再复跑。",
+        )
+    except ConnectionRefusedError:
+        rep.note("诊断 TCP", "被拒绝 —— 端口没在听，不是白名单（实例停了？端口写错了？）")
+    except Exception as exc:  # noqa: BLE001
+        rep.note("诊断 TCP", f"失败 -> {type(exc).__name__}")
+    finally:
+        sock.close()
+
+
+# --------------------------------------------------------------------------
 # 五步
 # --------------------------------------------------------------------------
 
@@ -193,12 +292,15 @@ def step1_connect(connect, dsn: str, rep: Reporter):
     except Exception as exc:
         # 刻意只报类名：连接失败的 message 里几乎一定带 host。
         rep.fail("1. 连接 + SELECT version()", f"连不上：{type(exc).__name__}")
+        _diagnose_unreachable(dsn, rep)
         return None
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT version()")
             version = cur.fetchone()[0]
         rep.ok("1. 连接 + SELECT version()", version)
+        # 观察项，不计成败：五步全绿不蕴含这条连接是加密的。见 _ssl_state()。
+        rep.note("SSL", _ssl_state(conn))
         return conn
     except Exception as exc:
         rep.fail("1. 连接 + SELECT version()", _err(exc))

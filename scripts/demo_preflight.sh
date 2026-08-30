@@ -44,7 +44,11 @@ cd "$REPO_ROOT"
 # 以后谁加测试都只需改 EXPECT_TESTS_NOPG 一个数，29 这个差值才是真正要守的不变量。
 # 整合轮 14 实测（合并态 T27–T30）：1069 passed / 39 skipped（无库）。39 = PG 门控 29
 #（22 live + 7 parity）+ 非 PG 门控 10（RocketMQ 8 条 + Nacos 2 条，有库时同样 skip）。
-# 有库档 1069+29=1098 由算式得出，本机无 PG **未实测**（见 docs/BACKLOG.md ## integrate-round-14）。
+# 有库档 1069+29=1098 由算式得出。**2026-08-31（T34 轨）已实测**，不再是纸面推算：
+# 起本机 pgvector 容器（本仓库 deploy/docker-compose.yml 的 pg profile，initdb 自动装
+# vector 扩展）、配上 MAOS_PG_DSN 后整条 5 步跑通，exit=0；第 1 步实得
+# **1098 passed / 10 skipped**，与算式逐位吻合，新判据「SKIPPED 行里不许出现 test_pg_」
+# 也随之首次真正启用并通过。剩的 10 条是非 PG 门控（RocketMQ 8 + Nacos 2）。
 PG_GATED_TESTS=29
 EXPECT_TESTS_NOPG=1069
 EXPECT_TESTS_PG=$((EXPECT_TESTS_NOPG + PG_GATED_TESTS))

@@ -30,6 +30,15 @@ docker compose -f deploy/docker-compose.yml --profile pg up -d pgvector
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
+> ✅ **本机走 compose 的话这一步不用手动做**（2026-08-31 起）：`deploy/docker-compose.yml`
+> 的 `pgvector` 服务挂了 `deploy/pg-initdb/`，首次初始化数据目录时自动执行这条 DDL。
+> 实测起完容器直接查 `SELECT extversion FROM pg_extension WHERE extname='vector'`
+> → **`0.8.6`**，全程没跑任何手动 DDL。
+>
+> 🔴 **只在 `pgdata` 卷为空时执行**（官方 postgres 镜像的行为）。卷里已有数据就
+> **安静跳过、不报错** —— 「改了 initdb 脚本却没生效」是这套机制最常见的坑。
+> 要让它重跑：`docker compose --profile pg down -v`（`-v` 才会删卷）再 `up`。
+
 🔴 **托管实例上这一步要用高权限账号**（本机 Docker 不会遇到，因为容器里的账号就是
 superuser）。PolarDB 实测：控制台建的普通账号执行这条会得到
 

@@ -1338,6 +1338,20 @@ exit=0，`gen_docs.py --check` exit=0，`demo_preflight.sh` 5 步全过 exit=0�
 
 - `scripts/matrix_probe.py`：`report.ok("③b")` 在打印 `两者相等？False` 之后**无条件**触发；`Report` 没有 fail 路径，**被证伪的判据与从未测过的判据打印得一模一样**（`✗ 本条未验证`）；②b 在 0 条消息到达时就记「过滤器生效」（包括 ②a 刚断定房间是空的、以及 sync 抛 SyncError 时）；②b 的 sync 抛异常时 ②c 从摘要里整个消失；`homeserver` / `room_id` 未脱敏打印、`resp.message` 在 `:311`/`:340` 未打码（**铁律 6** —— `evidence/room/*` 是人工手动打的码）
 - `scripts/verify.py:236`：「先跑 `python3 -m maos.kb.experiment`」这句提示**忽略 `--evidence`**，会写进仓库自己的 `evidence/` —— 照做既修不好用户的束，也弄脏了仓库。孤儿回执查询的 `GROUP BY` 漏了 `tenant_id` 却按它 join，**静默把两个租户的 case 并成一条 warn**
+
+## task-T34
+
+整合轮 15（PG / PolarDB 上生产收尾）发现的。基线 `784aad7`。
+本轨白名单外、或需下一轮处理的，**本轮都不改**（铁律 4）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-31 | P7 | 🔴 **`zhcfg` 的配套 GIN 索引没有任何建成/被用上的实测记录**。`polardb-live.md` §1.4 只写了「配套的 GIN 索引也由普通账号建」——这是**可行性陈述**，不是实测；`maos/store/pg_schema.sql:55` 那条 `CREATE INDEX idx_kb_doc_pg_fts_zh` 是**注释掉的模板**，真建的只有 `idx_kb_doc_pg_fts_simple` | 症状是**不报错、只是慢**：`pg_schema.sql:44` 自己写着「索引只对建索引时那个配置有效，把 `MAOS_PG_FTS_CONFIG` 换成中文配置之后这条索引就用不上了，退化成顺序扫描」。§1.4 那张召回表在 24 条语料上跑，顺序扫描一样出正确结果，所以**召回质量的结论不受影响，但「索引生效」这一维从来没被证明过** | 归下一个能连上云库的轨：`\d kb_doc_pg` 看 `idx_kb_doc_pg_fts_zh` 在不在，不在就照模板建；然后 `EXPLAIN (ANALYZE)` 一条中文查询，确认走的是 `Bitmap Index Scan` 而不是 `Seq Scan`。**本轨没做**：云库被白名单挡住，全程没连上 |
+| 2026-08-31 | P7 | **派单 §5.1 的前提已失真**：称 zhparser 三步「装都没装、三件事别混说」，而 `polardb-live.md` §1.4 显示 2026-08-30 三步已全部做完并有完整实录（`zhparser 2.2` 装成、`zhcfg` 建成、24 条真语料召回对比表） | 照派单重做等于伪造一次「首次装成」。派单 §0.3 的范围裁剪表列了 5 条已闭环项，唯独漏了这条 —— 它引的 `BACKLOG:1131` 与 §1.4 的实录**同为 08-30**，编排时漏看了同日闭环 | 归派单模板／编排侧：派单里写「某项尚未做」时，应对着目标文档的实录再核一遍，而不是只读 BACKLOG 条目。全局约定已有「派单放久了会过期」这一条，本例说明**同日写成的派单也会过期** |
+| 2026-08-31 | P7 | **BACKLOG 里三条明确标着「T34」的条目，派单一条都没派**：`demo_preflight.sh:219`（方案 B 必然让 verify 变 4/8）、`demo_preflight.sh:49`（1069 那道门静默依赖 Docker + `maos-sandbox` 镜像）、`polardb_smoke.py:179`（🔴 铁律 6 违规：`--local` 口令未 percent-encode，可致口令明文打印） | 三条**都落在本轨白名单文件内**，却不在派单 §5 的任务定义里。账本与派单对同一轨的认定不一致，漏的那条还是铁律 6 违规 | 归编排侧：派单成文前应 grep 一遍 BACKLOG 里指名本轨号的条目。**本轨没改这三条**（铁律 4：不做手册范围外的改动），已当面报告人类由其决定是否另派 |
+| 2026-08-31 | P7 | **`git restore evidence/`（= `demo_preflight.sh:219` 推荐的方案 B）让 verify 从 8/8 掉到 4/8，本轨现场复现**：`RESULT: 4/8 PASS`，失败项 `hash-integrity, business-ref, trace-tree, business-outcome`，exit=1 | 证实 `## code-review-2026-08-31` 那条 T34 条目属实，且给出了此前缺的完整读数。机理：`build_scenario` 每次跑都换一个全新 `maos.db`，而 `.db` 是 gitignore 的、`git restore` 只还原被跟踪的 JSON —— 于是旧 JSON 配新库，**一个 `git status` 完全看不见的不一致** | 归修 `demo_preflight.sh` 的轨。**对本轨交付无影响**：commit 只含 4 个白名单文件，`.db` 不进 git 不会传播；派单 §0.2 本就要求 verify 走 `make_evidence.py --out <tmp>` |
+| 2026-08-31 | P7 | **白名单失效的真实成因通常不是「忘了配」，而是出口 IP 变了**。本轨开场即撞上：编排侧 08-31 同日在另一 worktree 连得上，本会话全程 TCP 静默超时 | 白名单按出口 IP 放行，家用宽带／移动网络的出口 IP 会变 —— **上一轮能连上不代表这一轮能连上**。派单 §0 把「实例当前状态」写成既定事实（含「已实测 1098」），据此写的开场自检期望值在换网络后就对不上，容易被当成回归 | 已在 `polardb-live.md` §3.8 记成运维事实，并给 `polardb_smoke.py` 加了自动判据（DNS 通 + TCP 静默超时 → 点名白名单并打印本机出口 IP）。派单模板可考虑把「连库前先跑一次连通性探测」写进开场自检 |
+| 2026-08-31 | P7 | **`scripts/polardb_smoke.py` 的诊断分支没有测试覆盖**。新增的 `_ssl_state()` / `_diagnose_unreachable()` / `_egress_ip()` 三个函数，验证方式是本轨手工实跑（SSL 行在无 SSL 容器上显示 `off`、诊断结论在真超时上命中） | 该脚本整体本来就没有 pytest 覆盖（它刻意不 import maos、靠人跑）。新增分支同样只有手工证据，回归风险在于以后有人改动 `Reporter` 时不会有红灯 | 归下一轮：若要覆盖，`_ssl_state` 可用 fake conn 对象测三条路径（psycopg3 属性、psycopg2 回落、两者都无 → `unknown`），`_diagnose_unreachable` 可 monkeypatch `socket` 测四条判据分支。**本轨没加**：`maos/tests/**` 归 T33 持有，不许碰 |
 - `scripts/make_release.sh`：detached HEAD 下 `git rev-parse --abbrev-ref HEAD` 返回 `HEAD`，`git clone --branch HEAD` 会失败；多行 env 值会打断 `read -r` 哨兵循环；`VERIFY_DIR` 不在 EXIT trap 里；`:158` 的注释断言解压目录没有 `.git`，与 `:140` 的门禁正好相反
 - `scripts/demo_preflight.sh`：`if ! cmd` 里的 `"exit=$?"` 在三处**永远**打印 `实际：exit=0 / 期望：exit=0`；PG 饿死守卫的 `^SKIPPED` 锚点在设了 `FORCE_COLOR`/`PY_COLORS` 时（Claude Code 里就是）**匹配不到任何东西，静默失效**
 - `scripts/gen_docs.py`：写死的 `" 两处。"` 紧挨着一个算出来的模块列表（违反文件自己「数量不写死」的规矩，且 `--check` 抓不到）；`collect_tools` 按 `value.name` 去重且无自洽断言；写死的 `"refund" if ".refund." in cls.__module__`；写死的 `test_skills.py:76` 锚点

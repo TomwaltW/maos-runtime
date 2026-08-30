@@ -72,11 +72,26 @@ class ScriptedModelClient(ModelClient):
 
 
 class HigressModelClient(ModelClient):
-    """占位。Track B 接网关时实现：走 Higress 统一入口，tier 作为路由 header。"""
+    """占位。Track B 接网关时实现：走 Higress 统一入口，tier 作为路由 header。
+
+    key 的两道防线与 :class:`GatewayModelClient` 对齐：私有属性 + 不含 key 的
+    ``__repr__``。**改前并没有现行泄漏** —— 默认的 ``object.__repr__`` 只打类名和
+    内存地址，属性一个都不打；泄漏面是公开属性 ``api_key`` 本身（``vars()`` /
+    ``__dict__`` / 任何遍历属性的序列化都会把值带出来），以及「谁给这个类加一个
+    ``@dataclass`` 或 ``__repr__``，key 当场进 repr」。
+
+    所以这两行买的是**不变量**，不是止血：下划线声明它不是公开 API，显式
+    ``__repr__`` 把「repr 里有什么」钉死，不随将来的改动漂移。同文件那三道
+    （``_scrub()`` / ``from None`` / :class:`_SameOriginRedirectHandler`）等
+    ``complete()`` 真正出网时才轮得到，这个类现在一进来就抛。
+    """
 
     def __init__(self, base_url: str, api_key: str) -> None:
         self.base_url = base_url
-        self.api_key = api_key
+        self._api_key = api_key
+
+    def __repr__(self) -> str:
+        return f"HigressModelClient(base_url={self.base_url!r})"
 
     def complete(self, *, system: str, user: str, tier: str) -> ModelResponse:
         raise NotImplementedError("Track B：接入 Higress 时实现")

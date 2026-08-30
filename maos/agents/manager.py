@@ -11,7 +11,7 @@ import json
 import logging
 
 from maos import kb
-from maos.agents.base import AgentIdentity, BaseAgent, TaskContext, AgentOutput
+from maos.agents.base import _ATTRIBUTION, AgentIdentity, BaseAgent, TaskContext, AgentOutput
 from maos.contracts.events import new_id
 from maos.kb import guardrails, retriever
 from maos.model.client import Tier
@@ -46,16 +46,17 @@ class ManagerAgent(BaseAgent):
         """规划前先检索历史知识，命中的结果作为「建议任务」并进 DAG。
 
         `context` 是**可选**的结构化检索上下文（tenant_id / biz_type / channel_id /
-        sku / rule_no / …，外加只用来给事件定归属的 plan_id / trace_id）。不传就
-        退化成纯规划，prompt 与 1.0 逐字节一致 —— 不带 context 的场景
-        （1 / 2 / 5 / 7）`mgr.plan(GOAL)` 一行不用改，输出也一个字节不变。
-        演示主线上唯一接了 context 的是场景 6（`flows/scenario_6.py`）。
+        sku / rule_no / …，外加只用来定归属、进不了检索查询的 plan_id / trace_id）。
+        不传就退化成纯规划，prompt 与 1.0 逐字节一致，规划这一次的用量照旧落空
+        trace_id 并由 `obs/trace.py::unattributed_usage` 逐条点名 —— 归属是**如实
+        记录**，缺了就说缺了，不拿缺省值糊过去。
 
         检索到的东西**只能增加任务**，且不许替代订单事实、不许跳过人工审批：
         三条护栏在 `kb/guardrails.py` 里写成断言，违反抛 GuardrailViolation。
         """
-        docs = self._kb_prefetch(goal, context or {})
-        raw = self.ask(SYSTEM, self._user_message(goal, docs))
+        ctx = context or {}
+        docs = self._kb_prefetch(goal, ctx)
+        raw = self._ask_attributed(SYSTEM, self._user_message(goal, docs), ctx)
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -72,6 +73,34 @@ class ManagerAgent(BaseAgent):
             t.setdefault("depends_on", [])
             t.setdefault("risk_level", "L")
         return tasks
+
+    def _ask_attributed(self, system: str, user: str, context: dict) -> str:
+        """带归属调模型 —— 规划期这一次 `ask()` 唯一能拿到 Run id 的地方。
+
+        `BaseAgent.ask()` 的归属取自 `_ATTRIBUTION`，而那个 ContextVar 只由
+        `__init_subclass__` 包在子类的 `run(ctx)` 上（`agents/base.py`）。`plan()`
+        不是 `run()`：它跑在 `create_plan` **之前**，压根没有 `TaskContext` 可包，
+        所以规划这一次调用的用量恒落空 trace_id。调用方**早就**先生成好 id 放进
+        `context` 了（`flows/scenario_6.py`、`flows/contrast.py` 都这么传，两处的
+        用量却仍归属不上）—— 缺的一直只是把它接到 `_ATTRIBUTION` 上这一步。
+
+        `ask()` 与 `plan()` 的签名都一个字节不动：归属走 ContextVar，不走参数。
+        这是 `docs/DECISIONS.md ## task-T29` 定下的口径，本方法只是把同一条线
+        从 `run()` 延到 `plan()`。
+
+        `context` 里没有 id 就**不动**当前绑定：既让不传 context 的调用方逐字节
+        等价，也不会拿空串把外层已绑好的归属抹掉。宁可落空串由
+        `unattributed_usage` 点名，也不编一个 trace_id —— 口径同
+        `core/store.py::record_model_usage` 里那段「不许编 trace_id」。
+        """
+        ids = {k: str(context.get(k) or "") for k in ("trace_id", "plan_id")}
+        if not any(ids.values()):
+            return self.ask(system, user)
+        token = _ATTRIBUTION.set({**ids, "task_id": None})
+        try:
+            return self.ask(system, user)
+        finally:
+            _ATTRIBUTION.reset(token)
 
     # -- 检索前置（Phase 5）------------------------------------------------
     def _kb_prefetch(self, goal: str, context: dict) -> list[dict]:

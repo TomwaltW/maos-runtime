@@ -1342,3 +1342,13 @@ exit=0，`gen_docs.py --check` exit=0，`demo_preflight.sh` 5 步全过 exit=0�
 - `scripts/demo_preflight.sh`：`if ! cmd` 里的 `"exit=$?"` 在三处**永远**打印 `实际：exit=0 / 期望：exit=0`；PG 饿死守卫的 `^SKIPPED` 锚点在设了 `FORCE_COLOR`/`PY_COLORS` 时（Claude Code 里就是）**匹配不到任何东西，静默失效**
 - `scripts/gen_docs.py`：写死的 `" 两处。"` 紧挨着一个算出来的模块列表（违反文件自己「数量不写死」的规矩，且 `--check` 抓不到）；`collect_tools` 按 `value.name` 去重且无自洽断言；写死的 `"refund" if ".refund." in cls.__module__`；写死的 `test_skills.py:76` 锚点
 - `scripts/polardb_smoke.py:151` 回落 psycopg2，而 `pg_store._driver()` **只认 psycopg v3** —— 验收工具可能在一台每次 `PgStorePort` 调用都抛 `PgBackendUnavailable` 的机器上报 5/5 全绿
+
+## task-T32
+
+整合轮 15 · 成本归因补全 + 总线接线轮发现的。三条都在本轨白名单外，一律不改（铁律 4）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-31 | P7 | **`scripts/verify.py` 第 8 项里关于「空 `model` 列」的注释与 info 文案已过期**。本轮补上 `flows/scenario_2.py::FlakyModel` 的 `model=` 之后，那个 `blind` 计数恒为 0，末尾那行「2 条用量的 model 列为空 …… 出处 `flows/scenario_2.py` 的 FlakyModel 直接构造 ModelResponse 不填 model」再也不会打印，判据 c 中间那段注释举的例子也不复存在 | **不影响判定**：三态判据本身是对的，空 `model` 仍是结构上可能出现的第三种取值（任何自定义 `ModelResponse` 都可能不填），该分支该留。过期的只是它拿来举例的那个出处 —— 读代码的人会照着去 `scenario_2.py` 找，而那里已经填上了 | 归 T34（`scripts/**` 持有者）。把注释与 info 里的具体出处改成不指名的说法即可，判据逻辑一行不动。优先级低：读错的代价是白跑一趟，不是判错 |
+| 2026-08-31 | P7 | **生成文档 `docs/agent-identity.md` 把源码行号写死**（`maos/agents/manager.py:33` 等），于是**任何在被记录的类声明之上的增删行**都会让 `test_generated_docs.py` 的 2 条断言变红，哪怕改动与该文档的内容毫无关系。本轮加一行 import 就撞上了 | 把「文档是否最新」耦合成了「有没有人在文件上半部分动过行」。红的信息量低（它不指示任何真实不一致），而修法要跨到 `scripts/**` 与 `docs/` 两个别轨的面 —— 于是每一轨都被迫在「绕开行号」和「越界重跑生成器」之间二选一。本轮选了前者（收回单行 import，见 DECISIONS `## task-T32`），代价是留下一处「为了不动行号而不能换行」的隐性约束 | 归 T34 或整合轮。可选做法：`gen_docs.py` 改成只记声明位置的**文件**不记行号，或按符号名生成锚点。不建议现在动 —— 行号对人读代码确实有用，取舍要一起看几轨的实际摩擦再定 |
+| 2026-08-31 | P7 | **并行轨的 worktree 会被外部 `git reset --hard` 连未提交的工作一起清掉，且没有任何提示**。本轮九个文件跑绿并 `git add` 之后提交，得到的是 `nothing to commit, working tree clean`；reflog 显示七个检出被统一移到新基线 `dd3edff`。工作区改动与索引一起蒸发，只有 reflog 能看出发生过什么 | 重新钉基线本身是对的（各轨都该跟上主干），但它对**正在干活、尚未提交**的轨是静默破坏性的：改动没有进 stash、没有进 commit，只能靠执行方自己有没有留底重做。本轮因为改动内容都还在会话上下文里，重做代价约十分钟；若发生在更大的一轮上，丢的就是几小时 | 归整合轮/派单编排侧。可选做法：重新钉基线前先扫一遍各 worktree 的 `git status`，非空的轨先落一个 WIP commit 再动；或改用 `git rebase` 让未提交改动自己挡住操作（有未提交改动时 rebase 会拒绝，而 `reset --hard` 不会）。这条不是本轨能改的东西，记在这里是为了让下一次重新钉基线的人看见 |

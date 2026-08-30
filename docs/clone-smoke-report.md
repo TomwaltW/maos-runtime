@@ -453,6 +453,10 @@ RESULT: 7/7 PASS
 
 ### 卡点 7 —— 🔴 本遍唯一的新发现：裸 `git clone` 落在 `main` 上，而 `main` 是 TypeScript 时代的骨架
 
+> ✅ **已于 2026-08-30 转绿（整合轮 13 前）**：人类把 GitHub 默认分支改成了 `goai-restructure`，
+> `git ls-remote --symref <地址> HEAD` 现在给 `ref: refs/heads/goai-restructure`。
+> **下面整节按惯例保留原样，是当时的实录**，不是仓库当前状态。
+
 前四遍的克隆命令**都显式带了 `-b <分支>`**，于是这个问题四遍都没被看见。
 这一遍多做了一步：**不带 `-b`，照评委最可能的敲法裸 clone 一次。**
 

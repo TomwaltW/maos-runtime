@@ -918,6 +918,11 @@ T5 轨把 `docs/ppt-outline.md` 渲染成 `artifacts/` 下的演示稿（HTML �
 `docs/submission-checklist.md` 的两处可勾项，外加两份账本。
 **一行 `maos/**` 源码都没改。** 下面都是白名单外发现的，按铁律 4 记账不当场改。基线 `4cfef38`。
 
+
+> ✅ **2026-08-30 注记（整合轮 13 回填）**：本节里「仓库默认分支是 `main`」那一条**已转绿** ——
+> 默认分支已改成 `goai-restructure`，`git ls-remote --symref origin HEAD` 可自证。
+> **本节其余行按惯例保留原样，是当时的实录**；别再拿它当当前状态引用。
+
 | 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
 |---|---|---|---|---|
 | 2026-08-29 | P7 | 🔴 **仓库的 GitHub 默认分支是 `main`，而 `main` 停在 `3f2d5d1`，是已封存的 TypeScript 骨架**（44 个入库文件：`package.json` / `pnpm-lock.yaml` / `src/*.ts` / `tsconfig.json` / 一个早期 `python/` 目录），**没有 `maos/` 包、没有 `scripts/`、没有 `evidence/`、没有 `run.py`**。工作分支 `goai-restructure` 才是 `4cfef38`。实测：`git ls-remote --symref <url> HEAD` → `ref: refs/heads/main` | **评委裸 `git clone <地址>` 拿到的是那份 TS 骨架，README 里此后每一条命令都跑不了。** 而 `git clone` 会安安静静地成功，没有任何输出提示他走错了分支 —— 他会打开 README，发现里面讲的东西一个都不在，然后合理地推断「这份 README 描述的不是这个仓库」。这比 `docs/clone-smoke-report.md` 前四遍记的六个卡点都靠前、都致命：它发生在他还没跑过一条命令的时候。前四遍冒烟每次都自己带了 `-b`，所以四遍都没看见 | **提交前必须处理，两条路建议都做**。甲（最省事、且评委裸 clone 就对）：在 GitHub 仓库设置里把默认分支改成 `goai-restructure` —— **这要人类手动做，任何单轨都做不了**。乙：`README.md` §4 第 169 行那条 clone 命令写死 `-b goai-restructure`，归整合轮（README 是整合轮的面）。本轨已在 `SECURITY.md` 先补了一段显式警告，并在 `docs/clone-smoke-report.md` 第五遍一节记成「卡点 7」 |
@@ -1081,6 +1086,11 @@ T7–T14 八轨并入 + 活数字回填 + 证据束全量重跑。基线 `4cfef3
 裸 clone 可用性（默认分支卡点 + README 活数字）。基线 `f15e5dd`。
 三条都是**单轨做不了、必须人类动手**的，且前两条都卡在提交之前。
 
+
+> ✅ **2026-08-30 注记（整合轮 13 回填）**：本节里「仓库默认分支是 `main`」那一条**已转绿** ——
+> 默认分支已改成 `goai-restructure`，`git ls-remote --symref origin HEAD` 可自证。
+> **本节其余行按惯例保留原样，是当时的实录**；别再拿它当当前状态引用。
+
 | 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
 |---|---|---|---|---|
 | 2026-08-30 | P7 | 🔴 **卡点 8（本轨新发现）：远端 `goai-restructure` 停在 `4cfef38`，落后本地 `f15e5dd` 21 个 commit** —— 整合轮 11 连同 T7–T14 八轨从未推送。机器判据：`git ls-remote --heads origin` 给 `4cfef38…`，`git rev-parse goai-restructure` 给 `f15e5dd…` | **评委分支敲对了也拿不到当前代码**：实测远端 clone 跑出 `802 passed`（README 写 `860 passed`，差 58 条）、`trace-tree 19/19`（README §3 贴 `29/29`）。**而七项全 PASS、退出码全 0，没有任何一条命令报错** —— 卡点 7 会让人立刻发现不对，这条不会，评委只会看到「跑得通但和 README 对不上数」，最自然的解释是**「这份 README 的数字是编的」**，恰好打在铁律 3 上。逐条读数见 `docs/clone-smoke-report.md` 第六遍「卡点 8」 | 🔴 **提交之前必须做，且必须在卡点 7 之前想到**：人类把本地 `goai-restructure` push 到远端。铁律 5 禁止任何单轨 push，本轨做不了。**不做的话卡点 7 修好了也没用** |
@@ -1193,3 +1203,18 @@ T15–T20 六轨并入。基线 `f15e5dd`（整合轮 11 合并态），六轨�
 | 2026-08-30 | P5 | `maos/domain/refund/objects.py` 的 `_atomic()` **只有底层连接一条路径，没有 StorePort 分支**。照搬源 `maos/kb/__init__.py` 的 `_atomic()` 是先试 `port_of(store)` 走端口的 `transaction()`，端口不存在才落到 `_conn()` | 退款域换到 PG 后端时，迁移拿不到事务 —— 而 `_conn()` 那条路径本身就取 `SqliteStore` 的私有属性，PG 上直接 `TypeError`。当前无影响：退款域整层都还锁在 SQLite 上（见下一条） | 与下一条「`_conn()` 取私有属性」是同一件事的两面，一起做：给退款域接 StorePort 时把 `_atomic()` 的端口分支一并补上 |
 | 2026-08-30 | P5 | （承接 `## task-R1` 第 3 条，派单 §0.2 明示本轮留账不改）`objects._conn()` 取 `SqliteStore` 的私有属性 `_conn`，退款域整层因此绑死 SQLite | 退款域上不了 PG／PolarDB。P5 已经把工厂放行到 PG，这条是退款域**没跟上**的那一截 | 归 StorePort 接线那一轨，本轮无人持有 |
 | 2026-08-30 | P5 | （承接 `## task-T15` 第 4 条，派单 §0.2 明示不归本轨）`create_store(store, backend='postgres')` 静默忽略传入的 store | 调用方以为自己传的 store 被用上了，实际没有 | 归 `maos/store/factory` 那一面，本轮无人持有 |
+
+## integrate-round-13
+
+T21–T26 六轨并入。基线 `129e71d`，并轨时主干已由另一会话推进到 `6d195ec`
+（`072f4b2` PolarDB 二轮 + `6d195ec` 删合成表）。六轨各 1 个 commit、工作区全干净。
+本轮实测：**935 passed / 29 skipped（无库）**、**964 passed / 0 skipped（有库）**，
+935 + 29 = 964；`run.py` exit=0。有库那档是本轮自起 pgvector 容器
+（`-p integrate13-pg`，端口 55433，跑完 `down -v` 无残留）实跑出来的，不是抄的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-30 | P7 | **`deploy/polardb.md` 的读数表已过期**：写着「932 passed, 0 skipped（有库）／903 passed, 29 skipped（无库）」，整合轮 13 后是 **964 / 935** | 该表是 PolarDB 部署手册里的「本机对照组」，评委照它核会对不上。但两份 `deploy/polardb*.md` 属另一会话（`9d1e0d57`）的面，且 SSL 加固与口令轮换落地后还要再改一轮 | 归 PolarDB 运维那一轨，与 SSL／口令轮换一起改。**本轮刻意没动**：跨会话抢面比数字过期更贵 |
+| 2026-08-30 | P7 | （承接 `## task-T26` 第 3 条）**`## task-T17` 第 2 条写的「退款域 18 张表」仍是错的**，实测业务表 14 张、加 T26 的迁移记账表共 15 张 | 它是被后轨直接引用的事实，照抄会拿到 18 | 本轮未改：`## task-T17` 是历史实录节，按惯例不改历史行。下次有人正当持有该节时顺手更正 |
+| 2026-08-30 | P7 | **`maos/tests/conftest.py` 那条 delenv 的时序仍没有断言钉着**（`## task-T26` 第 2 条原文） | 本轮把「有库必须 0 skipped」钉进了 `demo_preflight.sh` 第 1 步，比只查条数强：29 条被饿死时 passed 会正好等于无库那档，只查条数看不出来。**但这仍是环境哨兵不是单元断言** —— 无库机器上跑不出这个差别 | 仍需一个 `test_conftest_env_baseline.py` 把时序钉死。归下一轨，与 `## task-T26` 第 2 条合并处理 |
+| 2026-08-30 | P7 | **`docs/clone-smoke-report.md` 的六遍冒烟没有第七遍**：卡点 7 已转绿、卡点 8 本轮推送后也闭合，但报告里没有一遍是在「两条都绿」之后跑的 | 报告的结论行仍写着「裸 clone 不成立」，与仓库当前状态相反。本轮已在卡点 7 一节顶上加了转绿注记，但**没有补跑第七遍** | 建议提交前补跑一遍裸 clone 冒烟（不带 `-b`），把七项判据在「默认分支已对 + 远端已同 sha」的前提下重跑一次 |

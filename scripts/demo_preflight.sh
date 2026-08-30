@@ -11,7 +11,7 @@
 #    只会打印不会失败的前置脚本等于没写。
 #
 # 2. **期望值可用环境变量覆盖**，不必改文件：
-#      MAOS_EXPECT_TESTS=903         第 1 步的测试条数
+#      MAOS_EXPECT_TESTS=935         第 1 步的测试条数
 #      MAOS_EXPECT_BUNDLES=8         第 4 步落盘的证据束个数
 #      MAOS_EXPECT_VERIFY='RESULT: 7/7 PASS'   第 5 步的核验结论行
 #    负例自证就靠它：MAOS_EXPECT_TESTS=999 bash scripts/demo_preflight.sh
@@ -37,8 +37,15 @@ cd "$REPO_ROOT"
 
 # 第 1 步的测试条数按环境分两档。差的 29 条 = 22（maos/tests/test_pg_store_live.py）
 # + 7（maos/tests/test_pg_rank_parity.py）：没库时它们整个 skip，有库时全部真跑。
-EXPECT_TESTS_NOPG=903
-EXPECT_TESTS_PG=932
+#
+# 有库那档**由无库那档加 29 算出来，不写死**。写死的代价整合轮 13 当场吃到了：
+# 契约 B 把有库钉成 932，而同轮 T24/T25/T26 各自加了 7/13/12 条测试，两个数一起作废——
+# 症状是「配了 DSN 的机器上第 1 步报回归」，恰恰是本档要治的那个病。改成算式之后，
+# 以后谁加测试都只需改 EXPECT_TESTS_NOPG 一个数，29 这个差值才是真正要守的不变量。
+# 整合轮 13 实测：935 passed / 29 skipped（无库）、964 passed / 0 skipped（有库），935+29=964。
+PG_GATED_TESTS=29
+EXPECT_TESTS_NOPG=935
+EXPECT_TESTS_PG=$((EXPECT_TESTS_NOPG + PG_GATED_TESTS))
 EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
 EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 7/7 PASS}"
 
@@ -103,12 +110,15 @@ pick_expect_tests() {
     if [ -n "${MAOS_EXPECT_TESTS:-}" ]; then
         EXPECT_TESTS="$MAOS_EXPECT_TESTS"
         EXPECT_TESTS_WHY='人为指定 MAOS_EXPECT_TESTS，已盖过自动判断'
+        EXPECT_SKIPPED_ZERO=0          # 人自己指定条数时不替他多判一层
     elif pg_reachable; then
         EXPECT_TESTS="$EXPECT_TESTS_PG"
         EXPECT_TESTS_WHY='有可连的 PG —— live 22 条 + parity 7 条会真跑'
+        EXPECT_SKIPPED_ZERO=1
     else
         EXPECT_TESTS="$EXPECT_TESTS_NOPG"
         EXPECT_TESTS_WHY='无可连的 PG —— live 22 条 + parity 7 条 skip'
+        EXPECT_SKIPPED_ZERO=0
     fi
 }
 
@@ -131,6 +141,15 @@ passed="$(grep -Eo '[0-9]+ passed' "$LOG_DIR/pytest.log" | tail -1 | grep -Eo '^
     "${EXPECT_TESTS} passed" "$LOG_DIR/pytest.log"
 if [ "$passed" != "$EXPECT_TESTS" ]; then
     die '测试条数与期望不符' "${passed} passed" "${EXPECT_TESTS} passed" "$LOG_DIR/pytest.log"
+fi
+# 有库那档还要守另半条不变量：29 条 live/parity 一条都不许被饿死。
+# 只查条数守不住它 —— conftest 的 delenv 若把 DSN 清早了，29 条会从 passed 掉回 skipped，
+# 那时 passed 正好等于无库那档的数，「测试变干净了」而不是红灯（docs/BACKLOG.md 的 ## task-T26 第 2 条）。
+skipped="$(grep -Eo '[0-9]+ skipped' "$LOG_DIR/pytest.log" | tail -1 | grep -Eo '^[0-9]+' || true)"
+skipped="${skipped:-0}"
+if [ "$EXPECT_SKIPPED_ZERO" = 1 ] && [ "$skipped" != 0 ]; then
+    die '有可连的 PG，却仍有用例被 skip' "${skipped} skipped" \
+        '0 skipped（22 条 live + 7 条 parity 必须真跑）' "$LOG_DIR/pytest.log"
 fi
 ok "${passed} passed"
 

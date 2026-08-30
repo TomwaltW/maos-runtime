@@ -162,12 +162,14 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 
 **不需要任何 API key。** 核心零依赖，只要 Python ≥ 3.10。
 
-> 🔴 **`-b goai-restructure` 一个字都不能省。** 本仓库的默认分支是 `main`，而 `main` 上
-> 是**已封存的 TypeScript 骨架**（`package.json` / `src/` / `tsconfig.json`，外加一份早期的
-> `python/` 移植），**不是**这份 README 描述的运行时。麻烦的是它**看起来像对的**：
-> 那个分支自带一份也叫 “MAOS Runtime” 的 README。而裸 `git clone <地址>` 会**安静地成功**，
-> 不给任何提示 —— 但本文此后每一条命令都会失败，因为那个分支上没有
-> `maos/`、没有 `run.py`、没有 `scripts/`。**认准下面第二条自检回 `goai-restructure`。**
+> **`-b goai-restructure` 建议照写。** 2026-08-30 起仓库的 GitHub 默认分支已经是
+> `goai-restructure`，裸 `git clone <地址>` 落地就是对的（`git ls-remote --symref <地址> HEAD`
+> 可自证）。写死分支是为了**不依赖那个远端设置** —— 它在网页上改回去不留任何 git 痕迹，
+> 而改回去的后果很难被发现：`main` 上是**已封存的 TypeScript 骨架**（`package.json` /
+> `src/` / `tsconfig.json`，外加一份早期的 `python/` 移植），它**看起来像对的** ——
+> 自带一份也叫 “MAOS Runtime” 的 README，clone 会**安静地成功**，直到本文的每一条命令
+> 都失败（那个分支上没有 `maos/`、没有 `run.py`、没有 `scripts/`）。
+> **认准下面第二条自检回 `goai-restructure`。**
 
 下面每条命令都在**仓库根目录**执行（clone 出来的目录名由你给的地址决定，
 `cd` 进去即可，不要写死成别的名字）：
@@ -175,7 +177,7 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 ```bash
 git clone -b goai-restructure <本仓库地址> maos && cd maos
 git rev-parse --abbrev-ref HEAD     # 必须回 goai-restructure；不是它就停下，别往下跑
-python3 -m pytest maos/tests -q     # 903 passed
+python3 -m pytest maos/tests -q     # 935 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 

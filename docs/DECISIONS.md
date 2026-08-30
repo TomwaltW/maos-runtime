@@ -1204,3 +1204,12 @@ verify 第 6 项自述层收口。派单 §5 只说了「补 FAILED 分支的 st
 |---|---|---|---|---|
 | 2026-08-30 | P7 | §5.2 要 `scripts/demo_preflight.sh` 按环境切换期望条数，派单把判据留给本轨定：算「`MAOS_PG_DSN` 非空」就有库，还是要「非空**且连得上**」 | 选**非空且连得上**。探测拿 `PgStorePort.connect()` 当场连一次，连不上就当没库 | 判据必须与被门控的那 29 条测试**同源**：`maos/tests/test_pg_store_live.py` 与 `test_pg_rank_parity.py` 的 skipif 走的就是「未设 **或连不上**」，探测函数也是 `PgStorePort.connect()`。只看「非空」会在「DSN 配了、库没起（容器没起、白名单没放行）」时期望 932 而实得 903，**在配了 DSN 的机器上误红** —— 那正是本档要治的病（`## task-T18` 第 4 条）。代价实测可接受：本机拒连 0.24 秒就返回，最坏是防火墙静默丢包吃满 `maos/store/pg_store.py` 的 `DEFAULT_CONNECT_TIMEOUT = 5` 秒，而第 1 步本身要跑 20 秒测试。三种情形均实跑自证：无 DSN → 903 档 exit=0；起了 `t23-pg` 真库 → 932 档 exit=0；DSN 配着但库已删 → **回落** 903 档 exit=0 |
 | 2026-08-30 | P7 | §5.1 的自洽断言要不要再建一个 `maos/tests/test_gen_docs*.py` 来守（派单 §4 把它列为「若需」的可选项） | **不建**。只加断言本身；「能真红」用一次性探针在 scratchpad 里验完即弃，报错原文进回执 | 两条理由。其一，断言已被存量测试**天然覆盖**：`maos/tests/test_generated_docs.py` 的 `rendered` fixture 在干净子进程里真跑 `render()`，必然过一遍 `collect_agents()`；断言一炸，该测试当场报「生成器在子进程里跑挂了」并把 stderr 全文贴出来（里面就是被点名的 role）。其二，新增测试会把全量条数从 903 顶上去，而**冻结契约 B（T23 ↔ T26）把有库档钉死在 932**，preflight 两档期望值正建立在 903／932 这组数上；为一条已被覆盖的断言去动这两个数，代价远大于收益 |
+## task-T24
+
+`kb.port_of()` 判据修正。手册给了两条路要求各算代价再定，下面三条是自行判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-08-30 | P5 | `port_of()` 把连上库的 `PgStorePort` 判成核心 store。BACKLOG 给了两条修法：①判据换成 `callable(_conn)`；②让 `PgStorePort` 把连接改名 `_pg_conn` | **选 ①**，一行：`if store is None or callable(getattr(store, "_conn", None))` | ② 要改 `maos/store/pg_store.py` —— 本轨白名单外（要停手问人类），且是 T18 刚填实的文件，并轨期动它徒增冲突面。更关键的是**② 只堵住 PG 这一个实现**：判据仍是「有 `_conn` 就走老路径」，下一个把连接命名为 `_conn` 的 StorePort 会原样再踩一遍。① 修的是判据本身，对所有后端一次到位 |
+| 2026-08-30 | P5 | 手册要求自证「① 真的够」。实测：`SqliteStore._conn` 是**存 sqlite 连接的属性**（`store.py:98`），不是手册所说的方法；它可调用只因 `sqlite3.Connection` 自带 `__call__`。即判据成立压在一条驱动实现细节上 | **仍选 ①，但把两道防线都写进 docstring，并新增测试直接钉住那两条驱动事实** | 实测确认 ① 有**两个各自都够**的理由：`sqlite3.Connection` 可调用（第一道）；核心 `SqliteStore` 压根没有 `execute` / `query`，摘掉 `__call__` 也仍落回 None（第二道）。所以 ① 不是「押在一个巧合上」。语义更硬的 `isinstance(conn, sqlite3.Connection)` 已记进 BACKLOG `## task-T24`，等钉驱动事实那条测试真红再换 —— 现在换的收益只是理由好听，代价是动三轨共用的分叉点 |
+| 2026-08-30 | P5 | 回归测试要不要连「建表→写→读」整条也跑一遍，还是只钉判据的三个返回值 | **两者都做**：判据三条 + 端口形状上的 `ensure_schema` → `upsert_doc` → `get_doc`/`list_docs` 整条，替身的连接**故意不实现 `executescript`** | 只钉返回值不够：判据对了不等于整层通，`port_of()` 之后每个调用点各有自己的老路径分支（本轮 AST 查出 5 处）。替身不实现 `executescript` 是为了让判据一旦判反，抛的是线上那条一模一样的 `AttributeError`，而不是一句「断言失败」—— 实测退回老判据时确实红成了原症状 |

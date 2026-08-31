@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-注册表里共 **13 个 skill / 13 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
+注册表里共 **19 个 skill / 19 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
 
 失败策略取值域冻结为 `retry`、`fallback`、`escalate`（maos/skills/contract.py:16）。
 
@@ -14,6 +14,12 @@
 
 | skill | 版本 | 域 | 归属角色 | 失败策略 | 依赖工具 | 声明位置 |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| `ap.compensate` | `1.0.0` | 软件交付域 | `ap_compensation` | escalate | （空） | `maos/skills/builtin/ap/compensate.py:65` |
+| `ap.execute` | `1.0.0` | 软件交付域 | `ap_treasury` | escalate | `bank.pay` | `maos/skills/builtin/ap/execute.py:42` |
+| `ap.intake` | `1.0.0` | 软件交付域 | `ap_intake` | escalate | （空） | `maos/skills/builtin/ap/intake.py:37` |
+| `ap.match` | `1.0.0` | 软件交付域 | `ap_match` | escalate | （空） | `maos/skills/builtin/ap/match.py:96` |
+| `ap.observe` | `1.0.0` | 软件交付域 | `ap_treasury` | escalate | `bank.query` | `maos/skills/builtin/ap/observe.py:50` |
+| `ap.plan-payment` | `1.0.0` | 软件交付域 | `ap_control` | escalate | （空） | `maos/skills/builtin/ap/plan_payment.py:34` |
 | `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:151` |
 | `finance.settle` | `1.0.0` | 制造售后退款域 | `refund_finance` | escalate | （空） | `maos/skills/builtin/refund/finance.py:55` |
 | `issue.aggregate` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/issue_aggregate.py:66` |
@@ -29,6 +35,108 @@
 | `test.verify` | `1.0.0` | 软件交付域 | `testing` | escalate | `sandbox` | `maos/skills/builtin/test_verify.py:30` |
 
 ## 逐个 skill × 九要素
+
+### ap.compensate @ 1.0.0
+
+实现：`ApCompensateSkill` @ `maos/skills/builtin/ap/compensate.py:65`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 付款被驳回或问不出回单后的域内补偿收口：作废付款指令、写补偿记录与对账工单，把案子推进到 compensated |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`operator`: str（做出驳回/收口决定的人）<br>`reason`: str（为什么走补偿，原样进补偿记录与事件）<br>`assignee`: str（可选，对账工单的接单人，缺省同 operator） |
+| `output_schema` | ③ 输出 | `biz_status`: compensated<br>`revoked`: list[dict]（作废的付款指令；语义是「不再推进」，**不是**「确认未付」）<br>`last_observed_state`: str（最后一次观察到的下落；没观察到就是 unobserved）<br>`ticket`: dict（对账工单）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id`、`operator` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 不碰银行、不写 ap_payment_observation（那是 ap.observe 的专属面）；biz_status 一律经 guard.update_biz_status，写不出 settled。已经 settled 的案子拒绝补偿 —— 那是数据被改坏的信号，不许静默吞掉 |
+| `reuse_note` | ⑧ 复用说明 | 任何有外部不可逆动作的域都该有自己的补偿：作废本地意图 + 留下最后观察 + 开一张给人的工单，三件缺一不可 |
+| `owner_roles` | ⑨ 归属角色 | `ap_compensation` |
+
+### ap.execute @ 1.0.0
+
+实现：`ApExecuteSkill` @ `maos/skills/builtin/ap/execute.py:42`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 核对匹配与审批后向银行发出付款指令，落 payment_instruction 并把业务状态推到 payment_requested；**写不出 settled** |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`bank`: str（已 register_bank 的名字，缺省 'demo'）<br>`amount`: str（可选，缺省取最近一轮匹配算出的应付额） |
+| `output_schema` | ③ 输出 | `instruction_id`: str（银行侧指令 id，ap.observe 用它）<br>`idempotency_key`: str<br>`amount`: str<br>`bank_advice`: dict（受理回单，**永远不是终态**）<br>`biz_status`: payment_requested<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | `bank.pay` |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 三道前置：匹配已通过（biz_status=matched）、有一条 approved 的人工审批、幂等键由 (tenant, case) 唯一确定。审批记录只读不写。本 skill 不是 guard.AUTHORITATIVE_WRITER —— 试图写 settled 会被 guard 抛 AuthoritativeFactViolation 并落一条事件。银行调用一律经 invoke_tool 留审计行 |
+| `reuse_note` | ⑧ 复用说明 | 任何「发出去 ≠ 成功了」的域都该照此拆两步：执行一步、观察一步，终态只有观察那一步写得进 |
+| `owner_roles` | ⑨ 归属角色 | `ap_treasury` |
+
+### ap.intake @ 1.0.0
+
+实现：`ApIntakeSkill` @ `maos/skills/builtin/ap/intake.py:37`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 收供应商发票，确认三单齐备并建出 ap_case（received），把 Task 挂到业务对象上 |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`invoice_id`: str（发票池里那一张）<br>`po_id`: str（采购订单号）<br>`po_version`: int（订单快照版本 —— 权威在 ERP，我们存的是读到的那一版）<br>`gr_id`: str（收货单号） |
+| `output_schema` | ③ 输出 | `case`: dict（ap_case 当前那一行）<br>`invoice`: dict（发票抬头，含 UNCL1001 类型码与其官方名称）<br>`three_way`: dict（三单齐备情况：各自的行数）<br>`refs`: list[dict]（挂上去的 ap_business_ref）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id`、`invoice_id`、`po_id`、`gr_id` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只建案不判定；biz_status 一律由 guard.create_case 落成 received，调用方指定不了。三单读取一律经 domain/ap/objects.py 的具名读取函数，本 skill 不自己写 SQL |
+| `reuse_note` | ⑧ 复用说明 | 任何「先确认外部单据齐备、再建本地案子」的域都该照此分层：齐不齐是可重试的失败，对不对是要人看的结论 |
+| `owner_roles` | ⑨ 归属角色 | `ap_intake` |
+
+### ap.match @ 1.0.0
+
+实现：`ApMatchSkill` @ `maos/skills/builtin/ap/match.py:96`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 三单匹配：逐行比数量与单价（各自容差），再按 Peppol/EN16931 规则验勾稽，产出可核对的拒付理由与应付金额 |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`attempt`: int（可选，落 match_result 的主键之一，缺省 1）<br>`tolerance`: dict（可选，覆盖 quantity/unit_price/tax 三个容差） |
+| `output_schema` | ③ 输出 | `matched`: bool（匹配通过与否 —— 不通过**不是**执行失败）<br>`payable_amount`: str（通过时按 BR-CO-16 算出的应付额；不通过为空串）<br>`findings`: list[dict]（每条带 rule_id / text / source，可核对）<br>`checked`: list[str]（本次跑过的判据编号 —— 证明没判的和判过的分得开）<br>`tolerance`: dict（本次实际用的三个容差）<br>`biz_status`: str（通过则推进到 matched，否则原样不动）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读三单、只写 match_result 与（通过时）ap_case.biz_status；biz_status 一律经 guard.update_biz_status，写不出 settled。拒付理由的 rule_id 必须来自 maos/tools/ap_codes.py 的已核对清单，自造编号在 ap_codes.require_rule 里当场抛 |
+| `reuse_note` | ⑧ 复用说明 | 任何「拿外部单据互相勾稽」的域都该照此写：判据挂外部规范编号，容差按量纲分别给，等式类判据零容差 |
+| `owner_roles` | ⑨ 归属角色 | `ap_match` |
+
+### ap.observe @ 1.0.0
+
+实现：`ApObserveSkill` @ `maos/skills/builtin/ap/observe.py:50`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 轮询银行取得付款终态回单，写 ap_payment_observation 并（仅在此处）写 settled |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`bank`: str（已 register_bank 的名字，缺省 'demo'）<br>`instruction_id`: str（可选，缺省取该案子最近一笔未作废的付款指令）<br>`max_polls`: int（可选，默认 5） |
+| `output_schema` | ③ 输出 | `bank_advice`: dict（终态回单，或到顶时的最后一次观察）<br>`observed_state`: accepted\|pending\|unknown\|settled\|failed<br>`poll_count`: int（问了几次 —— 终态是问出来的证据）<br>`bank_reference`: str（仅 settled 才有：可对账的银行流水号）<br>`biz_status`: str（settled 只可能由本 skill 写入）<br>`settled`: bool<br>`needs_compensation`: bool（银行明确失败时为 True）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | `bank.query` |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 本 skill 是 maos/domain/ap/guard.py 的 AUTHORITATIVE_WRITER —— 全系统唯一可写 settled 的 actor，且写入必须同事务附带银行流水号的回单，缺字段由 guard 抛 AuthoritativeFactViolation；非终态一律不推进状态；银行调用一律经 invoke_tool 留审计行 |
+| `reuse_note` | ⑧ 复用说明 | 任何「权威在外部系统」的终态都该照此写：先观察、再落库，两件事同一个事务；轮询到顶不许改判成失败 |
+| `owner_roles` | ⑨ 归属角色 | `ap_treasury` |
+
+### ap.plan-payment @ 1.0.0
+
+实现：`ApPlanPaymentSkill` @ `maos/skills/builtin/ap/plan_payment.py:34`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 按三单匹配的结论出一份可核对的付款计划（金额/付款方式/到期日/税种分解），供 effect_risk=H 的人工审批 |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`attempt`: int（可选，取哪一轮的匹配结论，缺省取最近一轮） |
+| `output_schema` | ③ 输出 | `plan`: dict（付款计划：amount / currency / payment_means_code / due_at）<br>`payable_amount`: str（取 ap.match 算出来的那个，不取发票自称的）<br>`citations`: list[dict]（金额与码表各自的规范引用）<br>`needs_human_approval`: bool（恒 True —— 出账是不可逆动作）<br>`biz_status`: str<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读不写业务状态：本 skill 不推进 biz_status，也不碰银行。匹配没通过一律拒绝出计划 —— 未经验证的金额不许进入审批视野。付款方式码不在 UNCL4461 内当场抛（BR-CL-16） |
+| `reuse_note` | ⑧ 复用说明 | 任何「人要批一份计划而不是一个按钮」的域都该照此分步：把审批对象做成可核对的清单，而不是一次确认 |
+| `owner_roles` | ⑨ 归属角色 | `ap_control` |
 
 ### code.repo-patch @ 1.0.0
 
@@ -260,4 +368,4 @@
 - **回滚**：旧版本从不被覆盖，`get(name, "1.0.0")` 永远拿得到当年那一个。在册版本用 `versions(name)` 列（maos/skills/registry.py:84）。升级期间在跑的旧 Plan 因此行为可复现 —— 这是保留历史版本的**唯一**理由。
 - **质量评估**：每次调用落一条 `SkillInvoked`，`detail` 带 `status` / `duration_ms` / `input_digest` / `output_hash` / `usage`；按 `skill + version` 聚合 event_log 即可得到成功率与耗时分布，无需另建埋点。证据侧由 `scripts/verify.py` 第 1 项做哈希一致性重放。
 
-当前在册的 13 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。
+当前在册的 19 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。

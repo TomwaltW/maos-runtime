@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **4 个**已实现工具，分布在 `gateway`、`sandbox` 两处。
+工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **6 个**已实现工具，分布在 `ap`、`gateway`、`sandbox` 两处。
 
 ## 九要素
 
@@ -27,6 +27,38 @@
 直接调 `port.entry` 就没有审计行，出事查不到是谁、什么参数、跑了多久。`params_digest` 走 sha256（maos/tools/port.py:35），落的是摘要不是明文，入参里的业务字段不进证据束。
 
 ## 已实现工具契约
+
+### `bank.pay`
+
+声明：`maos/tools/ap.py:344`（`BANK_PAY_PORT`）　入口实现：`maos/tools/ap.py:335`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | bank.pay |
+| `purpose` | ② 用途 | 向银行发出一条付款指令；返回受理回单，**永远不是终态** |
+| `entry` | ③ 入口 | `maos.tools.ap._pay` |
+| `params_schema` | ④ 入参 | `bank`: BankPort（进程内按名取到的银行实例，见 skills/builtin/ap/_common.py）<br>`instruction`: PaymentInstruction（金额为字符串，付款方式取 UNCL4461） |
+| `returns_schema` | ⑤ 出参 | `instruction_id`: str（银行侧指令 id，query 用它）<br>`idempotency_key`: str<br>`status`: accepted —— 受理态，永不为 settled/failed<br>`is_terminal`: bool（恒 False）<br>`amount`: str<br>`currency`: str<br>`payment_means_code`: str（UNCL4461）<br>`payment_means_name`: str（码表里的官方名称）<br>`poll_count`: int（恒 0，受理不算一次观察） |
+| `failure_modes` | ⑥ 失败形态 | · 幂等键为空 -> ValueError：没有幂等键就挡不住第二笔付款<br>· 同一幂等键上参数不一致 -> DuplicateInstruction，**不静默收下也不静默丢弃**<br>· 付款方式码不在 UNCL4461 内 -> KeyError（PaymentInstruction 构造时即抛）<br>· 银行不可达 / 超时 -> 由适配器抛，经 invoke_tool 落审计后原样上抛，上层按「未知外部状态」处置，**不许推断成失败** |
+| `security_boundary` | ⑦ 安全边界 | 只发指令，不判成败：本 port 的返回值永远不是终态，任何据此写 settled 的代码都会被 maos/domain/ap/guard.py 抛回来（铁律 8）。金额一律字符串，不进浮点。幂等键由 (tenant, invoice) 唯一确定，一张发票只允许有一笔付款指令 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | ap_treasury |
+
+### `bank.query`
+
+声明：`maos/tools/ap.py:379`（`BANK_QUERY_PORT`）　入口实现：`maos/tools/ap.py:340`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | bank.query |
+| `purpose` | ② 用途 | 问一次银行回单 —— 应付账款域**唯一**能取得付款终态的途径 |
+| `entry` | ③ 入口 | `maos.tools.ap._query` |
+| `params_schema` | ④ 入参 | `bank`: BankPort（进程内按名取到的银行实例）<br>`instruction_id`: str（bank.pay 返回的银行侧指令 id） |
+| `returns_schema` | ⑤ 出参 | `status`: accepted\|pending\|unknown\|settled\|failed<br>`is_terminal`: bool（只有 settled / failed 为 True）<br>`poll_count`: int（问了几次 —— 终态是问出来的证据）<br>`bank_reference`: str（仅 settled 才有：银行流水号，钱确实走了的外部凭据）<br>`value_date`: str（仅终态才有：起息日）<br>`payment_means_code`: str（UNCL4461） |
+| `failure_modes` | ⑥ 失败形态 | · 指令 id 不存在 -> LookupError<br>· 轮询到顶仍非终态 -> **如实返回非终态回单**，不许改判成失败：「我问累了」和「银行说没付成」是两回事<br>· status=unknown -> 该笔**可能已经划出**，不许重发指令，只能继续问或转人工 |
+| `security_boundary` | ⑦ 安全边界 | 只读。本 port 是 ap.observe 取得权威事实的唯一入口，而 ap.observe 是全系统唯一写得进 settled 的 actor（maos/domain/ap/guard.py）。非终态回单一律不推进业务状态 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | ap_treasury |
 
 ### `gateway.query`
 
@@ -98,4 +130,4 @@
 
 九要素里只有 `entry` 是本地可调用对象；把它换成一个 MCP client stub（同样的 `params_schema` 入、同样的 `returns_schema` 出），其余八项一字不改。`invoke_tool` 与 `ToolInvoked` 审计行在调用点之上，不关心 entry 背后是本地函数、子进程还是一个 MCP server —— 所以迁移之后，证据束里那条审计行的形状、`scripts/verify.py` 的第 1 项校验、Identity 的 `allowed_tools` 白名单，全部原样成立。
 
-反过来说：**没有做 MCP 迁移**。当前 4 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。
+反过来说：**没有做 MCP 迁移**。当前 6 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。

@@ -36,7 +36,7 @@ MAOS 对标物 `maos/runtime/worker.py` + `maos/agents/base.py` + `maos/skills/`
 `Internal protocol check:` 的用户消息把它推回循环，最多推两次；两次之后如果这一轮
 已经产生过用户可见的回复，就**推断**成 `done` 并发 `turn.status_inferred`
 （`turn.ts:2822`）；如果是 idle / background 这类合成唤醒且完全没有副作用，记
-`turn.synthetic_noop` 跳过（`turn.ts:2850` 附近）；都不是，才判
+`turn.synthetic_noop` 跳过（`turn.ts:2850`）；都不是，才判
 `loopExitReason = 'protocol_violation'` + `finalStatus = 'failed'`（`turn.ts:2868`）。
 
 **终态声明还要过一道语义验证器 —— 由第二个模型判。** 模型说 `done` 不等于运行时接受
@@ -93,7 +93,7 @@ memory / climate / context 并行加载（`turn.ts:1973-1978`），然后以每�
 （`installSkillFromManifest`，`skills.ts:177`），有路径穿越校验、单 skill ≤100 文件、
 单文件 ≤256KB 的硬约束，且**拒绝覆盖已存在的同名 skill**——要重装得 agent 自己先删。
 skill 存在 agent 私有工作区里，不是全局注册表：agent 之间要共享 skill 得互相发消息，
-对方自己拉一份（`skills.ts:17` 附近的模块注释）。
+对方自己拉一份（`skills.ts:17-19` 的模块注释）。
 
 **人格是三段拼接，运行时组装，其中两段由 agent 自己可写。** `buildSystemPrompt`
 （`personas.ts:311`）拼的是：① agent 自己工作区里的 `IDENTITY.md` + `SOUL.md`
@@ -116,6 +116,45 @@ so they remain retryable instead of disappearing into a silent skip.」第三，
 注释说「losing a workspace diff would be data loss」。至于「同一个 turn 被重放两次会
 怎样」——答案是：进程重启后那个 Map 是空的，会**真的重放一次**；护栏是 CLI 侧的
 反独白闸（「you already posted in <convo> Ns ago and nobody has replied yet」，
-`personas.ts:260` 附近）和 `postSystemNotice` 的 `dedupeKey`，而不是 turn 层的幂等键。
+`personas.ts:260`）和 `postSystemNotice` 的 `dedupeKey`，而不是 turn 层的幂等键。
+
+## 2. MAOS 的对应物
+
+先说最要紧的一条结论，它决定了后面所有对照怎么读：
+**MAOS 的 agent 不跑 LLM 多跳循环。** `BaseAgent.ask()`（`maos/agents/base.py:152`）
+调的是 `ModelClient.complete(system, user, tier)`（`maos/model/client.py:51`）——
+签名里没有 `messages`、没有 `tools`、没有 history，一次问答返回一段文本。
+`CodingAgent.run()`（`maos/agents/coding.py:40`）是**线性两步**：先 `kb.retrieve`
+再 `code.repo-patch`（`coding.py:58` / `coding.py:63`），没有循环。
+`WorkerRuntime.on_assignment`（`maos/runtime/worker.py:38`）收一条 `TaskAssignment`、
+调一次 `agent.run(ctx)`、发一条 `TaskResult`，全文 79 行。
+所以下表里凡是标「MAOS 没有」的，多半**不是缺陷，是另一种架构选择的必然结果** ——
+MAOS 把「多步」放在 Plan 的任务图上（多个 task，各自一跳），cumora 放在一个 turn 里
+（一个 task，多跳）。判断可移植性时必须带着这个前提读。
+
+| cumora 的机制 | MAOS 的对应物（含文件路径） | 判定 |
+| :-- | :-- | :-- |
+| 「一次轮次」是运行时一等实体：`runId` + run 行 + stage 机器（`turn.ts:1571`） | 一次派发是一等实体：task 行 + `TaskState` 状态机 + event_log（`maos/runtime/worker.py:38`、`maos/core/control_plane.py:334`） | 同构 |
+| 多跳工具循环 `for hop < MAX_HOPS`（`turn.ts:2427`，上限 200） | 无。一次 `agent.run(ctx)` 到底（`maos/runtime/worker.py:62`），"多步" 由 Plan 的多个 task 承担 | MAOS 没有 |
+| 模型显式声明轮次状态：`set_turn_status` 五值协议（`tools-shared.ts:47`） | `AgentOutput.status` 三值 `ok / failed / blocked`（`maos/agents/base.py:92`），由 **Python 代码**赋值，不是模型声明的 | 形似神不同 |
+| 沉默 ≠ done：两次 nudge → 推断 → protocol_violation 三级降级（`turn.ts:2788`） | 无对应。MAOS 的 agent 不会"沉默"，因为它是代码返回值不是模型自述 | MAOS 没有（也不需要） |
+| 终态语义验证器：小模型复核 `done` 是否真的交付了（`turn.ts:1181`） | `ReviewerGate`（`maos/runtime/gate.py:235`）+ `AWAITING_REVIEW` 状态。判据更硬（结构化闸门），位置更晚（task 边界而非 turn 内） | 形似神不同 |
+| 上下文压缩：双阈值 75%/95%（`turn.ts:930`/`939`）+ 两阶段 + LLM 摘要（`turn-compaction.ts:144`） | 无任何等价物。全仓 grep 不到 compact / truncate / token 预算 | MAOS 没有 |
+| CJK 感知的 token 估算（`turn-compaction.ts:67`） | 无。MAOS 只在 `record_model_usage`（`maos/core/store.py:508`）记网关回吐的真实用量，不做本地估算 | MAOS 没有 |
+| 每跳工具输出硬限长 8KB（`turn.ts:853`） | 无。`SkillResult.output`（`maos/skills/contract.py:38`）原样进 artifact，不截断 | MAOS 没有 |
+| 工具集 = `bash`（万能出口，CLI 手册即 schema）+ `set_turn_status`（`tools-shared.ts:77`） | `SkillContract` 九要素（`maos/skills/contract.py:20`，12 字段合成 9 项）+ `identity.allowed_tools` 白名单 | 形似神不同 |
+| 云端 / BYOA 两条路径共用一份工具定义（`tools-shared.ts` 的存在本身） | Scripted / 真模型双模式共用一份 `ModelClient` 抽象（`maos/model/client.py:49`），`select_model_client` 选路（`client.py:272`） | 同构 |
+| 工具权限：无。`bash` 全放，靠提示词和 CLI 侧闸门约束 | `check_tool` / `check_risk` / `check_write` 三查 + `PermissionDenied`（`maos/agents/base.py:133-150`），`SkillInvoker.invoke` 白名单再查一次（`maos/skills/invoker.py:55`） | MAOS 更强 |
+| 副作用结构化回吐：`CliSideEffect[]`（`tools-shared.ts:589`），运行时据此知道世界被改了什么 | `AgentOutput.artifacts` + `SkillInvoked` event_log 行（`maos/skills/invoker.py:121`，带 `input_digest` / `output_hash` / `invocation_id`） | 同构（MAOS 的溯源链更严） |
+| skill 装载：运行时按需，只把 name+description 进提示词（`skills.ts:250`、`turn.ts:2167`） | `@register_skill` import 即注册（`maos/skills/registry.py:33`），`builtin` 包动态发现（`registry.py:43`）；**全量注册，无提示词裁剪**——因为提示词里根本不列 skill | 形似神不同 |
+| skill 多版本：拒绝覆盖同名，重装要 agent 自己先删（`skills.ts:221`） | `name → {version → 类}` 双层注册表，按名取最高版本、按名+版本取历史版本（`maos/skills/registry.py:16`/`:69`） | MAOS 更强 |
+| skill 归属：agent 私有工作区，agent 之间靠互相发消息共享 | skill 全局注册，归属靠 `contract.owner_roles` + `identity.allowed_skills` 交叉白名单 | 形似神不同 |
+| 人格三段拼接，运行时组装（`personas.ts:311`），`IDENTITY.md` / `SOUL.md` **agent 自己可写** | `AgentIdentity` 冻结 dataclass（`maos/agents/base.py:59`），`docs/agent-identity.md` 由 `scripts/gen_docs.py` 从代码生成。agent **不可自改** | 形似神不同 |
+| 团队花名册每次唤醒重拉进提示词（`personas.ts:273`） | 无。MAOS 的 agent 不知道有哪些同事，协作全由 Manager 的 Plan 编排 | MAOS 没有（架构差异） |
+| 每跳成本记账，按 `purpose` 分通道（`compaction` / `completion-verify` / `steer-summary`） | `record_model_usage`（`maos/core/store.py:508`）+ `_ATTRIBUTION` ContextVar 挂 trace_id（`maos/agents/base.py:39`），按 `call_site` / `agent_role` / `tier` 归因 | 同构 |
+| 幂等：进程内 `Map<agentId, fingerprint>`（`turn.ts:838`），进程重启即失效 | `claim_idempotency` 落库幂等键（`maos/core/store.py:80`），`claim`（`control_plane.py:309`）与 `on_task_result`（`control_plane.py:339`）各一道 | MAOS 更强 |
+| 失败不写回 fingerprint → 保持可重试（`turn.ts:3294`） | `attempt >= max_attempts` 才 FAILED，否则回 PENDING 重派（`maos/core/control_plane.py:365-372`） | 同构 |
+| 中途插话（steer）：跑到一半把新消息 splice 进 history（`turn.ts:2353` 的 `tryDrainSteer`） | 无。MAOS 的 task 一旦 DISPATCHED 就不接受新输入 | MAOS 没有 |
+| 全流程观测事件：`recordEvent({kind, level, stage})`，一个 turn 几十条 | `append_event_log`（`maos/core/store.py:350`）+ `TaskState` 迁移记录 | 同构（cumora 粒度细得多） |
 </content>
 </invoke>

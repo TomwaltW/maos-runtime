@@ -150,3 +150,132 @@ MAOS 已经有 cumora 没有的东西 —— 真正的父子关系、`by_task` /
 「失败重试烧了多少」（失败调用不落账）。反过来，cumora 的 `getLlmCalls` 支持按
 `extras->>'hopIndex'` 排序来看一次 run 的逐跳轨迹（`llm-ledger.ts:827`），
 那个粒度 MAOS 的 span 树本来就有，且是真树不是排序后的平表。
+
+## 3. 可移植清单
+
+🔴 **落点判据先说清楚**：`model_usage` 表定义在 `maos/core/store.py:194-209`，铁律 1 是
+「现有表结构禁改，只允许**新增**表」。所以**给 `model_usage` 加列 = 动冻结契约**
+（判断只能是复赛后 / 不做）；**新开一张附表**则是允许的加法，落点算「动内核」。
+下表逐条区分了这两种。另：`maos/obs/**` 不在派单定义的插件白名单
+（`maos/skills/** maos/tools/** maos/agents/** maos/kb/**`）里，所以改 obs 一律记「动内核」。
+
+| # | cumora 的做法 | 出处 `文件:行` | MAOS 现状 | 形态 | 落点 | 成本 | 判断 |
+|---|---|---|---|---|---|---|---|
+| 1 | `purpose` 是穷举枚举，新调用点必须登记，漏接由 CI 守卫 `guard-llm-tracked.mjs` 报红 | `llm-ledger.ts:48-76`、`:22-23` | `call_site` 是自由字符串，漏接静默（T32「六处补 store=」是漏接实证，`maos/flows/scenario_7.py:475-479`） | 抄思想 | 动内核（`maos/obs/**` 加已知 call_site 登记表 + 一条测试断言：出现未登记 call_site 即红） | 0.5 人天 | **赛前做** —— 不改表、不改调用点，纯加一层守卫；T32 刚证明这类漏接会真发生，且发生时屏幕上看不出来 |
+| 2 | 失败调用也占一行：`status`（ok/rate_limited/timeout/failed）+ 截断的 `error` | `llm-ledger.ts:184-195`、`:138` | 只有成功路径调 `record_model_usage`，失败前烧掉的 input token 完全不落账 | 抄接口 | 🔴 动冻结契约（`model_usage` 加 `status`/`error` 两列） | 1 人天 | **复赛后** —— 铁律 1 + 距 9/22 只剩三周，赛前不赌冻结面。缺口本身记进附录 A |
+| 3 | 缓存分层 token：`cached_input_tokens` / `cache_creation_tokens` 独立计列，缓存读约 0.1× 价 | `cost.ts:19-28`、`:52-64` | 只有 `tokens_in` / `tokens_out`（`maos/core/store.py:203-204`） | 抄接口 | 🔴 动冻结契约（加两列）；退路是新开附表 = 动内核 | 1.5 人天 | **复赛后** —— 赛前缺省是 Scripted 模式，根本没有缓存行为可记，收益为零而风险碰冻结面 |
+| 4 | provider usage 双口径映射：OpenAI 的 `input_tokens` **含**缓存需减、Anthropic 的**已排除**需分别取 | `cost.ts:166-193` | 只解析 `prompt_tokens` / `completion_tokens`（`maos/model/client.py:235-239`），第二家 provider 会系统性偏低且无声 | 抄代码 | 动内核（`maos/model/client.py`） | 0.5 人天 | **复赛后** —— 现在只有一家网关，赛前动解析层是无收益的回归风险；接第二家之前必须先做这条 |
+| 5 | 价格表 + USD 计价：seed 全部硬写 `verified:false`，只有运维经 env 供的费率才算真实；双向子串匹配防裸 id 掉进 fallback | `cost.ts:44-64`、`:93-109`、`:127-138` | 全仓无价格表、无一处 USD（`grep -rni 'per_1m\|price\|usd' maos/` 无命中），只记 token | 抄代码 | 动内核（新增 `maos/obs/` 定价模块，在 `cost_view` 出口换算） | 1 人天 | **复赛后** —— 赛前做是**负价值**：Scripted 的 token 数是 `len(user)//4`（`maos/obs/trace.py:283-291`），乘真价格等于在评委面前伪造精度，正是 `ESTIMATED_NOTE` 明令反对的那件事。接真模型后再上，并照抄「只有运维供的费率才 verified」这条分级 |
+| 6 | BYOA 回传四层闸门：身份只认 JWT、runId 归属在事务内 `FOR UPDATE` 校验且条数不等即整批拒、purpose 白名单 coerce、批量上限 100 + 原子提交 | `server.ts:614-622`、`:626-627`、`:589-591`、`authorization.ts:37-63` | 无外部执行体路径，最近的亲戚是 `maos/runtime/gate.py` | 抄思想 | 新增插件（未来外部执行体接入层） | 3 人天 | **复赛后** —— MAOS 现在没有这条路径，赛前造需求。但这套「**不验数字、只验身份与归属**」的形状是本轨最该带走的知识，接外部执行体时直接照搬 |
+| 7 | 记账失败绝不弄坏被记的调用；唯有处在必须原子的事务里时反过来故意抛 | `llm-ledger.ts:152-160`、`:162-168` | 前半条已同构（`maos/core/store.py:519-521`），后半条无场景 | 抄思想 | —（已具备） | 0 | **不做** —— MAOS 这侧已经是对的，写在这里是为了整合轮别把它当缺口补 |
+| 8 | 观测数据入库前统一截断：字符串 24k / JSON 160k / 数组 50 项 / 对象 80 键 / 递归 8 层 | `observability.ts:12-38` | 事件 detail 直接落库，无统一 clip | 抄代码 | 动内核（`maos/core/store.py` 写入侧或 `maos/obs/`） | 0.5 人天 | **复赛后** —— 演示规模下不咬人；沙箱报告变大时才是真问题 |
+| 9 | `savableUsd`「桌上还剩多少钱」：未命中缓存的 input × (全价 − 缓存价)，可按它排序找最大优化目标 | `llm-ledger.ts:377-384`、`:499-507` | 无（缺价格表与缓存分层两个前置） | 抄思想 | 动内核 | 0.5 人天（前置 #3 #5 之后） | **复赛后** —— 依赖两个复赛后条目，本身不构成独立工作 |
+| 10 | **cumora 的空缺**：账本纯事后，没有任何预算阈值或花费突增告警，免费档限的全是结构性上限而非配额 | `metrics.ts:25-39`（无成本计数器）、`free-tier-limits.test.ts:97-165` | MAOS 有真正的准入闸门 `maos/runtime/gate.py`，加「本 plan 累计 token 超阈即停」是自然延伸 | 抄思想（反向：补它的缺口） | 动内核（`maos/runtime/gate.py`） | 1 人天 | **复赛后** —— 赛前不动闸门内核。但这是 MAOS 相对 cumora 的**结构性优势**：它的账本只能事后看，MAOS 的闸门能事前拦 |
+
+**统计**：10 条 —— 赛前做 1 / 复赛后 8 / 不做 1。
+落点分布：新增插件 1（#6）／动内核 6（#1 #4 #5 #8 #9 #10）／🔴 动冻结契约 2（#2 #3）／无需动 1（#7）。
+两条冻结契约条目的判断都已按铁律填「复赛后」。
+
+## 4. 反向清单 —— 它做了但 MAOS 不该抄
+
+判据统一用派单那句：*这个设计在解决我也有的问题，还是在解决它的用户量 / 多租户 /
+向后兼容才有的问题？*
+
+1. **把 `cost_usd` 冻进每一行。** `llm_calls` 在 INSERT 时就把美元算好存下
+   （`llm-ledger.ts:126-129`），代价是改价只影响新行、回填要写 UPDATE；而它自己的
+   `getTriageEconomics` 走的是相反路线 —— 查询时用当前价 × 存的 token 重算
+   （`observability.ts:458-463`）。同一个仓两套时点，是历史演进的疤，不是设计。
+   **MAOS 现在天然站在正确的一侧（只存 token 不存钱），这条要防的是整合轮「顺手补上
+   cost_usd 列」** —— 那会同时踩冻结契约和这个坑。token 数是事实，价格是可变的解释。
+
+2. **rollup 预聚合表。** 47 万行、日增 7 万、6 个聚合墙钟 5–25 秒
+   （`migrate.ts:303-315`）—— 这是多租户 SaaS 的量。MAOS 一次 `python3 run.py` 产生
+   几十行 `model_usage`，`list_model_usage` 全取过滤（`maos/core/store.py:468-475`）
+   在这个量级上是最优解。抄一张 rollup 表进来，等于凭空多一个必须保持同步的写侧。
+
+3. **`company_id` 多租户维度、`GROUPING SETS` 算活跃租户数、租户选择器。**
+   （`llm-ledger.ts:551-578`、`:637-687`）纯粹是多租户产物。一人公司里
+   `activeTenants` 恒等于 1。
+
+4. **`daemon_version` 的发版成本回归看板。**（`llm-ledger.ts:888-905`）它要解决的是
+   「一支在别人机器上、版本参差的 daemon 舰队」。一人公司没有舰队。
+
+5. **免费档结构性上限**（3 个 workspace / 10 个 agent / 5 个人类成员，
+   `free-tier-limits.test.ts:97-165`）**是商业模式产物**，不是工程设计。列在这里是因为
+   它容易被误读成「成本控制」——它一条 token 配额都不含。
+
+6. **自己手写 Prometheus 文本 exposition。**（`metrics.ts:1-21`）它给的理由是省下
+   `prom-client` 依赖、且该库的全局注册表与自家单例不合。MAOS 连一个抓取端的消费者都没有，
+   抄过来就是造一个没人 scrape 的端点 + 一个必须维护的注册表。
+
+7. **Discord webhook 告警链路。**（`alert.ts:1-15`、`alerting.ts:102-135`）它要解决的是
+   「生产环境没人 tail 日志、on-call 看不见静默崩溃」。一人公司自己就是 on-call，
+   终端就在眼前。
+   ⚠️ **一个例外值得单独留下**：按 `<label>:<消息前 80 字>` 做去重指纹、
+   粗到能合并栈位移、细到不并无关崩溃（`alerting.ts:16-24`），这条思想在任何有重复
+   噪声的地方都成立，和用户量无关 —— 但它属于告警设计，不属于本轨的成本面，
+   写在这里只为不让它随第 7 条一起被丢掉。
+
+8. **赛前引入任何 USD 数字。**（与 §3 #5 同源，单列因为它是最容易被抄的那一条：
+   cumora 最显眼的产出就是「$」）在 Scripted 缺省路径下，token 数是字符数除以 4
+   的估算（`maos/obs/trace.py:283-291`）。乘上一张连 cumora 自己都标 `verified:false`
+   的价格表（`cost.ts:44-51`），产出的是一个**看起来精确的假信号**。
+   MAOS 现有的 `ESTIMATED_NOTE` + `all_estimated` 旗子（`maos/obs/trace.py:287-291, 358`）
+   已经是比一个美元数字更诚实的交付物。
+
+## 5. 我没看懂 / 没时间看的
+
+- **`server/src/agents/llm-rollup.ts`（152 行）没读。** 只从调用侧知道它是「server 启动时
+  拉起的增量刷新 worker」（`migrate.ts:315`）。增量水位怎么定、迟到行怎么补、
+  刷新失败如何自愈 —— 全不知道。这恰是预聚合最容易出错的地方，评估「rollup 值不值得抄」
+  时我是靠 §4 的量级判据绕过去的，不是靠读懂它。
+- **`server/src/db-gc.ts`（159 行）没读。** 账本行留多久、rollup 留多久，直接决定
+  「这个 agent 这周花了多少」的可回答窗口有多长。这是派单问题 4 的一半，我只答了粒度，
+  没答**保留期**。
+- **`server/src/llm.ts`（186 行）只 `wc` 了没读。** 云端 key 如何按 company 解析
+  （`getLlmClient(ctx.companyId)`，`llm-ledger.ts:246`）、`company_id IS NULL` 的
+  「个人 key 调用」是怎么产生的，我是从查询侧注释（`llm-ledger.ts:462-464`）反推的。
+- **`getTriageEconomics` 的 SQL 主体（`observability.ts:470-660`，约 190 行）没逐行读。**
+  只读了口径注释（`:458-463`）和返回类型（`:416-439`）。所以「它能不能回答某个切片」
+  我是按类型字段答的，不是按 SQL 答的。
+- **`scripts/guard-llm-tracked.mjs` 本体没读**（只从 `llm-ledger.ts:22-23` 的引用知道它存在
+  以及它有一份流式调用点的 allowlist）。§3 #1 建议 MAOS 抄的是这条**思想**，
+  不是它的实现。
+- **前端 Observability 页完全没看。** 所以「哪些数字真被人盯着看」只能从后端接口形状
+  反推 —— 一个接口存在不等于有人在用。
+- **MAOS 侧 `maos/flows/contrast.py`（651 行）没读。** T32 的成本归因补全可能还有落点
+  不在我抽查的 `scenario_7.py` 里。
+
+## 附录 A · 顺手发现的 MAOS 问题
+
+本轮不改 MAOS、不追加账本，以下五条留给整合轮统一折进 BACKLOG。
+
+1. **失败的模型调用完全不落账。** `record_model_usage` 只在成功路径被调
+   （`maos/core/store.py:508-538`），一次超时或被限流的调用照样烧掉了 input token，
+   但在 `cost_view` 里根本不存在。这与 `ZERO_CALLS_NOTE`（`maos/obs/trace.py:299-303`）
+   想防的「调了没记」是同一类假象，区别是那一类有提示、这一类**一句提示都没有**。
+   对上 cumora：它把失败调用当一等公民记（`llm-ledger.ts:184-195`）。
+
+2. **usage 解析只认一家 provider 的口径。** `maos/model/client.py:235-239` 只读
+   `prompt_tokens` / `completion_tokens`。Anthropic 口径把缓存读写单列为
+   `cache_read_input_tokens` / `cache_creation_input_tokens`（`cost.ts:182-193`），
+   这些字段在 MAOS 侧会被整体忽略 —— 接第二家网关时 token 数会**系统性偏低且无声**，
+   而 `_safe_int` 的告警（`maos/model/client.py:106-118`）只覆盖「字段不是整数」，
+   覆盖不到「字段压根没被读」。
+
+3. **`call_site` 没有登记表。** 它是自由字符串（`maos/core/store.py:200`），
+   新增一个调用点忘了记账不会有任何信号。T32「六处补 store=」正是这类漏接的实证
+   （`maos/flows/scenario_7.py:475-479` 的注释写着该场景原先 `cost.calls` 恒为 0）。
+   §3 #1 是针对这条的最小成本方案。
+
+4. **`estimated` 一个字段扛了会分叉的语义。** 现在它的含义是「token 数是不是
+   `len(user)//4` 编的」（`maos/obs/trace.py:283-291`）。接真模型后会出现第三种情况：
+   真模型、真调用，但网关没回 usage。cumora 用两个正交旗子分开这件事 ——
+   `measured`（provider 报没报）与 `cost_estimated`（价格是不是猜的），
+   `llm-ledger.ts:99-101, 124`。届时 MAOS 这一个字段读不出区别，而它加列会碰冻结面，
+   所以**值得在还没接真模型的现在就想清楚**。
+
+5. **延迟只在成功路径上有。** `latency_ms`（`maos/core/store.py:205`）与第 1 条同因 ——
+   而超时调用往往是最贵的（烧了墙钟没有产出）。cumora 的 `latency_ms` 覆盖失败路径
+   （`llm-ledger.ts:270-277` 的 catch 分支照样带 `latencyMs`）。
+

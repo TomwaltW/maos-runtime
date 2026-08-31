@@ -133,7 +133,7 @@ A 的计数从 1 → 0 并把状态刷成 `resting`，尽管 B 上还连着。�
 下一次 loadInbox 返回空，daemon 就静默挂住了。结论是一句可以直接抄走的判据：
 **「任何与收件箱游标共享状态的东西，结构上就是不安全的」**（`server/src/agents/seen-boundary.ts:8-15`）。
 两段 Lua：单调 SET（`GET` 比较后才 `SET`，并发写永远收敛到较大值，`:33-45`）和一次性 token 的
-读-删（`:200-204` 的 `CONSUME_SCRIPT`）。两者**全部 fail-open**，理由同上：这是协调信号，不是不变量
+读-删（`:249` 调用的 `CONSUME_SCRIPT`，脚本体末尾在 `:200-204`）。两者**全部 fail-open**，理由同上：这是协调信号，不是不变量
 （`:56-62`、`:246-261`）。
 
 *第三层：SETNX 抢单。* 跨副本的副作用去重（`server/src/agents/scheduler.ts:466`、
@@ -225,7 +225,7 @@ sentinel 清单、`CONCURRENTLY` 旁路索引、归还连接前 `RESET ALL` —�
 | Redis Lua 单调 SET / 一次性 token，fail-open（`server/src/agents/seen-boundary.ts:33-45`、`:200-204`） | 无跨进程协调信号。但「协调信号 fail-open / 不变量 fail-closed」的区分已存在：端口探测失败退化本地（`maos/store/pg_store.py:58-60`）vs `GuardrailViolation` 不许 catch 成告警（`maos/kb/guardrails.py:60-62`） | **形似神不同** —— MAOS 有这条精神，没写成一句口径 |
 | WS 背压两级阈值 + 超限终止（`server/src/ws.ts:56-58`、`:912-925`） | 无。结构上也没有无界扇出 | **MAOS 没有** |
 | 有界并发信号量（`server/src/concurrency.ts:25-72`） | 无 | **MAOS 没有** |
-| 迁移 advisory lock + lock_timeout + sentinel（`server/src/db/migrate.ts:2031-2063`、`:2195-2238`） | kb 的 `_MIGRATIONS` + `kb_schema_version` 记账（`maos/kb/__init__.py:26-30`），无并发保护 | **形似神不同** —— MAOS 有版本号（更好），没有并发保护（更弱） |
+| 迁移 advisory lock + lock_timeout + sentinel（`server/src/db/migrate.ts:2031-2063`、`:2195-2238`） | kb 的 `_MIGRATIONS` + `kb_schema_version` 记账（`maos/kb/__init__.py:23-27`），无并发保护 | **形似神不同** —— MAOS 有版本号（更好），没有并发保护（更弱） |
 | `CREATE INDEX CONCURRENTLY` 旁路（`server/src/db/migrate.ts:2280-2344`） | 无。`maos/store/pg_store.py` 显式设 `ef_search`（`:86-104`）是同一类「不吃服务端缺省」的思路 | **形似神不同** |
 | `memory-scope` 三态过滤：pinned / 无 project / project 内（`server/src/agents/memory-scope.ts:229-238`） | kb 只有 `tenant_id` 一维硬约束（`maos/kb/retriever.py:69`「顺序即语义，最左是 tenant_id」） | **MAOS 隔离更严，但少一个维度** |
 | 写入归属歧义时回落 GLOBAL 不猜（`server/src/agents/memory-scope.ts:120-129`） | 结构上不存在此问题：`tenant_id` 是必填主键，缺一即抛（`maos/kb/__init__.py:459-460`） | **MAOS 没有这个问题** |
@@ -248,7 +248,7 @@ sentinel 清单、`CONCURRENTLY` 旁路索引、归还连接前 `RESET ALL` —�
 | 8 | 「不做兜底 SELECT」：补一条查询会开出 ABA 窗口，把被拒的写伪装成幂等成功 | `server/src/agents/membership.ts:165-168` | `claim_idempotency` 在 `IntegrityError` 后确实做了一次兜底 SELECT（`maos/core/store.py:387-398`） | 抄思想（作为判据复核，不一定要改） | 动内核 | 0.5 人天 | **复赛后** —— MAOS 那次兜底 SELECT 是**必要的**（要返回上次 outcome），语义与 cumora 的场景不同；但值得复赛后确认它在多进程下是否还成立 |
 | 9 | 状态租约：`status_updated_at` + 读侧过期退回 | `server/src/db/migrate.ts:449-455` | `task.worker_id` 无租约时间戳，worker 崩了任务永远挂在他名下 | 抄思想 | **动冻结契约**（`task` 表加列）／可退化为新增 `task_lease` 表（铁律 1 允许新增表） | 1 人天 | **复赛后** —— 赛前没有多 worker，租约无处可用 |
 | 10 | 外部投递的重试记账：`retry_attempts` + `next_retry_at` + 只挑「失败且到点」行的部分索引 | `server/src/db/migrate.ts:1087-1102` | `payment_observation` 有 `poll_count`，未确认有无「下次何时再看」（见 §5） | 抄接口 | 新增插件（退款域自己的表，不碰 `store.py`） | 1 人天 | **复赛后** —— 演示里观察是同步 poll，不需要后台重试循环 |
-| 11 | 迁移用 session 级 advisory lock 串行化，`lock_timeout` 只约束 DDL 等锁 | `server/src/db/migrate.ts:2031-2063` | kb 的 `_MIGRATIONS` 无并发保护；`maos/kb/__init__.py:26-30` 自述演示期库都是 `:memory:` | 抄思想 | 新增插件（`maos/kb/`） | 1 人天 | **复赛后** —— PolarDB 上线且多进程那天才需要；cumora 在这上面付过两次硬故障，值得先记着 |
+| 11 | 迁移用 session 级 advisory lock 串行化，`lock_timeout` 只约束 DDL 等锁 | `server/src/db/migrate.ts:2031-2063` | kb 的 `_MIGRATIONS` 无并发保护；`maos/kb/__init__.py:23-27` 自述演示期库都是 `:memory:` | 抄思想 | 新增插件（`maos/kb/`） | 1 人天 | **复赛后** —— PolarDB 上线且多进程那天才需要；cumora 在这上面付过两次硬故障，值得先记着 |
 | 12 | 重索引走 `CREATE INDEX CONCURRENTLY`，事务外、尽力而为、失败不阻塞启动 | `server/src/db/migrate.ts:2260-2344` | 无（SQLite 无此问题） | 抄思想 | 新增插件（`maos/kb/` 的 PG 路径） | 1 人天 | **复赛后** —— 同上，绑定 PolarDB 上线 |
 | 13 | 归还池化连接前 `RESET ALL`：会话级设置不会随 `release()` 复位 | `server/src/db/migrate.ts:2153-2179` | `maos/store/pg_store.py` 显式 `SET ef_search`（`:86-104`），未确认是否在同一连接上留下会话状态 | 抄代码 | 动内核（`maos/store/pg_store.py`） | 0.5 人天 | **复赛后** —— 需要先确认 MAOS 是否用连接池；本轨没读到池化代码 |
 | 14 | 有界并发信号量（20 行，无外部依赖），把扇出变成背压 | `server/src/concurrency.ts:25-72` | 无。结构上也没有无界扇出（`maos/core/eventbus.py:8-9` 单线程串行） | 抄代码 | 动内核（`maos/runtime/`） | 1 人天 | **复赛后** —— 现在加是空转；等真的并行 worker 落地再说 |
@@ -350,7 +350,7 @@ sentinel 清单、`CONCURRENTLY` 旁路索引、归还连接前 `RESET ALL` —�
    建议：那句 docstring 补一句「**并发语义不随文件迁移**」，免得 PolarStore 落地那天按字面理解。
    cumora 在这个位置的解法是清单 #6 #7（排序加锁 + 谓词下沉进 UPDATE）。
 
-2. **kb 的 `_MIGRATIONS` 没有并发保护。** `maos/kb/__init__.py:26-30` 自己说明「演示期的库都是
+2. **kb 的 `_MIGRATIONS` 没有并发保护。** `maos/kb/__init__.py:23-27` 自己说明「演示期的库都是
    `:memory:` 或每次新建，两者的区别看不出来；PolarDB 是持久库，区别就是上线第一天端口通道恒退化」。
    这段说的是**迁移没跑**的后果，还没说**两个进程同时跑迁移**的后果 —— 那正是 cumora 付过两次
    硬故障的地方（`server/src/db/migrate.ts:2031-2042`：40P01 死锁；`:2075-2084`：整批 DDL 一个隐式

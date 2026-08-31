@@ -326,6 +326,29 @@ COMPENSATION_IDENTITY = AgentIdentity(
 
 
 # ---------------------------------------------------------------------- 靶场数据
+def require_threshold_below_amounts() -> None:
+    """开跑前先确认三笔金额都超得过人工审批阈值。
+
+    本场景的三条链路都指望核算那一步停下来等人批 —— 人批的那一刻才落
+    `claim_approval`，而 `claim.pay` 没有它就拒绝发起赔付。阈值被
+    `MAOS_CLAIM_APPROVAL_THRESHOLD` 调到三笔金额之上时链路确实走不完，
+    这里当场说清是**阈值**的事：不拦的话，症状会显示成「付款任务失败：没有
+    approved 的审批记录」，那句话指向审批记录，离原因隔着一层。
+
+    检查放在**运行期**，不放在 `_tasks()` 里：`PLAN_JSON` 在模块级就调了 `_tasks()`，
+    在那里抛会让一台设了这个环境变量的机器连 import 都过不去 —— 测试收集期集体失败，
+    比运行期失败更难查。（`maos/tests/conftest.py` 目前不剥这个变量，已记
+    `docs/BACKLOG.md ## task-T37`。）
+    """
+    amounts = (AMOUNT_CLAIMED, AMOUNT_CLAIMED_2, AMOUNT_CLAIMED_3)
+    low = [a for a in amounts if not C.needs_human_approval(a)]
+    if low:
+        raise RuntimeError(
+            f"场景 8 的金额 {low} 没有超过人工审批阈值 {C.approval_threshold()}，"
+            f"链路走不完（核算那一步不会停下来等人批，claim.pay 就拿不到审批记录）"
+            f"—— 检查环境变量 {C.ENV_APPROVAL_THRESHOLD}")
+
+
 def seed_domain(store) -> None:
     """预置赔付方、保单快照与条款 —— 它们是**读到的那一版**，不是外部系统的当前值。"""
     objects.ensure_schema(store)
@@ -457,6 +480,7 @@ def _closure_block(store, *, claim_id: str, plan_id: str, cp) -> dict:
 def drive_happy(*, matrix: bool = False) -> dict:
     """跑完顺利路径并返回收口用的句柄。**只跑不断言** —— 断言在 `run()` 与测试里。"""
     print("场景 8：保险理赔（顺利路径），无 key 确定性复现")
+    require_threshold_below_amounts()
 
     model = select_model_client(SCRIPT, force_scripted=True)
     store, bus, cp, model, worker, gate = build(SCRIPT, matrix=matrix, model=model)
@@ -528,6 +552,7 @@ def drive_failure(*, matrix: bool = False) -> dict:
     """
     print(f"\n{'=' * 68}\n场景 8：保险理赔（失败路径）—— 赔付方没说到账，系统就一个字都不写"
           f"\n{'=' * 68}")
+    require_threshold_below_amounts()
 
     model = select_model_client(SCRIPT, force_scripted=True)
     store, bus, cp, model, worker, gate = build(SCRIPT, matrix=matrix, model=model)

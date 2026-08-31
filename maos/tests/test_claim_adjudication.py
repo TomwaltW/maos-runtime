@@ -15,8 +15,12 @@
 from __future__ import annotations
 
 import json
+import pathlib
+from decimal import Decimal
 
 import pytest
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 from maos.core.store import SqliteStore
 from maos.domain.claim import guard, objects
@@ -214,6 +218,49 @@ def test_settlement_is_capped_by_sum_insured():
     assert out["breakdown"]["capped_by_sum_insured"] is True
 
 
+def test_a_term_that_declares_zero_ratio_pays_zero():
+    """论证：条款明写「本项赔付比例 0」时，赔款就是 0 —— **不许被兜底成全额**。
+
+    自查时复现到的真 bug（原写法在 `return` 上罩了一条 `ratio > 0 else DEFAULT_RATIO`，
+    把两条路径一起兜了）：一条写着不赔的条款会赔出 (12000-1000)x1 = 11000。
+    这种错一路无声 —— 金额算得出来、每一步都成功，只有钱数错了。
+    """
+    ratio, deductible = ClaimSettleSkill._params_of(
+        {"matched_rules": [{"rule_no": "CL-09", "version": 1,
+                            "params": {"coinsurance_rate": 0}}]},
+        {"sum_insured": 100000.0, "deductible": 1000.0, "coinsurance_rate": 0.9})
+    assert ratio == 0, (
+        f"条款明写 0 就是本项不赔，实际 ratio={ratio} —— "
+        "被兜底改写了，一条写着不赔的条款会赔出全额")
+
+
+def test_an_unset_ratio_on_the_policy_snapshot_falls_back_to_full():
+    """论证：**保单快照**那一侧的 0 仍然兜底成全额 —— 两侧的 0 含义相反。
+
+    `policy_contract.coinsurance_rate` 的列缺省就是 0，分不清「约定了 0%」和
+    「这一列没填」。照 0 算会把每一笔赔款清零，那是比上一条更大的错。
+    这两条用例必须一起在：只留一条，修的人会把另一侧一起改掉。
+    """
+    ratio, _ = ClaimSettleSkill._params_of(
+        {"matched_rules": [{"rule_no": "CL-01", "version": 1, "params": {}}]},
+        {"sum_insured": 100000.0, "deductible": 1000.0, "coinsurance_rate": 0.0})
+    assert ratio == 1
+
+
+def test_zero_ratio_term_loses_to_a_covering_term():
+    """论证：并集口径没被这次修改动 —— 一条 0 和一条 0.9 同时命中，取 0.9。
+
+    「条款对被保险人的承诺是并集」：任何一条当时生效的条款承诺了九成，
+    保险公司就不能按另一条一分不赔。
+    """
+    ratio, _ = ClaimSettleSkill._params_of(
+        {"matched_rules": [
+            {"rule_no": "CL-09", "version": 1, "params": {"coinsurance_rate": 0}},
+            {"rule_no": "CL-01", "version": 1, "params": {"coinsurance_rate": 0.9}}]},
+        {"sum_insured": 100000.0, "deductible": 1000.0, "coinsurance_rate": 0.5})
+    assert ratio == Decimal("0.9")
+
+
 def test_settlement_refuses_when_adjudication_rejected():
     """论证：裁定不通过就不核算，**不给一个 0 元的结果**。
 
@@ -265,6 +312,45 @@ def test_unparseable_amount_is_fail_closed():
     """
     assert C.needs_human_approval(None) is True
     assert C.needs_human_approval("一万二") is True
+
+
+def test_scenario_8_refuses_to_start_when_the_threshold_is_raised(monkeypatch):
+    """论证：阈值被调到三笔金额之上时，场景**开跑前**就说清是阈值的事。
+
+    不拦的话症状会显示成「付款任务失败：没有 approved 的审批记录」—— 那句话
+    指向审批记录，离原因隔着一层（核算那一步没停，人就没机会批）。
+    """
+    from maos.flows import scenario_8 as S
+
+    monkeypatch.setenv(C.ENV_APPROVAL_THRESHOLD, "999999")
+    with pytest.raises(RuntimeError, match=C.ENV_APPROVAL_THRESHOLD):
+        S.require_threshold_below_amounts()
+
+
+def test_scenario_8_module_imports_even_with_a_raised_threshold():
+    """论证：这道前置检查**不在 import 期**跑。
+
+    `PLAN_JSON` 在模块级就调了 `_tasks()`。前置检查若写在那里，一台 export 了
+    这个变量的机器连 import 都过不去 —— 测试收集期集体失败，比运行期失败更难查。
+
+    **必须开子进程**，不能在本进程 `importlib.reload`：重载会把一份按高阈值烤出来的
+    `PLAN_JSON`（settle 任务的 `effect_risk` 变成 `L`）留在 `sys.modules` 里，
+    同一次 pytest 里后面跑的场景用例就再也停不到人工审批上了。第一版正是这么写的，
+    当场把 `test_claim_scenario.py` 的四条打成 ERROR —— 一条用例污染别的用例，
+    比它自己红更难查。
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, **{C.ENV_APPROVAL_THRESHOLD: "999999"})
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "import maos.flows.scenario_8 as s; assert s.PLAN_JSON; print('ok')"],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, (
+        f"阈值调高时模块 import 不进来：\n{proc.stderr[-2000:]}")
+    assert "ok" in proc.stdout
 
 
 def test_threshold_reads_env_at_call_time(monkeypatch):

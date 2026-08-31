@@ -238,6 +238,19 @@ class ClaimSettleSkill(Skill):
 
         条款没给参数时回落到**保单快照**上的 deductible / coinsurance_rate ——
         那是投保当时白纸黑字写着的数，比任何默认值都更有依据。
+
+        🔴 **`coinsurance_rate == 0` 在两条路径上不是同一个意思，兜底只许罩住一条**：
+
+          · **条款明写 0** —— 那就是「本项不赔」，是一个有效的业务结论。
+            兜底成全额会让一条写着不赔的条款赔出 100%，而且一路无声：金额算得出来、
+            每一步都成功、只有钱数错了。
+          · **保单快照上是 0** —— `policy_contract.coinsurance_rate` 的列缺省就是 0，
+            所以这一侧的 0 分不清「约定了 0%」和「这一列没填」。照 0 算会把**每一笔**
+            赔款清零，那是更大的错，所以这一侧兜底成全额。
+
+        两侧的 0 长得一模一样，含义相反 —— 这正是当初把兜底写在 return 上罩住两条
+        路径的原因，也是它错的地方。要分辨只能靠「条款有没有显式给这个键」，
+        而那个信息只在 `ratios` 这个列表空不空里。
         """
         rules = adj.get("matched_rules") or []
         ratios, deductibles = [], []
@@ -249,9 +262,14 @@ class ClaimSettleSkill(Skill):
             if "deductible" in params:
                 deductibles.append(_dec(params.get("deductible"), DEFAULT_DEDUCTIBLE))
 
-        ratio = (max(ratios) if ratios
-                 else _dec(contract.get("coinsurance_rate"), DEFAULT_RATIO))
+        if ratios:
+            ratio = max(ratios)          # 条款明写的，0 就是 0，不许被兜底改写
+        else:
+            ratio = _dec(contract.get("coinsurance_rate"), DEFAULT_RATIO)
+            if ratio <= 0:               # 快照那一侧的 0 是「没填」，见 docstring
+                ratio = DEFAULT_RATIO
+        # 起付线没有这个歧义：条款明写 0 与快照上是 0 都是「不扣起付线」，
+        # 而那对被保险人有利，两侧同义，所以这里不需要分路。
         deductible = (min(deductibles) if deductibles
                       else _dec(contract.get("deductible"), DEFAULT_DEDUCTIBLE))
-        # 保单快照上的 coinsurance_rate 可能是 0（未约定），那是「没配」不是「一分不赔」。
-        return (ratio if ratio > 0 else DEFAULT_RATIO), deductible
+        return ratio, deductible

@@ -25,7 +25,10 @@ class InvestigationClassifyAgent(BaseAgent):
         allowed_skills=frozenset({SKILL_CLASSIFY}),
         allowed_tools=frozenset(),
         write_scope=frozenset({"artifact"}),
-        max_risk="L",
+        # M 而不是 L：定性这一步是**人工调账授权**的触发点（任务带 effect_risk=H），
+        # 派单方按 M 级派它。Agent 的 max_risk 低于任务 risk_level 时 worker 直接
+        # 拒执行（安全事件），症状是任务一直不进人工队列 —— 而那看起来像「闸没配」。
+        max_risk="M",
         model_tier=Tier.LIGHT,
         max_self_repair=0,
     )

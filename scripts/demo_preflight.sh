@@ -49,8 +49,20 @@ cd "$REPO_ROOT"
 # vector 扩展）、配上 MAOS_PG_DSN 后整条 5 步跑通，exit=0；第 1 步实得
 # **1098 passed / 10 skipped**，与算式逐位吻合，新判据「SKIPPED 行里不许出现 test_pg_」
 # 也随之首次真正启用并通过。剩的 10 条是非 PG 门控（RocketMQ 8 + Nacos 2）。
+#
+# 🔴 **这个数是并轨的下游产物，每次并入新轨都要重取，不许照抄上一行。**
+# 2026-09-01（T51 整合轮）实测合并态 T37–T39 后：**1370 passed / 39 skipped（无库）**。
+# 三个业务域纵向切片共加 301 条。skipped 仍是 39 —— 新增的三个域一条门控测试都没加，
+# 所以 PG_GATED_TESTS=29 这个不变量没被动，有库档由算式得 1370+29=1399（未实测，
+# 上一次实测的 1098 对应 1069 那一档）。
+#
+# 这条被漏过一次，代价是**门禁在该拦的时候拦错了人**：T46 并完三轨后本脚本第 1 步
+# 报「实际 1370 / 期望 1069」并打出「前置未通过，不要开始录制」，exit=1 ——
+# 而当时代码是全绿的。录制前唯一的机器判据自己变成了假警报，是最坏的一种失效：
+# 下一次它真的红了，人会先怀疑是这个数又没刷。**加测试的那一轨改这个数，
+# 不要留给录制那天的人。**
 PG_GATED_TESTS=29
-EXPECT_TESTS_NOPG=1069
+EXPECT_TESTS_NOPG=1370
 EXPECT_TESTS_PG=$((EXPECT_TESTS_NOPG + PG_GATED_TESTS))
 EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
 EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 8/8 PASS}"

@@ -552,6 +552,7 @@ def insert_observation(store: Any, *, tenant_id: str, case_id: str, observation:
     row = (
         tenant_id, case_id,
         str(observation.get("request_id") or ""),
+        int(observation.get("poll_seq") or 0),
         str(observation.get("message_type") or ""),
         str(observation.get("confirmation_code") or ""),
         str(observation.get("rejection_code") or ""),
@@ -563,9 +564,9 @@ def insert_observation(store: Any, *, tenant_id: str, case_id: str, observation:
         invocation_id,
     )
     sql = ("INSERT OR REPLACE INTO resolution_observation (tenant_id, case_id, request_id,"
-           " message_type, confirmation_code, rejection_code, return_reason_code,"
+           " poll_seq, message_type, confirmation_code, rejection_code, return_reason_code,"
            " returned_amount, raw_message_json, observed_state, observed_at,"
-           " actor_invocation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+           " actor_invocation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
     if _conn is not None:
         _conn.execute(sql, row)
     else:
@@ -583,12 +584,17 @@ def get_case(store: Any, tenant_id: str, case_id: str) -> dict | None:
 
 def observations_of(store: Any, tenant_id: str, case_id: str,
                     *, observed_state: str | None = None) -> list[dict]:
-    """按案子取观察，可按归一状态过滤。收口断言与失败路径的「一个字都不写」靠它数。"""
+    """按案子取观察，可按归一状态过滤。收口断言与失败路径的「一个字都不写」靠它数。
+
+    按 `poll_seq` 排序而不是 `observed_at`：同一轮问询的几条时间戳可能落在同一微秒，
+    按时间排出来的顺序就不稳定了，而这几行是要按顺序念给人听的证据
+    （「第 2 次问到 CNCL，第 3 次才拿到退款报文」）。
+    """
     if observed_state is None:
         return objects.query(
             store, "SELECT * FROM resolution_observation WHERE tenant_id=? AND case_id=?"
-                   " ORDER BY observed_at", (tenant_id, case_id))
+                   " ORDER BY poll_seq, observed_at", (tenant_id, case_id))
     return objects.query(
         store, "SELECT * FROM resolution_observation WHERE tenant_id=? AND case_id=?"
-               " AND observed_state=? ORDER BY observed_at",
+               " AND observed_state=? ORDER BY poll_seq, observed_at",
         (tenant_id, case_id, observed_state))

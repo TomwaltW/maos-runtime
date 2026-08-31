@@ -102,10 +102,19 @@ CREATE TABLE IF NOT EXISTS cancellation_request (
 -- 所以 confirmation_code / rejection_code 只在 camt.029 行上有值，
 -- return_reason_code / returned_amount 只在 pacs.004 行上有值。
 -- observed_state 是归一之后的口径，取值见 guard.OBSERVED_STATES。
+--
+-- **每一次问询都落一行**，不是只落最后那一次。中间那几次里就有本域的题眼：
+-- 一条 camt.029/CNCL（「撤销成功」）出现在顺利路径与失败路径的**同一个位置**，
+-- 只落最后一次的话，「系统看见了肯定答复却没有写 returned」这件事没有证据。
+--
+-- `poll_seq` 进主键而不只靠 `observed_at`：三次问询可能落在同一微秒里，
+-- 那时 INSERT OR REPLACE 会把前一条**静默覆盖**掉 —— 症状是观察莫名少几行，
+-- 而这正是本域拿来当证据的那几行。
 CREATE TABLE IF NOT EXISTS resolution_observation (
     tenant_id           TEXT NOT NULL,
     case_id             TEXT NOT NULL,
     request_id          TEXT NOT NULL,
+    poll_seq            INTEGER NOT NULL DEFAULT 0,  -- 第几次问询问到的
     message_type        TEXT NOT NULL,   -- camt.029.001.xx | pacs.004.001.xx
     confirmation_code   TEXT NOT NULL DEFAULT '',  -- ExternalInvestigationExecutionConfirmation1Code
     rejection_code      TEXT NOT NULL DEFAULT '',  -- ExternalPaymentCancellationRejection1Code
@@ -115,7 +124,7 @@ CREATE TABLE IF NOT EXISTS resolution_observation (
     observed_state      TEXT NOT NULL,
     observed_at         TEXT NOT NULL,
     actor_invocation_id TEXT NOT NULL,
-    PRIMARY KEY (tenant_id, case_id, request_id, observed_at)
+    PRIMARY KEY (tenant_id, case_id, request_id, poll_seq, observed_at)
 );
 
 -- ---------------------------------------------------- 人工调账审批（硬监管要求）

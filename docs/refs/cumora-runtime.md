@@ -135,3 +135,109 @@ boot 后 NO_WORK_MS 内一次真 wake 都没收到就退，把 fuse 槽让给别
 | SSE 断线（`pod-agent.ts:298-302`） | 指数退避重连，**且只有连接真的稳过才重置退避梯子** | 不适用（MAOS 无长连接）。这条思路本身值得记：「连上了」不等于「健康」 |
 | 未捕获的 promise rejection（`pod-agent.ts:306-326`） | 装进程级兜底网转告警，**不让它杀死 pod** | Handler 抛异常 = nack 重投，超限进死信（`maos/core/eventbus.py:69-79`）。**同构**，MAOS 的更干净（失败进状态机而不是进日志） |
 | JWT 过期 / 伪造 / 跨租户复用（`runtime-server.test.ts:324-497`） | 每条路由在 handler 之前 401；身份一律以 JWT subject 为准，忽略 body 自称 | 不适用（无 HTTP 面）。对应物是 Identity 三查在 Worker 侧（`docs/architecture.md:83`） |
+
+## 3. 可移植清单
+
+**落点** 三档：新增插件（`maos/skills/**` `maos/tools/**` `maos/agents/**` `maos/kb/**`，不碰内核）
+／ 动内核（`maos/core/**` `maos/runtime/**`）／ 动冻结契约（`maos/contracts/**`、`maos/core/store.py` 表结构）。
+本清单**没有一条落在冻结契约面**。
+
+| # | cumora 的做法 | 出处 `文件:行` | MAOS 现状 | 形态 | 落点 | 成本 | 判断 |
+|---|---|---|---|---|---|---|---|
+| 1 | 静默降级必须有阈值告警：busy 心跳连续失败 5 次触发告警，告警正文里写明**后果**（"steer routing has degraded to wake-only for this pod"） | `http-client.ts:39`、`:347-357` | `select_model_client` 缺任一环境变量就静默回落 Scripted，只有一行 `log.info`（`maos/model/client.py:292-296`） | 抄思想 | 动内核（`maos/model/client.py` 一处） | 0.5 人天 | **赛前做** —— 复赛现场 key 配错会让「真模型跑通了」变成假结论，是唯一一类会让演示结论失真的静默失败 |
+| 2 | 连接类失败短重试能救回本回合，且**不该让用户看见失败**；重试次数与退避写在客户端内部，调用方无感 | `agent-error-paths.test.ts:294`；`http-client.ts:98-116`、`:290-303` | `GatewayModelClient` 一次 `urlopen`，`URLError` 直接转 `RuntimeError`（`maos/model/client.py:223-225`） | 抄接口 | 动内核（`maos/model/client.py`） | 1 人天 | 复赛后 —— 赛前默认路径是 Scripted，真模型只在演示时开；重试会让演示时长不可预测，彩排价值高于健壮性 |
+| 3 | 失败要让人看见：模型不可用时往房间投一条 `kind=system` 通知，`dedupeKey` + 持久幂等标记防多 agent 刷屏 | `client.ts:342-363`；`inproc-client.ts:630-748` | 失败只进 `TaskResult.error` 与 `event_log`，Element 房间里一片安静 | 抄思想 | 动内核 | 1.5 人天 | 复赛后 —— HiClaw 对接层已有发言口，但「接在 Worker 还是 Gate」要先定；赛前不动跨层的东西 |
+| 4 | 认领租约会过期：`HSETNX` 失败后读持有者 `startedAt`，超 ttl 就 `hdel` 抢占，并处理抢占竞态 | `inproc-client.ts:955-968` | `claim` 幂等键永不过期、无撤销口（`maos/core/control_plane.py:312-315` 自陈） | 抄思想 | 动内核（`control_plane.py` + store 新增表） | 2 人天 | 复赛后 —— 单进程同步执行触发不到；PG store 上进程硬崩会把任务永久卡在 RUNNING（记附录 A #1） |
+| 5 | 「连上了」不等于「健康」：SSE 重连的退避梯子**只在连接真的稳过之后**才重置 | `pod-agent.ts:298-302` | MAOS 无长连接；但 RocketMQ 后端的连接判活有同类问题面（`maos/core/eventbus.py:142-149` 明确拒绝回落内存版） | 抄思想 | 新增插件（写进 `deploy/` 的 RocketMQ 手册，不改代码） | 0.5 人天 | 复赛后 —— MAOS 已经把「不许静默回落」这条做对了，这条只是补一句「握手成功不算健康」的判据 |
+| 6 | 唤醒合并：多次唤醒折成一次回合的一份 options，两份简报**拼接 + 各分一半预算**而非后覆盖前 | `wake-options.ts:129-157`、`:162-190` | MAOS 一条 TaskAssignment 一次 claim 一次执行，无合并需求 | 不移植 | — | — | **不做** —— MAOS 的任务是 DAG 节点不是消息流，不存在「同一 agent 被短时间戳多次」的形态 |
+| 7 | 认领失败 fail-open（Redis 挂了就当抢到，"worst case is two agents do the same thing once"） | `http-client.ts:424-428`；`inproc-client.ts:970-977` | fail-closed：`claim` 返回 None 就不执行（`control_plane.py:326-328`） | 不移植 | — | — | **不做** —— 方向相反且 **MAOS 是对的**。cumora 的最坏后果是重复搜一次网页；MAOS 的最坏后果是同一笔退款被处理两次（铁律 8） |
+| 8 | 失败场景清单化：8 条错误路径逐条钉死，含「重试后恢复且**不落**失败通知」这种正向断言 | `agent-error-paths.test.ts:136-448` | 1069 条测试，模型侧失败路径覆盖未逐条核（见 §5 #3） | 抄思想 | 新增插件（`maos/tests/**`） | 1.5 人天 | 复赛后 —— 加测试不改行为，但会挤占本该用于演示彩排的时间 |
+
+**统计**：8 条 —— 赛前做 1 / 复赛后 5 / 不做 2。
+落点：新增插件 2（#5 #8）／ 动内核 4（#1 #2 #3 #4）／ 动冻结契约 0；#6 #7 判为不移植，无落点。
+
+## 4. 反向清单 —— 它做了但 MAOS 不该抄
+
+判据一句话：*这个设计在解决我也有的问题，还是在解决它的用户量 / 多租户 / 向后兼容才有的问题？*
+
+1. **整个 K8s pod 编排层**（`orchestrator.ts` 全 1257 行）。它解决的是「每个 agent 一个容器、
+   集群 `/dev/fuse` 槽位有限、server 有多个副本」。一人公司单进程，MAOS 的 `WorkerRuntime`
+   是个 Python 对象（`maos/runtime/worker.py:27`）。抄这层等于给自己雇一个 SRE。
+
+2. **集群配额闸 + 压力监控 + 两条 GC 循环**（`orchestrator.ts:760-774`、`:1060-1224`）。
+   每个阈值背后都写着一次事故日期（`:198` 的注释直接写了 "FUSE-cap incident 2026-05-20"）。
+   没有那个规模就没有那个疤，抄疤不抄伤是最典型的规模包袱。
+
+3. **多副本 `SETNX` 唤醒去重**（`scheduler.ts:454-469`）。前提是「N 个 server 副本订阅同一个
+   channel」。MAOS 单进程，抄进来是纯负债：多一个 Redis 依赖，换一个永远为真的判断。
+
+4. **唤醒前的小模型 triage**（`scheduler.ts:777-829`、`:859-868`）。它解决的是
+   「群聊里约 26% 的唤醒最后回复了空气」（`:676-680` 的注释给了这个生产数字），
+   本质是**自然语言的收件人不确定**。MAOS 的收件人由 DAG 的 `depends_on` 唯一确定
+   （`maos/core/control_plane.py:294`），零歧义。加一层模型判断是把确定性换成不确定性 ——
+   而且它会引入一个新的静默失败面（该唤醒没唤醒，无回复无日志无 run 行，cumora 自己在
+   `:682-687` 承认了这是「唯一会静默出错的操作」）。
+
+5. **`wake-options.ts` 的 200 行参数化**（Q3 的正面回答）。逐条拆：
+   `MAX_WAKE_PAYLOAD_CHARS` 与三个 brief 上限（`:3-6`）是抗**不可信生产者**，
+   而 MAOS 的事件全部由自己的 ControlPlane 铸造；`pollBrief` 的
+   「20 个选项 × 50 个投票人」裁剪（`:76-93`）是投票这个业务功能自带的包袱；
+   `mergeWakeTurnOptions` 的 manual 优先级（`:168-179`）只有在「同一 agent 被多种来源
+   短时间戳多次」时才有意义。**结论：这层旋钮对 MAOS 是过度设计**（对 cumora 不是）。
+   唯一可能有价值的是 `mergeWakeBackgroundBriefs` 的**预算切分**思路（`:147-151`）——
+   但也要等 MAOS 真出现「两份内容抢同一个上下文预算」的场景，现在没有。
+
+6. **agent 之间的「在想什么」协商面**（`markThinking` / `peekThinking` / `claimWork`，
+   `client.ts:247-299`）。它解决的是「多个自主 agent 决定要不要抢同一件活」。
+   MAOS 的活是 Manager 规划出的 DAG 节点，谁干哪个是**派单决定的，不是抢的**。
+   抄这个等于把确定性调度改成机会主义调度 —— 演示现场反而更难解释「为什么是它接的」。
+   （注：`claimWork` 的**原子性实现**值得看，见 §3 #4；不该抄的是「agent 自主抢活」这个语义。）
+
+7. **BYOA / 免费层 / 租户分级的分支**（`scheduler.ts:392-415`）。纯商业模式包袱：
+   免费用户不许起托管 pod、BYOA 走用户自己的机器。MAOS 没有这三层身份。
+
+## 5. 我没看懂 / 没时间看的
+
+1. **`server.ts` 935 行没有逐条读处理器实现**。只读了它在测试里被挂载的方式
+   （`runtime-server.test.ts:40-57`）和路由清单。特别是 `/cli` 那条通用路径和
+   `/inbox-triage/payload`，它们跨到 T42 的 ToolPort 面，我按派单要求止步。
+2. **`turn.ts` 没读**。只见到入口签名 `runAgentTurn(agentId, options)`（`pod-agent.ts:80`）
+   和 `AgentTurnOptions` 的字段名。**steer 究竟在「hop boundary」的哪一点注入，我没看到** ——
+   §1 里那句「回合循环在 LLM 迭代之间 drain」是转述 `scheduler.ts:361-366` 的注释，不是我读到的代码。
+3. **MAOS 侧没有逐条核对 1069 条测试对模型失败路径的覆盖**。§3 #8 写的是「覆盖未逐条核」，
+   这是诚实的未知，不是「没覆盖」的结论。
+4. **`authorization.ts`（172 行）与 `jwt.ts`（83 行）没读** —— 授权面不归本轨。
+5. **`agent-lifecycle-events.test.ts` / `agent-scanner.test.ts` 只读了文件名与行数**，没读内容。
+   §1 里关于 scanner 的说法全部来自 `scanner.ts` 源码本身（`:29-31`、`:55-76`、`:174-209`）。
+6. **`sse-parse.ts` / `pod-agent-exit.ts` / `fs-namespace.ts` / `pod-tools.ts` 没读**，
+   只从调用点推断了职责。`decidePodExit` 的具体判据（`pod-agent.ts:215` 调用它）我没验证。
+7. **`inproc-client.ts` 1187 行读了约四成**：头部、`claimWork` / `releaseWork` 全段、
+   方法骨架清单。中间大段 SQL（`loadInbox` / `loadContext` / `loadMemory`）只扫过结构，
+   没有逐行读 —— 那部分是 cumora 的数据模型，不是运行时编排。
+
+## 附录 A · 顺手发现的 MAOS 问题
+
+本轮不改 MAOS 也不追加账本，以下三条留给整合轮统一折进 BACKLOG。
+
+1. **`claim` 幂等键无过期，PG store 上存在永久卡死的可能。**
+   `ControlPlane.claim` 烧掉 `claim:<task_id>:<attempt>` 之后没有撤销口
+   （`maos/core/control_plane.py:309-329`，注释 `:312-315` 自陈「store 只有 claim/finish，
+   没有撤销口」）。Worker 若在 `_transit(RUNNING)` 之后、`_reply` 之前**硬崩**
+   （进程被杀 / OOM），该 attempt 再也无法被认领，任务永久停在 RUNNING。
+   `SqliteStore(":memory:")` 上库随进程一起消失所以看不出来；**PG store 上会留下卡死的行**。
+   *当前不是活 bug* —— 单进程同步执行，且 `_invoke` 兜住了所有 Python 异常
+   （`maos/runtime/worker.py:62-71`）—— 但 PG 上生产之后是真缺口。
+   cumora 对同一问题的解法是租约超时接管（`inproc-client.ts:955-968`）。
+
+2. **`select_model_client` 的降级只有一行 `log.info`。**
+   三个环境变量缺任何一个就静默回落 `ScriptedModelClient`（`maos/model/client.py:292-296`）。
+   「以为在跑真模型、其实跑的是假模型」这类错误不会有任何显眼提示，而它恰好会让一切
+   验证结论失真。cumora 对同一类静默降级的处理是打阈值告警**并在告警正文里写明后果**
+   （`http-client.ts:347-357`）。这条就是 §3 #1。
+
+3. **`GatewayModelClient` 无任何重试。**
+   一次 `urlopen`，`URLError` / `TimeoutError` / `OSError` 直接转 `RuntimeError`
+   （`maos/model/client.py:223-225`）。演示现场一次网络抖动 = 一个任务 failed，
+   而 MAOS 的失败会一路走到 REWORK 或 FAILED，观众看到的是「系统判错了」而不是「网断了」。
+   cumora 对同一场景的判断是「连接类失败短重试能救回本回合，且不该落用户可见的失败通知」
+   （`agent-error-paths.test.ts:294`）。这条就是 §3 #2。

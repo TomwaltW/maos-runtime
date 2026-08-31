@@ -223,3 +223,70 @@ MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dis
 其三，`human:<task_id>` 幂等键（`:728-731`）保证一个任务只被人工决策一次。
 **所以这条在当前单线程运行时是安全的，它和第 2/3/4 层一样，是「多 worker 之后」的账。**
 
+## 3. 可移植清单
+
+| # | cumora 的做法 | 出处 `文件:行` | MAOS 现状 | 形态 | 落点 | 成本 | 判断 |
+|---|---|---|---|---|---|---|---|
+| 1 | **驳回时回灌「你从未被展示过的新事实」，并让脑子对着新状态重判**；且驳回信封自身推进游标（「展示即已读」），重试不会在同一批事实上再挡一次 | `server/src/agents/cli.ts:1948-1990`、`:1971` | rework 只回灌 Gate 对**本轮产出**的 findings（`control_plane.py:472-480` → `:301`），不含「别的任务在你跑的时候产出了什么」；且每次 rework 必烧一个 attempt（`control_plane.py:296`），`max_attempts` 默认 3 | 抄思想 | 动内核（`maos/core/control_plane.py`） | 3 人天 | **复赛后** —— DAG 串行（`control_plane.py:294`）下并行任务看不见彼此，现在做是空转；`flows/common.py:112` 写明「换 RocketMQ 后循环消失」，那一次并行化 PR 里必须带上这条 |
+| 2 | **旁路一道闸必须留痕**：HELD 文本会明说「你的 `--send-anyway` 被忽略了，以及为什么」 | `cli.ts:1983-1985`；判据 `docs/COORDINATION.md:578-594` | `MAOS_FINANCE_THRESHOLD` 调大即**静默停用**第六道闸 —— 解析失败会告警收严（`gate.py:169-188`），但 `99999999` 是**合法值**，闸照判 pass，`gate_results` 里看不出它被配置掉了 | 抄思想 | 动内核（`maos/runtime/gate.py`：阈值非默认时补一条 `SEVERITY_INFO` finding） | 半天 | **赛前做** —— MAOS 已有三态 `pass/noted/fail`（`gate.py:271-272`），这条只是把现成机制用上；且「闸怎么证明它真的在判」是演示现场最可能被问的一句 |
+| 3 | **放行标志必须绑定服务端展示过的那个状态**（令牌存 `seq:<n>`，消费时重查房间有没有往前走，走了就作废并重新 HELD） | `server/src/agents/seen-boundary.ts:222-261`、`cli.ts:1880-1926` | `human_decision` 只认 `task_id`（`control_plane.py:702`）；房间卡片渲染了 `attempt`（`hiclaw/room_demo.py:141`），但 `/approve <task_id>`（`room_demo.py:145`）把它丢掉了 | 抄接口 | 动内核（`control_plane.py` 加可选 `seen_attempt`；`hiclaw/room_demo.py` 指令带上 attempt） | 1.5 人天 | **复赛后** —— `assert_transition`（`control_plane.py:726`）已让陈旧批准**响亮失败**而非静默生效，且 BLOCKED 期间产物不会变，当前不是活 bug；异步审批 / 多 worker 后升级为必做 |
+| 4 | **硬上限与「新事实重置预算」配成一对**：兜底唤醒 3 次不推进就停，会话里落任何新消息即重置计数 | `server/src/agents/agenda.ts:140-154`、`:176-183` | 只有上限那一半：`max_attempts`（`control_plane.py:452`）、`_max_replan` 默认 2（`:577-591`）；REWORK 次数从 event_log 数起（`:569-571`），**永不重置** | 抄思想 | 动内核（`maos/core/control_plane.py`） | 1 人天 | **复赛后** —— `max_attempts` 默认才 3，在这个量级上重置的收益很小；「先有上限、再谈重置」的顺序本身是对的 |
+| 5 | **故障时不 fail-closed 成「没活干」，而是切出最窄的确定性用例**：分类器 503 时只保「恰好一处停滞 + 别人最后发言 + ≤30 分钟 + 无其它卡片」，其余仍 fail-closed | `agenda.ts:526-564` | 同构已有：`_finance_threshold` 读不出数回落**收严**并告警、不抛（`gate.py:169-188`）；`_over_finance_threshold` 解析不出即触发（`gate.py:191-208`）。缺的不是哲学，是**逐处显式写死方向并注明写反的后果**的规程 | 抄思想 | 新增插件（落在 `docs/` + `maos/tests/`，不碰内核） | 半天 | **赛前做** —— 基线 `926aa7b` 那次事故正是「白名单判据方向写反」；这条是把已有的正确做法固化成检查单，不改任何跑绿的代码 |
+| 6 | **回归守卫注释**：`HARD_LOOP_CAP` 头上明写「这条兜底被以『AI 原生的优雅』为名删过两次，两次都回归了 —— 不要删」 | `server/src/agents/triage-core.ts:206-208` | MAOS 注释密度极高、且大量写了「为什么这么写」，但**没有「这条被删过 N 次 / 这条看起来多余但删了会怎样」这一形态** | 抄思想 | 新增插件（`docs/` 注释规程 + 若干处补注释，不碰逻辑） | 半天 | **赛前做** —— 零风险；`gate.py:146-158`（四象限 severity 曾分叉）、`control_plane.py:310-319`（幂等键顺序）这两处正是最该挂这种注释的地方 |
+| 7 | **共享同一份外部配额的两类调用必须成对设闸**（大脑信号量 + 小脑信号量，都走同一个 spawn pacer） | `docs/COORDINATION.md:489-499`、`:100-118` | 一层并发闸都没有；`maos/tools/port.py:31` 的 `rate_limit` 是**声明了却全仓零处执行**的死旋钮（所有实例填 `""`） | 抄思想 | 动内核（`maos/runtime/` + `maos/model/`） | 2 人天 | **复赛后** —— 单线程下是空转。关键约束：**必须和并行化在同一次改动里做完**，不能分两次 —— 第 3a 层就是「只加了大脑闸忘了小脑闸」的事故产物 |
+| 8 | **唤醒经济学当成一等指标**：一次 run 唤醒了 agent，10 分钟内它在触发会话里什么都没发 = **silent run**，按这个口径发布过 26.3% 的群聊静默率 | `server/src/__integration__/wake-economics.test.ts:1-13` | 成本侧已有：`maos/obs/trace.py:281-330` 按 trace_id 聚合 `model_usage`，且刻意区分「没调」与「调了没记」。**缺产出侧配对** —— 花了钱的这一轮到底产出了什么，没有指标 | 抄思想 | 新增插件（`maos/obs/**`，不碰内核） | 1 人天 | **复赛后** —— 成本归因刚在 T32 收口，再叠一层指标是手册范围外（铁律 4） |
+| 9 | **AdaptivePacer**：任一次调用限流就把全局间隔翻倍（上限 8s），连续 5 轮干净后减半回落 | `docs/COORDINATION.md:120-134` | 无退避；`maos/model/client.py:212-223` 只识别超时与 URLError，不识别限流 | 抄代码 | 动内核（`maos/model/client.py`） | 1.5 人天 | **不做** —— MAOS 一个 plan 的模型调用是几十次量级，够不上供应商突发窗口。先做第 7 条的固定并发闸就够；**在没有症状的地方加自适应机制**，正是反面教材第 6 条（「加第五条之前先查哪一条没抓住」）的另一种版本 |
+
+**分布**：赛前做 3（#2、#5、#6）／复赛后 5（#1、#3、#4、#7、#8）／不做 1（#9）。
+落点：新增插件 3（#5、#6、#8）／动内核 6（#1、#2、#3、#4、#7、#9）／**动冻结契约 0** ——
+本清单没有一条需要碰 `maos/contracts/**` 或 `maos/core/store.py` 的表结构。
+第 1、3 两条都只加**可选参数**与**事件 payload 里已有的字段**（`attempt` 已在
+`E.task_assignment` 里），不新增状态、不新增迁移（铁律 1 / 铁律 9）。
+
+## 4. 反向清单 —— 它做了但 MAOS 不该抄
+
+1. **不要把 Gate 换成模型判。** cumora 第 6 层的整个立场是「每个决策都由小模型做，
+   **没有任何 regex 分类消息内容**，留下的 regex 只解析模型自己吐的 JSON」
+   （`triage-core.ts:10-16`）；MAOS 在同一个生态位选了确定性规则，理由是「判定必须
+   可复现、可解释、可审计」（`gate.py:6-7`）。**两边在同一个位置做了相反的选择，
+   而各自的理由都成立** —— 因为判据对象不同：cumora 判的是自然语言意图（不可枚举），
+   MAOS 判的是 artifact 结构（可枚举：有没有 test_report、`files` 字段在不在、
+   金额超没超阈值）。把 MAOS 的 Gate 模型化，是用可复现性去换一个它不需要的能力。
+   MAOS 已经把模型侧语义审查放在闸**之后**（`maos/agents/reviewer.py:43`），
+   分层是对的，不要合并。
+
+2. **不要抄 hold token 的 TTL 语义去改 MAOS 的幂等键。** cumora 的令牌语义是
+   「承认**一个瞬间**」，所以 2 分钟 TTL 是对的，长 TTL 会把让路时存下的令牌变成
+   将来的旁路弹药（`seen-boundary.ts:184-186`、`docs/COORDINATION.md:321-342`）。
+   MAOS 的 `human:<task_id>`（`control_plane.py:728`）语义是「一个任务只被人工决策
+   一次」，是**永久**的；给它加 TTL 会直接引入重复决策，而驳回路径带着**真实外部
+   副作用**（反向打补丁，`control_plane.py:736`）。形状像，语义相反 —— 这是本轮
+   最容易抄错的一条。
+
+3. **不要抄多租户与规模包袱。** 两档 nudge 冷却（`agenda.ts:115-124`）、
+   global/project 两层记忆隔离（`docs/COORDINATION.md:725-740`，见 `memory-scope.ts`）、
+   `convene.ts:41-52` 的 `company_id` + `FOR SHARE` 参与者校验、
+   每引擎一个 `CUMORA_DEFAULT_*_MODEL` 回落（`docs/COORDINATION.md:667-681`）——
+   这些解决的是「N 个租户 × M 个用户 × 向后兼容」。判据照 §6 那句：
+   *这个设计在解决我也有的问题，还是在解决它的用户量才有的问题？*
+   一人公司抄进来是纯负债。
+
+4. **不要抄唤醒防抖 / 合并 / 同回合插话那一整套。** `docs/COORDINATION.md:143-162`
+   的四个旋钮（2500ms 防抖、运行中唤醒合并成单次重跑、DM 插进活会话、群消息内容无关
+   nudge）是**消息驱动**架构的特产：同一个 agent 会被同一件事叫醒 N 次。MAOS 是
+   派单驱动，一次 `dispatch_ready` 只发一个 `(task_id, attempt)`，重复投递由
+   `claim:<task_id>:<attempt>` 幂等键挡（`control_plane.py:325-328`）。
+   抄过来是给一个不存在的问题加三个旋钮 —— 反面教材第 6 条的教科书形态。
+
+5. **不要抄 5e「共享资源同名近期去重」。** `docs/COORDINATION.md:348-362` 解决的是
+   「两个 agent 各建一份《第七天的猫》」，前提是**共享命名空间里的资源可以被任意
+   agent 创建**。MAOS 的 artifact 按 `(task_id, version)` 隔离，两个任务在结构上
+   造不出同一个对象。
+
+6. **不要抄那五条提示词规则的内容，只抄它们的元规则。** `glance-protocol.ts:20`
+   的五条是为「N 个 agent 抢同一个发言位」这个具体形状调出来的（不许按位次占坑、
+   乐观发送靠服务端兜底、缺人时谁在谁补位）。MAOS 的 Agent 不抢发言位，这五条一条
+   都不适用。值得抄的是元规则：**「保持五条、只讲形状、编辑时改 const 不加条」**
+   （`docs/COORDINATION.md:483`）与「整份系统提示约 5KB」的字节预算
+   （`docs/COORDINATION.md:405-409`）。
+

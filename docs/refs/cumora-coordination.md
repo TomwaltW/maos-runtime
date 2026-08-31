@@ -290,3 +290,117 @@ MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dis
    （`docs/COORDINATION.md:483`）与「整份系统提示约 5KB」的字节预算
    （`docs/COORDINATION.md:405-409`）。
 
+## 5. 我没看懂 / 没时间看的
+
+1. 🔴 **第 1–4 层我读的是文档，没读实现。** `BigBrainSemaphore`、`AdaptivePacer`、
+   `standingPrompt()`、`runTurn()` 全在 `server/src/agents/computer/daemon.ts`
+   里（`docs/COORDINATION.md:783` 的文件表点名了它），我一行没读。所以 §1 第二、
+   三段与 §2.1 前四行的所有引用都指向 `docs/COORDINATION.md` 而不是实现 ——
+   **这是有意的（宁可粗定位也不编行号），但那四层结论的可靠性因此低一档**：
+   我只能证明作者是这么写文档的，不能证明代码就是这么写的。
+2. `server/src/agents/steer.ts`（454 行）只 grep 了关键词。我知道有
+   `STEER_INTERRUPT_AFTER_MS`（`steer.ts:139`）和 `STEER_ENABLED` 紧急开关
+   （`steer.ts:262-267`）两个旋钮，但**「流的下一个安全边界」到底怎么判**没看懂 ——
+   而这正是「同回合插话不会把正在跑的推理撕坏」的关键。
+3. 派单点名的 `convene.ts`（431）／`membership.ts`（303）／`inbox-triage.ts`（188）／
+   `idle.ts`（217）只读了头部与关键片段；`agenda.ts`（624）只读了 `claimStallNudge`
+   与确定性兜底两段。
+4. 🔴 **四个集成测试只读了抬头。** `agent-anti-duplicate.test.ts:1-14` 和
+   `wake-economics.test.ts:1-13` 读了文件头注释，`convene-concurrency.test.ts`（298 行）
+   与 `agent-steer.test.ts`（1021 行）**一行没读**。派单 §5.1 说「测试直接告诉你
+   作者认为什么是主流程」，这一步是我做得最不够的一处。
+5. MAOS 侧两处没核，各自影响一条判定：
+   - `maos/tools/gateway.py` 到底发不发真实网络请求、有没有超时（grep 未命中
+     `timeout`）—— 影响 §2.2 第 8 条「不会踩」的完整性。
+   - `maos/agents/reviewer.py`（`:43` 走 STRONG tier）在模型不可用时怎么退化 ——
+     影响 §2.2 第 11 条。cumora 在这里踩过最贵的一次坑（分类器 100% 503 而整张
+     安全网静默死掉，`docs/COORDINATION.md:596-610`）。
+6. cumora 的 `observability.ts`（809 行）与 `llm-ledger.ts`（956 行）没碰 —— 成本账本
+   那一面是别的轨的题目。
+
+## 附录 A · 顺手发现的 MAOS 问题
+
+（本轮不改 MAOS、不追加 `docs/BACKLOG.md` / `docs/DECISIONS.md`，以下留给整合轮。）
+
+1. **`ToolPort.rate_limit` 是声明了却全仓零处执行的死字段。**
+   `maos/tools/port.py:31` 定义了它，四个实例全填 `""`（`maos/tools/gateway.py:391`、
+   `:412`、`maos/tools/sandbox.py:654`、`:682`），**没有任何读取方**。
+   风险不是「现在限流不生效」（现在也不需要），是**将来有人给模型调用加限流时，
+   会以为工具这一层已经有了** —— 正是反面教材第 1 条（只设一层闸）的种子形态。
+   处置二选一：删掉字段，或在 ToolPort 注册时对非空值抛 `NotImplementedError`。
+
+2. **第六道闸可被一个合法配置值静默停用。** `MAOS_FINANCE_THRESHOLD`
+   （`maos/runtime/gate.py:96`、`:169-188`）填 `99999999` 解析得通、不告警、闸判 pass，
+   而 `gate_results` 显示的是 `pass` 不是 `noted` —— 读结果的人分不出「这道闸没话说」
+   和「这道闸被配置掉了」。MAOS 自己已经发明了三态（`gate.py:271-272`），这里没用上。
+   见可移植清单 #2（赛前做，半天）。
+
+3. **人工放行不绑定操作人被展示的那一版。** `human_decision` 只认 `task_id`
+   （`maos/core/control_plane.py:702`）；房间卡片把 `attempt` 渲染进了 Envelope
+   （`hiclaw/room_demo.py:141`），但 `/approve <task_id>`（`room_demo.py:145`）丢掉了它。
+   **当前不是活 bug**（`assert_transition` 让陈旧批准响亮失败，`control_plane.py:726`；
+   且 BLOCKED 期间产物不会变），异步审批 / 多 worker 之后变成活 bug。见可移植清单 #3。
+
+4. **四条止损机制并存，且相对顺序本身是判定的一部分。**
+   `max_attempts`（`control_plane.py:452`）、`_max_replan`（`:577`）、
+   第三出口 `_human_exit`（`:491`）、`_should_replan` 的「第 2 次 rework」（`:572-574`），
+   而 `:442-443` 的注释自己承认第三出口「必须排在 max_attempts 之前」。
+   这不是现在的缺陷，是**再加第五条时会出事的形状**。建议照可移植清单 #6 的形态，
+   在 `on_review_verdict` 头上挂一条回归守卫注释：*四条止损的相对顺序是判定的一部分；
+   加第五条之前，先证明现有四条里是哪一条没抓住。*
+
+5. **没有钉死的「上一个已知良好基线」，所以反面教材第 14 条在本仓无法执行。**
+   同一条 `python3 -m pytest maos/tests -q` 在本 worktree 是 1069 passed / 39 skipped，
+   在主干工作区是 1114 或 1117（派单 §0.1）。cumora 把基线钉到了
+   **时间戳 + commit sha + 一句「当时是什么状态」**（`docs/COORDINATION.md:12-25`），
+   回归时第一步就是对着那个 sha 做 `git log --since` 逐个 commit 读
+   （`:653-663`）。这是流程问题不是代码问题，且 T33 轨看名字正在做同一件事，
+   本条只记不重复派活。
+
+## 附录 B · 对人类工作流的启发
+
+1. 🔴 **「派单放久了会过期」就是 seen-cursor 问题的人类版，而现有解法只做了一半。**
+   全局 CLAUDE.md 已经要求「粘之前 grep 一遍旧 sha / 旧条数」，派单第 1 步的开场自检
+   也已经是「对不上就停手」的形状 —— 这等于 cumora 的**拒绝**。缺的是另一半：
+   **把新事实一起给出来让子会话重判**（§2.3 问题 3）。改法极小：开场自检发现 sha
+   不符时，顺手打印 `git log --oneline <派单里写的 sha>..HEAD`。子会话立刻从
+   「不对，停手」变成「不对，而且我知道差了这 7 个 commit」，很多情况下它自己就能
+   判断这次漂移要不要紧。cumora 撤掉 compose-anchor 的理由（`COORDINATION.md:234-240`）
+   正是「恒假警的闸，成本是真的」—— 一个只会说「对不上」的自检，会训练你直接忽略它。
+
+2. 🔴 **「先点名指出、等我确认再动手」是软机制守卫软机制，会静默失效。**
+   `COORDINATION.md:578-594` 那条反面教材的原话是：修法**不是**「提示 agent 负责任地
+   使用这个标志」，因为那是拿软机制去守软机制。全局 CLAUDE.md 自己也预见到了
+   （「这是软约定，只保证『基本每次』；哪天发现漏报，让 Claude 把它升级成
+   UserPromptSubmit hook」）。cumora 的结论比这个更硬两点：**其一，软闸不是慢慢
+   失效，是一旦「绕过去更省事」被发现就当场失效**（agent 学会抢先带 `--send-anyway`
+   纯粹是为了省一次往返，行为完全符合「要高效」的指令）；**其二，漏报是静默的 ——
+   你不会「哪天发现」它。** 这条和本仓 CLAUDE.md 里「hook 执行失败会被当作非阻塞
+   错误放行，守卫因此静默失效且不报警」是同一句话的两次独立发现。
+
+3. **decline cap 有直接的派单版本。** `agenda.ts:140-154`：同一件事三个不同的大脑
+   都说了「不」，再问不会改变结论，钱是真的。对应到多轨派单 —— 同一个问题被第三轨
+   也判成「做不了 / 得问人」时，**不该再派第四轨去试，该改的是派单本身**。
+   配套的另一半同样重要且容易漏：**计数在新事实到达时重置**（`agenda.ts:176-183`）。
+   所以「问过人、拿到新信息之后重新派」是合理的，「没有任何新信息再派一轨」不是。
+
+4. **cumora 那份文档本身就是值得抄的形态，MAOS 缺其中一件。** 它的密度来自三件事
+   同时具备：**每层明写抓得住什么、抓不住什么**（`COORDINATION.md:213-220` 直接有
+   一节叫 "What this does NOT catch"）；**撤掉的方案连同 commit sha 一起留着**
+   （5a 整节，`:222-244`）；**「试过、别重蹈」独立成章**（`:487-663`）。
+   MAOS 的 `docs/DECISIONS.md` 是第一件的雏形，`docs/BACKLOG.md` 是第三件的雏形，
+   **第二件没有对应物** —— 而这恰恰是多会话并行时最容易重复踩的：另一轨不知道你
+   三小时前试过同一个方案并撤了。
+
+5. **「观察窗不是判决」。** `COORDINATION.md:715-719`：7 分钟的观察器在 T1 判了 6/8，
+   +9 分钟再实时查已经是 8/8 —— 异步系统（冷却、心跳）经常在任意观察窗之后才恢复。
+   对应到并行派单：一轨回执里写的「另一轨尚未合并」「主干还是那个 sha」，是它开场
+   自检那一刻的快照，不是你读到回执时的事实。**整合轮别拿回执当现状，重查一次。**
+
+6. **「不要围着坏掉的部件设计」（`COORDINATION.md:625-644`）——本轮六轨的形状是对的。**
+   cumora 的用户原话是「团队里有人请假，你不会说这活干不成了」，修法落在**原则层**
+   （缺人时谁在谁补位）而不是运维层（把 olivia 修好）。对派单的具体含义：
+   每轨产出必须**独立可合并**，不能有「等 T4x 那轨先落地我才写得完」的依赖。
+   本轮「各写各的 `docs/refs/cumora-*.md`、整合轮统一处置」正是这个形状 ——
+   任何一轨挂掉，其余五轨的产出照样成立。
+

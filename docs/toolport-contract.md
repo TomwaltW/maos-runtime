@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **6 个**已实现工具，分布在 `gateway`、`claim`、`sandbox` 两处。
+工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **6 个**已实现工具，分布在 `ap`、`gateway`、`sandbox` 两处。
 
 ## 九要素
 
@@ -27,6 +27,38 @@
 直接调 `port.entry` 就没有审计行，出事查不到是谁、什么参数、跑了多久。`params_digest` 走 sha256（maos/tools/port.py:35），落的是摘要不是明文，入参里的业务字段不进证据束。
 
 ## 已实现工具契约
+
+### `bank.pay`
+
+声明：`maos/tools/ap.py:344`（`BANK_PAY_PORT`）　入口实现：`maos/tools/ap.py:335`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | bank.pay |
+| `purpose` | ② 用途 | 向银行发出一条付款指令；返回受理回单，**永远不是终态** |
+| `entry` | ③ 入口 | `maos.tools.ap._pay` |
+| `params_schema` | ④ 入参 | `bank`: BankPort（进程内按名取到的银行实例，见 skills/builtin/ap/_common.py）<br>`instruction`: PaymentInstruction（金额为字符串，付款方式取 UNCL4461） |
+| `returns_schema` | ⑤ 出参 | `instruction_id`: str（银行侧指令 id，query 用它）<br>`idempotency_key`: str<br>`status`: accepted —— 受理态，永不为 settled/failed<br>`is_terminal`: bool（恒 False）<br>`amount`: str<br>`currency`: str<br>`payment_means_code`: str（UNCL4461）<br>`payment_means_name`: str（码表里的官方名称）<br>`poll_count`: int（恒 0，受理不算一次观察） |
+| `failure_modes` | ⑥ 失败形态 | · 幂等键为空 -> ValueError：没有幂等键就挡不住第二笔付款<br>· 同一幂等键上参数不一致 -> DuplicateInstruction，**不静默收下也不静默丢弃**<br>· 付款方式码不在 UNCL4461 内 -> KeyError（PaymentInstruction 构造时即抛）<br>· 银行不可达 / 超时 -> 由适配器抛，经 invoke_tool 落审计后原样上抛，上层按「未知外部状态」处置，**不许推断成失败** |
+| `security_boundary` | ⑦ 安全边界 | 只发指令，不判成败：本 port 的返回值永远不是终态，任何据此写 settled 的代码都会被 maos/domain/ap/guard.py 抛回来（铁律 8）。金额一律字符串，不进浮点。幂等键由 (tenant, invoice) 唯一确定，一张发票只允许有一笔付款指令 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | ap_treasury |
+
+### `bank.query`
+
+声明：`maos/tools/ap.py:379`（`BANK_QUERY_PORT`）　入口实现：`maos/tools/ap.py:340`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | bank.query |
+| `purpose` | ② 用途 | 问一次银行回单 —— 应付账款域**唯一**能取得付款终态的途径 |
+| `entry` | ③ 入口 | `maos.tools.ap._query` |
+| `params_schema` | ④ 入参 | `bank`: BankPort（进程内按名取到的银行实例）<br>`instruction_id`: str（bank.pay 返回的银行侧指令 id） |
+| `returns_schema` | ⑤ 出参 | `status`: accepted\|pending\|unknown\|settled\|failed<br>`is_terminal`: bool（只有 settled / failed 为 True）<br>`poll_count`: int（问了几次 —— 终态是问出来的证据）<br>`bank_reference`: str（仅 settled 才有：银行流水号，钱确实走了的外部凭据）<br>`value_date`: str（仅终态才有：起息日）<br>`payment_means_code`: str（UNCL4461） |
+| `failure_modes` | ⑥ 失败形态 | · 指令 id 不存在 -> LookupError<br>· 轮询到顶仍非终态 -> **如实返回非终态回单**，不许改判成失败：「我问累了」和「银行说没付成」是两回事<br>· status=unknown -> 该笔**可能已经划出**，不许重发指令，只能继续问或转人工 |
+| `security_boundary` | ⑦ 安全边界 | 只读。本 port 是 ap.observe 取得权威事实的唯一入口，而 ap.observe 是全系统唯一写得进 settled 的 actor（maos/domain/ap/guard.py）。非终态回单一律不推进业务状态 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | ap_treasury |
 
 ### `gateway.query`
 
@@ -59,38 +91,6 @@
 | `security_boundary` | ⑦ 安全边界 | MAOS 不持有退款的权威事实（铁律 8），本工具只产生**观察记录**：refund 永不返回终态，终态一律经 query 取得；同一 idempotency_key 不产生第二笔退款；错误码判据全部取自 gateway_codes 的已核对官方表，未知码抛 KeyError 不兜底 |
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-r3 |
-
-### `payer.query`
-
-声明：`maos/tools/claim.py:462`（`PAYER_QUERY_PORT`）　入口实现：`maos/tools/claim.py:421`
-
-| 要素 | 含义 | 值 |
-| :-- | :-- | :-- |
-| `name` | ① 名称 | payer.query |
-| `purpose` | ② 用途 | 查询一笔赔付在赔付方侧的当前状态 —— paid 这个终态的唯一合法来源 |
-| `entry` | ③ 入口 | `maos.tools.claim.payer_query` |
-| `params_schema` | ④ 入参 | `payer`: PayerPort<br>`request_id`: str |
-| `returns_schema` | ⑤ 出参 | `status`: processing\|unknown\|paid\|denied<br>`poll_count`: int（问过几次，证明终态是问出来的）<br>`carc_code`: str<br>`group_code`: str<br>`is_terminal`: bool |
-| `failure_modes` | ⑥ 失败形态 | · KeyError: 未知 request_id<br>· status 仍为 processing/unknown: 还没到终态，继续轮询，**不许当成拒付**<br>· NotImplementedError: 用了 RealPayerAdapter 而真实赔付方未接通 |
-| `security_boundary` | ⑦ 安全边界 | 只读观察，不改变赔付方侧任何状态；轮询次数落在回执的 poll_count 上，审计可证明终态来自观察而非本地推断 |
-| `rate_limit` | ⑧ 限流 | （未设限） |
-| `owner` | ⑨ 属主 | task-T37 |
-
-### `payer.submit`
-
-声明：`maos/tools/claim.py:426`（`PAYER_SUBMIT_PORT`）　入口实现：`maos/tools/claim.py:409`
-
-| 要素 | 含义 | 值 |
-| :-- | :-- | :-- |
-| `name` | ① 名称 | payer.submit |
-| `purpose` | ② 用途 | 向赔付方发起赔付指令；返回受理回执，**不返回 paid**（到账须经 payer.query 观察） |
-| `entry` | ③ 入口 | `maos.tools.claim.payer_submit` |
-| `params_schema` | ④ 入参 | `payer`: PayerPort<br>`claim_ref`: str<br>`amount`: str（金额不进浮点）<br>`idempotency_key`: str<br>`payee`: str（可选，收款方；属幂等比对面）<br>`memo`: str（可选） |
-| `returns_schema` | ⑤ 出参 | `request_id`: str<br>`status`: processing\|unknown\|denied（**不含 paid**）<br>`carc_code`: str（X12 CARC，到账/在途时为空）<br>`group_code`: str（CO\|PR\|OA\|PI，这笔调整由谁承担）<br>`remark_codes`: list[str]（RARC，16/96/252 强制要求至少一条）<br>`effect`: denied\|reduced\|patient_share（MAOS 侧口径）<br>`recourse`: none\|resubmit_after_fix\|route_other_payer\|human_appeal<br>`source`: str（码表出处 URL）<br>`fetched_at`: str（码表核对日期）<br>`is_terminal`: bool |
-| `failure_modes` | ⑥ 失败形态 | · ValueError: 缺 idempotency_key<br>· DuplicateClaimPayment: 同幂等键但金额/案件号/收款方不一致 —— 不静默收下<br>· ValueError: CARC 16/96/252 的回执缺 RARC（X12 原文要求至少一条）<br>· status=unknown: 赔付方说不清结果 —— **不许在本地推断成败**，必须 payer.query<br>· status=denied: 明确拒付，回执带 CARC + Group Code（如 96 Non-covered charge(s)）<br>· KeyError: 未知 CARC / 未知 Group Code（码表不兜底，见 claim_codes.lookup）<br>· NotImplementedError: 用了 RealPayerAdapter 而真实赔付方未接通 |
-| `security_boundary` | ⑦ 安全边界 | MAOS 不持有赔付的权威事实（铁律 8），本工具只产生**观察记录**：submit 永不返回 paid，到账一律经 payer.query 取得；同一 idempotency_key 不产生第二笔赔付；码值判据全部取自 claim_codes 的已核对 X12 官方表，未知码抛 KeyError 不兜底；回执挂在 artifact 的 payer_receipt 键上，不占用 receipt —— 那个键归第七道闸的支付宝码表，两张码表不许混查 |
-| `rate_limit` | ⑧ 限流 | （未设限） |
-| `owner` | ⑨ 属主 | task-T37 |
 
 ### `sandbox.git_apply`
 

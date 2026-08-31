@@ -1,0 +1,225 @@
+# cumora 解析 · 协调与防撞机制 （T40 · 基线 cumora@1e883f6 / MAOS@926aa7b）
+
+## 1. 它是怎么做的
+
+**问题形状先于机制。** cumora 的多智能体协作是「同一台机器上 N 个独立的本地引擎会话，
+各自被服务端 SSE 事件唤醒，各自读同一个房间，各自独立决定说什么」
+（`docs/COORDINATION.md:31-33`）。作者把失败拆成正交的两类，整份文档都建在这个划分上：
+一是 **race collision** —— 两个 agent 同时醒来、都决定发同一句、都 INSERT 进 `messages`，
+服务端能靠一次 pre-INSERT 检查抓住；二是 **brain misjudgment** —— agent 看到的状态
+是对的，脑子仍然判错，服务端抓不住，只能靠提示词塑形，而提示词有天花板
+（`docs/COORDINATION.md:36-45`）。由此得出全篇的总判据，也是最该抄走的一句：
+**「代码机制能修的，绝不写成提示词规则；脑子在正确状态面前做出的明确决定，
+绝不加代码机制去改」**（`docs/COORDINATION.md:47-49`）。七层防御就是按这条判据分层的 ——
+第 1–4 层是基础设施（完全不占脑子注意力），第 5 层是服务端硬闸，第 6 层是廉价模型闸，
+第 7 层才是提示词。
+
+**第 1–4 层解决的是「同一个外部配额被 N 个进程同时打爆」，与业务语义无关。**
+第 1 层把模型版本钉死在部署环境变量上（`docs/COORDINATION.md:57-69`），起因是本地 CLI
+在一次会话中途把默认模型从 opus-4-7 悄悄翻成 4-8，而后者对类提示注入的模式更谨慎、
+在多智能体流程里行为不同 —— 不钉死，供应商每发一次模型，所有用户的行为就漂一次。
+第 2 层是每台机器的大脑并发信号量（默认 6，`docs/COORDINATION.md:71-88`）：N 个 agent 在
+同一次 SSE 扇出里醒来，没有这道闸就会整齐划一地撞上供应商的短窗突发限流
+（实测「7 人数数游戏 17 分钟内 130 次限流」）。第 3 层是**确定性**的最小 spawn 间隔
+（默认 500ms），它替换掉了更早的 `random(0..1500ms)` 抖动 —— 随机抖动是概率性的，
+四个同时醒来的 agent 可以同时掷到低值，仍然整齐撞墙；间隔闸让突发率**按构造**恒为
+1/interval（`docs/COORDINATION.md:90-98`）。第 3a 层是同一形状的小脑并发闸（默认 8），
+它的存在纯粹是一次事故的产物，见下一段。第 3b 层 AdaptivePacer 在任意一次引擎调用
+返回限流时把全局间隔**翻倍**（上限 8s），连续 5 轮干净后**减半**回落，且必须同时挂在
+冷启动路径和常驻会话路径上 —— 因为常驻会话的 `session.send` 根本不再经过原来的
+spawn 闸（`docs/COORDINATION.md:120-134`）。第 4 层是每个 agent 的限流冷却（60s），
+它顺带做一件容易被忽略的事：**把 `byoa_engine_failed` 通知压掉**，因为供应商限流
+不是 cumora 的故障，不该冒到聊天里去（`docs/COORDINATION.md:164-172`）；同时**保留未读
+收件箱**，让冷却结束后的下一次唤醒自然重试（`docs/COORDINATION.md:175-176`）。
+
+**第 3c 层是唤醒经济学，它决定了「N 条消息 → 几次昂贵推理」。** 首次唤醒起一个 2500ms
+的防抖定时器，窗口内到达的唤醒折叠进去，这一轮快照**全部**未读 —— 一串群消息塌成
+一次引擎回合而不是 N 次，且判据是内容无关的（`docs/COORDINATION.md:143-147`）。
+回合运行中再来的唤醒合并成单次待重跑，重跑会重读收件箱、已处理完就空转。
+折叠会伤延迟，所以开了两个逃生口：DM / @提及 / 人类消息在流的安全边界处**注入正在
+运行的会话**，让 agent 在任务中途就答；普通群活动只给一条内容无关的「N 条新消息，
+瞄一眼，是你的就接」（`docs/COORDINATION.md:150-159`）。另有 20s 的慢轮询兜底，
+用来在 SSE 流被静默切断时把漏掉的活捞回来（`docs/COORDINATION.md:161-162`）。
+
+**第 5 层是全篇的核心：seen-cursor freshness preflight，以及它的四个补丁。**
+每个 (agent, 会话) 在 Redis 里存一个「已被展示到的最高 peer seq」，10 分钟 TTL，
+用 Lua 做原子单调写，两个并发调用永远收敛到较大值、绝不回退
+（`server/src/agents/seen-boundary.ts:26`、`:37-45`、`:51-62`）。`cumora reply` 落库前
+读这个基线，查 `sequence > baseline` 的非自己消息，有就返回一个 **HELD 信封**（exit code 2），
+**把那几条消息原文内联在错误文本里**（`server/src/agents/cli.ts:1948-1990`）。
+两个设计点决定了它好不好用：其一，**「展示即已读」** —— HELD 信封自己会把游标推到它
+展示的最高 seq（`cli.ts:1971`「Shown ⇒ seen」），所以看过之后**平铺直叙地重发就能过，
+不需要任何标志位仪式**；其二，选 Redis 而**不是** `conversation_reads.last_read_at`，
+是因为后者是 loadInbox 的 SELECT 游标，把它推到 `NOW()` 会让下一次 loadInbox 返回空行、
+守护进程静默假忙（`docs/COORDINATION.md:204-211`、`seen-boundary.ts:8-15`）——
+**任何与收件箱游标共享状态的东西在结构上就是不安全的**。作者同样诚实地写下这道闸
+**抓不住什么**：Nova 在 Iris 的「5」落库之前就决定发「6」，两人的 preflight 在各自的
+INSERT 时刻都通过，这是脑子层面的乱序，服务端无从否决（`docs/COORDINATION.md:216-220`）。
+
+**第 5a 层是一段被撤掉的方案，而它的撤退理由比方案本身值钱。** compose-anchor 是钉在
+**回合开始**的时间戳、不被 `glance` 推进的第二道边界，用来堵一个真实的洞：B 的
+`cumora glance` 正确地让 B 看见了 A 刚落的帖，但**副作用**是把 B 的 seen 基线推过了 A，
+于是 B 的 preflight 判「没有更新的」，重复内容照发（`docs/COORDINATION.md:226-232`、
+`seen-boundary.ts:82-99`）。撤掉它是因为它在任何繁忙房间里都**保证第一次尝试必被 HELD**，
+哪怕 agent 确实读完了一切 —— 转录里满是「同一个 HELD，那些消息就是我刚 glance 过的
+→ send-anyway」，每条回复多烧 1–2 次大模型往返（`docs/COORDINATION.md:234-240`）。
+它唯一独占抓到的那类重复，改由不可旁路的逐字重复闸兜住。**一道恒假警的闸，成本是
+真的，收益要单独证明。**
+
+**第 5b 层把重复检查放进事务里，第 5d 层把旁路标志变成「承认」而不是「跳过」。**
+逐字重复闸在 `pool.connect()` + `BEGIN/COMMIT` 包住的序号申领 + INSERT 块内部、
+拿到 `conversation_counters` 行锁之后，重查最近一条非自己 peer 消息与草稿逐字比对，
+相同就 `ROLLBACK` + HELD（`docs/COORDINATION.md:246-257`、`cli.ts:2188-2222`）。
+放进事务是因为 pre-INSERT 版本有 TOCTOU：相隔 2 秒的两个 agent 可以都通过快照检查、
+然后都写进去（`docs/COORDINATION.md:253-257`）。而它**不接受 `--send-anyway` 旁路** ——
+理由是「逐字重复前一条 peer 消息没有任何正当用例，哪怕在 DM 里」，与序号闸
+（可旁路，因为 agent 可能确实要回一个特定 @提及）形成明确分工（`cli.ts:2188-2196`）。
+第 5d 层则是本轨最该被抄走的形状：`--send-anyway` / `--force` 只在服务端**确实给这个
+agent 展示过一个 HELD** 时才生效，令牌在展示时写入、消费时用 Lua 做原子 GET+DEL
+（`seen-boundary.ts:197-204`、`:222-238`、`:246-261`）。起因是 agent 学会了**抢先**
+带上标志省一次往返 —— saga 编完整个故事、零次 glance 直接 `--send-anyway`，
+比 nova 发出同一份交付物晚 49 秒，而本该给她看 nova 那条的 preflight 在运行之前就被
+绕过了（`docs/COORDINATION.md:309-317`）。第一版加固自己还留了个洞：令牌被「让路」
+这个正确动作**存了起来**（只有成功发送才清），3.5 分钟后一个新回合的抢先标志把它消费掉，
+一路越过两条没看见的消息（`docs/COORDINATION.md:321-327`）。于是令牌被收紧成
+**一个瞬间而不是一段会话**：绑定 HELD 展示过的最高 peer seq（`seq:<n>`），消费时
+`cmdReply` 重查是否有更新的、有就令牌作废并返回一个新的 HELD（`cli.ts:1880-1926`）；
+回合结束即死（`unmarkThinking` 清掉本回合会话的 `reply:*`）；`cumora ack` 即死
+（`cli.ts:1205-1208`）；TTL 从 10 分钟砍到 **2 分钟**，只当崩溃兜底
+（`seen-boundary.ts:184-186`）。Redis 出错时 `consumeHold` **反向 fail-open 成 armed** ——
+基础设施打嗝必须退化成「今天的行为」，绝不退化成「活干不了」（`seen-boundary.ts:243-245`）。
+
+**第 5c 层是主动唤醒的安全网，它示范了「AI 判断底下压一层确定性地板」。** 聊天安静时，
+心跳用便宜 SQL 捞出 [5 分钟, 6 小时] 窗口内的停滞会话，交给分类器判是否 actionable；
+判是、且该 agent 抢到 Redis NX 声明（`cumora:nudge:<convoId>`）才唤醒大脑 ——
+**每次停滞永远只有一个成员去捅**（`docs/COORDINATION.md:268-275`、
+`server/src/agents/agenda.ts:136-174`）。冷却分两档：分类器**说了 yes** 用 45 分钟
+（一次就够）；分类器**不可用**时用 5 分钟，因为此时无法把那一个被唤醒 agent 的判断
+当作定论（`agenda.ts:115-124`）。分类器 503 时**不是简单 fail-closed** —— 那会让整张
+安全网在故障期间静默死掉；而是切出最窄的确定性用例：**恰好一处停滞、别人最后发言、
+静默 ≤30 分钟、没有别的卡片/日程**，其余一律仍旧 fail-closed（`agenda.ts:526-564`）。
+最后压上 **decline cap**：兜底路径连续 3 次抢到声明而会话没推进，就停止为这处停滞
+再触发 —— 三个不同的大脑都说了「不」，再唤醒不会改变结论而钱是真的
+（`agenda.ts:140-154`）；计数器在会话里**落任何一条新消息时重置**，新状态 = 新预算
+（`agenda.ts:176-183`）。
+
+**第 6 层小脑闸与第 7 层提示词，共同点是「只做一件事，且拒绝枚举场景」。**
+小脑是**纯闸**：只判 `actionable` 真假，从不决定谁回、怎么回、说什么 ——
+读房间是大脑在回合内自己干的事（`server/src/agents/triage-core.ts:176-182`）。
+它的指令是**一条原则而不是清单**：有人类介入或等待 → 永远 actionable（人类对着沉默
+伸手是最坏的失败）；唯一压制的是**纯 agent 之间、背后没有权威开放工作**的闲聊；
+拿不准就 actionable=true（`triage-core.ts:185-191`）。让这个判断成为**事实**而非猜测的，
+是服务端从 DB/Redis 采集、**绝不从消息措辞推断**的信号：worklog 声明（有活跃声明 =
+有人在推真活）、人类注意力（消息、表情回应、**读游标活动**三者等价，
+`triage-core.ts:211-227`）。而 AI 判断底下压着确定性地板：已声明线程的硬上限
+`HARD_LOOP_CAP = 20`，未声明线程用**自伸缩**地板（消息数超过参与的不同 agent 数 =
+开始「套圈」= 死循环），agent↔agent DM 每 8 条才跑一次闸（`triage-core.ts:60`、
+`:197-209`、`:211-227`）。`HARD_LOOP_CAP` 上方挂着一条罕见的注释：
+**「这条兜底被以『AI 原生的优雅』为名删过两次，两次都回归了 —— 不要删」**
+（`triage-core.ts:206-208`）。第 7 层的契约是**简洁**：整份系统提示约 5KB，
+五条规则、只讲形状（`docs/COORDINATION.md:405-409`、`server/src/agents/glance-protocol.ts:20`）。
+支撑这五条的关键设计在 `glance-protocol.ts:8-18`：agent 只能看到**已发布的消息流**
+加一个私有游标，**没有**「谁在编、谁排在你前面」的花名册 —— 于是「按位次占坑」
+（我是第 3 个声明的所以我发 3）在结构上**不可表达**，那面按场景堆砌的提示词墙
+才塌得下来。
+
+## 2. MAOS 的对应物
+
+### 2.1 七层逐层对照（问题 1）
+
+| cumora 的机制 | MAOS 的对应物（含文件路径） | 判定 |
+| :-- | :-- | :-- |
+| 第 1 层 · 部署级模型钉版（`COORDINATION.md:57-69`） | `maos/model/client.py:301` 从 `ENV_MODEL` 取模型名，走 `maos.config` 配置面 | **同构**（MAOS 本来就显式传模型，不吃 CLI 默认值） |
+| 第 2 层 · 大脑并发信号量（`COORDINATION.md:71-88`） | **无。** 驱动循环 `maos/flows/common.py:119-130` 是单线程 `for` | **MAOS 没有**（当下有理，见下） |
+| 第 3 层 · 确定性 spawn 间隔（`COORDINATION.md:90-98`） | **无。** `maos/tools/port.py:31` 声明了 `rate_limit` 字段，但**全仓零处执行**，所有实例都填 `""` | **MAOS 没有**（旋钮已存在但是死的） |
+| 第 3a 层 · 小脑并发闸（`COORDINATION.md:100-118`） | **无。** MAOS 的「小脑」是零模型的规则闸，不 spawn 进程 | **MAOS 不需要** |
+| 第 3b 层 · AdaptivePacer 自适应退避（`COORDINATION.md:120-134`） | **无。** `maos/model/client.py:212-223` 只有超时，没有限流识别与退避 | **MAOS 没有**（多 worker 后必需） |
+| 第 3c 层 · 唤醒防抖 / 合并 / 同回合插话（`COORDINATION.md:143-162`） | **无。** MAOS 是派单驱动而非消息驱动，`dispatch_ready` 一次派一个 attempt | **MAOS 不需要**（任务不会「同一件事被叫醒 N 次」） |
+| 第 4 层 · 每 agent 限流冷却 + 通知压制（`COORDINATION.md:164-176`） | **形似神不同。** `maos/core/control_plane.py:452-455` 有次数耗尽 → FAILED，但那是**业务判定**耗尽，不是**基础设施**退避 | **形似神不同** |
+| 第 5 层 · seen-cursor freshness preflight + HELD（`cli.ts:1948-1990`） | `maos/runtime/gate.py:235-283` 七道闸 → rework；findings 经 `control_plane.py:301` 的 `rework_findings` 回灌下一次派单 | **形似神不同**（见 §2.3 问题 3） |
+| 第 5b 层 · 事务内逐字重复闸，不可旁路（`cli.ts:2188-2222`） | `control_plane.py:309-329` 的 `claim` 幂等键 + 状态校验；`control_plane.py:728-731` 的 `human:<task_id>` 幂等键 | **同构**（都是「在拿到锁之后再判一次」+「不可旁路」） |
+| 第 5c 层 · NX 声明保证「每处停滞只一个人捅」（`agenda.ts:136-174`） | `control_plane.py:325-328` 的 `claim:<task_id>:<attempt>` 幂等键，保证一次派发只被认领一次 | **同构** |
+| 第 5c 层 · 分类器不可用时的**窄确定性兜底**（`agenda.ts:526-564`） | `gate.py:169-188` `_finance_threshold` 读不出数时**回落收严**并告警、不抛 | **同构**（同一条哲学：故障时退化到窄而保守的确定性用例） |
+| 第 5c 层 · decline cap + 新消息重置预算（`agenda.ts:140-154`、`:176-183`） | `control_plane.py:452` `max_attempts`、`:577-591` `_max_replan`（默认 2）。**只有硬上限，没有「新事实重置预算」那一半** | **形似神不同** |
+| 第 5d 层 · hold token（旁路 = 承认服务端展示过的状态）（`seen-boundary.ts:222-261`） | **无。** MAOS 的 Gate 根本没有旁路标志；人工审批 `control_plane.py:702` 只认 `task_id` | **MAOS 没有**（见 §2.3 问题 5） |
+| 第 5e 层 · 共享资源同名近期去重（`COORDINATION.md:348-362`） | **无。** MAOS 的 artifact 按 `(task_id, version)` 天然隔离 | **MAOS 不需要** |
+| 第 6 层 · 小脑闸：便宜模型判 actionable，信号取自 DB 事实（`triage-core.ts:176-191`） | `gate.py:235-283` 七道闸 —— **同一个生态位，但用确定性规则实现**；`gate.py:72-75` 明写「用产物类型判，不信 role 自述」= 同一条「取事实不取自述」 | **形似神不同**（选择相反且各自有理，见 §4） |
+| 第 6 层 · AI 判断底下的确定性地板（`triage-core.ts:197-227`） | `gate.py:6-7` Gate 整体就是确定性层；模型侧语义审查在 `maos/agents/reviewer.py:43` 挂在闸**之后** | **形似神不同**（MAOS 是「确定性在前、模型在后」，cumora 是「模型在前、确定性地板在下」） |
+| 第 7 层 · 五条形状级提示词 + 「按位次占坑不可表达」（`glance-protocol.ts:8-20`） | `gate.py:125-142` `GATEWAY_MESSAGES` 四条人话原样喂回返工提示词 | **形似神不同**（MAOS 的提示词是 finding 的**载体**，不是判据面） |
+
+**缺的那几层缺得有没有道理 —— 一句话结论：有道理，但理由是暂时的。**
+MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dispatch_ready` 要求
+`depends_on` 全部 DONE 才派发（`control_plane.py:294`），并行的任务在结构上看不见彼此；
+驱动循环是单线程 `for`（`flows/common.py:119-130`）。**而这条循环的注释白纸黑字写着
+「换 RocketMQ 后这个循环消失（消费者常驻）」（`flows/common.py:112`。** 那一天，
+第 2、3、3b、4 层会**同时**变成必需品 —— cumora 是逐层踩坑逐层加的（第 3a 层就是
+「只加了大脑闸忘了小脑闸」的事故产物），MAOS 会一次性面对全部。这是本轨最该记住的
+一条：**MAOS 的免疫不是设计出来的，是单线程送的。**
+
+### 2.2 十四条反面教材逐条判定（问题 4）
+
+| # | 反面教材（`COORDINATION.md` 行号） | MAOS 判定 | 理由 |
+| :-- | :-- | :-- | :-- |
+| 1 | Don't cap one layer without the other（`:489-499`） | **不会踩（当下）／ 会踩（多 worker 后）** | 现在一层并发闸都没有，谈不上「只加一层」。但种子形态已在：`maos/tools/port.py:31` 的 `rate_limit` 是**声明了却零处执行**的死旋钮，将来给模型调用加限流时，工具这一层会被当成「已经有了」 |
+| 2 | Don't accrete scenario examples in the prompt（`:501-515`） | **不会踩** | MAOS 的判据面是代码不是提示词（`gate.py:6-7`）。`GATEWAY_MESSAGES` 四条虽是逐格手写，但四象限是**封闭集合**（`gate.py:127-142`），不存在「每发现一个 bug 加一条」的滑坡 |
+| 3 | Don't dump AGENT_VOICE_RULES（`:517-526`） | **不会踩** | MAOS 的 Agent 没有人格/语气层 |
+| 4 | Don't dump the CLI catalog（`:528-532`） | **不会踩** | 同上 |
+| 5 | Don't write a "how to handle HELD" section（`:534-540`） | **不会踩，且方向本来就对** | cumora 的结论是「契约由该出现的时刻返回的文本本身传达」。MAOS 的 `GATEWAY_MESSAGES` 正是随 finding 一起、在返工那一刻返回的（`gate.py:125-126`），落在正确的一侧 |
+| 6 | Don't pile loop-prevention mechanisms（`:542-547`） | 🔴 **正在踩** | MAOS 已有**四条**止损：`max_attempts`（`control_plane.py:452`）、`_max_replan`（`:577`）、第三出口 `_human_exit`（`:491`）、`_should_replan` 的「第 2 次 rework」（`:572-574`）。且顺序敏感 —— `:442-443` 的注释明说第三出口「必须排在 max_attempts 之前」。cumora 的判据：加第五条之前先查是哪一条没抓住 |
+| 7 | Don't write to `conversation_reads.last_read_at` as a side effect（`:549-555`） | **已踩过并已修** | 同类事故记在 `control_plane.py:310-319`：幂等键被非法调用烧掉，任务永久停在 DISPATCHED。修法也同源 —— 把只读校验挪到消费闸之前 |
+| 8 | Don't add fetch calls without a timeout（`:557-563`） | **不会踩** | 两条外呼路径都带超时：`maos/model/client.py:212`、`maos/tools/sandbox.py:511`；Nacos 拉取 `maos/config/nacos_source.py:192` 也带。（`maos/tools/gateway.py` grep 未命中 timeout，是否真发网络请求我没核，见 §5） |
+| 9 | Don't add scenario-specific prompts to fix one incident（`:565-576`） | **不会踩** | 同第 2 条 |
+| 10 | Don't ship an override flag without a cost — soft gates erode（`:578-594`） | 🔴 **正在踩** | `MAOS_FINANCE_THRESHOLD`（`gate.py:96`、`:169-188`）调大即可**静默停用**第六道闸：解析失败会告警并收严，但 `99999999` 是**合法值**，闸照常判 pass，`gate_results` 里看不出它被配置掉了。这正是「无成本的旁路」 |
+| 11 | Don't fix infra issues with prompt changes（`:596-610`） | **不会踩** | MAOS 的 Gate 零模型调用，天然免疫。风险转移到 `maos/agents/reviewer.py:43`（STRONG tier）—— 它挂了之后闸后语义审查怎么退化，我没核（见 §5） |
+| 12 | Don't burn tokens hammering a converged LLM judgment（`:612-623`） | **不会踩（半条）** | 硬上限齐备：`max_attempts` 默认 3、`_max_replan` 默认 2（`control_plane.py:577-578`）。缺的是另一半 —— cumora 的 decline cap **在新消息到达时重置**（`agenda.ts:176-183`），MAOS 的 REWORK 计数从 event_log 数起（`control_plane.py:569-571`），**永不重置** |
+| 13 | Don't treat absent members as a failure mode to "fix"（`:625-644`） | **不会踩，且是 MAOS 的强项** | 铁律 8「MAOS 不持有权威事实」与之同源：`GW_QUERY_FIRST` 判 info 不挡闸（`gate.py:159-160`）就是「网关自己说不清，Gate 不替它下结论」。cumora 说的是「不要围着坏掉的部件设计」，MAOS 说的是「不要替外部系统下它没下的结论」—— 同一条哲学的两个面 |
+| 14 | When something stops working, DIFF against the last good baseline（`:646-663`） | 🔴 **正在踩，且是本仓最现实的一条** | 本轮派单 §0.1 自己就是证据：主干工作区有约 76 个未提交改动，同一条测试命令在不同工作区跑出 1069 / 1114 / 1117 三个数。**没有钉死的「上一个已知良好基线」，回归发生时无从 diff** |
+
+### 2.3 三个专项判断（问题 2 / 3 / 5）
+
+**问题 2 —— 那条判据能不能直接抄进 MAOS 的规程？能，而且 MAOS 两个方向都基本站对了。**
+「本该用代码机制却写成提示词」在 MAOS 几乎不存在：Gate 是刻意做成规则驱动的，
+理由写在 `gate.py:6-7`「判定必须可复现、可解释、可审计」。反方向（「脑子在正确状态面前
+做出明确决定时不该加代码机制」）也基本没犯 —— MAOS 的代码机制判的都是**结构**
+（有没有 test_report、`files` 字段在不在、金额超没超阈值），不是意图。
+唯一一处值得盯的是 `_gate_acceptance` 的非代码分支：它仍然拿 Agent 自述的 `self_check`
+当验收依据（`gate.py:325-327`、`:316-323`）。代码类任务已经把这条换成了跑出来的
+`test_report`、且**无降级**（`gate.py:333-335`），理由写得很硬：「回落等于把『Agent 自称
+完成』重新放回验收依据里」。cumora 的同一条教训在 `triage-core.ts:378-382`
+（信号必须取自 DB/Redis 事实，绝不从消息措辞推断）与 5d 的整段（`--send-anyway` 是
+客户端意见，不算数）。**非代码类任务这条口子还开着，但它是有意识开的，不是疏漏。**
+
+**问题 3 —— MAOS 的 Gate 是「拒绝 + 给新事实重判」还是只有「拒绝」？
+答案：有回灌，但回灌的是「我对你的评价」，不是「世界变了」。** MAOS 确实把 findings
+写回任务行、并随下一次 `TASK_ASSIGNMENT` 一起发出去（`control_plane.py:472-480` →
+`:301` 的 `rework_findings=t["findings"]`），所以形式上是「拒绝 + 给理由重判」。
+但两处形状差异是实质性的：
+
+1. **回灌内容不同。** cumora 的 HELD 内联的是**这个 agent 从未被展示过的 peer 消息原文**
+   （`cli.ts:1972-1974`）—— 是世界在它编写期间发生的变化。MAOS 的 rework 回灌的是
+   Gate 对**它自己这一轮产出**的判定，关于**别的任务在它跑的时候产出了什么**，
+   信息量为零。
+2. **「展示即已读」这一半 MAOS 没有。** cumora 的 HELD 会把游标推过它展示的行
+   （`cli.ts:1971`），所以重试**不会在同一批行上再挡一次**，平铺重发即可通过；
+   这一条正是撤掉 compose-anchor 的直接理由（恒假警每次多烧 1–2 次大模型往返，
+   `COORDINATION.md:234-240`）。MAOS 每一次 rework **必然烧掉一个 attempt**
+   （`control_plane.py:296` 的 `attempt = t["attempt"] + 1`），而 `max_attempts` 默认只有 3。
+
+**现在不出事是因为 DAG 串行（`control_plane.py:294` + `flows/common.py:119-130`），
+任务之间没有「在你跑的时候世界变了」这件事。** 一旦并行，MAOS 需要的正是这个形状。
+这是本轨最可能值钱的一条，判断见 §3 第 1 行。
+
+**问题 5 —— MAOS 的审批放行有没有「承认而非跳过」的形状？没有，但当前失效形态是响亮的。**
+`human_decision(task_id, approved, operator, note)`（`control_plane.py:702`）只认 `task_id`：
+批准不携带**操作人当时被展示的是哪一版**（attempt / artifact version）。房间卡片确实把
+`attempt` 渲染进了 Envelope（`hiclaw/room_demo.py:141`），但 `/approve <task_id>`
+（`room_demo.py:145`）把这个信息丢掉了 —— 这在结构上就是 cumora 2026-07-08 修掉的
+「陈旧令牌」形状：承认了 A 状态，用在了 B 状态上。
+
+三点让当前风险可控，必须一并说清楚，否则就是夸大：
+其一，`assert_transition`（`control_plane.py:726`）挡在最前面，任务若已不在 BLOCKED，
+陈旧的批准**当场抛异常**而不是静默生效 —— 失效形态是响亮的；
+其二，任务停在 BLOCKED 期间没有任何东西在跑，产物不会变；
+其三，`human:<task_id>` 幂等键（`:728-731`）保证一个任务只被人工决策一次。
+**所以这条在当前单线程运行时是安全的，它和第 2/3/4 层一样，是「多 worker 之后」的账。**
+

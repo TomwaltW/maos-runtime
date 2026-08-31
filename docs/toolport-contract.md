@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **4 个**已实现工具，分布在 `gateway`、`sandbox` 两处。
+工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **6 个**已实现工具，分布在 `gateway`、`claim`、`sandbox` 两处。
 
 ## 九要素
 
@@ -60,6 +60,38 @@
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-r3 |
 
+### `payer.query`
+
+声明：`maos/tools/claim.py:462`（`PAYER_QUERY_PORT`）　入口实现：`maos/tools/claim.py:421`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | payer.query |
+| `purpose` | ② 用途 | 查询一笔赔付在赔付方侧的当前状态 —— paid 这个终态的唯一合法来源 |
+| `entry` | ③ 入口 | `maos.tools.claim.payer_query` |
+| `params_schema` | ④ 入参 | `payer`: PayerPort<br>`request_id`: str |
+| `returns_schema` | ⑤ 出参 | `status`: processing\|unknown\|paid\|denied<br>`poll_count`: int（问过几次，证明终态是问出来的）<br>`carc_code`: str<br>`group_code`: str<br>`is_terminal`: bool |
+| `failure_modes` | ⑥ 失败形态 | · KeyError: 未知 request_id<br>· status 仍为 processing/unknown: 还没到终态，继续轮询，**不许当成拒付**<br>· NotImplementedError: 用了 RealPayerAdapter 而真实赔付方未接通 |
+| `security_boundary` | ⑦ 安全边界 | 只读观察，不改变赔付方侧任何状态；轮询次数落在回执的 poll_count 上，审计可证明终态来自观察而非本地推断 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-T37 |
+
+### `payer.submit`
+
+声明：`maos/tools/claim.py:426`（`PAYER_SUBMIT_PORT`）　入口实现：`maos/tools/claim.py:409`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | payer.submit |
+| `purpose` | ② 用途 | 向赔付方发起赔付指令；返回受理回执，**不返回 paid**（到账须经 payer.query 观察） |
+| `entry` | ③ 入口 | `maos.tools.claim.payer_submit` |
+| `params_schema` | ④ 入参 | `payer`: PayerPort<br>`claim_ref`: str<br>`amount`: str（金额不进浮点）<br>`idempotency_key`: str<br>`payee`: str（可选，收款方；属幂等比对面）<br>`memo`: str（可选） |
+| `returns_schema` | ⑤ 出参 | `request_id`: str<br>`status`: processing\|unknown\|denied（**不含 paid**）<br>`carc_code`: str（X12 CARC，到账/在途时为空）<br>`group_code`: str（CO\|PR\|OA\|PI，这笔调整由谁承担）<br>`remark_codes`: list[str]（RARC，16/96/252 强制要求至少一条）<br>`effect`: denied\|reduced\|patient_share（MAOS 侧口径）<br>`recourse`: none\|resubmit_after_fix\|route_other_payer\|human_appeal<br>`source`: str（码表出处 URL）<br>`fetched_at`: str（码表核对日期）<br>`is_terminal`: bool |
+| `failure_modes` | ⑥ 失败形态 | · ValueError: 缺 idempotency_key<br>· DuplicateClaimPayment: 同幂等键但金额/案件号/收款方不一致 —— 不静默收下<br>· ValueError: CARC 16/96/252 的回执缺 RARC（X12 原文要求至少一条）<br>· status=unknown: 赔付方说不清结果 —— **不许在本地推断成败**，必须 payer.query<br>· status=denied: 明确拒付，回执带 CARC + Group Code（如 96 Non-covered charge(s)）<br>· KeyError: 未知 CARC / 未知 Group Code（码表不兜底，见 claim_codes.lookup）<br>· NotImplementedError: 用了 RealPayerAdapter 而真实赔付方未接通 |
+| `security_boundary` | ⑦ 安全边界 | MAOS 不持有赔付的权威事实（铁律 8），本工具只产生**观察记录**：submit 永不返回 paid，到账一律经 payer.query 取得；同一 idempotency_key 不产生第二笔赔付；码值判据全部取自 claim_codes 的已核对 X12 官方表，未知码抛 KeyError 不兜底；回执挂在 artifact 的 payer_receipt 键上，不占用 receipt —— 那个键归第七道闸的支付宝码表，两张码表不许混查 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-T37 |
+
 ### `sandbox.git_apply`
 
 声明：`maos/tools/sandbox.py:634`（`GIT_APPLY_PORT`）　入口实现：`maos/tools/sandbox.py:365`
@@ -98,4 +130,4 @@
 
 九要素里只有 `entry` 是本地可调用对象；把它换成一个 MCP client stub（同样的 `params_schema` 入、同样的 `returns_schema` 出），其余八项一字不改。`invoke_tool` 与 `ToolInvoked` 审计行在调用点之上，不关心 entry 背后是本地函数、子进程还是一个 MCP server —— 所以迁移之后，证据束里那条审计行的形状、`scripts/verify.py` 的第 1 项校验、Identity 的 `allowed_tools` 白名单，全部原样成立。
 
-反过来说：**没有做 MCP 迁移**。当前 4 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。
+反过来说：**没有做 MCP 迁移**。当前 6 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。

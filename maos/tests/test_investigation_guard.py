@@ -76,6 +76,15 @@ def _violations(store):
             if e["event_type"] == guard.VIOLATION_EVENT]
 
 
+def _reasons(store):
+    """越权事件的 reason 列表 —— 用来分辨是**哪一道闸**拦下的。
+
+    四道闸抛同一个异常类型，只断类型分不出来（变异检验实测：删掉第 ① 道，
+    只断类型的用例照样绿）。reason 是它们唯一的区分点。
+    """
+    return [e["reason"] for e in _violations(store)]
+
+
 # ------------------------------------------------------- ① 只有权威 actor
 @pytest.mark.parametrize("actor", [
     "investigation.file", "investigation.classify", "investigation.cancel",
@@ -94,6 +103,27 @@ def test_only_the_authoritative_writer_can_write_returned(actor):
                                 observation=_pacs004())
     assert guard.AUTHORITATIVE_WRITER in str(exc.value)
     assert guard.get_case(store, TENANT, CASE)["biz_status"] == "cancellation_sent"
+    # **断到具体那一道闸**，不只断异常类型。
+    #
+    # 四道闸抛的是同一个 AuthoritativeFactViolation，只断类型的话，把第 ① 道
+    # 整条删掉这条用例照样绿 —— 因为第 ② 道（回执只有权威方递得进来）会接住它。
+    # 变异检验当场抓到过这个盲区，判据因此收紧到事件的 reason 上。
+    assert _reasons(store) == [f"returned 只能由 {guard.AUTHORITATIVE_WRITER} 写入"], (
+        "拦下这次越权的必须是第 ① 道权威闸本身，不是后面几道的连带效果")
+
+
+def test_non_writer_blocked_even_without_an_observation():
+    """不带观察的越权写入同样要被第 ① 道拦下。
+
+    这条与上一条成对：上一条带着合格观察（会被 ② 接住），这条什么都不带
+    （会被 ③ 接住）—— 两条都断 reason，第 ① 道才真的被单独测到。
+    """
+    store = _store()
+    _case(store)
+    with pytest.raises(guard.AuthoritativeFactViolation):
+        guard.update_biz_status(store, TENANT, CASE, "returned",
+                                "investigation.compensate", "inv-bare")
+    assert _reasons(store) == [f"returned 只能由 {guard.AUTHORITATIVE_WRITER} 写入"]
 
 
 def test_violation_is_not_silent():
@@ -114,6 +144,7 @@ def test_violation_is_not_silent():
     assert d["attempted"] == "returned"
     assert d["invocation_id"] == "inv-bad"
     assert d["authoritative_writer"] == guard.AUTHORITATIVE_WRITER
+    assert evs[0]["reason"] == f"returned 只能由 {guard.AUTHORITATIVE_WRITER} 写入"
 
 
 def test_violation_on_missing_case_still_leaves_evidence():

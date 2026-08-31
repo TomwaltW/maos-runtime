@@ -163,6 +163,50 @@ def test_rejected_approval_does_not_count(rig):
             "tenant_id": TENANT, "case_id": "case-rej", "clearing": TEST_CLEARING})
 
 
+class _EagerClearingHouse:
+    """一个**违约的**清算方：受理 camt.056 时就直接给出终态决议。
+
+    存在的唯一理由是把 `investigation.cancel` 里那条契约校验真的触发一次。
+    变异检验实测：那条校验删掉之后本域 105 条用例**一条都不红** ——
+    因为 MockClearingHouse 本来就守规矩，没有任何用例走到过那个分支。
+    一条防线只活在源码里、没有用例踩过，等于没有。
+    """
+
+    def send_cancellation(self, request):
+        from maos.tools.investigation import MSG_PAYMENT_RETURN, ResolutionReceipt
+        return ResolutionReceipt(
+            request_id="clr_eager", idempotency_key=request.idempotency_key,
+            message_type=MSG_PAYMENT_RETURN,          # funds_settled 会算成 True
+            return_reason_code="CUST", returned_amount=request.amount,
+            resolution="confirmed", definition="（违约实现：一步就给结论）")
+
+    def poll_resolution(self, request_id):            # pragma: no cover —— 走不到
+        raise AssertionError("不该问到这里")
+
+
+def test_cancel_rejects_a_clearing_house_that_answers_too_early(rig):
+    """# 论证：决议必须是**问**出来的 —— 一步到终态的实现会被当场拒绝。
+
+    换一个「发出去就给结论」的清算方实现，`investigation.cancel` 必须响，
+    而不是收下那份回执把案子推到 cancellation_sent。放过它，
+    `investigation.observe` 就失去了存在理由，整条「观察与推断分离」的论证跟着塌。
+    """
+    store = rig
+    C.register_clearing(TEST_CLEARING, _EagerClearingHouse())
+    _run(store, "investigation.file", {
+        "tenant_id": TENANT, "case_id": "case-eager", "original_msg_id": MSG})
+    _run(store, "investigation.classify", {
+        "tenant_id": TENANT, "case_id": "case-eager"})
+    C.record_adjustment_approval(store, tenant_id=TENANT, case_id="case-eager",
+                                 approver="@boss", decision="approved")
+    with pytest.raises(AssertionError) as exc:
+        _run(store, "investigation.cancel", {
+            "tenant_id": TENANT, "case_id": "case-eager", "clearing": TEST_CLEARING})
+    assert "一步到终态" in str(exc.value)
+    # 案子没有被这份违约回执推进。
+    assert guard.get_case(store, TENANT, "case-eager")["biz_status"] == "classified"
+
+
 def test_cancel_refuses_without_classification(rig):
     """没定性就没有原因码，camt.056 发不出去。"""
     store = rig

@@ -176,3 +176,116 @@ MAOS 把「多步」放在 Plan 的任务图上（多个 task，各自一跳）�
 | 11 | 云端 / BYOA 两条路径共用一份工具定义与执行实现 | `tools-shared.ts` 整个文件的存在 | 已同构：Scripted / 真模型双模式共用 `ModelClient` 抽象（`maos/model/client.py:49`），由 `select_model_client`（`maos/model/client.py:272`）选路 | —— | —— | —— | **不做** —— 已有，且 MAOS 的分界线画得更早（在客户端层而非工具层） |
 | 12 | 失败的 turn 不写回幂等指纹，保持可重试 | `turn.ts:3294` | 已同构且更强：幂等键**落库**（`maos/core/store.py:80`），`claim` 与 `on_task_result` 各一道；失败按 `attempt < max_attempts` 回 PENDING 重派（`maos/core/control_plane.py:365-372`） | —— | —— | —— | **不做** —— cumora 那个 `Map` 进程重启就失效，MAOS 这侧本来就是它想要的形态 |
 
+## 4. 反向清单 —— 它做了但 MAOS 不该抄
+
+判据一句话：*这个设计在解决我也有的问题，还是在解决它的用户量 / 多租户 / 向后兼容才有的问题？*
+
+**一、多租户 `companyId` 贯穿全链路。** `turn.ts` 里几乎每一次 `recordEvent` 都要带
+`companyId`，`runCompanyId` 的确定本身要走三级 fallback（inbox 行 → 会话查库 →
+persona 兜底，`turn.ts:1611-1615`）；`installSkillFromManifest`
+（`skills.ts:177`）为了让 Observability 面板能按公司过滤，专门回查一次 `participants`
+表拿 tenant 填进 `agent_workspace.company_id`，注释还特意说明「没有它这一列会是 NULL，
+面板就看不见文件了」。这是 SaaS 多租户的税。一人公司抄它，就是给每张表加一个
+永远等于同一个值的列，外加每条链路多一次查库。**MAOS 现在没有这个字段，保持没有。**
+
+**二、失败通知的小时级熔断（`FAILURE_NOTICE_HOURLY_CAP` + Redis INCR）。**
+`postTurnFailureNotices` 里那段最长的注释（`turn.ts:1746-1772`）讲的是一次真实
+事故：N 个 agent 在同一个广播房间里因同一个底层原因失败 → 每条失败通知本身又是一条
+新消息 → 下一次唤醒的 inbox 变了 → 去重键跟着变 → 再发一条通知，`O(N²)` 级联，
+几秒钟房间里堆出 200+ 条系统消息。修法是两层：去重键**过滤掉 system 消息**，
+再加一个 Redis 里 1 小时 TTL 的计数器兜底。这个灾难的成因是
+「agent 共享一个消息流 + 通知本身就是消息」。**MAOS 结构上不可能发生**：失败进
+`TaskState` 状态机和 `event_log`，不进任何会触发再次唤醒的输入流。抄这套熔断，
+是给一个不存在的病开药。
+
+**三、人格自演进（`IDENTITY.md` / `SOUL.md` 由 agent 自己 `edit_file` 改）。**
+这条不是规模包袱，是**领域错配**，但同样不该抄。cumora 的 IDENTITY/SOUL 描述的是
+**风格与价值观**，漂移是产品特性（「数字同事会成长」）。MAOS 的 `AgentIdentity`
+（`maos/agents/base.py:59`）描述的是 **权限**：`allowed_skills` / `allowed_tools` /
+`write_scope` / `max_risk`，且被 `check_tool` / `check_risk` / `check_write`
+（`maos/agents/base.py:133-150`）在运行时强制执行。让 agent 自改这份声明，
+等于让它自己提权 —— 这不是「更像人」，是把整个安全边界交出去。
+真要抄，只能抄「可写性梯度」这个**分层思想**：把风格与权限拆成两份东西，
+风格那份可以让 agent 改。但那是复赛后的重构，不是三周内的事。
+
+**四、`GLOBAL_RULES` 里那几百行社交礼仪。** 反独白闸的解释、引用回复的「↦ addressed
+to YOU / not you」礼仪、Skype 表情指南、「先发一句 intent message 再干活否则同事会
+撞车」（`personas.ts:105` 起，一直到 `personas.ts:271`）。这些全部在解决
+「多个 agent 挤在同一个人类可见的聊天室里互相刷屏」。MAOS 的 agent 不在聊天室里，
+它们在任务图上，彼此不可见，协作由 Manager 的 Plan 编排。把这几百行搬进 MAOS 的
+系统提示词，是每次调用都付一遍钱去约束一个不存在的行为。
+
+**五、`MAX_HOPS = 200` 这个数字本身。** 它是被 cumora 特定负载（视频下载、多步研究）
+一路顶上来的经验值（`turn.ts:841-846` 的演进注释）。要抄的是那个**论断** ——
+「跳数上限不该用来控成本，控成本的是压缩」—— 而不是 200 这个数。MAOS 将来真做了
+多跳循环，起点该由 MAOS 自己的任务形态决定。
+
+**六、steer（跑到一半把新消息插进 history）—— 标注为「场景不同」而非包袱。**
+`tryDrainSteer`（`turn.ts:2353`）解决的是「人盯着 agent 干活时改主意」，配套还有
+一整套字节预算、批量摘要、饱和告警。MAOS 的人类介入点在 Gate 与
+`HumanApprovalQueue`（`maos/runtime/gate.py:773`），任务本身是秒级跑完的批处理，
+人来不及插话。这条不是规模包袱，是场景不同 —— 如果 MAOS 将来做长跑任务，它会重新
+变得相关。现在不做，但别把它归档成「垃圾」。
+
+## 5. 我没看懂 / 没时间看的
+
+- **`cli.ts`（6402 行）一行没读。** 它是 cumora 全部世界能力的真正实现（`cumora reply` /
+  `react` / `kanban` / `doc` / `skills` 等所有子命令）。我对工具面的理解全部来自
+  `tools-shared.ts:77` 那份 tool schema 的 `description` 文本和提示词里的用法示例 ——
+  也就是**从说明书反推实现**。`CliSideEffect` 究竟在 CLI 里怎么产生、
+  `bashOutputSideEffects`（`tools-shared.ts:589`）解析的是什么格式，我没有验证。
+- **三份测试一份没通读。** `__integration__/agent-turn.test.ts`（1649 行）只用
+  `grep` 定位过，`__tests__/agents-turn-compaction.test.ts`（778 行）和
+  `__integration__/agent-tools.test.ts`（961 行）完全没打开。派单说读测试最省时间，
+  这是本轮最该补而没补的一步 —— 我对「作者认为什么是主流程」的判断，全部来自
+  代码注释而非测试断言。
+- **`turn.ts` 的 wake prompt 组装段（约 1900–2160）只扫读。** `renderContext`
+  （`turn.ts:559`，约 155 行）里那套引用回复标记、图片附件物化、`loadFaces` 头像注入、
+  日历系统消息渲染，我只知道它们存在，没有跟进逻辑。
+- **`turn-stream.ts`（228 行）只读了函数目录和两个超时常量**（`turn-stream.ts:16-17`：
+  4 分钟空闲超时 / 6 分钟墙钟超时）。`applyResponseStreamEvent`（`turn-stream.ts:155`）
+  和 `reduceResponseStream`（`turn-stream.ts:221`）的归约逻辑没读，所以「一跳的
+  assistant text 是怎么从流事件里攒出来的」我说不清。
+- **`hydrateFs` / `commitFs` 没读**（在 `server/src/runtime/fs-namespace.ts`，本轮没打开）。
+  我只从 `turn.ts` 的调用点知道：turn 开始把工作区物化成真目录、`finally` 里第一件事
+  是提交 diff 回 `agent_workspace`。四个持久化根目录的规则来自提示词文本
+  （`personas.ts:105` 段），不是从实现确认的。
+- **BYOA 那条路径完全没看。** 我只从 `tools-shared.ts` 这个文件名和它的模块注释推断
+  「存在云端与 BYOA 两条路径且共用工具定义」，没有读 BYOA 侧的入口。
+- **「同一个 turn 被重放两次会怎样」是代码推断，不是实测。** 我的结论（进程重启后
+  `lastCompletedInbox` 是空的 → 会真的重放一次 → 护栏在 CLI 侧的反独白闸和
+  `postSystemNotice` 的 `dedupeKey`）来自读 `turn.ts:838` / `turn.ts:3294` 的代码路径，
+  没有跑过，也没在测试里找到对应用例来印证。这条如果要拿去做决策，得先验。
+
+## 附录 A · 顺手发现的 MAOS 问题
+
+本轮不改 MAOS，也不追加账本。以下四条留给整合轮统一折进 BACKLOG。
+
+1. **`maos/agents/reviewer.py:83` 静默裸切 JSON。** `json.dumps(artifacts, ensure_ascii=False,
+   default=str)[:8000]` —— 从 JSON 中间切一刀，Reviewer 模型收到的是语法破损的片段，
+   且**不知道自己被截了**。artifact 一多（或某个 patch_set 的 files 字段一大），
+   语义审查就基于残片出意见，而 `_parse` 那步只在模型输出不合契约时才兜底
+   （`maos/agents/reviewer.py:59-61`）——模型硬着头皮输出了合法 JSON 的话，
+   这就是一个完全静默的审查盲区。修法见第 3 节 #1。
+
+2. **`AgentIdentity.max_self_repair` 是死字段。** 定义在 `maos/agents/base.py:69`，
+   十个 agent 各自赋了值（`coding.py:37` 是 2、`architecture.py:82` 是 1、
+   `testing.py:169` 是 0 并配了「测试不自修复」的注释），
+   `scripts/gen_docs.py:158` 还把它当真字段生成了 `docs/agent-identity.md` 里 11 张表的
+   一行。但**全仓（含测试）没有任何一处读取它**。要么给它接上执行点，要么删掉 ——
+   现状是文档在承诺一个运行时不存在的约束，而且 `docs/agent-identity.md` 因为是
+   自动生成的，看上去还很权威。
+
+3. **`register_skill` 同名同版本静默覆盖。** `maos/skills/registry.py:33` 的
+   `SKILL_REGISTRY.setdefault(name, {})[version] = cls` —— 两个模块注册同名同版本的
+   skill，后 import 的静默赢，不报警。`registry.py` 的模块注释花了很大篇幅解释
+   「保留历史版本是为了旧 Plan 可复现」，那么同版本被悄悄换掉恰恰打破这条承诺。
+   一行 `if version in versions: log.warning(...)` 即可。
+
+4. **「失败但没说为什么」在类型上合法。** `AgentOutput` 的 `open_questions` 默认空
+   列表、`error` 默认 None（`maos/agents/base.py:94-95`），所以
+   `AgentOutput(status="failed")` 和 `AgentOutput(status="blocked")` 都是合法构造。
+   `ReviewerAgent._needs_human`（`maos/agents/reviewer.py:71`）已经在局部守住了这条
+   （注释：产出空白意见书比没有意见书危险得多），但这是 agent 自觉，不是运行时强制。
+   修法见第 3 节 #2。
+

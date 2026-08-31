@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **6 个**已实现工具，分布在 `ap`、`gateway`、`sandbox` 两处。
+工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **10 个**已实现工具，分布在 `ap`、`investigation`、`gateway`、`claim`、`sandbox` 两处。
 
 ## 九要素
 
@@ -60,6 +60,38 @@
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | ap_treasury |
 
+### `clearing.cancel`
+
+声明：`maos/tools/investigation.py:494`（`CLEARING_CANCEL_PORT`）　入口实现：`maos/tools/investigation.py:474`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | clearing.cancel |
+| `purpose` | ② 用途 | 向清算方发出 camt.056 撤销请求；返回受理回执，**不返回决议**（决议须经 clearing.resolution 问询，资金证据更须等 pacs.004） |
+| `entry` | ③ 入口 | `maos.tools.investigation.clearing_cancel` |
+| `params_schema` | ④ 入参 | `clearing`: ClearingHousePort<br>`original_msg_id`: str<br>`end_to_end_id`: str<br>`amount`: str（金额不进浮点）<br>`currency`: str<br>`reason_code`: str（ExternalCancellationReason1Code）<br>`idempotency_key`: str（camt.056 的 Assgnmt/Id）<br>`case_id`: str（可选） |
+| `returns_schema` | ⑤ 出参 | `request_id`: str<br>`message_type`: camt.056.001.08（受理，非决议）<br>`resolution`: pending（发出去的那一刻不可能有结论）<br>`funds_settled`: bool（恒 False）<br>`request_resolved`: bool（恒 False）<br>`is_terminal`: bool（恒 False）<br>`source`: str（码表出处） |
+| `failure_modes` | ⑥ 失败形态 | · ValueError: 缺 idempotency_key（对应 camt.056 的 Assgnmt/Id）<br>· UnknownCodeError: reason_code 不在 ExternalCancellationReason1Code 里 ——**不许兜底**，编造的原因码发出去就是一份不合规报文<br>· DiscordantCancellationRequest: 同指派号参数不一致；不许发第二份 camt.056，清算方会把它当成第二个 case，而资金只有一笔<br>· NotImplementedError: 用了 SwiftNetworkAdapter 而清算网络未接通 |
+| `security_boundary` | ⑦ 安全边界 | MAOS 不持有撤销与资金的权威事实（铁律 8），本工具只产生**观察记录**：send 永不返回决议，决议一律经 clearing.resolution 取得；同一 idempotency_key 不发第二份 camt.056；原因码取自 iso20022_codes.json 的已核对官方表，未知码抛 UnknownCodeError 不兜底 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-t38 |
+
+### `clearing.resolution`
+
+声明：`maos/tools/investigation.py:527`（`CLEARING_RESOLUTION_PORT`）　入口实现：`maos/tools/investigation.py:489`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | clearing.resolution |
+| `purpose` | ② 用途 | 问询清算方对撤销请求的决议（camt.029）与资金退回（pacs.004）——本域终态的唯一合法来源 |
+| `entry` | ③ 入口 | `maos.tools.investigation.clearing_resolution` |
+| `params_schema` | ④ 入参 | `clearing`: ClearingHousePort<br>`request_id`: str |
+| `returns_schema` | ⑤ 出参 | `message_type`: camt.029.001.08 \| pacs.004.001.09<br>`confirmation_code`: str（camt.029 的 ExternalInvestigationExecutionConfirmation1Code）<br>`rejection_code`: str（否定决议时的 ExternalPaymentCancellationRejection1Code）<br>`return_reason_code`: str（pacs.004 的 ExternalReturnReason1Code）<br>`returned_amount`: str（只有 pacs.004 才有）<br>`resolution`: confirmed\|rejected\|pending\|partial\|other（**撤销请求**的下落）<br>`request_resolved`: bool（请求有结论了吗）<br>`funds_settled`: bool（钱回来了吗 —— **只有 pacs.004 为 True**）<br>`poll_count`: int（问过几次，证明结论是问出来的）<br>`is_terminal`: bool（funds_settled 或明确被拒；**CNCL 不算**） |
+| `failure_modes` | ⑥ 失败形态 | · KeyError: 未知 request_id<br>· resolution=pending: 清算方还没给结论，继续问，**不许当成失败**<br>· confirmation_code=CNCL 而 funds_settled=False: 清算方说撤销成功了，但资金退回报文（pacs.004）还没到 —— **这一档最危险**，把它当成业务成功就是把外部状态写死为终态（铁律 8）<br>· confirmation_code=RJCR: 撤销请求被拒，随附 rejection_code，终态，转人工或补偿<br>· NotImplementedError: 用了 SwiftNetworkAdapter 而清算网络未接通 |
+| `security_boundary` | ⑦ 安全边界 | 只读观察，不改变清算方任何状态；问询次数落在回执的 poll_count 上，审计可证明结论来自观察而非本地推断；funds_settled 是对 message_type 的判定（只有 pacs.004 为真），**不是构造入参** —— 杜绝在调用处手填一个 True |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-t38 |
+
 ### `gateway.query`
 
 声明：`maos/tools/gateway.py:395`（`GATEWAY_QUERY_PORT`）　入口实现：`maos/tools/gateway.py:362`
@@ -91,6 +123,38 @@
 | `security_boundary` | ⑦ 安全边界 | MAOS 不持有退款的权威事实（铁律 8），本工具只产生**观察记录**：refund 永不返回终态，终态一律经 query 取得；同一 idempotency_key 不产生第二笔退款；错误码判据全部取自 gateway_codes 的已核对官方表，未知码抛 KeyError 不兜底 |
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-r3 |
+
+### `payer.query`
+
+声明：`maos/tools/claim.py:462`（`PAYER_QUERY_PORT`）　入口实现：`maos/tools/claim.py:421`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | payer.query |
+| `purpose` | ② 用途 | 查询一笔赔付在赔付方侧的当前状态 —— paid 这个终态的唯一合法来源 |
+| `entry` | ③ 入口 | `maos.tools.claim.payer_query` |
+| `params_schema` | ④ 入参 | `payer`: PayerPort<br>`request_id`: str |
+| `returns_schema` | ⑤ 出参 | `status`: processing\|unknown\|paid\|denied<br>`poll_count`: int（问过几次，证明终态是问出来的）<br>`carc_code`: str<br>`group_code`: str<br>`is_terminal`: bool |
+| `failure_modes` | ⑥ 失败形态 | · KeyError: 未知 request_id<br>· status 仍为 processing/unknown: 还没到终态，继续轮询，**不许当成拒付**<br>· NotImplementedError: 用了 RealPayerAdapter 而真实赔付方未接通 |
+| `security_boundary` | ⑦ 安全边界 | 只读观察，不改变赔付方侧任何状态；轮询次数落在回执的 poll_count 上，审计可证明终态来自观察而非本地推断 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-T37 |
+
+### `payer.submit`
+
+声明：`maos/tools/claim.py:426`（`PAYER_SUBMIT_PORT`）　入口实现：`maos/tools/claim.py:409`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | payer.submit |
+| `purpose` | ② 用途 | 向赔付方发起赔付指令；返回受理回执，**不返回 paid**（到账须经 payer.query 观察） |
+| `entry` | ③ 入口 | `maos.tools.claim.payer_submit` |
+| `params_schema` | ④ 入参 | `payer`: PayerPort<br>`claim_ref`: str<br>`amount`: str（金额不进浮点）<br>`idempotency_key`: str<br>`payee`: str（可选，收款方；属幂等比对面）<br>`memo`: str（可选） |
+| `returns_schema` | ⑤ 出参 | `request_id`: str<br>`status`: processing\|unknown\|denied（**不含 paid**）<br>`carc_code`: str（X12 CARC，到账/在途时为空）<br>`group_code`: str（CO\|PR\|OA\|PI，这笔调整由谁承担）<br>`remark_codes`: list[str]（RARC，16/96/252 强制要求至少一条）<br>`effect`: denied\|reduced\|patient_share（MAOS 侧口径）<br>`recourse`: none\|resubmit_after_fix\|route_other_payer\|human_appeal<br>`source`: str（码表出处 URL）<br>`fetched_at`: str（码表核对日期）<br>`is_terminal`: bool |
+| `failure_modes` | ⑥ 失败形态 | · ValueError: 缺 idempotency_key<br>· DuplicateClaimPayment: 同幂等键但金额/案件号/收款方不一致 —— 不静默收下<br>· ValueError: CARC 16/96/252 的回执缺 RARC（X12 原文要求至少一条）<br>· status=unknown: 赔付方说不清结果 —— **不许在本地推断成败**，必须 payer.query<br>· status=denied: 明确拒付，回执带 CARC + Group Code（如 96 Non-covered charge(s)）<br>· KeyError: 未知 CARC / 未知 Group Code（码表不兜底，见 claim_codes.lookup）<br>· NotImplementedError: 用了 RealPayerAdapter 而真实赔付方未接通 |
+| `security_boundary` | ⑦ 安全边界 | MAOS 不持有赔付的权威事实（铁律 8），本工具只产生**观察记录**：submit 永不返回 paid，到账一律经 payer.query 取得；同一 idempotency_key 不产生第二笔赔付；码值判据全部取自 claim_codes 的已核对 X12 官方表，未知码抛 KeyError 不兜底；回执挂在 artifact 的 payer_receipt 键上，不占用 receipt —— 那个键归第七道闸的支付宝码表，两张码表不许混查 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-T37 |
 
 ### `sandbox.git_apply`
 
@@ -130,4 +194,4 @@
 
 九要素里只有 `entry` 是本地可调用对象；把它换成一个 MCP client stub（同样的 `params_schema` 入、同样的 `returns_schema` 出），其余八项一字不改。`invoke_tool` 与 `ToolInvoked` 审计行在调用点之上，不关心 entry 背后是本地函数、子进程还是一个 MCP server —— 所以迁移之后，证据束里那条审计行的形状、`scripts/verify.py` 的第 1 项校验、Identity 的 `allowed_tools` 白名单，全部原样成立。
 
-反过来说：**没有做 MCP 迁移**。当前 6 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。
+反过来说：**没有做 MCP 迁移**。当前 10 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。

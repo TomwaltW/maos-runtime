@@ -1708,3 +1708,16 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **乙-5（warning）`issue.aggregate` 的实际持有者与自述完全不相交**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/issue_aggregate.py:84`），实际持有 `claim_intake`（`maos/agents/claim/intake_agent.py:26`）与 `refund_intake`（`maos/agents/refund/intake_agent.py:35`） | 判 warning：接线接得上，是自述漂了。但这条漂得最厉害 —— 自述指的角色一个都没持有，两个真持有者一个都没写上 | 整合期。建议把自述改成 `["claim_intake", "refund_intake"]`（多源聚合去重本来就是受理侧的活，两个 intake 角色的 duty 都写着「聚合去重」）。**改自述、不改白名单** |
 | 2026-09-01 | P9 | **乙-6（warning）`policy.match` 的自述少了一个持有者**。自述 `owner_roles=["refund_policy"]`，实际持有 `refund_policy` + `refund_finance`（`maos/agents/refund/finance_agent.py:32`）。两个版本的契约都要改：`maos/skills/builtin/refund/policy.py:91` 与 `refund/policy_v1_1.py:148` | 判 warning。`refund_finance` 持有它是**刻意的**（duty 写着「自行复核规则」，不接受政策侧的结论口述），所以错的是自述 | 整合期，建议两个版本文件的自述都改成 `["refund_policy", "refund_finance"]`。**别删 `refund_finance` 的授权** —— 那会把「财务自行复核」这条设计砍掉 |
 | 2026-09-01 | P9 | **乙-7（warning）`req.normalize` 的自述少了 `requirement`**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/req_normalize.py:69`），实际持有 `manager`（`maos/agents/manager.py:38`）+ `requirement`（`maos/agents/requirement.py:35`） | 判 warning，同乙-6。顺带一条口径提醒：`manager` 有完整 identity 但刻意不进 `AGENT_POOL`（C-2），只按池核对的话这条根本发现不了 —— 本轨的体检机因此按**全仓 23 个 AgentIdentity** 取事实源 | 整合期，建议自述改成 `["manager", "requirement"]` |
+
+## task-T59（MCP server 注册表与按角色挂载，本轮都不改）
+
+2026-09-01 建 `maos/tools/mcp/registry.py` 时发现的四条。注册表消灭了
+「server 说的」与「MAOS 认的」这一处分家，但**没有**消灭下面这几处 ——
+写在这里免得下一个人以为注册表已经把对账做全了。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`ToolPort.params_schema` 是自然语言描述，不是 JSON Schema**（`git_tool.py` 里写成 `"op": "str（baseline / ls_files / show_file）"`） | `reconcile()` 的 `schema-drift` 只能判到**键名级**：server 把某个参数从 string 改成 array、或把可选改成必填但键名不变，对账一律看不见。判宽是本轮的刻意选择（见 DECISIONS `## task-T59` 第 2 条），但代价是真的存在 | 要收紧就得把 `params_schema` 换成真 JSON Schema，那要动 `maos/tools/port.py` 与全仓每一个 ToolPort —— 是一轮独立的活，且必须一次改完，不能留半张表 |
+| 2026-09-01 | P9 | **`git_tool.py::OPS` 没有被纳入对账**。`OPS`（op -> MCP 工具名的手写映射）与 `SERVERS[...].exposes` 仍是两份各自维护的清单，当前值相同纯属人记着 | server 加一个工具时，`exposes` 漏登记会被 `reconcile()` 报 `undeclared`，但 `OPS` 漏加**没有任何东西会红** —— 上层调用点拿到的仍是「未知的 git-mcp 操作」 | 泛化的做法是把 op 映射放进 `McpServerSpec`（比如 `ops: Mapping[str, str]`），让 `reconcile()` 三方对账。本轮没做：那要改 §5.2 定死的 spec 形状，且只有一个 server 时看不出这个抽象对不对 |
+| 2026-09-01 | P9 | **`reconcile()` 没有挂进任何自动入口**，只有 `maos/tests/test_mcp_registry.py` 在跑它 | 加第二个 server 的人如果只跑自己那几条测试、不跑全量 pytest，对账就形同虚设。`scripts/verify.py` 与 `gen_docs --check` 都没有引它 | 挂进 `scripts/verify.py` 之前要先想清楚一件事：对账要**真拉子进程**，而 verify 是证据束核验，多一个会 fork 的步骤要评估它在无网/受限环境下的表现。归做 verify 那一轨 |
+| 2026-09-01 | P9 | **角色到工具的映射仍是两份手写表**：`registry.DEFAULT_ROLE_SERVERS` 与 `maos/agents/*.py` 各自的 `allowed_tools` | 本轮加了一条测试守着「`ports_for("coding")` 挑出来的 port 必须在 `CodingAgent.identity.allowed_tools` 里」，但那是**单向**的：白名单里有而映射里没有的（比如 `sandbox`）无人过问。真正的档案表是别轨的产出，本轨的映射只是兜底 | 归能力档案表那一轨（`profiles` 注入口已经留好）。合并后应当让档案表成为唯一出处，`DEFAULT_ROLE_SERVERS` 退化成「没人注入时的最小可跑集」或直接删掉 |

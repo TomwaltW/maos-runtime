@@ -28,7 +28,8 @@ from typing import Any, Callable, Iterable, Sequence
 
 from maos.contracts.events import Envelope
 
-from hiclaw.matrix_bus import MirrorChannel, render_mirror
+from hiclaw.matrix_bus import (MirrorChannel, RoomSendTimeout, describe_exc,
+                               render_mirror)
 
 log = logging.getLogger("maos.matrix")
 
@@ -141,7 +142,7 @@ class TransitionMirror:
         try:
             rows = self.store.list_event_log(self.plan_id)
         except Exception as exc:                        # noqa: BLE001 —— 见不变量 1
-            log.warning("迁移镜像读取 event_log 失败（%s），本轮跳过", exc)
+            log.warning("迁移镜像读取 event_log 失败（%s），本轮跳过", describe_exc(exc))
             return 0
 
         sent = 0
@@ -159,8 +160,15 @@ class TransitionMirror:
                 plain, html = render_transition(row, attempt=self._attempt_of(row))
                 self.channel.send(plain, html)          # type: ignore[union-attr]
                 sent += 1
+            except RoomSendTimeout as exc:
+                # 断点已经推进过了，所以不会重发 —— 这一条只决定**怎么记数**。
+                # 不计进 sent：超时只说明「我不等了」，nio 后台大概率把它送到了，
+                # 但「大概率」不能写进回执。于是 mirrored 是个**下界**，
+                # 与 runbook 那条口径一致：唯一算数的判据是去房间里数消息。
+                log.warning("迁移镜像超时（%s）；未计入条数，房间里很可能有这一条",
+                            describe_exc(exc))
             except Exception as exc:                    # noqa: BLE001 —— 见不变量 1
-                log.warning("迁移镜像发送失败（%s），已跳过该行，流水线不受影响", exc)
+                log.warning("迁移镜像发送失败（%s），已跳过该行，流水线不受影响", describe_exc(exc))
         self.mirrored += sent
         return sent
 
@@ -191,7 +199,7 @@ class TransitionMirror:
         while not self._stop.wait(self.interval):
             self.poll_once()
 
-    def stop(self, *, timeout: float = 1.0, flush: bool = True) -> None:
+    def stop(self, *, timeout: float = 1.0, flush: bool = True) -> bool:
         """停轮询。``flush=True`` 时**退出前补最后一次轮询**。
 
         补这一次是必需的而非好看：审批放行到进程退出之间往往不足一个 interval，
@@ -199,13 +207,18 @@ class TransitionMirror:
         而那正是演示要给人看的那一行。
         """
         self._stop.set()
-        thread, self._thread = self._thread, None
+        thread = self._thread
         if thread is not None:
             thread.join(timeout)
             if thread.is_alive():
                 log.warning("迁移镜像线程 %.1fs 内未退出（守护线程，不阻塞进程退出）", timeout)
+                # 活线程可能正卡在 channel.send；此刻补 poll 会与它并发，且调用方
+                # 无从知道是否已经静止。保留线程引用，允许证据入口据返回值 fail closed。
+                return False
+            self._thread = None
         if flush:
             self.poll_once()
+        return True
 
     # -- 上下文管理 -------------------------------------------------------
     def __enter__(self) -> "TransitionMirror":

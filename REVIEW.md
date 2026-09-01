@@ -129,7 +129,7 @@ Task-0 的验收标准"11 条测试全绿"在 relock 之前物理上无法达成
 
 ## 附：本次审计执行的只读命令
 
-```
+```bash
 git log -1 --format='%H%n%ci%n%s' f104161
 git rev-parse HEAD
 git status --porcelain=v1 / --untracked-files=all

@@ -49,7 +49,7 @@
 **环境清洁**。本机 `env | grep -E '^(MAOS_|MATRIX_|ANTHROPIC_|OPENAI_)'` 本来就是空的，
 但两遍冒烟仍在脚本开头显式 unset 了全部 20 个变量再校验残留为空，证明结论不依赖本机状态：
 
-```
+```text
 MAOS_LLM_BASE_URL MAOS_LLM_API_KEY MAOS_LLM_MODEL MAOS_LLM_TIMEOUT MAOS_LLM_TOKEN
 MAOS_SANDBOX_FORCE_SUBPROCESS MAOS_SANDBOX_TIMEOUT MAOS_SANDBOX_WORKDIR
 MAOS_MAX_REPLAN MAOS_KB_ENABLED MAOS_KB_WEIGHTS MAOS_APPROVERS
@@ -151,7 +151,7 @@ D-1（rework 第三出口）与 D-2（第六道闸 plan 级判据）并入后，
 
 七项读数与在整合轮 6 工作区内实测的**逐字节一致**，这是这一遍最要紧的一条：
 
-```
+```text
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
@@ -209,7 +209,7 @@ git checkout -- evidence/`）：跑完后 `git status` **脏行归 0**，确实�
 ### 卡点 2 —— 照错误提示做，会原地打转
 
 - **卡在哪**：卡点 1 的报错提示是「先跑 `python3 scripts/make_evidence.py`」。照做，再 `verify.py`：
-  ```
+  ```text
   [FAIL] 无法开始核验：缺数据库: evidence/scenario-R5/maos.db（先跑 python3 scripts/make_evidence.py）
   exit=2
   ```
@@ -229,7 +229,7 @@ git checkout -- evidence/`）：跑完后 `git status` **脏行归 0**，确实�
 
 - **卡在哪**：跑完 ①②③ 拿到 7/7 之后，`git status` 有 **50 行**改动。一个懂 git 的评委的
   本能反应是 `git checkout -- evidence/` 收拾一下，然后**再核验一遍**。结果：
-  ```
+  ```text
   [FAIL] hash-integrity       4/74
   [FAIL] business-ref         0/33
   [FAIL] trace-tree           10/18
@@ -431,7 +431,7 @@ git checkout -- evidence/`）：跑完后 `git status` **脏行归 0**，确实�
 
 ### 七项读数（两遍逐字节一致）
 
-```
+```text
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
@@ -460,7 +460,7 @@ RESULT: 7/7 PASS
 前四遍的克隆命令**都显式带了 `-b <分支>`**，于是这个问题四遍都没被看见。
 这一遍多做了一步：**不带 `-b`，照评委最可能的敲法裸 clone 一次。**
 
-```
+```bash
 $ git ls-remote --symref https://github.com/TomwaltW/maos-runtime.git HEAD
 ref: refs/heads/main    HEAD
 3f2d5d12ac73d2a1d2668fa71609ac770f99afa1        HEAD
@@ -561,7 +561,7 @@ ref: refs/heads/main    HEAD
 第五遍的结论里有一句「**远端那份代码与本地这份是同一个东西 —— 只要你指定了分支**」。
 **这一遍它不成立了。** 两个源指定同一个分支名，clone 出来的 HEAD 不是同一个：
 
-```
+```bash
 $ git ls-remote --heads origin
 7c80ca30fb2721d4b0e3503ad3273960c9b73a6b	refs/heads/agent/add-python-maos-skeleton
 4cfef38fa0c2deb824e2293285d9642a2204c6b3	refs/heads/goai-restructure
@@ -639,7 +639,7 @@ push 由人类手动做 —— 这个卡点正是那条铁律的必然副作用�
 
 ### 七项读数 —— 源 A（`f15e5dd`）
 
-```
+```text
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
@@ -702,7 +702,7 @@ RESULT: 7/7 PASS
 **主干得已推送**（卡点 8）。本遍是这两条都闭合之后的第一次复核，
 于是**这一遍不带任何条件**：照评委最可能的敲法，`git clone <地址>`，一个参数都不加。
 
-```
+```bash
 $ git clone https://github.com/TomwaltW/maos-runtime.git smoke7
 $ git rev-parse --abbrev-ref HEAD        -> goai-restructure
 $ git rev-parse HEAD                     -> ce52069ae910807c769a1b4f12c09b7697557c12

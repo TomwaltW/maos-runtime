@@ -29,6 +29,8 @@ from maos.core.store import record_model_usage
 from maos.model.client import Tier
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
+from maos.tools.mcp.git_tool import FIXTURE_ROOT, GIT_MCP_PORT
+from maos.tools.port import invoke_tool
 
 #: 落 ``model_usage`` 时写进 ``call_site`` 列的值。
 CALL_SITE = "maos/skills/builtin/code_repo_patch.py::CodeRepoPatchSkill.run"
@@ -187,11 +189,22 @@ class CodeRepoPatchSkill(Skill):
 
         # 接住整个 ModelResponse 再取 .text（口径同 req_normalize）：补丁产出是本仓
         # 最贵的一类调用，用量在这一行丢掉，成本视图里最大的那一块就是空的。
+        # 补丁基线经 git-mcp 取（``depends_tools`` 里声明的那个 git-mcp，现在真调了）。
+        # 拿的是「这份补丁是针对哪个 HEAD 产出的」——补丁本身不带基线，事后就只能靠
+        # 时间戳去猜它对应哪一版代码，而时间戳在返工链上恰好是最不可信的那个字段。
+        # 失败一律抛：连不上就是连不上，不许悄悄回落到本地 git，否则「这一步走没走
+        # MCP」在证据里查不出来。
+        baseline = invoke_tool(
+            GIT_MCP_PORT,
+            {"op": "baseline", "root": FIXTURE_ROOT},
+            store=ctx.store, extras=ctx.extras,
+        )
+
         tier = ctx.extras.get("tier") or Tier.MEDIUM
         started = time.perf_counter()
         resp = ctx.model.complete(
             system=SYSTEM,
-            user=self._build_prompt(payload, ctx),
+            user=self._build_prompt(payload, ctx, baseline),
             tier=tier,
         )
         record_model_usage(
@@ -243,13 +256,27 @@ class CodeRepoPatchSkill(Skill):
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _build_prompt(payload: dict, ctx: SkillContext) -> str:
-        """attempt 从 extras 取，不进 payload —— 入参字段以附录 B 为准，不许扩。"""
+    def _build_prompt(payload: dict, ctx: SkillContext, baseline: dict | None = None) -> str:
+        """attempt 从 extras 取，不进 payload —— 入参字段以附录 B 为准，不许扩。
+
+        基线行只放 sha / 分支 / 干净与否三个短标量，**不放文件内容**：
+        ``ScriptedModelClient`` 按 ``kw in user`` 子串匹配取第一个命中的键，
+        往提示词里灌仓库正文会凭空多出误命中，而那种失配表现成「模型答非所问」，
+        查起来会绕很远。
+        """
         parts = [
             f"任务：{payload.get('title', '')}",
             f"任务输入：{json.dumps(payload.get('inputs') or {}, ensure_ascii=False)}",
             f"验收标准：{json.dumps(payload.get('acceptance') or [], ensure_ascii=False)}",
         ]
+        if baseline:
+            parts.append(
+                "补丁基线：%s@%s（%s）" % (
+                    baseline.get("repo_name") or "?",
+                    baseline.get("head_short") or "?",
+                    "工作树有未提交改动" if baseline.get("dirty") else "工作树干净",
+                )
+            )
         findings = payload.get("rework_findings") or []
         attempt = int(ctx.extras.get("attempt") or 1)
         if attempt > 1 and findings:

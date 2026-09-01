@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **4 个**已实现工具，分布在 `gateway`、`sandbox` 两处。
+工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **5 个**已实现工具，分布在 `gateway`、`git_tool`、`sandbox` 三处。
 
 ## 九要素
 
@@ -60,6 +60,22 @@
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-r3 |
 
+### `git-mcp`
+
+声明：`maos/tools/mcp/git_tool.py:66`（`GIT_MCP_PORT`）　入口实现：`maos/tools/mcp/git_tool.py:48`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | git-mcp |
+| `purpose` | ② 用途 | 经 MCP（stdio / JSON-RPC 2.0）做只读 git 查询：仓库基线、文件清单、单文件内容 |
+| `entry` | ③ 入口 | `maos.tools.mcp.git_tool.git_mcp` |
+| `params_schema` | ④ 入参 | `op`: str（baseline / ls_files / show_file）<br>`root`: str（仓库根，同时是路径关押边界；相对路径按仓库根解析，不按 CWD）<br>`path`: str（仅 show_file：相对 root 的路径）<br>`prefix`: str（仅 ls_files：路径前缀过滤，可空） |
+| `returns_schema` | ⑤ 出参 | `baseline`: {repo_root:str, repo_name:str, head:str, head_short:str, branch:str, dirty:bool, dirty_count:int, tracked_count:int}<br>`ls_files`: {files:list[str], count:int}<br>`show_file`: {path:str, content:str, bytes:int, truncated:bool} |
+| `failure_modes` | ⑥ 失败形态 | · McpError: 拉起 server 失败 / 对端提前退出（stderr 尾三行随异常一起带出）<br>· McpError: 握手协议版本不一致 —— 停，不猜，不按任一版继续跑<br>· McpError: 等待响应超时（MAOS_MCP_TIMEOUT，默认 15s），子进程已被杀掉，不留孤儿<br>· McpError: 工具级失败（root 不是 git 仓 / 文件不在 HEAD 里 / 路径越出 root）<br>· ValueError: op 不在 OPS 里 —— 调用点写错了，不是对端的问题<br>· 以上全部原样抛出，不降级回本地 git：悄悄降级会让「这一步走没走 MCP」在证据里查不出来 |
+| `security_boundary` | ⑦ 安全边界 | ① 全部工具只读：不 commit / 不 apply / 不 checkout，写操作归沙箱，两处都能改仓库会让「谁改的」失去唯一答案；② 路径按 --root 关押，show_file 的 path 先 resolve 再用 Path.relative_to 判定（不用 startswith，后者会把 /w-evil 判成 /w 的子路径）；③ 不打网络：只 fork git 子进程跑本地查询子命令，不跑 fetch/push/clone；④ 子进程 env 按白名单重建，只放行 PATH/LANG + 自算的 PYTHONPATH，按名放行而非按名拦截，新增 *_TOKEN 变量不需要有人记得来加拦截；⑤ 单帧上限 64KiB，超出显式标 truncated —— 静默截断等于伪造文件内容 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-mcp |
+
 ### `sandbox.git_apply`
 
 声明：`maos/tools/sandbox.py:634`（`GIT_APPLY_PORT`）　入口实现：`maos/tools/sandbox.py:365`
@@ -98,4 +114,13 @@
 
 九要素里只有 `entry` 是本地可调用对象；把它换成一个 MCP client stub（同样的 `params_schema` 入、同样的 `returns_schema` 出），其余八项一字不改。`invoke_tool` 与 `ToolInvoked` 审计行在调用点之上，不关心 entry 背后是本地函数、子进程还是一个 MCP server —— 所以迁移之后，证据束里那条审计行的形状、`scripts/verify.py` 的第 1 项校验、Identity 的 `allowed_tools` 白名单，全部原样成立。
 
-反过来说：**没有做 MCP 迁移**。当前 4 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。
+**这句话已经不是推论了。** `git-mcp` 这个工具的 `entry` 就是一次 MCP stdio 往返（JSON-RPC 2.0，`maos/tools/mcp/`：拉起 server → `initialize` 握手 → `tools/call` → 收尸），而它落进 `event_log` 的 `ToolInvoked` 行与本地工具的**逐字段同形**。
+
+可当场核验：
+
+```bash
+python3 -m maos.tools.mcp.server --root scenarios/fixture-repo  # 手工起 server
+python3 -m pytest maos/tests/test_mcp_transport.py maos/tests/test_mcp_git_tool.py -q
+```
+
+其余 4 个工具的 `entry` 仍是进程内函数 —— **这是刻意的，不是没来得及**：`sandbox.*` 的隔离论证（容器 `--network none --read-only`）独立成立，换传输层要重新论证一遍等价性而收益为零；`gateway.*` 则把 `GatewayPort` 活对象当参数传，跨进程前必须先重构成「server 侧持有 gateway」。两条都记在 `docs/BACKLOG.md`。

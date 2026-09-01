@@ -19,7 +19,7 @@ log-only —— 于是场景照跑、exit=0、终端上「房间消息」一条�
 
 T 轮实测（同一份 env，只换解释器）：
 
-```
+```bash
 $ python3                        <check_wiring>   matrix-nio = 不可导入 -> No module named 'nio'
 $ ~/.maos-matrix/venv/bin/python <check_wiring>   matrix-nio = 可导入
 ```
@@ -27,6 +27,23 @@ $ ~/.maos-matrix/venv/bin/python <check_wiring>   matrix-nio = 可导入
 ⚠️ `MatrixBusConfig.from_env()` 两边都报 `log_only=False` —— **配置对不等于通道通**。
 `log_only` 只看四个 env 齐不齐，装没装 nio 它不知道。别拿这个字段当「接通了」的判据，
 判据是**房间里真出现了消息**。
+
+✅ **这一条现在会自己拦下来**（`926aa7b` 之后改的，见文末第二份修订记录）。
+`room_demo` 开工先打一行自检；且「`MATRIX_*` 配齐了却没接通房间」不再跑完降级流程，
+直接 **exit 4**（`EXIT_NO_ROOM`）：
+
+```text
+$ python3 -m hiclaw.room_demo --case approve --auto-approve
+[自检] 解释器 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3
+       matrix-nio 不可导入（ModuleNotFoundError: No module named 'nio'）—— 进不了真房间
+ERROR maos.matrix  Matrix 房间没接通：MatrixDepMissing: 当前解释器没装 matrix-nio：…
+[没进房间] 当前解释器没装 matrix-nio，房间根本没接通。
+  改用装了它的那个重跑：/Users/shensikai/.maos-matrix/venv/bin/python -m hiclaw.room_demo ...
+exit=4
+```
+
+真要做无房间自检，显式加 `--allow-degraded`，退出码回到 0。
+`log_only` 那条判据仍然成立，只是它不再是**唯一**的防线。
 
 ---
 
@@ -38,14 +55,16 @@ $ ~/.maos-matrix/venv/bin/python <check_wiring>   matrix-nio = 可导入
 
 | 症状 | 真实原因 | 怎么确认 | 见 |
 |---|---|---|---|
-| 房间里**什么都没有**，终端照常跑完 exit=0 | 房间开了端到端加密（E2EE）。`_NioChannel._verify_room()` 查到 `m.room.encryption` 状态事件就抛 `RoomEncrypted`，上游当场降级 log-only | 终端有一行 `WARNING maos.matrix`；房间设置里「加密」是开的 | §7.1 |
-| 同上 | 四个必填 env 漏了任意一个 | 终端首行 `WARNING maos.matrix  Matrix 配置缺 <变量名>，降级 log-only（不进房间，行为等同进程内总线）` | §7.2 |
+| 房间里**什么都没有**，终端刷 `[没进房间]`、**exit=4** | 房间开了端到端加密（E2EE）。`_NioChannel._verify_room()` 查到 `m.room.encryption` 状态事件就抛 `RoomEncrypted`，上游降级 log-only | `[没进房间]` 那段的「原因：」一行写着 `RoomEncrypted`；房间设置里「加密」是开的 | §7.1 |
+| 房间里**什么都没有**，终端照常跑完 **exit=0** | 四个必填 env 漏了任意一个。这一档**不拦**：它是明确的降级自检意图 | 终端首行 `WARNING maos.matrix  Matrix 配置缺 <变量名>，降级 log-only（不进房间，行为等同进程内总线）` | §7.2 |
 | 房间有消息，但 `/reject` 回的是**「审批未生效」** | `MAOS_SANDBOX_WORKDIR` 没设。补偿执行器**硬失败** | 回执原文含 `审批未生效：<task_id> —— ` | §7.3 |
-| 同上，但用的是**系统 `python3`** | 没装 matrix-nio，`_NioChannel` 构造即 `ImportError` | 见本文抬头那一节；`~/.maos-matrix/venv/bin/python` 重跑 | 抬头 |
-| 房间里消息**齐的**，终端却打 `房间回话失败（）`（括号里是空的） | **虚警**。Synapse 限流 429 让单次 send 超过 `_NioChannel` 的 10s 超时，`concurrent.futures.TimeoutError` 的 `str()` 恰好是空串 | 去房间里数一遍消息：一条不少就是虚警 | §7.6 |
+| 终端刷 `[没进房间] 当前解释器没装 matrix-nio`、**exit=4** | 用的是**系统 `python3`**。`_NioChannel` 构造即 `ModuleNotFoundError`，被翻成 `MatrixDepMissing` | 开工第一行 `[自检]` 就写着解释器路径与 `matrix-nio 不可导入` | 抬头 |
+| 房间里消息**齐的**，终端却打 `Matrix 镜像超时（RoomSendTimeout: …）` | **虚警**。Synapse 限流 429，nio 退避重试拖过 send 超时（30s），而协程仍在后台把消息送达 | 告警原文自带「不要重跑」与「未计入失败次数」；去房间里数消息，一条不少 | §7.6 |
 
-**记住这条判据**：`log_only=True` 时行为**等同进程内总线**，场景照跑、退出码照样是 0。
-「跑通了」和「进房间了」是两件事，退出码只证明前者。
+**记住这条判据**：`log_only=True` 时行为**等同进程内总线**，场景照跑。
+「跑通了」和「进房间了」仍然是两件事 —— 只是在 `room_demo` 这个入口上，
+退出码现在**能把两者分开**：想进房间却没进成 = 4，从没打算进 = 0。
+别把这条推广到别的入口，那边 `log_only` 照旧只是一行 WARNING。
 
 **还有一条反向判据**（T 轮加的）：终端打了 `房间回话失败` 也**不**代表消息没进房间。
 两个方向都不能只看终端 —— 唯一算数的判据是**去房间里数消息**。
@@ -58,7 +77,7 @@ $ ~/.maos-matrix/venv/bin/python <check_wiring>   matrix-nio = 可导入
 
 跑完应当拿到（三样都在**仓库外**，`chmod 600`，永不入库）：
 
-```
+```text
 ~/.maos-matrix/STATUS      # 一行状态；这里必须是 READY <ISO8601>
 ~/.maos-matrix/room.env    # 八个键，可 source
 ~/.maos-matrix/creds.txt   # boss / intern 的 Element 登录口令
@@ -95,13 +114,13 @@ curl -s -H "Authorization: Bearer $MATRIX_TOKEN" \
 
 T 轮实测输出（`MATRIX_ROOM_ID` 这间）：
 
-```
+```text
 HTTP 404  {"errcode":"M_NOT_FOUND","error":"Event not found."}
 ```
 
 顺带把另外两条也验了（都不回显 token，可以放心截）：
 
-```
+```text
 GET $MATRIX_HOMESERVER/_matrix/client/versions            -> HTTP 200
 GET $MATRIX_HOMESERVER/_matrix/client/v3/account/whoami   -> HTTP 200  user_id=@maos-bot:maos.local
 ```
@@ -197,7 +216,7 @@ id 形如 `task_<12位hex>` 的任务。照原样去房间里找 `task-s7-paymen
 一次 `--case approve` 房间里依次出现 23 条。开头三条是总线自己的订阅回执，
 不是业务事件，别当成漏跑：
 
-```
+```text
 订阅 maos.task.result（group=control-plane）
 订阅 maos.review.verdict（group=control-plane）
 订阅 maos.task.assignment（group=worker-w1）
@@ -205,7 +224,7 @@ id 形如 `task_<12位hex>` 的任务。照原样去房间里找 `task-s7-paymen
 
 首行摘要的**逐字形态**（`hiclaw.matrix_bus.summarize` 的真实输出）：
 
-```
+```text
 [task_5a1469c54bbe] TaskAssignment → maos.task.assignment attempt=1 role=coding
 [task_5a1469c54bbe] TaskResult → maos.task.result attempt=1 status=ok
 [task_5a1469c54bbe] ReviewVerdict → maos.review.verdict attempt=1 verdict=pass
@@ -217,7 +236,7 @@ id 形如 `task_<12位hex>` 的任务。照原样去房间里找 `task-s7-paymen
 
 展开折叠块后是完整 Envelope（`render_mirror` 真实输出，注意 `api_key` 已被出口脱敏成 `***`）：
 
-````
+````text
 [task_5a1469c54bbe] TaskAssignment → maos.task.assignment attempt=1 role=coding
 ```json
 {
@@ -258,7 +277,7 @@ Agent 产出补丁是 M 级、在其授权内，但这个补丁**合进生产**�
 （卡片正文里 `effect_risk` 是 `H`，末尾逐字写着可用指令），
 **从卡片里复制 `task_id`**，在房间发：
 
-```
+```text
 /approve task_5a1469c54bbe        # ← 你那一轮的 id 不是这个，每次运行都重新生成
 ```
 
@@ -277,12 +296,12 @@ Agent 产出补丁是 M 级、在其授权内，但这个补丁**合进生产**�
 
 T 轮实测（终端最后一行 + 房间最后三条）：
 
-```
+```text
 终态: task=DONE  plan=DONE  （镜像发出 7 条迁移）
 exit=0
 ```
 
-```
+```text
 [task_5a1469c54bbe] StateTransition → BLOCKED → DONE attempt=1
 已批准 task_5a1469c54bbe（操作人 @boss:maos.local）
 [plan_a9e5af33ed5b] PlanTransition → RUNNING → DONE attempt=1
@@ -304,7 +323,7 @@ exit=0
 
 审批卡出现后，在房间发（**原因写清楚，它会进回执也进审计**）：
 
-```
+```text
 /reject task-s7-payment 渠道回执异常，转人工
 ```
 
@@ -332,14 +351,14 @@ exit=0
 
 ### `--case reject` 真正能核的终态
 
-```
+```text
 终态: task=FAILED  plan=FAILED  （镜像发出 7 条迁移）
 exit=0
 ```
 
 房间里最后三条（T 轮逐字）：
 
-```
+```text
 已驳回 task_02695e4aac86（操作人 @boss:maos.local），原因：渠道回执异常，转人工
 [task_02695e4aac86] StateTransition → BLOCKED → FAILED attempt=1
 [plan_546534bf2ccc] PlanTransition → RUNNING → FAILED attempt=1
@@ -368,13 +387,13 @@ exit=0
 
 用 **intern** 账号（`$MAOS_MATRIX_OUTSIDER`，**不在** `MAOS_APPROVERS` 名单里）在同一间房发：
 
-```
+```text
 /approve task-s7-payment
 ```
 
 期望房间回执（逐字）：
 
-```
+```text
 无审批权限：@intern:maos.local 不在 MAOS_APPROVERS 名单内
 ```
 
@@ -383,7 +402,7 @@ T 轮实测，房间回执与上面一字不差；终端同步打 `[房间回执
 同时 `event_log` 落一行 `ApprovalDenied`
 （`hiclaw/matrix_bus.py::RoomApprovalBridge._record_denied`）：
 
-```
+```text
 ApprovalDenied | sender 不在 MAOS_APPROVERS 名单内 |
   {"sender": "@intern:maos.local", "command": "approve", "task_id": "…"}
 ```
@@ -400,7 +419,7 @@ ApprovalDenied | sender 不在 MAOS_APPROVERS 名单内 |
 
 T 轮把这一条真验了。房间里逐字（`transcript.md` 第 15–19 条）：
 
-```
+```text
 @intern:maos.local   /approve task_5a1469c54bbe
 @maos-bot:maos.local  无审批权限：@intern:maos.local 不在 MAOS_APPROVERS 名单内
 @intern:maos.local   /approve                       ← 缺参数
@@ -522,7 +541,7 @@ git checkout -- evidence/scenario-1 evidence/scenario-2 evidence/scenario-3 \
 - **原因**：`MatrixBusConfig.from_env()` 缺任一必填项就 `log_only=True`，**不抛异常**
 - **下一步**：看终端第一行 WARNING，它会**逐字点名缺哪个变量**（只打变量名不打值）：
 
-  ```
+  ```text
   WARNING maos.matrix  Matrix 配置缺 MATRIX_TOKEN，降级 log-only（不进房间，行为等同进程内总线）
   ```
 
@@ -540,8 +559,16 @@ git checkout -- evidence/scenario-1 evidence/scenario-2 evidence/scenario-3 \
 
 - 先确认发命令的账号在 `MAOS_APPROVERS` 里（`echo $MAOS_APPROVERS`，**这条不回显 token，可以截**）
 - 再确认命令是 `/approve` / `/reject` 开头且**带 task_id**：缺参数只回用法，不落任何决策
-- 机器人不听自己的回声（`listen` 里跳过 `sender == self._client.user`），
+- 机器人不听自己的回声（`should_deliver` 里跳过 `sender == whoami 回来的 mxid`），
   所以用 bot 账号自己发命令是没反应的 —— 必须用 boss 账号
+- **现在它会出声**：被回声过滤丢掉的那条如果长得像审批命令，终端会打
+
+  ```text
+  WARNING maos.matrix  忽略了一条 bot 自己发的审批命令（@maos-bot:maos.local）——
+  机器人不听自己的回声。请换一个**人类**账号（MAOS_APPROVERS 里的那个）在 Element 里发
+  ```
+
+  自己发的**普通回执**照旧悄悄丢，不打这条 —— 每条都喊一句就成了刷屏
 
 ### 7.5 前几条消息进了房间，后面突然没了
 
@@ -566,8 +593,18 @@ git checkout -- evidence/scenario-1 evidence/scenario-2 evidence/scenario-3 \
 - **怎么确认**：数房间，不看终端。T 轮 R1 那一轮打了 3 条这个警告，
   房间里 23 条消息一条不少。
 - **不要**因为看到这条警告就重跑 —— 重跑只会再撞一次限流，并且把房间灌得更满。
-- 已记 `docs/BACKLOG.md` 的 `## task-T4`（空括号的报错信息本身也是个坑：
-  它把「超时」显示成了「没有原因」）。
+- ✅ **本轮已修**（`926aa7b` 之后），三件事一起改的：
+  1. 所有异常日志过 `describe_exc()`，类名一律带上、消息为空补 `<该异常没有消息>`，
+     超时类再追一句「不要重跑」的处置口径。**空括号不会再出现**。
+  2. send 单独一档超时（`DEFAULT_SEND_TIMEOUT = 30s`），与构造期的 10s 分开 ——
+     构造连不上要早知道，发消息要经得起退避。限流本身照旧由 nio 的
+     `Got 429 response (ratelimited)` 打出来，**没有被盖住**。
+  3. 超时抛的是 `RoomSendTimeout`，`MatrixEventBus._mirror` 里**不计入**
+     `MAX_MIRROR_FAILURES`。这条最要紧：原来撞一次限流就够 3 次、直接触发
+     §7.5 那个永久降级 —— 那之后房间里是真的一条都没有了，**一次虚警被自己
+     亲手做实成了真故障**。
+- 判据不变：唯一算数的仍然是去房间里数消息。`mirror.mirrored` 那个条数在超时时
+  **不加一**，所以它是个下界，不是等号。
 
 ### 7.7 跑完退出时刷一屏 asyncio 报错（T 轮新增）
 
@@ -576,8 +613,11 @@ git checkout -- evidence/scenario-1 evidence/scenario-2 evidence/scenario-3 \
   `Exception ignored in: <coroutine object AsyncClient.sync_forever …>`
 - **原因**：收口时私有事件循环先关，`sync_forever` 那条常驻协程后死。
   发生在**终态之后**，不影响任何判定，也不影响退出码。
-- **下一步**：忽略。但演示当天**别把终端留在这一屏**上 —— 观众看不出它无害。
-  截图前先滚回终态那一行。已记 `docs/BACKLOG.md` 的 `## task-T4`。
+- ✅ **本轮已修**（`926aa7b` 之后）。`_NioChannel.close()` 改成有序收口六步：
+  停 sync -> `cancel()` 掉 `sync_forever` 并**等它落地** -> 关客户端 ->
+  `shutdown_asyncgens()` -> 停循环 -> `join()` 线程 -> `loop.close()`。
+  常驻协程和 aiohttp 连接池都在循环还活着的时候收干净，GC 就没有东西可以去碰了。
+- 还看到这一屏的话，先确认跑的是改后的版本；仍无害，判定与退出码照旧在它上面几行。
 
 ---
 
@@ -601,3 +641,21 @@ git checkout -- evidence/scenario-1 evidence/scenario-2 evidence/scenario-3 \
 | §7 | `04` 证明「`/reject` → 补偿」 | 改成「驳回生效 + Plan FAILED」，并写明文件名比它能证明的东西大、为什么没改名 | 同 §5 |
 | §8 | 直接跑 `verify.py` | 前面补 `make_evidence.py`，否则这条自检**永远通过却什么都没验到**；补还原命令 | H 轮已记账，T 轮补上 |
 | §9 | 五条排错 | 补 7.6（429 + 10s 超时导致的空括号虚警）、7.7（退出时 asyncio 噪声） | 实跑 |
+
+
+## 修订记录（2026-08-31，基线 `926aa7b`）
+
+把 §0 那张表里的四行**从「文档提醒」改成「代码会响」**。改的是行为不是措辞 ——
+这四条原来的共同点是：屏幕上一切正常、退出码 0、房间里一条都没有，
+全靠读手册的人记得去查，而「记得去查」在 T 轮一次都没成立过。
+
+| 坑 | 原来的形态 | 改成什么 | 落点 |
+|---|---|---|---|
+| 用系统 `python3` 跑（最贵的一步） | `ImportError` 与「连不上」共用一条降级分支，跑完 exit=0，终端形态与真房间无法分辨 | 单列 `MatrixDepMissing`；总线记 `degrade_reason`；入口对「想进房间却没进成」**exit 4**，并打一行 `[自检]` 写明解释器 | `matrix_bus.py`、`room_demo.py` |
+| `房间回话失败（）` 空括号虚警 | `TimeoutError` 的 `str()` 是空串，告警说不出自己是什么；且计进 `MAX_MIRROR_FAILURES`，撞一次限流就永久降级 | 全部日志过 `describe_exc()`；send 单列 30s 超时并抛 `RoomSendTimeout`；**超时不计入**失败次数 | `matrix_bus.py`、`transition_mirror.py` |
+| 退出刷一屏 `Event loop is closed` | 收口只 stop 循环，常驻协程与连接池后死 | `close()` 六步有序收口，等线程退出再 `loop.close()` | `matrix_bus.py` |
+| bot 账号自己发命令没反应 | 回声过滤静默丢弃，房间里什么都不发生 | 丢掉的那条**是审批命令**时打一条 WARNING，点名要换人类账号 | `matrix_bus.py` |
+
+判据：`maos/tests/test_matrix_bus.py` 第 8 节（19 条）+ `test_room_wiring.py` 第 4 节（6 条）。
+四条修复逐个撤掉做过变异检验，每条都能让对应用例变红 —— 不是「写了测试」，是「测到了」。
+全量 `python3 -m pytest maos/tests -q` → **1114 passed / 39 skipped**。

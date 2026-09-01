@@ -1434,3 +1434,15 @@ exit=0，`gen_docs.py --check` exit=0，`demo_preflight.sh` 5 步全过 exit=0�
 |---|---|---|---|---|
 | 2026-08-31 | P7 | **T34 新加的白名单判据方向写反了**。它的判据是「DNS 解析成功 + TCP **超时** → 大概率白名单没放行」，但本机出口 IP 漂移后实测的真实症状是「DNS 成功 + TCP **握手成功** → 连接随即被断，`OperationalError`、**无 SQLSTATE**」，于是脚本打印的是「网络通，问题在 PG 鉴权层（账号 / 库名 / SSL 策略）」 | **在真正的白名单场景下把人指向错误方向** —— 会去查账号口令和 SSL 策略，而实际只需在控制台加一条白名单。这比没有判据更糟：`## polardb-live` 里那条老结论（「白名单不放行的症状是 TCP 静默超时」）应该也只在**某些链路**成立，公网地址前有 SLB 时 TCP 是能握上的 | 判据改成三分支：TCP 超时 → 白名单（链路 A）；**TCP 握手成功但 PG 层无 SQLSTATE 地断开 → 同样优先怀疑白名单**（链路 B，实测形态）；有 SQLSTATE → 才是真的鉴权层。归下一轮 PolarDB 轨。改之前先把两种链路各复现一次，别照抄本条 |
 | 2026-08-31 | P7 | **本机出口 IP 会漂**，白名单是一次性配置但需要反复维护。T34 收尾时报的是一个 IP，几小时后并轨复验时已换成另一个 | 有库档全量（1098）与云库冒烟（5/5）**随时可能因为 IP 漂移而跑不出来**，且症状看起来像回归。交付前如果撞上，容易误判成代码问题 | 两条路：① 白名单放宽到运营商网段（安全性下降，需人拍板）；② 在 `polardb_smoke.py` 的诊断里直接打印当前出口 IP（`dig +short myip.opendns.com @resolver1.opendns.com`，**不泄漏目标 host**），让人一眼看出要加哪个。②成本低且无风险，推荐先做 |
+
+## task-mcp（接 `git-mcp` 时发现，本轮都不改）
+
+2026-09-01 落地第一个 MCP 工具时发现的三条。前两条是**刻意不迁**的理由，
+写在这里是因为 `docs/toolport-contract.md`「迁移到 MCP」一节直接引它们 ——
+生成物里那句「两条都记在 docs/BACKLOG.md」得指得到东西。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
+| 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
+| 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |

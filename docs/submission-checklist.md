@@ -189,6 +189,11 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 - [ ] README 里所有命令都是 `python3`（评委在 macOS 上敲 `python` 会 command not found）。
 - [ ] 七份文档齐：`architecture` / `domain-portability` / `authoritative-facts` /
       `agentteams-mapping` / `agent-identity` / `skill-catalog` / `toolport-contract`。
+- [ ] **`docs/gateway-rationale.md` 在仓库里、且 README §9 索引指得到它。**
+      它是「推荐工具链未使用需说明理由」那一维的**主文档**（八个组件逐条给状态、
+      等价机制、迁移点），而规则那条的分水岭正是「**且未说明理由**」。
+      这份文档此前不在本自查单的任何一条里 —— 写了理由但评委翻不到，
+      与没写理由在判分上是同一件事。**这一条就是为补那个洞加的。**
 - [ ] 三份**代码生成**的文档是重新生成过的，不是手改的（`--check` 绿即可）。
 - [ ] `docs/BACKLOG.md` / `docs/DECISIONS.md` / `docs/open-questions.md` **保留在仓库里**，
       不要为了好看删掉 ——「知道自己哪里没做完」本身是可信度的一部分。
@@ -209,6 +214,7 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 | AutoGen | 「可插拔内核之一，未在复赛演示中启用」 | 「基于 AutoGen 构建」 | ✅ 全仓 `*.py` grep 不到 `autogen` 的实现，只在 `maos/runtime/worker.py` 注释里提及 |
 | replan 换渠道 | 「场景 7 演到了：撞 `40005` 触发一次 replan 换备用渠道，再撞 `ACQ.SYSTEM_ERROR` 一票否决落人工，全程没有自旋」 | 「重试到上限才转人工」（**只重试了一次**，不是打满上限）｜「换了渠道就成功了」 | ✅ 整合轮 5 合入 Y-4 后实测：`run.py --scenario 7` 屏幕上打出 `换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）`，状态轨迹里有 `AWAITING_REVIEW -> REWORK [gate_rework]` → `REWORK -> PENDING [requeue]`；`test_replan_gateway.py` 仍 **19 passed**，一条没少 |
 | 场景覆盖 | 「`run.py` 无参跑全部七个场景，含失败路径」 | 「七个场景都跑成功了」（场景 7 的 Plan 终态是 FAILED，那正是它要演的） | ✅ `maos/main.py:29` 实测 `DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)` |
+| MCP | 「5 个 ToolPort 里 **1 个**（`git-mcp`）的 `entry` 真走 MCP stdio（JSON-RPC 2.0，零依赖自写），审计行与本地工具逐字段同形；其余四个刻意没迁，障碍写在 `docs/BACKLOG.md` 的 `## task-mcp`」 | 「工具层已全面 MCP 化」｜「接入了 MCP 生态/官方 SDK」——**没装 `mcp` 包**，协议是手写的（`pyproject.toml` 的 `dependencies = []` 是硬约束）｜「模型自己选工具」——**没做**，agent 仍是脚本化编排，`ModelClient.complete` 是冻结契约 A-12 | ✅ 2026-09-01 落地实测：`test_mcp_transport.py` 18 条 + `test_mcp_git_tool.py` 13 条全绿；`evidence/scenario-1/trace.json` 有 `tool:git-mcp` 的 `ToolInvoked` span（`params_digest` 64 位 hex）。选型与四条判断记在 `docs/DECISIONS.md` 的 `## task-mcp-2026-09-01` |
 
 > ✅ 整合轮 5 已合入 Y-4，上表 replan 那一行已改口。新的说漏风险反过来了：
 > 屏幕上是 **1 次** replan（撞第二个码就一票否决），**不是「重试到上限」**——
@@ -224,7 +230,7 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 **「PPT 页」列填的是页锚，不是页码。** 页锚与 [`docs/ppt-outline.md`](ppt-outline.md)（Z-1 轨）
 共用同一套编号，由编排侧钉死：
 
-```
+```text
 P1  封面·一句话主张     P2  评委三段反馈      P3  从一条退款说起    P4  架构一眼
 P5  状态机与七道闸      P6  AgentTeams 事件链 P7  Skill/ToolPort    P8  RAG 面向规划
 P9  权威事实边界        P10 失败路径纵切      P11 一条命令核验      P12 同一内核两个域

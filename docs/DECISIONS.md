@@ -1393,3 +1393,14 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 |---|---|---|---|---|
 | 2026-08-31 | P7 | 真房间跑三幕演示时实测到：一次**审批已经生效**的运行报了 `exit=2`，并打出 `未等到审批（300s 超时）—— 任务仍停在 DONE` 这句自相矛盾的话。成因是判据取错了面 —— `on_message` 的 `decided.set()` 排在 `bridge.handle_message()` 之后，而后者要同步把回执发进房间，429 限流下实测撞满 30s `RoomSendTimeout`；`hq.decide()` 早已落库，事件却还没置位 | **当场改**，不走「记 BACKLOG 不当场改」：`hiclaw/room_demo.py` 新增 `wait_for_decision()`，判据从「事件置位」改成「事件置位 **或** 库里任务已离开 BLOCKED」，取先到者；超时分支在 `bus.drain()` + `mirror.stop()` 之后再复查一次，落在那 1s 窗口里的判定按已生效处理并打一行 `[迟到]` 到 stderr | 这是抬头第 3 条「超时不许伪装成成功」的**反面**：成功也不许伪装成超时，两者的判据都只能是库。不当场改的代价是演示当天最贵的那种误报 —— 终端说超时、房间说已批准，而人要在台上现场解释哪个算数。偏离铁律 4 是本条记录存在的原因（人类明确要求修）。三条回归挂在 `test_room_wiring.py` 第 3 节，**逐个撤掉修复都能让对应用例变红**；全量 `1117 passed / 39 skipped`（基线 1114），`run.py` 与 `gen_docs --check` 均 exit=0 |
 | 2026-08-31 | P7 | 上面那条修复要不要在真房间里实证「晚到 30s 仍算数」这一面 | **不实证，只留变异检验**；另跑两次真链路回归（真超时 → `exit=2` 且判词说 `BLOCKED`；正常批准 → `终态 DONE/DONE`、`exit=0`） | 那个窗口只有 30 秒宽，且命令何时落房由 **Element 客户端自己的发送队列**决定（实测一次 16:24:45 打出的命令，房间时间戳是 16:25，机器人收时已过预算）——掐点复现靠运气，跑绿了也不能算判据。可复现的部分已由变异检验覆盖，不可复现的部分不假装验过 |
+
+## task-mcp-2026-09-01（第一个 MCP 工具落地）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | 四个已实现工具里迁哪一个到 MCP | **一个都不迁，新增 `git-mcp`** | `git-mcp` 这个名字此前已经在 `agents/coding.py:33` 的 `allowed_tools` 里（且 `:42` 真的在跑 `check_tool`）、在 `code_repo_patch.py:169` 的 `depends_tools` 里，却没有任何 ToolPort 实现它 —— 白名单放行了一个不存在的东西。补它同时消掉两个洞，而迁 `sandbox.*` / `gateway.*` 各自有硬障碍（见 `docs/BACKLOG.md` 的 `## task-mcp`） |
+| 2026-09-01 | P8 | 用官方 `mcp` Python SDK 还是手写协议 | **手写 JSON-RPC over stdio**（`maos/tools/mcp/protocol.py`，约 90 行） | `pyproject.toml` 的 `dependencies = []` 是被当契约维护的，官方 SDK 会拉进 pydantic / httpx / anyio 一整串。同样的取舍 `maos/model/client.py` 已经做过一次（OpenAI 兼容协议用 urllib 手写）。协议版本钉死 `2025-06-18`，握手对不上即停，不猜 |
+| 2026-09-01 | P8 | `git-mcp` 取到的基线放多少进提示词 | **只放 `repo@sha7` 与工作树干净与否三个短标量，不放文件正文** | `ScriptedModelClient` 按 `kw in user` 子串匹配取第一个命中的键（`model/client.py:66`）。往提示词里灌仓库正文会凭空多出误命中，而那种失配表现成「模型答非所问」，查起来会绕很远。想读文件内容的话 `git_show_file` 一直在，是调用方要不要用的问题 |
+| 2026-09-01 | P8 | MCP 连不上时要不要回落本地 `git` | **不回落，一律抛 `McpError`** | 悄悄降级会让「这一步到底走没走 MCP」在证据里查不出来 —— 那比不接更坏。口径同全仓：`AlipaySandboxAdapter` 抛 `NotImplementedError` 而非返假数据、`get_gateway` 取不到就抛、`create_store` 绝不回落 sqlite。超时（默认 15s）同时**杀掉子进程**，不留孤儿 |
+| 2026-09-01 | P8 | `invoke_tool` 的 params 里 root 传绝对路径还是相对路径 | **传仓库相对路径 `scenarios/fixture-repo`，在 entry 里按仓库根解析** | params 的 sha256 摘要要落进 `ToolInvoked` 审计行。传绝对路径的话同一次调用在两台机器上摘要不同，且 `/Users/<某人>/...` 会原样进证据束 —— 既不可比，也没必要。`test_mcp_git_tool.py::test_fixture_root_does_not_drift_from_sandbox` 守着它与 `sandbox.FIXTURE_REPO` 不漂 |
+| 2026-09-01 | P8 | `scripts/gen_docs.py` 里「N 个工具的 entry 都是进程内函数」那句话 | **改成按 entry 所属模块自动分组**，不手写名单 | 加了 MCP 工具之后原话变成假话，而 `docs/toolport-contract.md` 是生成物、`--check` 不一致即非零退出。名单一旦手写，加工具的人忘了改它这一节就开始说假话 —— 而这一节恰好是评分规则点名的那一条。顺带修掉同一函数里写死的「分布在 … **两**处」 |

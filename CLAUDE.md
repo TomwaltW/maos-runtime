@@ -66,7 +66,7 @@ python3 run.py                     # 场景 1-7 端到端（Scripted 模式，�
 
 ## 目录结构
 
-```
+```text
 maos/            正式 Python 包
   contracts/       冻结契约：events.py / states.py（禁改）
   core/            store.py（表结构禁改，只许新增表）/ control_plane.py / eventbus.py

@@ -107,6 +107,17 @@ def code(text: str) -> str:
     return f"`{text}`"
 
 
+#: 小数目的中文数词。只覆盖 1..10，超出就退回阿拉伯数字 —— 生成物里宁可写
+#: 「分布在 … 11 处」也不许写错一个「两」字。
+_NUM_CN = "〇一二三四五六七八九十"
+
+
+def num_cn(n: int) -> str:
+    if n == 2:
+        return "两"                      # 「两处」不说「二处」
+    return _NUM_CN[n] if 0 <= n <= 10 else str(n)
+
+
 def fmt(value) -> str:
     """把 Identity / 契约里的值排成人能读、且顺序稳定的一格。"""
     if isinstance(value, (set, frozenset)):
@@ -495,6 +506,9 @@ def render_toolport_contract() -> str:
     groups: dict[str, list[dict]] = {}
     for t in tools:
         groups.setdefault(t["module"].__name__, []).append(t)
+    # 「分布在 X、Y 两处」写死过一个「两」字：模块数一变这句就是假话，而生成物
+    # 每次都重写，假话会一路刷进提交材料。数量一律由 len() 出，不由手写的数词出。
+    where_count = num_cn(len(groups))
 
     out = [
         "# ToolPort 契约",
@@ -505,7 +519,7 @@ def render_toolport_contract() -> str:
         f"`ToolPort` 是九要素 dataclass（{where_class(ToolPort)}，冻结契约附录 A-6），"
         f"当前扫到 **{len(tools)} 个**已实现工具，分布在 "
         + "、".join(code(m.split('.')[-1]) for m in groups)
-        + " 两处。",
+        + f" {where_count}处。",
         "",
         section("九要素"),
         "",
@@ -564,6 +578,13 @@ def render_toolport_contract() -> str:
                 shown = fmt(value)
             out.append(f"| {code(f.name)} | {label} | {shown} |")
 
+    # 哪些工具的 entry 已经不在本进程里：按 entry 所属模块判，不靠人维护一张名单。
+    # 名单一旦手写，加工具的人忘了改它，这一节就会开始说假话 —— 而这一节恰好是
+    # 评分规则点名的那一条（「未使用 Metrics、RAG、MCP，且未说明理由」）。
+    mcp_tools = [t for t in tools
+                 if getattr(t["port"].entry, "__module__", "").startswith("maos.tools.mcp")]
+    local_tools = [t for t in tools if t not in mcp_tools]
+
     out += [
         "",
         section("迁移到 MCP"),
@@ -577,10 +598,37 @@ def render_toolport_contract() -> str:
         "所以迁移之后，证据束里那条审计行的形状、`scripts/verify.py` 的第 1 项校验、"
         "Identity 的 `allowed_tools` 白名单，全部原样成立。",
         "",
-        "反过来说：**没有做 MCP 迁移**。当前 "
-        f"{len(tools)} 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论"
-        "（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。",
     ]
+
+    if mcp_tools:
+        names = "、".join(code(t["port"].name) for t in mcp_tools)
+        out += [
+            f"**这句话已经不是推论了。** {names} "
+            f"{'这' + num_cn(len(mcp_tools)) + '个工具' if len(mcp_tools) > 1 else '这个工具'}"
+            "的 `entry` 就是一次 MCP stdio 往返（JSON-RPC 2.0，"
+            "`maos/tools/mcp/`：拉起 server → `initialize` 握手 → `tools/call` → 收尸），"
+            "而它落进 `event_log` 的 `ToolInvoked` 行与本地工具的**逐字段同形**。",
+            "",
+            "可当场核验：",
+            "",
+            "```bash",
+            "python3 -m maos.tools.mcp.server --root scenarios/fixture-repo  # 手工起 server",
+            "python3 -m pytest maos/tests/test_mcp_transport.py maos/tests/test_mcp_git_tool.py -q",
+            "```",
+            "",
+            f"其余 {len(local_tools)} 个工具的 `entry` 仍是进程内函数 —— "
+            "**这是刻意的，不是没来得及**："
+            "`sandbox.*` 的隔离论证（容器 `--network none --read-only`）独立成立，"
+            "换传输层要重新论证一遍等价性而收益为零；"
+            "`gateway.*` 则把 `GatewayPort` 活对象当参数传，跨进程前必须先重构成"
+            "「server 侧持有 gateway」。两条都记在 `docs/BACKLOG.md`。",
+        ]
+    else:
+        out += [
+            "反过来说：**没有做 MCP 迁移**。当前 "
+            f"{len(tools)} 个工具的 `entry` 都是进程内函数，上面这段是接口层面的推论"
+            "（`entry` 是 `Callable`，替换点唯一），不是已跑通的事实。",
+        ]
     return "\n".join(out) + "\n"
 
 

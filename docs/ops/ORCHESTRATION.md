@@ -256,7 +256,7 @@ REVIEW.md 全部「必须写进 contracts.md / 由 Task-0 定死」修正项的�
 ## 6. 待拍板
 
 **T-01 · Task-0 的范围**（2026-08-27，由人类手写 Task-0 单与看板任务卡冲突引发）：
-- **选项 A（编排建议）**：维持看板全量范围 —— 契约冻结 + skills 框架三件（contract/registry/invoker）+ flows/ 四场景迁移 + store.py +knowledge 表 + worker/base 改造 + run.py/main.py 分发器。理由：这些文件是 A/C/D 的开工前置（C 的独占清单里 `flows/scenario_1/2.py`、A 的 invoker 链路、D 的 knowledge 沉淀都依赖它们），收窄后五轨开工即撞缺失文件。
+- **选项 A（编排建议）**：维持看板全量范围 —— 契约冻结 + skills 框架三件（contract/registry/invoker）+ flows/ 四场景迁移 + store.py +knowledge 表 + worker/base 改造 + run.py/main.py 分发器。理由：这些文件是 A/C/D 的开工前置（C 的独占清单里 `flows/scenario_{1,2}.py`、A 的 invoker 链路、D 的 knowledge 沉淀都依赖它们），收窄后五轨开工即撞缺失文件。
 - **选项 B**：按手写单收窄为「纯契约冻结」（contracts.md + 注册自动发现 + gitignore + 一条测试）。若选 B，必须同时拍板：skills 框架、flows 迁移、knowledge 表**另归谁做、何时做**，否则 G2 过闸即放五轨进场撞墙。
 - 未拍板前 Task-0 不派单。
 - 2026-08-27 13:12 进展：人类改走自有框架文件路线（`~/maos-dispatch/task-0.md`，编排只做展开/核对/出 diff）。范围之争细化为差异清单 **D-1..D-12**（见 §7 日志 13:12 行与编排会话输出）；人类逐条裁决完毕即视为 T-01 了结。

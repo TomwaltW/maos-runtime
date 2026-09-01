@@ -130,7 +130,7 @@ MAOS_EXPECT_VERIFY='RESULT: 8/8 PASS' bash scripts/demo_preflight.sh   # -> exit
 （`.gitignore`），干净检出上根本不存在；没跑过 `make_evidence.py` 就敲镜 7 的查询，
 屏幕上是（实测原文）：
 
-```
+```text
 Error: unable to open database "evidence/scenario-7/maos.db": unable to open database file
 ```
 
@@ -168,7 +168,7 @@ python3 run.py --scenario 7
 
 **画面上要指出的**（实跑输出）：
 
-```
+```text
 Plan: FAILED  |  处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常
   · 受理多源退款诉求并聚合证据                        DONE             attempt=1 risk=L
   · 按下单锁定的政策版本裁定退款资格                     DONE             attempt=1 risk=L
@@ -186,7 +186,7 @@ Plan: FAILED  |  处理客户对轴承订单的退款诉求：政策与金额均
 
 **操作**：用编辑器打开证据文件，镜头给到文件内容（比在终端 `cat` 一大段 JSON 好看）：
 
-```
+```text
 evidence/scenario-7/business-objects.json    # 政策裁定产物：规则编号 + 版本 + 依据
 ```
 
@@ -269,7 +269,7 @@ cat evidence/scenario-R5/run.log
 🔴 **第一条命令屏幕上只有 3 行。** `27c9e18` 实测（stdout 2 行 + stderr 1 行，
 终端上混在一起）：
 
-```
+```text
 [task-nokb-intake] plan_defect —— 机器返工修不好，一次转人工，不再重发
 
 证据束已落盘：/…/evidence/scenario-R5
@@ -285,7 +285,7 @@ cat evidence/scenario-R5/run.log
 
 **镜头**：`cat run.log` 的输出，重点在 `[2/3]`、`[3/3]` 和最后两行。
 
-```
+```text
 场景 R5：RAG 有无对照实验，无 key 确定性复现
 
 [1/3] 准备段：跑一条完整成功的退款 case，收口后按晋升规则沉淀知识
@@ -338,7 +338,7 @@ cat evidence/scenario-R5/run.log
 
 **镜头**：回到主终端（场景 7 的输出），指状态迁移轨迹里的这两行。
 
-```
+```text
     task-s7-finance  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
     task-s7-finance  BLOCKED          -> DONE             [human_approve]
 ```
@@ -357,7 +357,7 @@ cat evidence/scenario-R5/run.log
 
 **镜头**：主终端的业务输出 `[2]`、`[3]` 两段 —— 这是本镜的主画面。
 
-```
+```text
 [2] 第七道闸认出网关回执: code=40005 retriable=True outcome=failed -> disposition=replan_channel
     网关回执 40005（调用频次超限）：retriable=True / outcome=failed —— 网关在入口就拒了，这一笔业务确定没执行，可以换渠道重发。官方处置：降低请求并发量
     → 触发 replan 重规划：付款任务换渠道 s7-primary -> s7-backup；幂等键由 (tenant, case) 定，换渠道不换键，不会造出第二笔
@@ -371,7 +371,7 @@ cat evidence/scenario-R5/run.log
 
 **再给一眼状态迁移轨迹**（同一屏往下滚，换渠道在状态机上留的痕）：
 
-```
+```text
     task-s7-payment  AWAITING_REVIEW  -> REWORK           [gate_rework]
     task-s7-payment  REWORK           -> PENDING          [requeue]
     task-s7-payment  PENDING          -> DISPATCHED       [dispatch]
@@ -404,7 +404,7 @@ cat evidence/scenario-R5/run.log
 
 **镜头**：主终端最后五行 —— 这是整个 Demo 的题眼，停久一点。
 
-```
+```text
   业务状态  : compensated（全程没有经过 settled）
   settled 观察: 0 条 —— 没问出终态就一条都不该有
   补偿记录  : 2 行 ['manual_ticket', 'refund_request_revoked']
@@ -447,7 +447,7 @@ python3 -m pytest maos/tests -k "unlisted_skill or whitelist_still_bites or outs
 
 `27c9e18` 实测（0.15s）：
 
-```
+```text
 [OK]    docs/agent-identity.md
 [OK]    docs/skill-catalog.md
 [OK]    docs/toolport-contract.md
@@ -462,13 +462,23 @@ python3 -m pytest maos/tests -k "unlisted_skill or whitelist_still_bites or outs
 输入输出、失败策略、依赖工具、安全边界。这张目录从代码里的契约实例生成，
 **改了代码不重跑就红**。
 
+**可选一句（默认不念）**：「五个工具里，`git-mcp` 走 MCP —— 只换入口一项。」
+
+> 🔴 **默认不念。** 这句约 15 字 ≈ 3.7s，而镜 7 的富余只有 +4.0s —— 念了就把
+> 「每一镜富余 ≥ 2.8s」的底线击穿。真要念，按惯例**先从镜 3（富余 +5.2s）借 4 秒**，
+> 并同步刷逐镜耗时表；不借就不念。MCP 的完整陈述评委在 PPT P7 与
+> `docs/gateway-rationale.md` §8 都看得到（后者有两条能当场跑的命令），
+> 不差 demo 里这一句。
+> 万一评委追问，台上**不许说**「接入了 MCP 生态」：装的不是官方 SDK，协议是手写的；
+> 也**不许说**「模型自己选工具」——那是 function calling，本仓库刻意没做（A-12 冻结）。
+
 ---
 
 ### 第二段（约 19s）　镜头：`sqlite3` 那一屏 —— 本镜的主画面
 
 `27c9e18` 实测（0.01s，87 列宽，100 列窗口不换行）：
 
-```
+```text
 seq  task_id          skill              ver    status  ms  input_digest  invocation_id
 ---  ---------------  -----------------  -----  ------  --  ------------  -------------
 4    task-s7-intake   issue.aggregate    1.0.0  ok      0   940c6d861a    18a47d315c
@@ -505,7 +515,7 @@ seq  task_id          skill              ver    status  ms  input_digest  invoca
 
 `27c9e18` 实测（0.48s）：
 
-```
+```text
 maos/tests/test_agents_gate.py::test_identity_whitelist_still_bites PASSED [ 33%]
 maos/tests/test_registry_autodiscovery.py::test_unlisted_skill_raises_permission_denied PASSED [ 66%]
 maos/tests/test_skills.py::test_invoke_outside_whitelist_raises_permission_denied PASSED [100%]
@@ -554,7 +564,7 @@ warn 说的是产物来源可审计性，出处已记在 `docs/BACKLOG.md task-X
 
 七行实跑值（`27c9e18` 实测，T 轮重跑复核 —— 与上一轮 `2474c56` 逐字一致）：
 
-```
+```text
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
@@ -569,7 +579,7 @@ RESULT: 8/8 PASS
 
 末尾还有一行，一并给到镜头：
 
-```
+```text
 证据来源：scenario-1, scenario-2, scenario-3, scenario-4, scenario-5, scenario-6, scenario-7, scenario-R5
 ```
 
@@ -799,3 +809,16 @@ Y-4 已并入（`783d9dd`），下面四条**已按实跑回填**：
 > 回填时的红线不变：**不许演不存在的功能。** 每一条改完都要实跑一次，
 > 屏幕上看得到才许写进念词。本轮第 3、4、5、8、9 条全是「上一版写的画面已经不在屏幕上了」——
 > 分镜放几天就会长出这种失真，**每轮都得重跑一遍，不能靠读**。
+
+---
+
+## MCP 落地回填台账（2026-09-01）
+
+`git-mcp` ToolPort 落地当天（`maos/tools/mcp/`，entry 真走 MCP stdio），本分镜只动了一处：
+
+| # | 镜／节 | 改动 | 依据 |
+| :-- | :-- | :-- | :-- |
+| 1 | 镜 7 第一段 | 加一条**默认不念**的可选句（「五个工具里，`git-mcp` 走 MCP —— 只换入口一项」，约 15 字 ≈ 3.7s）。默认不念的原因：镜 7 富余只有 +4.0s，念了就击穿「每镜富余 ≥ 2.8s」的底线；要念先从镜 3 借 4s 并刷耗时表。逐镜耗时表因此**一字未动**。附红字禁语两条：不许说「接入了 MCP 生态」（官方 SDK 没装，协议手写）、不许说「模型自己选工具」（A-12 冻结，刻意没做） | `evidence/scenario-1/trace.json` 的 `tool:git-mcp` span；`docs/DECISIONS.md` 的 `## task-mcp-2026-09-01` |
+
+念词里的数字「五个」与 `gen_docs` 扫描结果同步；**并入新域工具（ap/claim/investigation 等）后
+这个数会变，录制前照惯例重跑 `python3 scripts/gen_docs.py --check` 并按当时的数念**。

@@ -18,12 +18,15 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
 
 from hiclaw import room_demo
-from hiclaw.matrix_bus import (ENV_APPROVERS, EVENT_APPROVAL_DENIED, MatrixBusConfig,
+from hiclaw.matrix_bus import (DEGRADE_CONNECT, DEGRADE_DEPS, DEGRADE_ENV,
+                               ENV_APPROVERS, EVENT_APPROVAL_DENIED, VENV_PYTHON,
+                               MatrixBusConfig,
                                RoomApprovalBridge)
 from hiclaw.transition_mirror import MIRRORED_EVENT_TYPES, TransitionMirror
 from maos.contracts.states import TaskState
@@ -368,3 +371,140 @@ def test_timeout_is_not_disguised_as_success(monkeypatch):
     monkeypatch.setenv(ENV_APPROVERS, APPROVER)
     assert room_demo.run_demo(
         "approve", timeout=0.3, auto_approve=False) == room_demo.EXIT_TIMEOUT
+
+
+# 上一条的**反面**，三条一起守：成功也不许伪装成超时。
+#
+# 成因不是「等得不够久」，是判据取错了面：`on_message` 的 `decided.set()` 排在
+# 「把回执发进房间」之后，而那一步在 Synapse 限流下实测撞满 30s RoomSendTimeout。
+# 判定早生效了，事件还没置位 —— 于是一次成功的运行报 exit=2，并打出
+# 「未等到审批 …… 任务仍停在 DONE」这种自相矛盾的行（2026-08-31 三幕演示实测）。
+def test_decision_is_judged_by_the_store_not_only_by_the_event(blocked):
+    """`decided` 迟迟不置位时，判据必须是库里的状态。
+
+    用一个**永不置位**的 Event 把那 30s 压缩成确定性：判定生效了，事件没来。
+    """
+    store, _bus, cp, _plan_id, task = blocked
+    task_id = task["task_id"]
+    never = threading.Event()               # 模拟回执卡在 30s RoomSendTimeout 里
+
+    # 还停在 BLOCKED：等不到就是等不到，这一条不许被上面那句话带松
+    assert room_demo.wait_for_decision(store, task_id, never, 0.3) is False
+
+    HumanApprovalQueue(store, cp).decide(task_id, approved=True, operator=APPROVER)
+    assert room_demo.wait_for_decision(store, task_id, never, 0.3) is True, (
+        "判定已经落库、只是事件没置位 —— 这也算等到了")
+
+
+def test_a_decision_landing_during_flush_is_not_called_a_timeout(monkeypatch):
+    """`wait` 返回之后、判超时之前还有一个窗口：`bus.drain()` + `mirror.stop()`。
+
+    后者实测要 1s 上下（它等镜像线程收口）。审批落在那里面时必须按已生效处理。
+    这里把 `wait_for_decision` 钉死成「没等到」，而房间那边判定其实已经生效。
+    """
+    room = ScriptedRoom(APPROVER)           # listen 一挂上就批准，判定当场落库
+    monkeypatch.setattr(room_demo, "bus_channel", lambda bus: room)
+    monkeypatch.setattr(room_demo, "wait_for_decision", lambda *a, **kw: False)
+    monkeypatch.setenv(ENV_APPROVERS, APPROVER)
+
+    assert room_demo.run_demo(
+        "approve", timeout=1, auto_approve=False) == room_demo.EXIT_OK
+
+
+def test_real_timeout_still_names_blocked_in_the_verdict(monkeypatch, capsys):
+    """真超时那句话必须说 BLOCKED —— 它现读状态，曾经打出过「任务仍停在 DONE」。"""
+    monkeypatch.setattr(room_demo, "bus_channel", lambda bus: RecordingChannel())
+    monkeypatch.setenv(ENV_APPROVERS, APPROVER)
+
+    assert room_demo.run_demo(
+        "approve", timeout=0.3, auto_approve=False) == room_demo.EXIT_TIMEOUT
+    err = capsys.readouterr().err
+    assert "未等到审批" in err
+    assert f"任务仍停在 {TaskState.BLOCKED}" in err, (
+        "判词现读状态：它说的状态必须就是拦住这次运行的那个")
+
+
+# --------------------------------------------------------------------------
+# 4. 「没进房间」不许被报成成功（runbook 抬头那一节）
+# --------------------------------------------------------------------------
+# 这一节只守一件事：**退出码**。降级的终端输出与真房间的输出形态一模一样 ——
+# 「房间消息」照刷、终态照打 —— 所以退出码是唯一能把两者分开的东西，
+# 而它原来两边都是 0。截那个终端窗口当证据，与真房间的证据无法分辨。
+
+
+def _degraded_bus_with(monkeypatch, reason: str) -> None:
+    """让装配出来的总线自称是某种降级。只改原因，不改行为。"""
+    real_build = room_demo.build
+
+    def _build(*a, **kw):
+        parts = real_build(*a, **kw)
+        bus = parts[1]
+        bus.degrade_reason = reason
+        bus.degrade_detail = f"用例注入的 {reason}"
+        return parts
+
+    monkeypatch.setattr(room_demo, "build", _build)
+    monkeypatch.setattr(room_demo, "bus_channel", lambda bus: None)
+
+
+@pytest.mark.parametrize("reason", [DEGRADE_DEPS, DEGRADE_CONNECT])
+def test_wanting_a_room_and_not_getting_one_is_not_exit_zero(monkeypatch, reason, capsys):
+    """配齐了 MATRIX_* 却没进成房间 —— 必须非 0，且**不跑**降级流程。
+
+    跑完降级流程再 exit=0 的话，这一轮看起来像一次成功的取证：终端上「房间消息」
+    一条不落、终态照打。而房间里一条都没有。这是整条链路最贵的一步。
+    """
+    _degraded_bus_with(monkeypatch, reason)
+    assert room_demo.run_demo("approve", timeout=10, auto_approve=True) == \
+        room_demo.EXIT_NO_ROOM
+
+    captured = capsys.readouterr()
+    assert "[没进房间]" in captured.err
+    assert "终态" not in captured.out, "拦下了却还是把演示跑完了"
+    assert "--allow-degraded" in captured.err, "没告诉人怎么显式降级"
+
+
+def test_no_room_verdict_names_the_interpreter(monkeypatch, capsys):
+    """没装 matrix-nio 那一档，报错里要有能直接粘的那条命令。"""
+    _degraded_bus_with(monkeypatch, DEGRADE_DEPS)
+    room_demo.run_demo("approve", timeout=10, auto_approve=True)
+
+    err = capsys.readouterr().err
+    assert "matrix-nio" in err and VENV_PYTHON in err, err
+
+
+def test_allow_degraded_is_the_explicit_way_back_to_exit_zero(monkeypatch, capsys):
+    """显式承认不进房间就照旧走完全程 —— 闸门拦的是**默认**，不是这条路。"""
+    _degraded_bus_with(monkeypatch, DEGRADE_DEPS)
+    assert room_demo.run_demo("approve", timeout=10, auto_approve=True,
+                              allow_degraded=True) == room_demo.EXIT_OK
+
+    captured = capsys.readouterr()
+    assert "[降级放行]" in captured.err, "放行了却没说这一轮没进房间"
+    assert "终态: task=DONE" in captured.out
+
+
+def test_never_meant_to_use_a_room_still_exits_zero(monkeypatch):
+    """反向对照：四个 env 一个都没配 = 明确的降级自检意图，退出码不变。
+
+    少了这一半，上面几条在「一降级就非 0」的实现下也全绿 —— 而那会把 CI 与
+    runbook 依赖的无房间自检整条打掉。
+    """
+    _degraded_bus_with(monkeypatch, DEGRADE_ENV)
+    assert room_demo.run_demo("approve", timeout=10, auto_approve=True) == \
+        room_demo.EXIT_OK
+
+
+def test_selfcheck_line_says_which_interpreter_ran_it():
+    """开工第一行必须写明解释器与 matrix-nio 能不能导入。
+
+    这是唯一一个**看终端分辨不出来**的失效形态，所以不能靠人记得去查。
+    """
+    import sys as _sys
+
+    line = room_demo.selfcheck_line()
+    assert _sys.executable in line
+    assert "matrix-nio" in line
+    # matrix-nio 这个包没有 __version__ 属性，``getattr(nio, "__version__", "?")``
+    # 会恒取到问号 —— 而这一行是要被截进证据的，一栏恒定的 ? 等于白写。
+    assert "matrix-nio ?" not in line, f"版本号取法又退回 __version__ 了：{line}"

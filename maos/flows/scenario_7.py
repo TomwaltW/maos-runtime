@@ -86,6 +86,7 @@
 from __future__ import annotations
 
 import json
+from typing import Callable
 
 from maos.agents.base import AgentIdentity
 from maos.agents.manager import ManagerAgent
@@ -561,7 +562,12 @@ def seed_second_order(store) -> None:
          1, "{}", C.now_iso()))
 
 
-def drive_human_exit(*, store, bus, cp, gate, hq) -> dict:
+DecisionApplier = Callable[[bool, str, str], None]
+DecisionHook = Callable[[dict, bool, DecisionApplier], None]
+
+
+def drive_human_exit(*, store, bus, cp, gate, hq,
+                     decision_hook: DecisionHook | None = None) -> dict:
     """第二笔：网关判「交易不存在」→ 控制面第三出口 → **一次**干净的转人工。
 
     ## 这一段在演什么
@@ -606,9 +612,19 @@ def drive_human_exit(*, store, bus, cp, gate, hq) -> dict:
         f"第二笔也应先停在财务核算的人工审批上，实际 {[t['task_id'] for t in pending]}")
     print(f"\n[6] 待主管审批: {pending[0]['title']}（既有的 effect_risk=H 入口，未改动）")
 
-    C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=APPROVER,
-                      decision="approved", reason="金额与订单锁定的政策 v1 一致")
-    hq.decide(TASK_FINANCE_2, approved=True, operator=APPROVER, note="已核对金额与政策版本")
+    if decision_hook is None:
+        C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=APPROVER,
+                          decision="approved", reason="金额与订单锁定的政策 v1 一致")
+        hq.decide(TASK_FINANCE_2, approved=True, operator=APPROVER,
+                  note="已核对金额与政策版本")
+    else:
+        def apply_finance_decision(approved: bool, operator: str, note: str) -> None:
+            C.record_approval(
+                store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=operator,
+                decision="approved" if approved else "rejected", reason=note)
+            hq.decide(TASK_FINANCE_2, approved=approved, operator=operator, note=note)
+
+        decision_hook(pending[0], True, apply_finance_decision)
     run_until_settled(bus, gate, cp, plan_id)
 
     # —— 付款撞终态失败码：第三出口 ——
@@ -619,6 +635,10 @@ def drive_human_exit(*, store, bus, cp, gate, hq) -> dict:
     blocked = [e for e in moves if e["to_state"] == TaskState.BLOCKED]
     detail = blocked[-1]["detail"] if blocked else {}
     receipt2 = receipt_artifact(store, TASK_PAYMENT_2)
+    payment_pending = hq.pending(plan_id)
+    assert [t["task_id"] for t in payment_pending] == [TASK_PAYMENT_2], (
+        f"付款任务应停在 BLOCKED 等人处置，实际 "
+        f"{[t['task_id'] for t in payment_pending]}")
 
     print(f"\n[7] 第七道闸认出网关回执: code={receipt2['receipt']['code']} "
           f"retriable={receipt2['receipt']['retriable']} "
@@ -632,15 +652,30 @@ def drive_human_exit(*, store, bus, cp, gate, hq) -> dict:
     print(f"    无谓返工 {len(reworks)} 次 —— 改造前这里是 2 次，"
           f"屏幕上会出现三条一模一样的失败日志")
     print(f"    证据: {detail.get('evidence')}")
-    print(f"    人工队列捞到: {[t['task_id'] for t in hq.pending(plan_id)]} "
+    print(f"    人工队列捞到: {[t['task_id'] for t in payment_pending]} "
           f"—— BLOCKED 而没人捞得到就是静默挂起，比 FAILED 更糟")
 
     # —— 第二次人工介入：主管按官方 remedy 判「改单重来」，不是再发一次 ——
-    C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=APPROVER,
-                      decision="rejected", reason=REJECT_REASON_2)
-    hq.decide(TASK_PAYMENT_2, approved=False, operator=APPROVER, note=REJECT_REASON_2)
+    payment_decision_note = REJECT_REASON_2
+    if decision_hook is None:
+        C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=APPROVER,
+                          decision="rejected", reason=REJECT_REASON_2)
+        hq.decide(TASK_PAYMENT_2, approved=False, operator=APPROVER, note=REJECT_REASON_2)
+    else:
+        applied_notes: list[str] = []
+
+        def apply_payment_decision(approved: bool, operator: str, note: str) -> None:
+            C.record_approval(
+                store, tenant_id=TENANT_ID, case_id=CASE_ID_2, approver=operator,
+                decision="approved" if approved else "rejected", reason=note)
+            hq.decide(TASK_PAYMENT_2, approved=approved, operator=operator, note=note)
+            applied_notes.append(note)
+
+        decision_hook(payment, False, apply_payment_decision)
+        if applied_notes:
+            payment_decision_note = applied_notes[-1]
     bus.drain()
-    print(f"\n[9] 主管处置: {REJECT_REASON_2} —— 人决定改单，MAOS 不替他决定")
+    print(f"\n[9] 主管处置: {payment_decision_note} —— 人决定改单，MAOS 不替他决定")
 
     dump(cp, plan_id, "场景 7 第二段：终态失败码一次干净转人工")
     return {"plan_id": plan_id, "trace_id": trace_id, "task": store.get_task(TASK_PAYMENT_2),

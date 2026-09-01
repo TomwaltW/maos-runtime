@@ -32,7 +32,7 @@ matrix.org 私密房间」那条后路。
 自动写进 `homeserver.yaml` 的 `registration_shared_secret`，`docker exec` 一条命令就能建
 账号，全程无需 GUI、无需人类。本轨三个账号全部是脚本注册的：
 
-```
+```text
 [up] 账号 maos-bot 已注册
 [up] 账号 boss 已注册
 [up] 账号 intern 已注册
@@ -57,7 +57,7 @@ matrix.org 私密房间」那条后路。
 
 两个镜像的 label 都指向 element-hq 官方仓库：
 
-```
+```bash
 $ docker image inspect ghcr.nju.edu.cn/element-hq/synapse:latest --format '{{json .Config.Labels}}'
 {
     "gitsha1": "7b10e6b9bc2dacc33f0974c999f640b55ef831bc",
@@ -68,7 +68,7 @@ $ docker image inspect ghcr.nju.edu.cn/element-hq/synapse:latest --format '{{jso
 
 ⚠️ **别拿 digest 当一致性证据**：南大镜像站的 `latest` tag 缓存落后于 ghcr.io，同日实测
 
-```
+```text
 本地（南大源拉到的）    sha256:18db676dd9f1a053edcf3033a78daeff035b773d58e5bc68802e379947332302
 ghcr.io 官方 latest     sha256:20ac3981c3477972efdf6be97accb428a1fad999694ed1c7a85c2d86c7fd1fb5
 ```
@@ -84,7 +84,7 @@ ghcr.io 官方 latest     sha256:20ac3981c3477972efdf6be97accb428a1fad999694ed1c
 
 ### 症状
 
-```
+```bash
 $ docker pull ghcr.io/element-hq/synapse:latest
 （并行两个 pull 跑满 10 分钟，一层未落地，Images 总体积零增长，被超时杀掉）
 
@@ -96,7 +96,7 @@ context deadline exceeded
 
 ### 定位：宿主机有代理，Docker 没走
 
-```
+```bash
 $ env | grep -i proxy
 NO_PROXY=localhost,127.0.0.1,::1
 HTTPS_PROXY=http://127.0.0.1:7897
@@ -109,7 +109,7 @@ $ docker info --format '{{json .HTTPProxy}} {{json .HTTPSProxy}}'
 宿主机 shell 走 `127.0.0.1:7897`，docker daemon 走 Docker Desktop 内置的
 `http.docker.internal:3128` —— **两套代理，daemon 那套出不了境**。三个交叉验证：
 
-```
+```bash
 # 容器里访问境外 registry：超时
 $ docker run --rm python:3.11-slim python3 -c "import urllib.request as u; \
     print(u.urlopen('https://registry-1.docker.io/v2/', timeout=15).status)"
@@ -136,7 +136,7 @@ SSL 握手阶段才报错 = TCP 与代理都通，只是 macOS 的 Python.framew
 
 `docker manifest inspect` 是最快的探针（走 CLI 直连，几秒出结果，不用等 blob）：
 
-```
+```text
 docker.1ms.run       -> {            （可用）
 docker.xuanyuan.me   -> toomanyrequests: 免费节点当前繁忙，请稍后重试。
 hub.rat.dev          -> {            （可用）
@@ -163,7 +163,7 @@ ghcr.rat.dev         -> ... EOF
 
 ### 4.1 generate（只做一次）
 
-```
+```bash
 $ docker run --rm -v maos_synapse:/data \
     -e SYNAPSE_SERVER_NAME=maos.local -e SYNAPSE_REPORT_STATS=no \
     ghcr.nju.edu.cn/element-hq/synapse:latest generate
@@ -179,7 +179,7 @@ A config file has been generated in '/data/homeserver.yaml' for server name 'mao
 
 ### 4.2 起服务 + 就绪探测
 
-```
+```bash
 $ docker run -d --name maos-synapse -v maos_synapse:/data -p 8008:8008 \
     ghcr.nju.edu.cn/element-hq/synapse:latest
 
@@ -189,7 +189,7 @@ $ curl -s http://localhost:8008/_matrix/client/versions | head -c 120
 
 ### 4.3 注册三个账号（无需人类）
 
-```
+```bash
 $ docker exec maos-synapse register_new_matrix_user \
     -u maos-bot -p '<redacted>' --no-admin -c /data/homeserver.yaml http://localhost:8008
 ```
@@ -200,7 +200,7 @@ $ docker exec maos-synapse register_new_matrix_user \
 
 ### 4.4 取 token → 建非加密房 → 自查
 
-```
+```bash
 $ curl -s -XPOST http://localhost:8008/_matrix/client/v3/login \
     -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"maos-bot"},
          "password":"<redacted>"}'
@@ -219,7 +219,7 @@ $ curl -s -XPOST http://localhost:8008/_matrix/client/v3/createRoom \
 建房时的默认，服务端 API 建房不会自动加密 —— 但「不会」不等于「验过了」，所以 `up.sh`
 每次都自查：
 
-```
+```bash
 $ curl -s -H "Authorization: Bearer <redacted>" \
     http://localhost:8008/_matrix/client/v3/rooms/!xfRqhNYVNyuOMitWVs:maos.local/state/m.room.encryption
 HTTP 404  {"errcode":"M_NOT_FOUND","error":"Event not found."}     ← 期望值
@@ -227,7 +227,7 @@ HTTP 404  {"errcode":"M_NOT_FOUND","error":"Event not found."}     ← 期望值
 
 三人在房：
 
-```
+```bash
 $ curl -s -H "Authorization: Bearer <redacted>" \
     http://localhost:8008/_matrix/client/v3/rooms/$MATRIX_ROOM_ID/joined_members
 HTTP 200  members=["@boss:maos.local", "@intern:maos.local", "@maos-bot:maos.local"]
@@ -235,7 +235,7 @@ HTTP 200  members=["@boss:maos.local", "@intern:maos.local", "@maos-bot:maos.loc
 
 ### 4.5 Element web
 
-```
+```bash
 $ docker run -d --name maos-element -p 8080:80 \
     -v <repo>/deploy/synapse/element-config.json:/app/config.json:ro \
     ghcr.nju.edu.cn/element-hq/element-web:latest
@@ -277,7 +277,7 @@ $ docker run -d --name maos-element -p 8080:80 \
 
 ### 4.6 房间收发自证
 
-```
+```bash
 $ . ~/.maos-matrix/room.env && ~/.maos-matrix/venv/bin/python deploy/synapse/smoke_send.py
 sent event_id=$VGmkV8kLV9rscBEuaVpaLOEsbo0Oc7Xy0CFUYmhTXLI
 echo   body=[smoke] MAOS 房间地基自证 2026-08-29T05:42:17+00:00
@@ -306,7 +306,7 @@ SMOKE OK
 症状识别：口径写错时 `MatrixBusConfig.from_env` 四键俱全、不会报缺配置，而是在
 `_NioChannel` 构造时连接失败，打
 
-```
+```text
 WARNING maos.matrix  Matrix 房间连接失败（...），降级 log-only
 ```
 
@@ -319,7 +319,7 @@ WARNING maos.matrix  Matrix 房间连接失败（...），降级 log-only
 **坑 4：Synapse 的 `rc_login` 限流会打穿幂等。** `up.sh` 第一版每次跑都无条件登三个账号，
 第二次重跑当场炸：
 
-```
+```text
 [up] 失败：登录 intern 失败：Too Many Requests
 up.sh(第二次) exit=1
 ```
@@ -343,7 +343,7 @@ Synapse 默认 `rc_login.failed_attempts/account` 的 `burst_count` 是 3，第�
 
 ## 7. 交给下游的握手件
 
-```
+```text
 ~/.maos-matrix/room.env     chmod 600，8 个键，可 source
 ~/.maos-matrix/creds.txt    chmod 600，三个账号口令（*_USER / *_PASSWORD 成对）
 ~/.maos-matrix/STATUS       READY <ISO8601>     ← T 轮实读 READY 2026-08-29T05:52:11Z

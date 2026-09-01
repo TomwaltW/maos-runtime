@@ -20,16 +20,21 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import sys
 import threading
 import time
 
 import pytest
 
-from hiclaw.matrix_bus import (ACTION_APPROVE, ENC_CLEAR, ENC_ENCRYPTED, ENC_ERROR,
-                               ENV_APPROVERS, ENV_HOMESERVER, ENV_ROOM_ID, ENV_TOKEN,
-                               ENV_USER, EVENT_APPROVAL_DENIED, MAX_MIRROR_FAILURES,
-                               REQUIRED_ENV, USAGE, ApprovalCommand, MatrixBusConfig,
-                               MatrixEventBus, RoomApprovalBridge, encryption_verdict,
+import hiclaw.matrix_bus as matrix_bus
+from hiclaw.matrix_bus import (ACTION_APPROVE, DEGRADE_CONNECT, DEGRADE_DEPS,
+                               DEGRADE_ENV, DEGRADE_NONE, ENC_CLEAR, ENC_ENCRYPTED,
+                               ENC_ERROR, ENV_APPROVERS, ENV_HOMESERVER, ENV_ROOM_ID,
+                               ENV_TOKEN, ENV_USER, EVENT_APPROVAL_DENIED,
+                               MAX_MIRROR_FAILURES, NO_MESSAGE, REQUIRED_ENV, USAGE,
+                               VENV_PYTHON, ApprovalCommand, MatrixBusConfig,
+                               MatrixDepMissing, MatrixEventBus, RoomApprovalBridge,
+                               RoomSendTimeout, describe_exc, encryption_verdict,
                                looks_like_command, open_channel, parse_approval_command,
                                redact, render_mirror, should_deliver)
 from maos.agents.testing import make_test_report, seed_scripted_report
@@ -626,6 +631,18 @@ class _FakeSendError(Exception):
         self.message = message
 
 
+class _FakeSyncError(Exception):
+    def __init__(self, status_code: str = "M_UNKNOWN", message: str = "sync failed") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+class _FakeSyncResponse:
+    def __init__(self, next_batch: str) -> None:
+        self.next_batch = next_batch
+
+
 class _FakeRoomMessageText:
     """占位：只用来当 add_event_callback 的过滤类型。"""
 
@@ -644,6 +661,11 @@ class _FakeAsyncClient:
     # 由用例改写的服务器行为
     whoami_result: object = None
     state_result: object = None
+    #: room_send 拖多久才落地。用来复现「限流退避把 send 拖过超时」那一幕。
+    send_delay: float = 0.0
+    #: sync_forever 是否常驻不返回（真 nio 的形态）。缺省立刻返回够别的用例用，
+    #: 但验收口那条必须有个会一直挂着的版本 —— 否则 close() 里 cancel 那步等于没测。
+    hang_sync: bool = False
 
     def __init__(self, homeserver: str, user: str) -> None:
         self.homeserver = homeserver
@@ -659,6 +681,7 @@ class _FakeAsyncClient:
         self.closed = False
         self.sync_stopped = False
         self.sync_done = threading.Event()
+        self.sync_forever_since = None
         type(self).instances.append(self)
 
     # -- 服务器动作 --
@@ -672,6 +695,11 @@ class _FakeAsyncClient:
 
     async def room_send(self, room_id, message_type, content, **kw):
         self.calls.append("room_send")
+        if type(self).send_delay:
+            import asyncio
+
+            await asyncio.sleep(type(self).send_delay)
+        # 落地在 sleep **之后**：这正是「调用方已经放弃、消息照样送达」那一幕。
         self.sent.append(content)
         return object()
 
@@ -679,12 +707,17 @@ class _FakeAsyncClient:
         self.calls.append(f"sync(filter={sync_filter!r})")
         await self._dispatch(self.history)
         self.next_batch = "s72_1_2_3"
-        return object()
+        return _FakeSyncResponse(self.next_batch)
 
     async def sync_forever(self, timeout=None, **kw):
         self.calls.append("sync_forever")
+        self.sync_forever_since = kw.get("since")
         await self._dispatch(self.live)
         self.sync_done.set()           # 用例靠它等一轮派发跑完，不靠 sleep 猜
+        if type(self).hang_sync:
+            import asyncio
+
+            await asyncio.Event().wait()
 
     async def _dispatch(self, events):
         for room, event in events:
@@ -716,6 +749,7 @@ def fake_nio(monkeypatch):
     module.AsyncClient = _FakeAsyncClient
     module.WhoamiError = _FakeWhoamiError
     module.RoomSendError = _FakeSendError
+    module.SyncError = _FakeSyncError
     module.RoomMessageText = _FakeRoomMessageText
     module.RoomGetStateEventError = _FakeStateError
     monkeypatch.setitem(sys.modules, "nio", module)
@@ -723,8 +757,12 @@ def fake_nio(monkeypatch):
     _FakeAsyncClient.instances = []
     _FakeAsyncClient.whoami_result = _FakeWhoamiResponse(BOT_MXID)
     _FakeAsyncClient.state_result = _FakeStateError("M_NOT_FOUND", "Event not found.")
+    _FakeAsyncClient.send_delay = 0.0
+    _FakeAsyncClient.hang_sync = False
     yield _FakeAsyncClient
     _FakeAsyncClient.instances = []
+    _FakeAsyncClient.send_delay = 0.0
+    _FakeAsyncClient.hang_sync = False
 
 
 def test_channel_asks_whoami_before_touching_the_room(fake_nio):
@@ -783,6 +821,8 @@ def test_first_sync_history_is_not_replayed_as_new_commands(fake_nio):
     assert order[0].startswith("sync("), f"挂回调挂在了跳历史之前：{client.calls}"
     assert order[1] == "add_event_callback"
     assert client.next_batch, "跳历史那次 sync 没把 next_batch 推起来"
+    assert client.sync_forever_since == client.next_batch, (
+        "常驻同步没有显式从已证明的历史边界续跑")
     channel.close()
 
 
@@ -799,6 +839,33 @@ def test_first_sync_uses_zero_timeline_filter(fake_nio):
 
     first_sync = next(c for c in client.calls if c.startswith("sync("))
     assert "'limit': 0" in first_sync, first_sync
+    channel.close()
+
+
+@pytest.mark.parametrize("failure", [
+    "sync-error", "missing-next-batch", "empty-next-batch",
+])
+def test_listener_fails_closed_when_history_boundary_is_not_proven(fake_nio, failure):
+    """首次 /sync 没拿到有效游标时，不得挂回调猜测历史边界。"""
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    client.next_batch = "stale-client-cursor-must-not-count"
+
+    async def broken_sync(*args, **kwargs):
+        client.calls.append("broken_sync")
+        if failure == "sync-error":
+            return _FakeSyncError("M_LIMIT_EXCEEDED", "slow down")
+        if failure == "empty-next-batch":
+            return _FakeSyncResponse("")
+        return object()
+
+    client.sync = broken_sync
+    with pytest.raises(RuntimeError, match="历史|next_batch|sync"):
+        channel.listen(lambda sender, body: None)
+
+    assert client.callbacks == [], "边界未证明就挂回调，会把历史命令当真人新命令"
+    assert channel._sync_task is None
+    assert "sync_forever" not in client.calls
     channel.close()
 
 
@@ -870,3 +937,338 @@ def test_token_field_is_declared_repr_false(fake_nio):
     """
     fields = {f.name: f for f in dataclasses.fields(MatrixBusConfig)}
     assert fields["token"].repr is False, "token 字段的 repr=False 被去掉了（安全边界）"
+
+
+# ==========================================================================
+# 8. 四种「安静地什么都没发生」—— 每一种都必须出声
+# ==========================================================================
+# 这一节守的是 docs/matrix-room-runbook.md §0 那张表里的四行。它们的共同点是：
+# 屏幕上一切正常、退出码是 0、房间里一条消息都没有。真房间取证时逐条撞出来的，
+# 每一条都曾让一整轮跑完之后才发现白跑（T 轮，见 docs/BACKLOG.md ## task-T4）。
+#
+# 判据一律**不是**「日志里有话」，而是「调用方能据此做出不同的动作」：
+# 退出码不同、失败计数不同、线程/循环收干净了。日志措辞另有几条单独钉，
+# 因为那几条恰恰是措辞本身出的问题（空括号）。
+
+
+class _BlockNio:
+    """让 ``import nio`` 抛真正的 ModuleNotFoundError —— 系统 python3 上的形态。
+
+    不用 ``sys.modules["nio"] = None``：那条路抛的是 ``ImportError`` 且 ``.name``
+    是空的，而 :func:`open_channel` 的判据正是 ``exc.name == "nio"``，
+    用假形态测等于没测到那一支。
+    """
+
+    def find_spec(self, name, path=None, target=None):
+        if name == "nio" or name.startswith("nio."):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return None
+
+
+@pytest.fixture
+def no_nio(monkeypatch):
+    """把当前解释器伪装成「没装 matrix-nio」的那一个。"""
+    monkeypatch.delitem(sys.modules, "nio", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_BlockNio(), *sys.meta_path])
+    yield
+
+
+class _TimingOutChannel:
+    """每次 send 都超时的通道。形状对齐 MirrorChannel。"""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def send(self, plain: str, html: str) -> None:
+        self.attempts += 1
+        raise RoomSendTimeout("30s 内没等到房间回执；协程仍在后台重试")
+
+    def listen(self, on_message) -> None:               # noqa: ANN001
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+# -- 8.1 空括号：告警必须说得出自己是什么 ----------------------------------
+def test_empty_message_exception_still_says_what_it_was():
+    """``TimeoutError()`` 的 str() 是空串 —— 告警不许因此变成一对空括号。
+
+    T 轮真房间那一轮打了 3 条 ``房间回话失败（）``，括号里什么都没有。看到它的人
+    既不知道是什么错、也不知道该不该重跑，而正确答案恰恰是「别重跑」。
+    """
+    assert str(TimeoutError()) == "", "前提变了：这条用例守的就是空 str() 那个坑"
+
+    line = describe_exc(TimeoutError())
+    assert "TimeoutError" in line, f"没说出异常类型：{line}"
+    assert NO_MESSAGE in line, f"空消息没有兜底占位：{line}"
+    assert f"（{line}）" != "（）"
+
+
+def test_timeout_description_tells_the_reader_not_to_rerun():
+    """超时类的描述必须带处置口径。告警只说「失败了」等于没说。"""
+    line = describe_exc(RoomSendTimeout("30s 内没等到房间回执"))
+    assert "不要重跑" in line, f"没写处置口径：{line}"
+    assert "限流" in line and "数消息" in line, line
+
+
+def test_non_timeout_exception_keeps_its_own_message():
+    """普通异常照原文带上，只在前面补类型。别把原始信息挤掉。"""
+    line = describe_exc(RuntimeError("M_UNKNOWN_TOKEN Invalid access token"))
+    assert line.startswith("RuntimeError: ")
+    assert "M_UNKNOWN_TOKEN Invalid access token" in line
+    assert "不要重跑" not in line, "非超时不该带超时的处置口径"
+
+
+# -- 8.2 坑一：解释器用错了，和房间连不上不是一回事 -----------------------
+def test_missing_matrix_nio_names_the_interpreter_you_actually_used(no_nio):
+    """没装 nio 时抛 MatrixDepMissing，且消息里有**当前**解释器和该换的那个。
+
+    这是整条链路最贵的一步：系统 python3 跑完 exit=0、终端照常刷「房间消息」，
+    截那个窗口当证据与真房间**无法分辨**。能自动认出它的地方只有这里。
+    """
+    with pytest.raises(MatrixDepMissing) as caught:
+        open_channel(_live_config())
+
+    text = str(caught.value)
+    assert sys.executable in text, f"没说清是哪个解释器跑的：{text}"
+    assert VENV_PYTHON in text, f"没给出能直接粘的那一行：{text}"
+    assert isinstance(caught.value.__cause__, ModuleNotFoundError)
+
+
+def test_a_different_missing_module_is_not_blamed_on_nio(monkeypatch):
+    """nio 装了但它自己缺依赖时，不许念成「你没装 nio」—— 那会把人指向错方向。"""
+    def _boom(config):
+        raise ModuleNotFoundError("No module named 'h11'", name="h11")
+
+    monkeypatch.setattr(matrix_bus, "_NioChannel", _boom)
+    with pytest.raises(ModuleNotFoundError) as caught:
+        open_channel(_live_config())
+    assert not isinstance(caught.value, MatrixDepMissing)
+    assert caught.value.name == "h11"
+
+
+@pytest.mark.parametrize("scenario, expected", [
+    ("deps", DEGRADE_DEPS),
+    ("connect", DEGRADE_CONNECT),
+    ("env", DEGRADE_ENV),
+])
+def test_degrade_reason_separates_never_meant_to_from_meant_to_but_failed(
+        request, scenario, expected):
+    """三种降级必须给出**三种**原因 —— 入口靠它决定退出码。
+
+    ``log_only`` 这一个布尔把它们抹平成同一个 True：「四个 env 一个都没配」（自检
+    常态，退 0）和「配齐了却没进成房间」（事故，必须非 0）在它上面长得一模一样。
+    没有这个字段，入口就只能对两者做同一件事 —— 而那正是坑一的成因。
+    """
+    if scenario == "deps":
+        request.getfixturevalue("no_nio")
+        bus = MatrixEventBus(InMemoryEventBus(), _live_config())
+    elif scenario == "connect":
+        fake = request.getfixturevalue("fake_nio")
+        fake.state_result = _FakeStateResponse({"algorithm": "m.megolm.v1.aes-sha2"})
+        bus = MatrixEventBus(InMemoryEventBus(), _live_config())
+    else:
+        bus = MatrixEventBus(InMemoryEventBus(), MatrixBusConfig.from_env({}))
+
+    assert bus.degrade_reason == expected
+    assert bus.config.log_only is True and bus.channel is None
+    assert _drive(bus) == _drive(InMemoryEventBus()), "降级后行为与裸总线不一致"
+
+
+def test_connected_bus_reports_no_degrade_reason(fake_nio):
+    """反向对照：真接通时原因必须是空的。少了这一半，上面那条在「永远返回 deps」
+    的实现下也成立。"""
+    bus = MatrixEventBus(InMemoryEventBus(), _live_config())
+    assert bus.degrade_reason == DEGRADE_NONE and bus.degrade_detail == ""
+    assert bus.channel is not None
+    bus.close()
+
+
+def test_missing_nio_is_loud_and_does_not_leak_the_token(no_nio, caplog):
+    """这一条要在屏幕上站得住（ERROR），且不许把 token 带出去。"""
+    with caplog.at_level("WARNING", logger="maos.matrix"):
+        MatrixEventBus(InMemoryEventBus(), _live_config())
+
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, f"没装 nio 只留了 WARNING，会被日志淹掉：{caplog.text}"
+    assert "房间里一条都不会有" in caplog.text, caplog.text
+    assert SENTINEL_TOKEN not in caplog.text, "token 值泄漏进了日志"
+
+
+# -- 8.3 坑二：超时是虚警，不许被做实成永久降级 ---------------------------
+def test_send_timeout_never_triggers_the_permanent_degrade():
+    """连续超时 **不计入** MAX_MIRROR_FAILURES —— 否则一次限流就把镜像关掉。
+
+    撞限流时 nio 还在后台退避重试，消息很可能已经落地（T 轮实测：3 条超时告警，
+    房间里 23 条消息一条不少）。把它计进失败次数，撞一次限流就够 3 次、直接永久
+    降级 —— 那之后房间里是真的一条都没有了，一次虚警被自己亲手做实成真故障。
+    """
+    channel = _TimingOutChannel()
+    bus = MatrixEventBus(InMemoryEventBus(), _live_config(), channel=channel)
+
+    rounds = MAX_MIRROR_FAILURES + 2
+    for i in range(rounds):
+        bus.publish(Topic.TASK_RESULT, E.task_result(
+            plan_id="p", task_id=f"t{i}", attempt=1, trace_id="tr", status="ok"))
+
+    assert channel.attempts == rounds, "超时之后就不再尝试了，等于已经降级"
+    assert bus.channel is channel, "超时把通道摘掉了 —— 虚警做实成了真故障"
+    assert bus.config.log_only is False
+
+
+def test_a_real_send_failure_still_degrades_permanently():
+    """反向对照：真失败照旧走永久降级。少了这一半，上面那条在「永不降级」下也绿。"""
+    bus = MatrixEventBus(InMemoryEventBus(), _live_config(),
+                         channel=_ExplodingChannel())
+    for i in range(MAX_MIRROR_FAILURES):
+        bus.publish(Topic.TASK_RESULT, E.task_result(
+            plan_id="p", task_id=f"t{i}", attempt=1, trace_id="tr", status="ok"))
+
+    assert bus.channel is None and bus.config.log_only is True
+
+
+def test_mirror_timeout_warning_is_not_an_empty_pair_of_parens(caplog):
+    """镜像超时那条告警要说得出自己是什么，并且说清「未计入失败次数」。"""
+    bus = MatrixEventBus(InMemoryEventBus(), _live_config(),
+                         channel=_TimingOutChannel())
+    with caplog.at_level("WARNING", logger="maos.matrix"):
+        bus.publish(Topic.TASK_RESULT, E.task_result(
+            plan_id="p", task_id="t1", attempt=1, trace_id="tr", status="ok"))
+
+    assert "（）" not in caplog.text, f"又打成空括号了：{caplog.text}"
+    assert "RoomSendTimeout" in caplog.text
+    assert "未计入失败次数" in caplog.text
+
+
+def test_message_still_lands_after_the_caller_gave_up_waiting(fake_nio, monkeypatch):
+    """超时只代表「我不等了」，协程照旧把消息送达 —— 这就是虚警的成因。
+
+    钉住它是为了守 ``_await`` 里那个**不 cancel** 的决定：顺手加一句
+    ``future.cancel()`` 看起来是收尾更干净，实际是把一条本来会送达的消息掐掉，
+    而症状是「房间里少了几条，没人知道少在哪」。
+    """
+    monkeypatch.setattr(matrix_bus, "DEFAULT_SEND_TIMEOUT", 0.15)
+    fake_nio.send_delay = 0.6
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+
+    with pytest.raises(RoomSendTimeout):
+        channel.send("摘要行", "<p>摘要行</p>")
+    assert client.sent == [], "还没到点就落地了，这条用例没测到超时"
+
+    deadline = time.time() + 5
+    while time.time() < deadline and not client.sent:
+        time.sleep(0.05)
+    assert len(client.sent) == 1, "调用方放弃后协程被掐掉了 —— 消息真丢了"
+    channel.close()
+
+
+def test_timed_out_send_can_be_flushed_before_channel_close(fake_nio, monkeypatch):
+    """证据入口收口前必须能等后台重试完成，不能 close() 把它截断。"""
+    monkeypatch.setattr(matrix_bus, "DEFAULT_SEND_TIMEOUT", 0.05)
+    fake_nio.send_delay = 0.2
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+
+    with pytest.raises(RoomSendTimeout):
+        channel.send("最终回执", "<p>最终回执</p>")
+    assert channel.flush_pending_sends(timeout=1.0) is True
+    assert [row["body"] for row in client.sent] == ["最终回执"]
+    channel.close()
+
+
+def test_timed_out_send_that_eventually_fails_makes_flush_fail_closed(
+        fake_nio, monkeypatch):
+    """后台重试最终失败不能从 pending 消失后伪装成 flush 成功。"""
+    monkeypatch.setattr(matrix_bus, "DEFAULT_SEND_TIMEOUT", 0.02)
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+
+    async def delayed_failure(room_id, message_type, content, **kwargs):
+        import asyncio
+
+        await asyncio.sleep(0.08)
+        return _FakeSendError("delayed send failed")
+
+    client.room_send = delayed_failure
+    with pytest.raises(RoomSendTimeout):
+        channel.send("最终迁移", "<p>最终迁移</p>")
+    assert channel.flush_pending_sends(timeout=1.0) is False
+    channel.close()
+
+
+def test_send_gets_a_wider_timeout_than_construction(fake_nio):
+    """send 与构造期不共用一档超时。共用的话，连发几条镜像必然一串假失败。"""
+    channel = open_channel(_live_config())
+    assert channel._send_timeout > channel._timeout, (
+        "send 的超时不比构造期宽 —— 一次 429 退避就是几秒")
+    channel.close()
+
+
+# -- 8.4 坑三：退出时刷一屏 asyncio 报错 ----------------------------------
+def test_close_leaves_no_running_loop_or_thread(fake_nio):
+    """收口后循环关了、线程退了、常驻协程也 cancel 了。
+
+    少了这三步的代价不是崩，是退出时刷一屏 ``RuntimeError: Event loop is closed``
+    / ``Task was destroyed but it is pending!``：``sync_forever`` 和 aiohttp 的连接池
+    都还活着，循环却停了，GC 去跑它们的 ``__del__`` 就每个都要碰那个死循环。
+    报错在终态**之后**，不影响判定 —— 但它把真正该看的那几行冲出了屏幕，
+    而这套链路所有的失败都只在日志里。
+    """
+    fake_nio.hang_sync = True                   # 真 nio 的形态：sync_forever 不返回
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    channel.listen(lambda sender, body: None)
+    assert client.sync_done.wait(5), "sync_forever 没起来"
+
+    channel.close()
+
+    assert client.sync_stopped is True and client.closed is True
+    assert channel._loop.is_closed(), "事件循环没关 —— GC 时那些 __del__ 会去碰它"
+    channel._thread.join(timeout=5)
+    assert not channel._thread.is_alive(), "守护线程没退出"
+    assert channel._sync_task is None, "sync_forever 那条协程还挂着"
+
+
+def test_close_is_idempotent(fake_nio):
+    """收口调两次不许炸。演示脚本的收口路径不止一条（超时分支也走它）。"""
+    channel = open_channel(_live_config())
+    channel.close()
+    channel.close()
+
+
+# -- 8.5 坑四：bot 不听自己的回声，但要说出来 -----------------------------
+def test_bot_talking_to_itself_is_dropped_but_said_out_loud(fake_nio, caplog):
+    """bot 账号自己打的 /approve 照旧丢弃，但必须留一句「换个账号」。
+
+    回声过滤本身没错，不过滤就自激。错的是它的症状：房间里什么都不会发生 ——
+    没有回执、没有报错、任务照旧停在 BLOCKED，发命令的人只能以为程序没在听。
+    """
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    client.live = [(_Room("!room:example.org"), _Msg(BOT_MXID, "/approve task-1"))]
+
+    seen: list[tuple[str, str]] = []
+    with caplog.at_level("WARNING", logger="maos.matrix"):
+        channel.listen(lambda sender, body: seen.append((sender, body)))
+        assert client.sync_done.wait(5), "sync_forever 没跑完"
+
+    assert seen == [], "回声过滤没拦住自己的消息"
+    assert "不听自己的回声" in caplog.text, f"丢得静悄悄：{caplog.text}"
+    assert "MAOS_APPROVERS" in caplog.text, "没说清下一步该用哪个账号"
+    channel.close()
+
+
+def test_bots_own_ordinary_messages_stay_silent(fake_nio, caplog):
+    """自己发的**普通**回执本就该悄悄丢 —— 每条都喊一句就成了刷屏。"""
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    client.live = [(_Room("!room:example.org"), _Msg(BOT_MXID, "[t1] TaskResult → ok"))]
+
+    with caplog.at_level("WARNING", logger="maos.matrix"):
+        channel.listen(lambda sender, body: None)
+        assert client.sync_done.wait(5), "sync_forever 没跑完"
+
+    assert "不听自己的回声" not in caplog.text, f"把普通回执也喊了：{caplog.text}"
+    channel.close()

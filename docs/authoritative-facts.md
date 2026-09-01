@@ -41,7 +41,7 @@ AUTHORITATIVE_STATES = frozenset({"settled"})
 业务状态机（**不是** Task 状态机，铁律 9：业务状态是业务对象自己的字段）：
 `maos/domain/refund/guard.py:34`
 
-```
+```text
 submitted ─→ approved ─→ gateway_accepted ─→ processing ─→ settled
     │            │              │                 │
     └→ rejected  └→ rejected    └→ compensated    └→ compensated
@@ -151,7 +151,7 @@ skill 侧那个是 invoker 补齐前的兜底，两个都在时必须以**事件
 失败路径（`python3 run.py --scenario 7`）是这条边界最直白的演示 ——
 网关返 `ACQ.SYSTEM_ERROR`，`payment.observe` 轮询 3 次仍问不出终态：
 
-```
+```text
   业务状态  : compensated（全程没有经过 settled）
   settled 观察: 0 条 —— 没问出终态就一条都不该有
   补偿记录  : 2 行 ['manual_ticket', 'refund_request_revoked']

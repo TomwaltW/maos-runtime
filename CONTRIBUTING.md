@@ -71,7 +71,7 @@ git diff --stat maos/contracts/       # 必须空输出（冻结契约未被动�
 
 ## 4. 提交规范
 
-```
+```text
 <type>(p<N>): <一句话>
 ```
 

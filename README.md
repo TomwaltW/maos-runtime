@@ -39,7 +39,7 @@ python3 scripts/verify.py          # ② 八项证据逐项重放校验 -> RESUL
 现在看**失败的那一条**（`python3 run.py --scenario 7`）—— 同样的诉求，网关返
 `ACQ.SYSTEM_ERROR`，轮询三次仍问不出结果：
 
-```
+```text
   业务状态  : compensated（全程没有经过 settled）
   settled 观察: 0 条 —— 没问出终态就一条都不该有
   补偿记录  : 2 行 ['manual_ticket', 'refund_request_revoked']
@@ -100,7 +100,7 @@ echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 本机实跑（整合轮 14，T27–T30 四轨并入后当场重跑；全新克隆 + 无任何 API key 的逐步耗时见
 [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
 
-```
+```text
 [PASS] hash-integrity       86/86
 [PASS] business-ref         35/35
 [PASS] authoritative-fact   3/3
@@ -249,7 +249,7 @@ export MAOS_LLM_MODEL=...
 
 ## 6. 证据索引
 
-```
+```text
 evidence/
   INDEX.json              # 本次生成的清单：git sha、每场的 span/event 计数、树错误
   scenario-1 … scenario-7/
@@ -279,6 +279,7 @@ evidence/
 | **降级路径** | Docker 不可用时裸 subprocess，但 env **按白名单重建**（只放行 `PATH`/`LANG`，`HOME` 指向一次性空目录） | 白名单是「按名放行」不是「按名拦截」—— 新增一个 `*_TOKEN` 变量不需要有人记得去加拦截 |
 | **补丁落盘** | 三重路径校验：受保护目录分段相等 / `conftest.py` 任意层级禁改 / `workdir` 内含性 | 任一条不过即拒，不重试、不降级 |
 | **工具调用** | Agent 只能调 Identity `allowed_tools` 里的工具，越权抛 `PermissionDenied` | 运行时强制，见 [`docs/agent-identity.md`](docs/agent-identity.md) |
+| **跨进程工具（MCP）** | `git-mcp` 全部操作只读；路径按 `--root` 关押（先 resolve 再 `relative_to`，不用 `startswith`）；不打网络；子进程 env 按白名单重建；超时 15s 并杀子进程 | 连不上/超时**一律抛，不回落本地 `git`** —— 悄悄降级会让「这一步走没走 MCP」在证据里查不出来 |
 | **Skill 调用** | 同上，白名单在 `SkillInvoker` 里前置校验 | 每次调用落一条 `SkillInvoked` 审计行 |
 | **权威事实** | 全系统只有 `payment.observe` 写得进 `settled`，且必须同事务附回执 | 越权**不静默失败**：抛异常 + 落 `AuthoritativeFactViolation` 事件 |
 | **密钥** | 只读环境变量，禁止写进任何文件；`MatrixBusConfig.token` 用 `field(repr=False)` | 证据束落盘时出口脱敏 + 写完拿哨兵串反查，命中即销毁目录并失败 |
@@ -306,6 +307,12 @@ evidence/
 | 历史流程不能替代当前订单事实和人工授权 | `maos/kb/guardrails.py` 三条断言 | 护栏单测 |
 | 以退款到账 / 客户确认 / 人工纠错验证 DAG | `result.json` 的 `business_outcome` | verify 第 6 项 |
 | 只有证据完整且外部结果明确的案例进默认知识层 | 晋升规则 `promote_history_case` | verify 第 7 项 |
+
+十三条之外，技术要求对**推荐工具链**另有一条判据 ——「不按使用数量评分……重点在于
+说明清楚设计理念、接口契约、必要性、可观测性、权限边界、端到端评估证据和迁移路径」。
+这一条的主文档是 [`docs/gateway-rationale.md`](docs/gateway-rationale.md)（八组件逐条给
+状态、等价机制、迁移点）；其中 MCP 不止给了理由：`git-mcp` 的 `entry` 已真走 MCP stdio，
+证据在 `evidence/scenario-1/trace.json` 的 `tool:git-mcp`。
 
 ### 数据口径（必须写明，不含糊）
 
@@ -370,7 +377,7 @@ python3 scripts/gen_docs.py --check    # 与代码不一致即非零退出
 
 ## 10. 目录结构
 
-```
+```text
 maos/            正式 Python 包
   contracts/       冻结契约：events.py / states.py（禁改）
   core/            control_plane.py / eventbus.py / store.py

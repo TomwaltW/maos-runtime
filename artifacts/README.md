@@ -52,23 +52,35 @@ grep -a -o "/MediaBox\s*\[[^]]*\]" artifacts/maos-复赛方案.pdf | sort -u
 
 ---
 
-## 2. 截图 slot：房间实拍待回填
+## 2. 截图 slot：房间实拍**已回填**（2026-08-31）
 
-**位置**：`maos-复赛方案.html` 的 **P6**（AgentTeams 事件链）页，右栏中部。
+**位置**：`maos-复赛方案.html` 的 **P6**（AgentTeams 事件链）页，右栏下部。
 在源码里搜这一行注释即可定位：
 
 ```html
-<!-- SLOT: room-screenshot —— … -->
+<!-- SLOT: room-screenshot —— 已回填 evidence/room/02-transitions.png … -->
 ```
 
-紧跟它的是一个带虚线边框的占位块：
+紧跟它的是一个 `<figure>`，内嵌 base64 图 + 一行 `figcaption`。
 
-```html
-<div class="slot" style="flex:1 1 auto; min-height:120px;">
-  <div class="t">房间实拍：待 T4 回填</div>
-  <div class="s">&lt;!-- SLOT: room-screenshot --&gt;<br>回填方式见 artifacts/README.md</div>
-</div>
-```
+**回填时一并做的三件事**（换图时同样要做）：
+
+1. 图先缩放再内嵌 —— `sips -Z 900 <src>.png --out /tmp/room-900.png`，
+   原图 2880×1882 的 Retina 截图直接内嵌会让 HTML 涨到 500KB 以上；
+   缩到 900px 宽后 base64 约 150KB，PDF 从 3.84MB 涨到 3.98MB。
+2. `<img>` 上必须留 `max-height:248px` —— **这是溢出实测收敛出来的值**。
+   不限高时 P6 溢出 160px，内容会被静默裁掉（见第 3 节 ②）。
+3. P6 右栏原有的第二个 card（「为什么第 5 项要单列」）**已删**，其论点并入
+   「当前真实状态（不吹）」那张 card —— 与表格第 5 行、card 正文三处重复，
+   删掉才腾得出图的位置。
+
+选 `02-transitions.png` 的理由：它证明状态迁移是**逐条**镜像的
+（`PENDING → DISPATCHED → RUNNING → AWAITING_REVIEW → BLOCKED` 五条各一条消息），
+最贴 P6「事件链」这个页名，也是五张里最难伪造的一张。
+
+---
+
+### 换一张图的步骤
 
 **回填步骤**（整合轮做，T4 的真房间证据到位之后）：
 
@@ -86,11 +98,9 @@ grep -a -o "/MediaBox\s*\[[^]]*\]" artifacts/maos-复赛方案.pdf | sort -u
         style="width:100%; border:1px solid var(--line2); border-radius:6px;">
    ```
 
-3. **同时改 P6 与 P13 的口径**。当前两页写的都是「真房间待接通」：
-   - P6 右栏 `card bad` 里的「当前真实状态（不吹）」
-   - P13 口径表 Matrix 那一行
-
-   房间真跑通了才允许改口，且要与 `docs/agentteams-mapping.md` 的「当前真实状态」小节保持一致 ——
+3. **口径已随回填一起改到位**（2026-08-31）：P6 的 card 已由 `bad` 改 `ok`、
+   P13 口径表 Matrix 那一行、P14 缺口清单里的「真房间未接通」三处均已改口，
+   与 `docs/agentteams-mapping.md` 的「真房间已接通」一致 ——
    **那份文档是口径上位法，不是这里**。
 
 4. 重导 PDF（第 1 节），重验页数 15。加图后 P6 可能溢出，若页数变成 16，按第 3 节调。

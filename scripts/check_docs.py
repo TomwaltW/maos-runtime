@@ -18,6 +18,23 @@
   E 反引号里的 `path[:line]`：路径不存在，或行号超出该文件实际行数
   F 空白卫生：CRLF、文件末尾无换行、行尾空格、正文里的 Tab
 
+## 阻断类与提示类（`SEVERITY`）
+
+判据分两档，**只有阻断类会让把守测试变红**：
+
+  阻断类 —— 文档在**说假话**或结构真的坏了：断链、指不到的锚点、不存在的引用路径、
+            过期的行号、未闭合的围栏、错列的表格、CRLF / 末尾缺换行。
+  提示类 —— 排版偏好：围栏没写语言标注、标题层级跳跃 / 重名 / 第二个 H1、
+            行尾空格、正文 Tab。它们不影响文档说的话是否为真。
+
+分档的理由是 2026-09-01 的实测：把两档绑在同一条断言里，这条断言**从来没绿过**
+（当时 187 条里 113 条是提示类，散在 12 份手写文档中，其中一半正被别的轨改写）。
+一条永远红的断言等于没有断言 —— 它同时把真正的断链一起淹掉。提示类仍然照报、
+照计数，CLI 单列一节，`--all-blocking` 可把它们提为阻断（供日后专轨清账）。
+
+未登记在 `SEVERITY` 里的类别一律按**阻断**处理（fail-closed），并由
+`maos/tests/test_docs_guard.py` 钉住「每个类别都必须显式分档」。
+
 ## 白名单按「被引用的路径」索引，不按 file:line
 
 行号会随编辑上下漂，拿 `DECISIONS.md:1282` 当键，隔一次插入就失配，
@@ -25,6 +42,46 @@
 `maos/obs/cost.py` 这条豁免的理由（「决定不建」）不会因为账本多插一行而改变。
 
 每条豁免都必须写理由。写不出理由的，就不是豁免，是没修。
+
+## 射程 = git 管得到的东西，与 checkout 无关
+
+判决**不许因为跑在主仓还是跑在 worktree 里而变**。2026-09-01 的实测：同一个
+commit、同一份脚本，主仓报 46 条、worktree 报 74 条 —— 28 条差额全部来自
+`review/`（编排面，走 `.git/info/exclude`，只存在于主仓的文件系统里）。
+一个在不同 checkout 里给不同判决的守卫不是守卫。
+
+于是射程按 git 划，不按文件系统划：
+
+  - **在册面** = `git ls-files --cached --others --exclude-standard`
+    （已跟踪 + 未跟踪但没被忽略的，即「`git add` 会收的东西」）。
+    存在性判定与 basename 反查都只在这个集合里做。
+  - **被 git 忽略的路径整个不在射程内**，直接跳过，连磁盘都不碰。
+    `review/**`（编排面）、`docs/superpowers/plans/**`（gitignored 操作剧本）
+    都归这一档 —— 它们**按设计**进不了版本库，守卫不该管。
+
+两个集合都由 git 自己回答，而 `.gitignore` 是被跟踪的、`.git/info/exclude` 落在
+common dir 里，主仓与所有 worktree 共享 —— 所以两处答案逐字相同。
+git 不可用时退回文件系统口径（见 `universe()` 的兜底），并**只在那时**允许漂。
+
+## 外部仓引用写 `<repo>:path[:line]`
+
+`docs/refs/cumora-*.md` 解析的是**另一个仓库**。裸写 `docs/COORDINATION.md` 会被
+当成本仓相对路径，必红 —— 而它在本仓永远不会存在。所以外部引用带仓名前缀：
+
+    `cumora:docs/COORDINATION.md:31-33`
+
+守卫见到 `EXTERNAL_REPOS` 里登记过的前缀、且冒号后面**含 `/`**，就**只做格式校验**
+（路径部分要像路径、行号要像行号），不做存在性校验。前缀没登记过的一律当散文放过
+（不然 `http:` 这类都要遭殃）；「含 `/`」那一条挡的是 cumora 自己的事件命名空间
+`cumora:nudge:<convoId>`，它不是路径引用。代价是外部仓根目录下的文件
+（`cumora:README.md`）不受格式校验 —— 目前没有这种引用，有了再说。
+登记一个外部仓要写理由，口径同 `ALLOW_MISSING`。
+
+## exit 语义：阻断类非空就 exit 1
+
+默认就是严格的。历史上默认 exit 0、要加 `--strict` 才报错，于是
+「`check_docs.py && 下一步`」看着像道闸、其实永远放行。`--strict` 保留为兼容空开关，
+`--lenient` 才回到「只报告」。真正的把守仍在 `maos/tests/test_docs_guard.py`。
 
 ## 不读受保护面的内容
 
@@ -37,10 +94,42 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: 类别 -> 档位。缺省（没登记的新类别）按 "blocking" 处理，见模块头「阻断类与提示类」。
+#: 提示类的判据本身没变松，只是不再让把守测试变红。
+SEVERITY: dict[str, str] = {
+    # —— 阻断：文档在说假话，或结构真的坏了 ——
+    "A-open": "blocking",      # 围栏没闭合，后面整段正文都被当成代码
+    "B-sep": "blocking",       # 表格没有分隔行 —— 渲染出来根本不是表
+    "B-sepcols": "blocking",
+    "B-cols": "blocking",
+    "D-link": "blocking",      # 断链
+    "D-anchor": "blocking",    # 指不到任何标题的锚点
+    "E-missing": "blocking",   # 引用的路径不存在
+    "E-line": "blocking",      # 行号已经指不到那段代码
+    "E-extref": "blocking",    # 外部仓引用写坏了
+    "F-crlf": "blocking",
+    "F-eof": "blocking",
+    # —— 提示：排版偏好，不影响文档说的话是否为真 ——
+    "A-lang": "advisory",
+    "C-skip": "advisory",
+    "C-dup": "advisory",       # GitHub 自己会给重名锚点加 -1 后缀，不会渲染坏
+    "C-h1": "advisory",
+    "F-trail": "advisory",
+    "F-tab": "advisory",
+}
+
+#: 登记在册的外部仓库。键是引用前缀，值是理由 —— 口径同 ALLOW_MISSING：
+#: 写不出理由的不该登记，否则 `随便写个前缀:` 就能绕开存在性校验。
+EXTERNAL_REPOS: dict[str, str] = {
+    "cumora": "docs/refs/cumora-*.md 解析的外部项目（cumora@1e883f6），"
+              "其 docs/COORDINATION.md / docs/BYOA.md 永远不会出现在本仓",
+}
 
 #: 只判存在性、绝不读内容（与 guard_bash.py 的保护面口径一致）
 NO_READ = frozenset({
@@ -69,6 +158,9 @@ ALLOW_MISSING: dict[str, str] = {
     "obs/otel.py": "docs/EXECUTION.md 是执行手册，写的是 Phase 6 待建的可观测后端",
     "maos/obs/otel.py": "同上，EXECUTION.md 的待建文件",
     "maos/tools/paths.py": "BACKLOG 提议的下沉落点，尚未建",
+    "maos/domain/_sql.py":
+        "同类：docs/BACKLOG.md 里 claim/refund 两域 SQL 样板去重那一条提议的下沉落点，"
+        "原文是「它就该下沉成 … 这样的基础设施」，属待建，且明写「上第三个域之前再决定」",
     "scripts/gen_room_transcript.py": "BACKLOG 提议收编的脚本，尚未建",
     # —— 反例：这个文件**存在**才是 bug ——
     "maos/agents/_sandbox_stub.py":
@@ -119,33 +211,81 @@ PATHREF = re.compile(
     r"(?::(\d+)(?:[-–](\d+))?)?$"
 )
 SEP_CELL = re.compile(r"^\s*:?-{2,}:?\s*$")
+#: `<repo>:path[:line[-line]]` —— 外部仓引用。前缀是否认账由 EXTERNAL_REPOS 决定。
+EXTREF = re.compile(r"^([A-Za-z][\w\-]*):(\S+?)(?::(\d+)(?:[-–](\d+))?)?$")
 
 _linecache: dict[str, int | None] = {}
 _basemap: dict[str, list[str]] | None = None
+_universe: frozenset[str] | None = None
+_ignored: dict[str, bool] = {}
+
+
+def _git(*args: str) -> str | None:
+    """跑一条只读 git 命令，拿 stdout；git 不可用或非零退出返回 None。"""
+    try:
+        p = subprocess.run(("git", *args), cwd=ROOT, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return p.stdout.decode("utf-8", "replace") if p.returncode == 0 else None
+
+
+def universe() -> frozenset[str]:
+    """在册面：`git add` 会收的那些文件（已跟踪 + 未跟踪未忽略），仓库相对路径。
+
+    判决的射程由它划定，而不是由「磁盘上有什么」划定 —— 后者在主仓和 worktree 里
+    天然不同（见模块头「射程 = git 管得到的东西」）。git 不可用时退回文件系统遍历，
+    这是兜底，不是等价物：那种环境下判决可以随 checkout 漂。
+    """
+    global _universe
+    if _universe is None:
+        out = _git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+        if out is not None:
+            _universe = frozenset(p for p in out.split("\0") if p)
+        else:
+            walked: list[str] = []
+            for base, dirs, files in os.walk(ROOT):
+                dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+                walked += [os.path.relpath(os.path.join(base, f), ROOT) for f in files]
+            _universe = frozenset(walked)
+    return _universe
+
+
+def out_of_scope(rel: str) -> bool:
+    """这个路径是不是被 git 忽略的 —— 忽略即不在射程内，连磁盘都不碰。
+
+    `review/**`（编排面，`.git/info/exclude`）、`docs/superpowers/plans/**`
+    （gitignored 操作剧本）按设计进不了版本库，它们「不存在」不是文档的错。
+    `.gitignore` 被跟踪、`info/exclude` 落在 common dir，主仓与 worktree 同答案。
+    """
+    if rel not in _ignored:
+        # 不加 --no-index：已跟踪的文件即便撞上某条 ignore 规则也仍在射程内
+        # （它已经进了 git），这正是 check-ignore 的缺省口径。
+        _ignored[rel] = _git("check-ignore", "-q", "--", rel) is not None
+    return _ignored[rel]
 
 
 def basemap() -> dict[str, list[str]]:
-    """basename -> 仓库内所有同名文件的相对路径。解析 `gate.py:812` 这类简写用。"""
+    """basename -> 在册面里所有同名文件的相对路径。解析 `gate.py:812` 这类简写用。"""
     global _basemap
     if _basemap is None:
         found: dict[str, list[str]] = defaultdict(list)
-        for base, dirs, files in os.walk(ROOT):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-            for f in files:
-                found[f].append(os.path.relpath(os.path.join(base, f), ROOT))
+        for rel in universe():
+            if rel.split("/", 1)[0] in SKIP_DIRS:
+                continue
+            found[rel.rsplit("/", 1)[-1]].append(rel)
         _basemap = found
     return _basemap
 
 
 def resolve(fp: str) -> str | None:
-    """把文档里写的引用解析成真实相对路径；解析不了返回 None。
+    """把文档里写的引用解析成在册面里的真实相对路径；解析不了返回 None。
 
     仓库里大量使用**省略前缀的简写**（`refund/payment_agent.py` 指
     `maos/agents/refund/payment_agent.py`），所以直接命中失败后再按「路径后缀且
     落在分段边界上」找一次；唯一命中才算解析成功，多个候选一律判「解析不了」，
     宁可漏报也不要指着错文件去核行号。
     """
-    if os.path.exists(os.path.join(ROOT, fp)):
+    if fp in universe():
         return fp
     tail = "/" + fp
     hits = [p for p in basemap().get(fp.rsplit("/", 1)[-1], []) if p.endswith(tail)]
@@ -295,8 +435,11 @@ def check(path: str) -> list[tuple[str, int, str]]:
             target = target.split("#", 1)[0]
             if not target:
                 continue
-            if not os.path.exists(os.path.normpath(
-                    os.path.join(os.path.dirname(path), target))):
+            abs_t = os.path.normpath(os.path.join(os.path.dirname(path), target))
+            rel_t = os.path.relpath(abs_t, ROOT)
+            if not rel_t.startswith("..") and out_of_scope(rel_t):
+                continue                     # 被 git 忽略的目标不在射程内
+            if rel_t not in universe() and not os.path.exists(abs_t):
                 issues.append(("D-link", n, f"链接指向不存在的文件：{target}"))
 
     # -- E 反引号里的 path[:line] -----------------------------------------
@@ -304,13 +447,30 @@ def check(path: str) -> list[tuple[str, int, str]]:
         if code_line[n]:
             continue
         for span in CODESPAN.findall(ln):
-            m = PATHREF.match(span.strip())
+            s = span.strip()
+            ext = EXTREF.match(s)
+            # 认账的条件多一条「路径部分含 /」：cumora 自己的事件命名空间长成
+            # `cumora:nudge:<convoId>` / `cumora:wake:<agentId>`，它们不是路径引用，
+            # 不加这一条会被当成写坏的外部引用报出来。
+            if ext and ext.group(1) in EXTERNAL_REPOS and "/" in ext.group(2):
+                # 外部仓：只校验形状，不校验存在性 —— 那个仓不在这里
+                if not PATHREF.match(ext.group(2)):
+                    issues.append(("E-extref", n, f"外部仓引用的路径部分不合法：{s}"))
+                continue
+            m = PATHREF.match(s)
             if not m:
                 continue
             fp, first, last = m.group(1), m.group(2), m.group(3)
             has_dir = "/" in fp
             if not has_dir and not first:
                 continue                     # 裸文件名且无行号 —— 是简写，不是路径断言
+            # 散文里的「或」简写：`scenario_5/6.py` 说的是 scenario_5.py 或
+            # scenario_6.py，`6` 那一段不是目录也不是模块名 —— Python 模块名不许
+            # 以数字开头，所以这个形状一定不是路径断言。
+            if fp.endswith(".py") and fp.rsplit("/", 1)[-1][0].isdigit():
+                continue
+            if has_dir and out_of_scope(fp):
+                continue                     # 被 git 忽略：按设计进不了版本库，不归守卫管
             real = resolve(fp)
             if real is None:
                 if has_dir and fp not in ALLOW_MISSING:
@@ -360,10 +520,27 @@ def run(targets: list[str] | None = None) -> list[tuple[str, str, int, str]]:
     return found
 
 
+def severity(kind: str) -> str:
+    """类别的档位。没登记的一律按**阻断**（fail-closed）—— 新判据不该默认是提示。"""
+    return SEVERITY.get(kind, "blocking")
+
+
+def blocking(issues: list[tuple[str, str, int, str]]) -> list[tuple[str, str, int, str]]:
+    """只留阻断类。`maos/tests/test_docs_guard.py` 的主判据钉的就是这一份。"""
+    return [i for i in issues if severity(i[1]) == "blocking"]
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="MAOS 文档结构与引用守卫")
+    ap = argparse.ArgumentParser(
+        description="MAOS 文档结构与引用守卫。阻断类非空即 exit 1；"
+                    "提示类只报告不影响退出码。真正的把守在 maos/tests/test_docs_guard.py。")
     ap.add_argument("paths", nargs="*", help="要查的 md 或目录；缺省 docs/ + 仓库根 *.md")
-    ap.add_argument("--strict", action="store_true", help="有问题就 exit 1")
+    ap.add_argument("--strict", action="store_true",
+                    help="兼容用空开关：默认已经是严格的（阻断类非空即 exit 1）")
+    ap.add_argument("--lenient", action="store_true",
+                    help="只报告，永远 exit 0")
+    ap.add_argument("--all-blocking", action="store_true",
+                    help="把提示类也算进退出码（供日后专门清排版账的那一轨用）")
     args = ap.parse_args(argv)
 
     targets: list[str] = []
@@ -376,13 +553,23 @@ def main(argv: list[str] | None = None) -> int:
             targets.append(a)
 
     issues = run(sorted(set(targets)) or None)
-    per_file: dict[str, list[tuple[str, int, str]]] = defaultdict(list)
-    for rel, kind, n, msg in issues:
-        per_file[rel].append((kind, n, msg))
-    for rel in sorted(per_file):
-        print(f"\n### {rel}")
-        for kind, n, msg in sorted(per_file[rel], key=lambda x: (x[1], x[0])):
-            print(f"  [{kind}] {rel}:{n}  {msg}")
+    hard = blocking(issues)
+    soft = [i for i in issues if severity(i[1]) != "blocking"]
+
+    def dump(title: str, rows: list[tuple[str, str, int, str]]) -> None:
+        per_file: dict[str, list[tuple[str, int, str]]] = defaultdict(list)
+        for rel, kind, n, msg in rows:
+            per_file[rel].append((kind, n, msg))
+        print(f"\n{'-' * 60}\n{title}")
+        for rel in sorted(per_file):
+            print(f"\n### {rel}")
+            for kind, n, msg in sorted(per_file[rel], key=lambda x: (x[1], x[0])):
+                print(f"  [{kind}] {rel}:{n}  {msg}")
+
+    if hard:
+        dump("阻断类 —— 文档在说假话或结构坏了", hard)
+    if soft:
+        dump("提示类 —— 排版偏好，不影响退出码（--all-blocking 可提为阻断）", soft)
 
     tally: dict[str, int] = defaultdict(int)
     for _rel, kind, _n, _msg in issues:
@@ -391,10 +578,12 @@ def main(argv: list[str] | None = None) -> int:
     if not issues:
         print("文档守卫：全部通过")
     else:
-        print(f"共 {len(issues)} 条")
+        print(f"共 {len(issues)} 条（阻断 {len(hard)} / 提示 {len(soft)}）")
         for k, v in sorted(tally.items(), key=lambda x: -x[1]):
-            print(f"  {k:12s} {v}")
-    return 1 if (issues and args.strict) else 0
+            print(f"  {k:12s} {v:4d}  {severity(k)}")
+    if args.lenient:
+        return 0
+    return 1 if (issues if args.all_blocking else hard) else 0
 
 
 if __name__ == "__main__":

@@ -1586,3 +1586,20 @@ T40–T45 六轨各自读了参照实现 cumora 的一个面，产出 `docs/refs
 | 2026-09-01 | P8 | **`docs/DECISIONS.md:1457` 正文里裸提 `COORDINATION.md`**（不在反引号里，守卫看不见），指的同样是 cumora 仓那份 | 与上一条同源：外部引用的写法在本仓还没有统一。这一条守卫永远抓不到，只能靠人 | `docs/DECISIONS.md` 是共享账本，不属任何一轨独占。归日后统一外部引用写法的那一次 |
 | 2026-09-01 | P8 | **`PATHREF` 的扩展名表不含 `.png` / `.ts` / `.jpg` / `.svg`**，只认 `py/md/json/toml/sh/ya?ml/ini/cfg/lock/txt/Dockerfile` | 后果是双向的：`evidence/room/*.png` 这类引用**不会被误判红**（这正是本轮要的），但也**守不住**它们断链。真要守证据截图的引用，得先决定 `evidence/` 的口径（那批文件由脚本重生成，行号/存在性的语义和源码不同） | 想守证据引用时再做。**别顺手扩表** —— 扩表会立刻把一批现存引用判红，而它们分散在多轨手里 |
 | 2026-09-01 | P8 | **`ALLOW_MISSING` 里有两条已成冗余**：`maos/skills/builtin/probe_autodiscovery_tmp.py` 与 `maos/skills/builtin/_private_probe.py` 都写在 `.gitignore` 里，被「git 忽略即出射程」这条新规则天然覆盖，豁免再也不会被用到 | 无功能影响，但 `test_allow_missing_has_no_dead_entries` 只查「被豁免的文件是不是已经建出来了」，查不出「这条豁免已经被另一条规则接管」。清单会慢慢积压这种看不见的死条目 | 归下一轮碰这个脚本的轨。删之前要确认 `.gitignore` 里那两行还在（它们是有意写死的两个确切文件名，不是通配） |
+
+## task-T53（答辩自伤口径根治 · 白名单外的命中）
+
+本轨把「真房间未接通」这个**已被本仓自己的证据推翻**的口径，从
+`docs/submission-checklist.md` / `docs/ppt-outline.md` / `docs/demo-script.md`
+三份文档里全量根治。下面是**白名单外**的命中，一处都没改（铁律 4）。
+
+🔴 **第 1 条是本节唯一的高优先级项** —— 它在评委真正会打开的那份制品里。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | 🔴 **已导出的 PPT 制品里有 5 处旧房间口径，其中一处是三重错误**。`artifacts/maos-复赛方案.html`：`:517` 状态标签「代码就绪／真房间未接通」、`:541`「**真房间未接通。Synapse 账号需人类手工注册。matrix-nio 未安装**」、`:549` slot「房间实拍：待 T4 回填」、`:1027` A-4 表「真房间待接通」、`:1114`「失败与缺口没有删：……真房间未接通……」 | **这是评委真正会打开的东西**，比三份 Markdown 严重一个量级。`:541` 那句三个分句**逐条被实测证伪**：房间已接通；三个 Matrix 账号全部由 `register_new_matrix_user` 脚本注册、**没有一步需要人类点 GUI**（`docs/agentteams-mapping.md:64-66` 明写上一版那个前提是错的）；matrix-nio 0.26.0 装在 `~/.maos-matrix/venv/`，**只有系统 `python3` 没装**（漏了主语）。`:1114` 尤其伤 —— 它把一句错的自曝当成「我们很诚实」的例证 | **收尾轨，且优先级高于本节其余各条。** 改 `:549` 那个 slot 时按 `docs/ppt-outline.md` 的「留给整合轮的一件事」执行：填 `evidence/room/01-approval-card.png`，base64 内联不外链 |
+| 2026-09-01 | P8 | **`artifacts/README.md` 两处同源旧口径**：`:68`「房间实拍：待 T4 回填」、`:89`「同时改 P6 与 P13 的口径。当前两页写的都是『真房间待接通』」 | 它是上一条那份 HTML 的回填手册。手册不改，回填的人照着做还是会写回旧口径 | **与上一条同轨同时改**，两者必须一起动，单改一边会再次分叉 |
+| 2026-09-01 | P8 | **`docs/agentteams-mapping.md:89-92` 的注记已反向过期**。那段写着「`docs/submission-checklist.md` §A-4 那一行仍写着『真房间待接通』+ 复核结论『真房间未接通』——**该行已过期**，本轮只读不改，已记 `## task-T4`」 | 该行**已由本轨 T53 修好**。注记留着，会让下一个读 mapping 的人以为 §A-4 还是旧的，进而去「修」一个已经对的地方 | **收尾轨**：删掉那段注记，或改成「已由 T53 修正」。`docs/agentteams-mapping.md` 不在本轨可改面内 |
+| 2026-09-01 | P8 | **三份文档的 pytest 条数家族全面过期**。实测 `36bd036` 上是 **1370 passed, 39 skipped**，而三份文档里散着 `1069` / `802`（7 处）/ `749`（7 处）/ `703`（8 处）/ `645`（5 处）/ `596`（3 处）等至少 15 个不同的历史值 | 台上任何一个数字被评委当场复现打脸，整份材料的可信度一起塌。但**现在刷没有意义** —— T47 / T48 / T49 / T50 / T52 五轨仍在加测试与判据，六轨并轨后还得再刷一遍 | **收尾轨，且必须是并轨之后的最后一步。** 判据：以 `python3 -m pytest maos/tests -q` 的当场输出为唯一真值，三份文档 + `README.md` + `docs/EXECUTION.md` + `artifacts/**` + `scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG` 一次刷齐 |
+| 2026-09-01 | P8 | **`docs/submission-checklist.md` 内部对 `verify.py` 的读数自相矛盾**：`:34` 与 `:267` 写「`verify.py` → **8/8 PASS**」，而 `:123` / `:246` / `:474` / `:502` 写「**7/7 PASS**」 | 两个数指的很可能不是一回事（八束证据 vs 七项核验），但同一份自查清单里并排出现、都不带限定语，被追问「到底几项」时答不上来。**本轨未实跑核实**（`verify.py` 需先有 `evidence/scenario-*/maos.db`，跑它会把 `evidence/` 跑脏，超出本轨零改动范围） | **收尾轨**：跑一次 `make_evidence.py` + `verify.py`，按当场输出统一措辞，把「几束证据」与「七项核验」两个读数分开写 |
+| 2026-09-01 | P8 | **`04-reject-compensation.png` 文件名名不副实，改名要一起动三处**。`evidence/room/README.md` 自己划了边界：房间里拍不到补偿（`CompensationExecuted` 只落 `event_log`、从不 publish），这张图证明的是「驳回生效 + Plan 落 FAILED」 | 文件名比它能证明的东西大，是最容易被追问穿的一处。已记 `## task-T4`，至今未做 | **收尾轨或复赛后。** 改名要同时动 `docs/EXECUTION.md:499/502` 与 `evidence/room/README.md` 三处；**本轨的处置是不改名、改口径** —— 三份文档里凡提到这张图的地方都已写明它证明不了补偿 |

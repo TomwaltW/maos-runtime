@@ -1639,3 +1639,18 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T55（多 Provider 模型客户端：第二家协议）
+
+本轨新增 `maos/model/providers.py`（Anthropic Messages 客户端 + provider 注册表）
+与 38 条离线测试。**只造零件不接线**是派单定的范围，下面五条都是动手时撞到、
+按铁律 4 不当场改的。第 1 条是本轮范围裁剪留下的必然缺口，写在这里是为了让整合期
+有个挂钩 —— 零件没有消费方这件事不会有任何测试变红。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`PROVIDERS` 目前零消费方**。`select_model_client()`（`maos/model/client.py:329`）仍然只认 `MAOS_LLM_*` 三件套那一条 OpenAI 兼容路径，没有任何配置面能选中 `"anthropic"` | 新客户端能被 import、能被测试，但**跑不到生产路径上**。而「接不上」不会红任何一条用例：注册表是纯数据，没人读它也照样绿 | T57（构造入口）与整合期。接线时要连带决定「provider 名从哪个 env 读」——本轨刻意没定这个变量名，定了就是替 T57 拍板 |
+| 2026-09-01 | P9 | **`HigressModelClient` 不在注册表里**。它是占位类（`complete()` 一进来就 `NotImplementedError`），本轨按派单不动它，于是仓库里有三个客户端类、注册表只两条 | 今天无害。但「注册表 = 全部可用 provider」这条不变量现在只是口头的，没有测试守着类集合与表的对应关系 | 接 Higress 的那一轨。要么补进表、要么在表的 docstring 里写明「占位类不入表」并加一条守卫 |
+| 2026-09-01 | P9 | **零重试缺口被复制了一遍**（承接 `## task-T54` 记的第 19 条）。新客户端与 `GatewayModelClient` 一样，一次网络抖动就等于一个任务 failed | 现在是两家都没有，将来做重试要在两处做 —— 或者先把出网那段抽出来共用（但那要改 `client.py`，本轨的只读面） | 做重试的那一轨。抽公共出网层与加重试应当同一轨做完，别先抽后加 |
+| 2026-09-01 | P9 | **`stop_reason == "max_tokens"` 的截断没有任何上层处置**。本轨把 `stop_reason` 记进了 `ModelResponse.meta`，但全仓没有一处读它 | 截断发生时正文是**半截 JSON**，下游解析失败会表现成「模型没按格式回」，而真因是 `max_tokens` 给小了。误诊方向完全相反：会有人去改 prompt，而不是调额度 | 与「按角色配 `max_tokens`」一起做（T56 路由表那一侧更自然）。至少要在解析失败的错误文本里带上 `stop_reason` |
+| 2026-09-01 | P9 | **`model_usage` / `model_call_failure` 两张表都没有 provider 维度**（`maos/core/store.py:557`、`:595` 的参数表里只有 `model`，没有 provider） | 一家的时候不需要。两家并存之后，账上要靠 `model` 字符串反推是哪家 —— 而那一列的值来自服务端回显，不是我方可控的枚举 | 真正接第二家上生产的那一轮。表结构是冻结面，只能新增表或新增列，要和第 1 条的接线一起设计。注：`usage_is_estimated()` 这一处**不用改** —— 它判的是「是不是 `ScriptedModelClient`」，新客户端天然被判为真实计费 |

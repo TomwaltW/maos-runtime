@@ -291,8 +291,16 @@ def select_model_client(script: dict[str, str] | None = None, *,
     }
     missing = [name for name, value in env.items() if not value]
     if missing:
-        log.info("未配置 %s，降级为确定性 ScriptedModelClient（不发起任何网络请求）",
-                 "/".join(missing))
+        # WARNING 而不是 INFO，且正文必须写明**后果** —— 这条降级本身是对的，
+        # 坏的是它安静。「以为在跑真模型、其实在跑假模型」不会有任何显眼提示，
+        # 而它恰好让这一跑的一整类结论失真：现场 key 配错，「真模型跑通了」
+        # 就成了假结论。只说「降级了」，读日志的人还要自己推后果；写明后果，
+        # 他一眼知道接下来哪些结论不能信。
+        # 铁律 6：这里只打**变量名**（missing 是名字列表），env 一个值都不许带进来。
+        log.warning("未配置 %s，降级为确定性 ScriptedModelClient —— 本次运行不发起任何"
+                    "网络请求，所有「模型」输出都是脚本回放：成本读数（token/费用）、"
+                    "延迟、以及任何与模型行为相关的结论，这一跑一律不成立",
+                    "/".join(missing))
         return ScriptedModelClient(script)
 
     log.info("启用真模型：base_url=%s model=%s", env[ENV_BASE_URL], env[ENV_MODEL])

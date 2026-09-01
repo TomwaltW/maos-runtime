@@ -861,6 +861,24 @@ T 轮真房间取证（基线 `27c9e18`）。照 `docs/matrix-room-runbook.md` �
 | 2026-08-29 | P7 | **`evidence/INDEX.json` 的 `aux_bundles` 对 `evidence/room` 记的是 `file_count: 2`，实际已是 7**（5 张 PNG + 2 份 md）。本轨跑 `make_evidence.py` 时它被正确重算过（且给 PNG 标了 `secret_scan: "无法核验（图像，密钥是像素不是字节）"`，口径很好），但 `INDEX.json` 不在本轨可改面内，按派单 §6 判据「`git status` 只应出现 §4 表里的文件」**已还原** | 索引与目录实际内容对不上，直到下一次有人跑 `make_evidence.py`。自愈成本为零（整合轮必跑），但在那之前照 `INDEX.json` 清点房间证据会少数 5 张图 | 整合轮重跑 `make_evidence.py` 时自动消失，**不需要专门处理**。记在这里只是为了让下一个人看到 `file_count: 2` 时不去查「图是不是没提交」 |
 
 
+### 已处理（2026-08-31，基线 `926aa7b`）
+
+上表第 1 条（空括号虚警）与第 6 条（退出时 asyncio 报错）**已修**，连同 runbook 抬头
+那条「用系统 `python3` 跑」和 §7.4 的「bot 不听自己回声」一起做的 —— 四条的共同形态
+都是「安静地什么都没发生」，分开修会各自留一半。
+
+| 原条目 | 按建议做了什么 | 落点 |
+|---|---|---|
+| 空括号虚警 | 建议的两件事都做了：① 所有异常日志过 `describe_exc()`，类名一律带上、空消息补占位、超时类追一句「不要重跑」；② send 单列 `DEFAULT_SEND_TIMEOUT = 30s`，与构造期的 10s 分开。**没有**用「调大超时」去掩盖限流：nio 的 `Got 429 response` 照旧打出来。另加一条建议里没写、但比那两条更要紧的：超时抛 `RoomSendTimeout`，`_mirror` 里**不计入** `MAX_MIRROR_FAILURES` —— 原来撞一次限流就够 3 次、直接永久降级，虚警被自己做实成真故障 | `hiclaw/matrix_bus.py`、`hiclaw/transition_mirror.py` |
+| 退出时 asyncio 报错 | 照建议改 `_NioChannel.close()`：`cancel()` 掉 `_sync_task` 并等它落地。另补了建议里没提的三步 —— `shutdown_asyncgens()`、`join()` 线程、`loop.close()`，否则 aiohttp 连接池仍会在 GC 时去碰死循环 | `hiclaw/matrix_bus.py` |
+
+判据：`maos/tests/test_matrix_bus.py` 第 8 节、`test_room_wiring.py` 第 4 节，共 25 条。
+四条修复逐个撤掉做过变异检验，每条都能让对应用例变红。
+
+上表其余条目**未动**（补偿结果无人可见、空 workdir 恒 `ok=false`、`04` 文件名、
+`submission-checklist` 过期、房间遗留消息、`transcript.md` 生成器、`INDEX.json` 条数），
+它们不属于「安静地什么都没发生」这一类，归属轨也不同。
+
 ## task-T5
 
 T5 轨把 `docs/ppt-outline.md` 渲染成 `artifacts/` 下的演示稿（HTML 正本 + PDF）。

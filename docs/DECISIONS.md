@@ -1580,3 +1580,16 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P8 | `docs/skill-catalog.md` / `docs/toolport-contract.md` 两个冲突怎么合 | **不手合，重跑 `scripts/gen_docs.py`** | 这两份是生成物，判据是「与代码逐字节一致」而不是「两侧文字都保留」。手合必然写出一份对不上代码的版本，`gen_docs --check` 当场非零退出。重跑后三份生成物 `[OK]` |
 | 2026-09-01 | P8 | `docs/BACKLOG.md` / `docs/DECISIONS.md` 两本账怎么合 | **取并集**，integrate 的小节（T37…T54）在前，主仓的 `## task-mcp` 系两节接尾 | 两侧都是「在文件尾部另起 `##` 小节」的纯追加，没有一行是对同一段的两种写法。账本的价值就在于一条都不掉，挑哪一节留都是错的 |
 | 2026-09-01 | P8 | `maos/skills/builtin/code_repo_patch.py` 唯一那个冲突块 | **两侧都要**：外层用 integrate 的 `try/except` + `record_model_failure`（T54 失败留账），内层保留主仓给 `_build_prompt` 加的第三个入参 `baseline`（git-mcp 取到的补丁基线） | 两侧改的是同一段但目的正交 —— 一个管「调用失败也要留账」，一个管「补丁产出要带基线」。二选一都会静默丢掉一整条能力，而丢掉的那条不会有任何测试变红：`_build_prompt` 的 `baseline` 是带默认值的可选参数 |
+
+## task-T59（MCP server 注册表与按角色挂载，2026-09-01）
+
+新建 `maos/tools/mcp/registry.py`（声明 / 发现 / 对账）与 `maos/tests/test_mcp_registry.py`。
+派单定死了 `McpServerSpec` 的字段与三类 `Finding`，以下五处是派单没覆盖、本轨自行判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | 派单给的 `McpServerSpec` 字段里没有「这个 server 背书哪个 ToolPort」，但 `reconcile()` 要与已注册的 ToolPort 对账、`ports_for()` 要返回 ToolPort 对象 | **加一个 `ports: tuple[str, ...]` 字段**，配模块内 `KNOWN_PORTS` 名字 -> 已有对象 | 不加的话，这两件事都得在模块里再写一张 server -> port 的硬编码映射 —— 那又是一张没人守着的分家表，正是本模块要消灭的东西。放进 spec 才是「一份声明」 |
+| 2026-09-01 | P9 | `schema-drift` 判到什么粒度 | **键名级**：只查 server 某工具的**必填**参数在 `params_schema` 里有没有对应的键，不解析描述文字 | `params_schema` 现在是中文自然语言（`"op": "str（baseline / …）"`）。去解析它会让「改一个字就红」，而那个字不影响调用点；键名少一个才是真的调不通。代价（类型/必填漂移看不见）记进 BACKLOG `## task-T59` 第 1 条 |
+| 2026-09-01 | P9 | `ports_for(role)` 碰到映射里写了个没注册的 server 名时怎么办 | **抛 `KeyError`**；而角色本身不在映射里则返回空列表 | 两种情况不是一回事：「这个角色没有 MCP 能力」是正常态（银行角色本来就不该有 git 能力），「挂了个不存在的 server」是配置写错了。后者若也返回空，装配时会静默少挂一个工具，跑到调用点才炸，且现场看不出是配置问题 |
+| 2026-09-01 | P9 | spec 背书的 ToolPort 一个都没解析出来时，参数对账还跑不跑 | **不跑**，只报那条 `missing` | 照跑会把「port 找不到」这一条放大成每个必填参数一条 `schema-drift`，真正该看的那条淹在噪声里。半张错的差异清单比没有清单更误导 |
+| 2026-09-01 | P9 | `spec.security_boundary` 与 `GIT_MCP_PORT.security_boundary` 是各写一份还是必须一致 | **字符串完全相等**，并加测试钉住（同时验 ①-⑤ 五条都在） | 本模块的主张就是「同一件事不许有两份手写描述」。安全边界自己分成两份，等于当场自食其言 —— 而且这一处分家最危险：评审时对的是 ToolPort 那份，装配时读的是 spec 这份 |

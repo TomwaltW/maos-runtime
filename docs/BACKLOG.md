@@ -1639,3 +1639,16 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T59（MCP server 注册表与按角色挂载，本轮都不改）
+
+2026-09-01 建 `maos/tools/mcp/registry.py` 时发现的四条。注册表消灭了
+「server 说的」与「MAOS 认的」这一处分家，但**没有**消灭下面这几处 ——
+写在这里免得下一个人以为注册表已经把对账做全了。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`ToolPort.params_schema` 是自然语言描述，不是 JSON Schema**（`git_tool.py` 里写成 `"op": "str（baseline / ls_files / show_file）"`） | `reconcile()` 的 `schema-drift` 只能判到**键名级**：server 把某个参数从 string 改成 array、或把可选改成必填但键名不变，对账一律看不见。判宽是本轮的刻意选择（见 DECISIONS `## task-T59` 第 2 条），但代价是真的存在 | 要收紧就得把 `params_schema` 换成真 JSON Schema，那要动 `maos/tools/port.py` 与全仓每一个 ToolPort —— 是一轮独立的活，且必须一次改完，不能留半张表 |
+| 2026-09-01 | P9 | **`git_tool.py::OPS` 没有被纳入对账**。`OPS`（op -> MCP 工具名的手写映射）与 `SERVERS[...].exposes` 仍是两份各自维护的清单，当前值相同纯属人记着 | server 加一个工具时，`exposes` 漏登记会被 `reconcile()` 报 `undeclared`，但 `OPS` 漏加**没有任何东西会红** —— 上层调用点拿到的仍是「未知的 git-mcp 操作」 | 泛化的做法是把 op 映射放进 `McpServerSpec`（比如 `ops: Mapping[str, str]`），让 `reconcile()` 三方对账。本轮没做：那要改 §5.2 定死的 spec 形状，且只有一个 server 时看不出这个抽象对不对 |
+| 2026-09-01 | P9 | **`reconcile()` 没有挂进任何自动入口**，只有 `maos/tests/test_mcp_registry.py` 在跑它 | 加第二个 server 的人如果只跑自己那几条测试、不跑全量 pytest，对账就形同虚设。`scripts/verify.py` 与 `gen_docs --check` 都没有引它 | 挂进 `scripts/verify.py` 之前要先想清楚一件事：对账要**真拉子进程**，而 verify 是证据束核验，多一个会 fork 的步骤要评估它在无网/受限环境下的表现。归做 verify 那一轨 |
+| 2026-09-01 | P9 | **角色到工具的映射仍是两份手写表**：`registry.DEFAULT_ROLE_SERVERS` 与 `maos/agents/*.py` 各自的 `allowed_tools` | 本轮加了一条测试守着「`ports_for("coding")` 挑出来的 port 必须在 `CodingAgent.identity.allowed_tools` 里」，但那是**单向**的：白名单里有而映射里没有的（比如 `sandbox`）无人过问。真正的档案表是别轨的产出，本轨的映射只是兜底 | 归能力档案表那一轨（`profiles` 注入口已经留好）。合并后应当让档案表成为唯一出处，`DEFAULT_ROLE_SERVERS` 退化成「没人注入时的最小可跑集」或直接删掉 |

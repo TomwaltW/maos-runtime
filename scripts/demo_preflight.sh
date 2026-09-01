@@ -42,7 +42,7 @@ cd "$REPO_ROOT"
 # 契约 B 把有库钉成 932，而同轮 T24/T25/T26 各自加了 7/13/12 条测试，两个数一起作废——
 # 症状是「配了 DSN 的机器上第 1 步报回归」，恰恰是本档要治的那个病。改成算式之后，
 # 以后谁加测试都只需改 EXPECT_TESTS_NOPG 一个数，29 这个差值才是真正要守的不变量。
-# T47–T53 整合轮实测（合并态 51833ca）：1456 passed / 39 skipped（无库）。39 = PG 门控 29
+# 整合轮 14 实测（合并态 T27–T30）：1069 passed / 39 skipped（无库）。39 = PG 门控 29
 #（22 live + 7 parity）+ 非 PG 门控 10（RocketMQ 8 条 + Nacos 2 条，有库时同样 skip）。
 # 有库档 1069+29=1098 由算式得出。**2026-08-31（T34 轨）已实测**，不再是纸面推算：
 # 起本机 pgvector 容器（本仓库 deploy/docker-compose.yml 的 pg profile，initdb 自动装
@@ -56,13 +56,18 @@ cd "$REPO_ROOT"
 # 所以 PG_GATED_TESTS=29 这个不变量没被动，有库档由算式得 1370+29=1399（未实测，
 # 上一次实测的 1098 对应 1069 那一档）。
 #
+# 2026-09-01（T47–T54 整合轮，本行是**当前生效的那个数**）：合并态 51715e5 实测
+# **1476 passed / 39 skipped（无库）**。T51 并入后 1370 -> T47–T53 六轨并入后 1456
+# -> T54 再加 20 条（失败调用留账 12 + usage 两家口径 8）得 1476。skipped 仍是 39，
+# PG_GATED_TESTS=29 依旧没被动，有库档由算式得 1476+29=1505（未实测）。
+#
 # 这条被漏过一次，代价是**门禁在该拦的时候拦错了人**：T46 并完三轨后本脚本第 1 步
 # 报「实际 1370 / 期望 1069」并打出「前置未通过，不要开始录制」，exit=1 ——
 # 而当时代码是全绿的。录制前唯一的机器判据自己变成了假警报，是最坏的一种失效：
 # 下一次它真的红了，人会先怀疑是这个数又没刷。**加测试的那一轨改这个数，
 # 不要留给录制那天的人。**
 PG_GATED_TESTS=29
-EXPECT_TESTS_NOPG=1456
+EXPECT_TESTS_NOPG=1476
 EXPECT_TESTS_PG=$((EXPECT_TESTS_NOPG + PG_GATED_TESTS))
 EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
 EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 8/8 PASS}"

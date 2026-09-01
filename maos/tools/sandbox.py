@@ -21,6 +21,13 @@
 测试与 CI 永远走降级路径（`MAOS_SANDBOX_FORCE_SUBPROCESS=1`），保证无 Docker 环境可跑；
 靠「碰巧没装 docker」来命中降级分支不算数，那样这条路径在装了 Docker 的机器上从不被测。
 
+**第三档是不跑**（`MAOS_SANDBOX_REQUIRE_CONTAINER`，缺省关）。降级把原因写进报告
+已经比只打日志好很多，但那仍然是「事后告诉你隔离没生效」——**没有人必须同意**。
+这一档表达的是「宁可不跑，也不裸跑」：容器不可用时直接产出 `tool_error` 报告，
+一条用例都不执行。开着它，`docs/toolport-contract.md` 里「容器隔离」那句断言
+要么成立、要么这一轮根本没有结论，不存在第三种。两个开关同时为真时
+`FORCE_SUBPROCESS` 赢 —— 它是测试基础设施，本档是部署策略。
+
 ## tool_error 与 failed 是两件事
 
 `tool_error` = 环境/工具炸了，根本没跑成；`failed` = 用例真挂了，跑成了但不过。
@@ -58,6 +65,12 @@ IMAGE = "maos-sandbox"
 TAG = "latest"
 IMAGE_REF = f"{IMAGE}:{TAG}"
 DEFAULT_TIMEOUT = 300
+
+# 测试与 CI 恒走降级路径的开关（值恒为 "1"，口径不许放宽 —— 见 _docker_ready）。
+ENV_FORCE_SUBPROCESS = "MAOS_SANDBOX_FORCE_SUBPROCESS"
+
+# fail-closed 档：容器起不来就让这一轮**失败**，绝不裸跑。缺省关，见 require_container()。
+ENV_REQUIRE_CONTAINER = "MAOS_SANDBOX_REQUIRE_CONTAINER"
 
 # 本次 pytest 实际走的是哪条路径。写进 test_report 里跟报告一起落盘 ——
 # 降级只进 log.warning 的话，屏幕上「容器隔离」这句话不成立而没有人会知道。
@@ -113,6 +126,44 @@ def sandbox_timeout() -> int:
     return value
 
 
+#: `require_container()` 认的两组取值。认不出的第三种一律告警回退到「关」——
+#: 拼错一个开关值不该把流水线掀翻，但更不许被静默当成「开」（那会让人以为
+#: fail-closed 生效了，而这正是本档要治的那类假象）。
+_TRUE_VALUES = ("1", "true", "yes", "on")
+_FALSE_VALUES = ("0", "false", "no", "off")
+
+
+def require_container() -> bool:
+    """`MAOS_SANDBOX_REQUIRE_CONTAINER`：宁可不跑，也不裸跑。默认**关**。
+
+    「容器隔离」是提交材料里的一句断言（`docs/toolport-contract.md` 的
+    `security_boundary`，评审会逐条对）。降级发生时那句断言就不成立 —— 而在此之前
+    降级这件事**没有人必须同意**：`_docker_ready()` 返回 False 就无条件裸跑。
+    本档就是那个「必须有人同意」：为真时容器不可用直接产出失败报告，不进降级路径。
+
+    🔴 **缺省必须是关**：未设 = False，行为与本档出现之前逐字节一致。否则 CI、
+    测试、以及任何没有 Docker 的机器全部当场变红 —— 一个默认开的 fail-closed 档
+    会在第一天就被人 export 掉，然后永远关着。
+
+    口径照 `sandbox_timeout`：走 `maos.config` 的配置面（缺省源就是
+    `os.environ.get`，取值逐字节不变），认不出的取值**告警回退、不抛**。
+
+    刻意**不做**参照实现那个 `CUMORA_BYOA_ALLOW_UNSANDBOXED=1` 式的逃生口：
+    那是给存量用户留的兼容档，MAOS 没有存量。该抄的是 `failIfUnavailable` 的
+    方向，不是逃生口 —— 多一个「危险但保留」的档位是纯负债。
+    """
+    raw = get_config_source().get(ENV_REQUIRE_CONTAINER, "")
+    if not raw:
+        return False
+    value = raw.strip().lower()
+    if value in _TRUE_VALUES:
+        return True
+    if value not in _FALSE_VALUES:
+        log.warning("%s=%r 不是布尔值，回退默认（关闭，容器不可用时仍降级）",
+                    ENV_REQUIRE_CONTAINER, raw)
+    return False
+
+
 def _clean_env(home: str) -> dict[str, str]:
     """白名单重建 env：只放行 PATH / LANG，HOME 指向一次性空目录，其余一律不传。
 
@@ -128,6 +179,16 @@ def _clean_env(home: str) -> dict[str, str]:
     env.setdefault("LANG", "C.UTF-8")
     env["HOME"] = home
     return env
+
+
+def _force_subprocess() -> bool:
+    """测试与 CI 那个强制降级开关。**读法一个字不许改**：直读 `os.environ`、只认 `"1"`。
+
+    它不走 `maos.config` 的配置面，也不认 `true`/`yes` —— 它是**测试基础设施**，
+    不是治理旋钮：无 Docker 环境靠它保证降级路径每次都被真的测到，口径一放宽，
+    「这条路径到底测没测到」就变成一个要现场推的问题。
+    """
+    return os.environ.get(ENV_FORCE_SUBPROCESS) == "1"
 
 
 def _image_listed() -> str:
@@ -155,8 +216,8 @@ def _docker_ready() -> tuple[bool, str]:
     daemon 也在，只是探测不可靠。这一条仍然降级（保守），但原因文本会点名这个矛盾，
     免得现场把「探测抽风」误读成「你忘了 docker build」而去做一次没用的重建。
     """
-    if os.environ.get("MAOS_SANDBOX_FORCE_SUBPROCESS") == "1":
-        return False, "MAOS_SANDBOX_FORCE_SUBPROCESS=1（测试与 CI 恒走降级路径）"
+    if _force_subprocess():
+        return False, f"{ENV_FORCE_SUBPROCESS}=1（测试与 CI 恒走降级路径）"
     if shutil.which("docker") is None:
         return False, "找不到 docker 命令"
     try:
@@ -178,6 +239,19 @@ def _docker_ready() -> tuple[bool, str]:
             f"镜像与 daemon 都在，是探测本身不可靠；本次仍按不可用降级")
     return False, (f"镜像 {IMAGE_REF} 不可用（{detail}）"
                    f"；先跑 docker build -t {IMAGE} -f deploy/sandbox.Dockerfile .")
+
+
+def container_doctor() -> tuple[bool, str]:
+    """开跑前体检：这台机器上容器档能不能走。返回 (可用, 不可用的原因)。
+
+    就是 `_docker_ready()` 的公开名字，**不是它的复制品** —— 直接转调，两者永远
+    同一个结论。给它一个不带下划线的名字是因为调用方在包外：`scripts/demo_preflight.sh`
+    这类开跑前的体检要问的正是这一句，而现在的答案只能靠「跑完看报告里的
+    `degraded_reason`」倒推 —— 那时候已经跑过了，体检的意义就没了。
+
+    纯函数：只探测，不落盘、不改 workdir、不起容器。
+    """
+    return _docker_ready()
 
 
 def _git(cwd: str | os.PathLike, *args: str) -> subprocess.CompletedProcess:
@@ -589,6 +663,21 @@ def sandbox_pytest_run(workdir: str) -> dict[str, Any]:
     report.unlink(missing_ok=True)
 
     usable, why = _docker_ready()
+    if not usable and not _force_subprocess() and require_container():
+        # fail-closed 档：宁可不跑，也不裸跑（`MAOS_SANDBOX_REQUIRE_CONTAINER`）。
+        # 走 _tool_error_report 而不是抛：tool_error 与 failed 是两件事，Gate 对
+        # 「工具没跑成」判 blocker、对「用例挂了」逐条转 findings —— 这里是前者，
+        # 一条用例都没执行过，报成 failed=0 的正常报告会被判成通过。
+        # mode 记 MODE_NOT_RUN 而不是 subprocess：压根没跑，说成降级就是记错了执行路径。
+        # 两个开关同时为真时 FORCE_SUBPROCESS 赢（DECISIONS ## task-T47）：它是测试
+        # 基础设施，本档是部署策略，测试基础设施不该被一个部署旋钮掀翻。
+        log.error("%s 要求容器隔离，而容器不可用（%s）；本次拒绝降级为裸 subprocess",
+                  ENV_REQUIRE_CONTAINER, why)
+        return _tool_error_report(
+            f"{ENV_REQUIRE_CONTAINER} 要求容器隔离，容器不可用（{why}）—— "
+            f"本次拒绝降级为裸 subprocess，一条用例都没有执行。"
+            f"这不是用例失败，是沙箱没起来：修好容器，或显式关掉 {ENV_REQUIRE_CONTAINER}",
+            started, mode=MODE_NOT_RUN, reason=why)
     if usable:
         mode, reason = MODE_CONTAINER, None
         failure = _run_in_container(base)

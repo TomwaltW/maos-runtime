@@ -24,6 +24,7 @@ subprocess，``--network none / --read-only / --user 1000:1000`` 三项一起失
 from __future__ import annotations
 
 import importlib.util
+import logging
 import pathlib
 import subprocess
 import sys
@@ -35,12 +36,15 @@ from maos.artifacts import KIND_TEST_REPORT, validate_artifact
 from maos.core.store import SqliteStore
 from maos.obs.trace import MODE_SUBPROCESS, MODE_UNRECORDED, export_trace
 from maos.tools.sandbox import (
+    ENV_REQUIRE_CONTAINER,
     IMAGE,
     IMAGE_REF,
     MODE_CONTAINER,
     MODE_NOT_RUN,
     _docker_ready,
+    container_doctor,
     prepare_sandbox_workdir,
+    require_container,
     sandbox_pytest_run,
 )
 
@@ -408,3 +412,139 @@ class _FakeConn:
         if "FROM artifact" in sql:
             return _FakeCursor(self._artifacts)
         return list(self._rows)
+
+
+# ---------------------------------------------------------------------------
+# 第五段（T47）· fail-closed 档：宁可不跑，也不裸跑
+#
+# 上面四段守的是「降级发生了要看得见」。这一段守的是另一件事：**降级要有人同意**。
+#
+# 在此之前 `_docker_ready()` 返回 False 就无条件裸跑 —— 原因写进了报告（这比只打
+# 日志好很多），但没有任何配置能表达「这一轮我要的就是容器隔离，起不来就别跑」。
+# 而「容器隔离」是 `docs/toolport-contract.md` 的 `security_boundary` 里的一句断言，
+# 评审会逐条对；降级发生时那句断言就不成立，报告却照样全绿。
+#
+# 三条判据：
+#   ① 变量未设 -> 行为与本档出现之前**逐字节一致**（这是防回归的那条，最重要）；
+#   ② 变量为真 -> 失败报告，且报告说得清是「要求容器」而不是「用例挂了」；
+#   ③ 两个开关同时为真 -> `FORCE_SUBPROCESS` 赢（DECISIONS ## task-T47）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_docker(monkeypatch):
+    """把「容器不可用」做成确定事实，不依赖这台机器上到底有没有 Docker。
+
+    不能用 `MAOS_SANDBOX_FORCE_SUBPROCESS=1` 来制造不可用：那个开关本身是第 ③ 条
+    的被测对象，拿它当前置条件，③ 就恒真而测不出东西。
+    """
+    monkeypatch.delenv("MAOS_SANDBOX_FORCE_SUBPROCESS", raising=False)
+    monkeypatch.setattr("maos.tools.sandbox.shutil.which", lambda _: None)
+
+
+def test_require_container_defaults_to_off(monkeypatch):
+    """缺省是关。这一条单独钉住，因为默认值一旦漂成「开」，所有无 Docker 的机器全红。"""
+    monkeypatch.delenv(ENV_REQUIRE_CONTAINER, raising=False)
+    assert require_container() is False
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on", " 1 "])
+def test_require_container_reads_the_usual_true_spellings(monkeypatch, raw):
+    monkeypatch.setenv(ENV_REQUIRE_CONTAINER, raw)
+    assert require_container() is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off", ""])
+def test_require_container_reads_the_usual_false_spellings(monkeypatch, raw):
+    monkeypatch.setenv(ENV_REQUIRE_CONTAINER, raw)
+    assert require_container() is False
+
+
+def test_require_container_warns_on_garbage_and_falls_back_to_off(monkeypatch, caplog):
+    """认不出的取值：告警回退到「关」，不抛。
+
+    口径同 `sandbox_timeout`。回退到「关」而不是「开」是有意的：一个拼错的开关值
+    不该把流水线掀翻。但**必须告警** —— 静默当成「开」会让人以为 fail-closed 生效了，
+    而那正是本档要治的那类假象。
+    """
+    monkeypatch.setenv(ENV_REQUIRE_CONTAINER, "ja")
+    with caplog.at_level(logging.WARNING, logger="maos.tools.sandbox"):
+        assert require_container() is False
+    assert ENV_REQUIRE_CONTAINER in caplog.text
+    assert "回退" in caplog.text
+
+
+def test_unset_flag_still_degrades_exactly_as_before(no_docker, monkeypatch, tmp_path):
+    """① 变量未设时，Docker 不可用 -> 照旧降级跑完。
+
+    这是**防回归**的那一条：本档的第一硬约束是「不配它就一个字节都不变」，
+    否则 CI、测试、以及任何没有 Docker 的机器全部当场变红。
+    """
+    monkeypatch.delenv(ENV_REQUIRE_CONTAINER, raising=False)
+    path = prepare_sandbox_workdir(str(tmp_path / "repo"))
+    report = sandbox_pytest_run(path)
+
+    assert report["tool_error"] is None, "降级是跑成了，不是工具炸了"
+    assert report["sandbox_mode"] == MODE_SUBPROCESS
+    assert report["degraded_reason"]
+    assert report["passed"] > 0, "真降级跑完该有过的用例"
+    assert "沙箱降级" in report["summary"]
+
+
+def test_flag_on_refuses_to_run_bare_instead_of_degrading(no_docker, monkeypatch, tmp_path):
+    """② 变量为真时，Docker 不可用 -> 失败报告，不裸跑。
+
+    判据不止「失败了」，还要：报告说得清**是因为要求容器**，而不是用例挂了。
+    `tool_error` 与 `failed` 在 Gate 眼里是两件事 —— 混了的话，「沙箱没起来」
+    会被读成「代码有问题」，现场查错方向整个反掉。
+    """
+    monkeypatch.setenv(ENV_REQUIRE_CONTAINER, "1")
+    path = prepare_sandbox_workdir(str(tmp_path / "repo"))
+    report = sandbox_pytest_run(path)
+
+    assert report["tool_error"], "要求容器却裸跑了，fail-closed 没生效"
+    assert ENV_REQUIRE_CONTAINER in report["tool_error"], "没说清是被哪个开关拦下的"
+    assert "不是用例失败" in report["tool_error"], \
+        "得把「沙箱没起来」和「代码挂了」分开说，否则现场查错方向会反"
+    assert "找不到 docker" in report["tool_error"], "容器不可用的原因要原样带出来"
+
+    assert (report["passed"], report["failed"], report["errors"]) == (0, 0, 0), \
+        "一条用例都没执行过，任何非零计数都是在编"
+    assert report["cases"] == []
+    assert report["sandbox_mode"] == MODE_NOT_RUN, "压根没跑，不许说成 subprocess"
+    assert validate_artifact(KIND_TEST_REPORT, report) == [], "拒跑的报告也得是合法产物"
+
+
+def test_force_subprocess_wins_over_require_container(monkeypatch, tmp_path):
+    """③ 两个开关同时为真 -> `FORCE_SUBPROCESS` 赢，照常降级跑完。
+
+    裁决与理由记在 `docs/DECISIONS.md ## task-T47`：`FORCE_SUBPROCESS` 是**测试
+    基础设施**（无 Docker 环境靠它保证降级路径每次都被真的测到），
+    `REQUIRE_CONTAINER` 是**部署策略**。让部署旋钮掀翻测试基础设施，代价是
+    一台机器上误设一个环境变量就让整个测试套件红成一片，而且红得毫无信息量。
+    """
+    monkeypatch.setenv("MAOS_SANDBOX_FORCE_SUBPROCESS", "1")
+    monkeypatch.setenv(ENV_REQUIRE_CONTAINER, "1")
+    path = prepare_sandbox_workdir(str(tmp_path / "repo"))
+    report = sandbox_pytest_run(path)
+
+    assert report["tool_error"] is None, "FORCE_SUBPROCESS 该赢，却被 fail-closed 拦了"
+    assert report["sandbox_mode"] == MODE_SUBPROCESS
+    assert "MAOS_SANDBOX_FORCE_SUBPROCESS" in report["degraded_reason"]
+
+
+def test_container_doctor_is_callable_without_running_anything(monkeypatch):
+    """开跑前体检：结论要能在**不跑任何用例**的前提下拿到。
+
+    `container_doctor()` 就是 `_docker_ready()` 的公开名字（同一个纯函数，无副作用、
+    不落盘、不改 workdir）。`scripts/demo_preflight.sh` 要的正是这个形状 ——
+    开跑前一条命令问出「这台机器上容器档能不能走」，而不是跑完看报告里的
+    `degraded_reason` 才知道。
+    """
+    monkeypatch.delenv("MAOS_SANDBOX_FORCE_SUBPROCESS", raising=False)
+    monkeypatch.setattr("maos.tools.sandbox.shutil.which", lambda _: None)
+
+    usable, why = container_doctor()
+    assert usable is False
+    assert "找不到 docker" in why
+    assert container_doctor() == _docker_ready(), "公开名字必须就是同一个结论，不是复制品"

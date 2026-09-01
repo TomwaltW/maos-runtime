@@ -1548,3 +1548,15 @@ T40–T45 六轨各自读了参照实现 cumora 的一个面，产出 `docs/refs
 | 2026-09-01 | P8 | **阈值留痕的触发面与任务级判据对齐，于是混合计划里有一个覆盖缺口**。`_finance_threshold_notice` 只在被评审的任务自己 `biz_type == "refund"` 时开口 | 一个计划里既有退款任务、又有非退款任务，而恰好只评审到非退款任务那一轮时，阈值被调过这件事不留痕。**当前不是活 bug**：`_gate_finance_plan` 是逐任务跑的，同一个 plan 里只要有一个退款任务过闸，痕就留下了 | **不建议扩大触发面**。扩到「plan 里有退款任务就留痕」要在留痕这条路上再扫一次 `list_tasks`（多一次存储读，为一条 info），而扩到「无条件留痕」会把场景 1-5 每一个任务的 finance 从 `pass` 变成 `noted`。有真实需求再说 |
 | 2026-09-01 | P8 | **登记表守不住「根本不记账」的新调用点**。两条守卫（静态扫源码 / 动态扫真跑过的库）判据都落在 `record_model_usage` 的调用点上 | 新增一个模型调用点、**连 `record_model_usage` 都没调**，两条守卫都是绿的，而账照漏。T32 那次「六处补 `store=`」漏的正是这一类 | 要堵得把判据挪到模型客户端那一侧（`complete()` 被调用了却没有对应的 usage 行）。**判复赛后**：那需要在 client 上挂计数并与库对账，比登记表重得多，而登记表已经把「改了字符串 / 多了一个记账点」这两类挡住了 |
 | 2026-09-01 | P8 | **`maos/obs/__init__.py` 仍是一行 docstring，`trace` 与新增的 `call_sites` 都没有导出** | 不是缺陷，是口径：`maos/obs` 的两个模块现在都靠全路径 import（`from maos.obs import trace as trace_mod` / `from maos.obs.call_sites import ...`）。记在这里只为一件事 —— 后来的人别以为「没导出」是漏了，顺手加一个 `__all__` 反而会把两种 import 写法都留在仓库里 | **不必改**。真要统一的话，等 `maos/obs` 有第三个模块时一次性定口径 |
+
+## task-T49（Agent 输出面：自描述截断 + 失败必须给理由）
+
+本轨修的是 `## task-T51` 的第 6 条（`reviewer.py:83` 裸切）与第 17 条
+（「失败但没说为什么」在类型上合法），两条都已落地并配了用例。下面 3 条是本轨
+新发现、按铁律 4 **不当场改**的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`register_skill` 同名同版本静默覆盖，本轨未做**。`maos/skills/registry.py:39` 的 `SKILL_REGISTRY.setdefault(contract.name, {})[contract.version] = cls` | 与 `## task-T51` 第 10 条同一条，本轨派单 §5.3 把它列为可选项。**未做的原因不是判它不值得，而是 `maos/skills/registry.py` 不在本轨白名单** —— 派单明令不许自行扩白名单 | 一行 `if version in versions: log.warning(...)` 即可，推荐 `warning` 不推荐 `raise`（skill 是 import 注册的，raise 会让一次误 import 掀掉整个进程启动）。**待人类裁决是否扩白名单**，裁决前不动 |
+| 2026-09-01 | P8 | **`docs/agent-identity.md` 记录的是声明行号，于是任何在 `maos/agents/*.py` 上方插代码的改动都会让 `gen_docs.py --check` 变红** | 本轨实测踩了两次：§5.1 在 `reviewer.py` 顶部加了 12 行常量，`ReviewerAgent` 声明位置 33→47；§5.2 在 `base.py` 中段加了 `__post_init__`，`BaseAgent` 位置 103→131。两次都与 `AgentIdentity` 的**字段**毫无关系，但门禁照红。派单 §0.1 也只预警了「动字段会红」这一种 | 不是 bug，是**行号作为标识的固有代价**（同 `## task-T51` 第 24 条那类「读数跟着 sha 走」的问题）。真要治就得让生成器记符号名而不是行号，收益不明显。**记在这里只为一件事**：下一轨看到这个红，别去查自己有没有动字段，直接重跑生成器 |
+| 2026-09-01 | P8 | **`AgentOutput.status` 仍是自由字符串**，`__post_init__` 只对 `failed` / `blocked` 立了理由不变量，**没有校验 status 取值本身** | 拼错成 `AgentOutput(status="faild")` 照旧构造成功，且**绕过本轨刚立的不变量** —— 它既不等于 `failed` 也不等于 `blocked`，两条 if 都不命中。实跑核实过下游：`on_task_result` 的分支是 `ok` / `blocked` / `else: # failed`（`maos/core/control_plane.py:365`），拼错的值落进最后那个兜底档，`last_error=p.get("error")` 取到 `None` —— **任务判 FAILED 而库里的 `last_error` 是空的**，正是本轨要堵的那个形状换了个入口进来 | 本轨**没做**：加 status 白名单是一条独立的收严，会波及全仓 55 处构造点与事件契约面的 status 取值口径，超出派单范围（铁律 4）。做的话应与 `maos/contracts/events.py` 里 TaskResult 的 status 口径一起定，那是冻结面，**必须先问人类** |

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 
+from maos.agents._truncate import PackedItems, pack_json_array
 from maos.agents.base import AgentIdentity, AgentOutput, BaseAgent, TaskContext, register
 from maos.agents.testing import record_seeded_artifact
 from maos.artifacts import KIND_REVIEW_NOTE
@@ -28,6 +29,19 @@ SYSTEM = """你是 Reviewer Agent，对交付产物做语义审查。只输出 J
 只写你在产物里真实看到的问题；没有问题就给空 defects，不要为了显得认真而编。"""
 
 PROMPT_MARKER = "语义审查产物清单"
+
+#: 产物清单送进模型的字符预算。原先是 ``json.dumps(...)[:8000]`` 那一刀的 8000，
+#: 数值照旧，切法改成按份装填（见 ``_truncate.pack_json_array``）。
+ARTIFACT_BUDGET = 8000
+
+
+def _describe_artifact(art: object) -> str:
+    """被省略产物在截断说明里的点名方式 —— 要能让人/模型指得回是哪一份。"""
+    if isinstance(art, dict):
+        bits = [str(art[k]) for k in ("task_id", "kind", "version") if art.get(k) is not None]
+        if bits:
+            return "/".join(bits)
+    return json.dumps(art, ensure_ascii=False, default=str)[:60]
 
 
 @register
@@ -49,21 +63,33 @@ class ReviewerAgent(BaseAgent):
         self.check_write("artifact")
 
         artifacts = ctx.inputs.get("artifacts") or []
+        packed = pack_json_array(artifacts, budget=ARTIFACT_BUDGET,
+                                 describe=_describe_artifact)
+        if artifacts and packed.presented == 0:
+            # 一份都塞不进去 -> 与「超时」同类：审查没做成，不许伪装成审过了。
+            return self._needs_human(
+                f"语义审查无法开始：{packed.total} 份产物中第 1 份单份就超过 "
+                f"{ARTIFACT_BUDGET} 字符预算（完整清单 {packed.original_chars} 字符），"
+                "一份都呈现不了。请拆小产物或分批送审。")
+
         try:
-            raw = self.ask(SYSTEM, self._build_prompt(ctx, artifacts))
+            raw = self.ask(SYSTEM, self._build_prompt(ctx, packed))
         except TimeoutError as exc:
             return self._needs_human(f"语义审查超时：{exc}")
         except Exception as exc:                      # noqa: BLE001 —— 见 _needs_human
             return self._needs_human(f"语义审查未完成（{type(exc).__name__}: {exc}）")
 
-        note = self._parse(raw, len(artifacts))
+        note = self._parse(raw, packed)
         if note is None:
             return self._needs_human("语义审查输出不合契约（非 JSON 或缺 conclusion）")
 
         return AgentOutput(
             status="ok",
             artifacts=[{"kind": KIND_REVIEW_NOTE, "content": note}],
-            metrics={"defects": len(note["defects"]), "reviewed": len(artifacts)},
+            # ``reviewed`` 是**实际送到模型眼前的份数**，不是清单长度。截断发生时
+            # 两者不等，写 len(artifacts) 就是声称审了全部 —— 那正是这次要修的假话。
+            metrics={"defects": len(note["defects"]), "reviewed": packed.presented,
+                     "artifacts_total": packed.total, "truncated": packed.truncated},
         )
 
     # ------------------------------------------------------------------
@@ -77,15 +103,19 @@ class ReviewerAgent(BaseAgent):
                            metrics={"needs_human": True})
 
     @staticmethod
-    def _build_prompt(ctx: TaskContext, artifacts: list) -> str:
-        return "\n\n".join([
-            f"{PROMPT_MARKER}（计划 {ctx.plan_id}，共 {len(artifacts)} 份）：",
-            json.dumps(artifacts, ensure_ascii=False, default=str)[:8000],
-            f"验收标准：{json.dumps(list(ctx.acceptance), ensure_ascii=False)}",
-        ])
+    def _build_prompt(ctx: TaskContext, packed: PackedItems) -> str:
+        """没触发截断时，与改造前的提示词**逐字节一致**；触发了才多出一段截断说明。"""
+        blocks = [
+            f"{PROMPT_MARKER}（计划 {ctx.plan_id}，共 {packed.total} 份）：",
+            packed.payload,
+        ]
+        if packed.truncated:
+            blocks.append(packed.note)
+        blocks.append(f"验收标准：{json.dumps(list(ctx.acceptance), ensure_ascii=False)}")
+        return "\n\n".join(blocks)
 
     @staticmethod
-    def _parse(raw: str, reviewed: int) -> dict | None:
+    def _parse(raw: str, packed: PackedItems) -> dict | None:
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
@@ -105,11 +135,18 @@ class ReviewerAgent(BaseAgent):
                 "severity": str(d.get("severity") or "minor"),
                 "note": str(d.get("note") or ""),
             })
+        # 意见书里的 reviewed 同样是**实际审过的份数**。截断时额外把差额写进
+        # summary —— 这份意见书是给人看的，「只审了 M/N 份」必须一眼看得见。
+        scope = ("" if not packed.truncated
+                 else f"（清单被截断：共 {packed.total} 份，仅审 {packed.presented} 份）")
         return {
             "defects": defects,
             "conclusion": conclusion,
-            "reviewed": reviewed,
-            "summary": f"语义审查完成：{len(defects)} 条缺陷，结论「{conclusion[:40]}」",
+            "reviewed": packed.presented,
+            "artifacts_total": packed.total,
+            "truncated": packed.truncated,
+            "summary": (f"语义审查完成：{len(defects)} 条缺陷，"
+                        f"结论「{conclusion[:40]}」{scope}"),
             "self_check": {"build": "pass", "lint": "pass"},
         }
 

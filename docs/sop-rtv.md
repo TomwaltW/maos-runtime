@@ -155,10 +155,10 @@ sed -n '/^BIZ_STATUS_FLOW/,/^}/p' review/rtv-contracts.md \
 
 主干之外的四条边都是失败路径，一条都不许省：
 
-- `received → rejected`：受理即驳回（退货诉求不成立）。
-- `disposed → rejected`：裁定不通过。
-- `disposed → compensated` / `shipped → compensated` / `credited → compensated`：
-  货已经动了（或裁定已经出了），但供应商不认、也问不出来 —— 补偿做完之后的收口。
+- `received` → `rejected`：受理即驳回（退货诉求不成立）。
+- `disposed` → `rejected`：裁定不通过。
+- `disposed` / `shipped` / `credited` 三处都能进 `compensated`：货已经动了
+  （或裁定已经出了），但供应商不认、也问不出来 —— 补偿做完之后的收口。
 
 分辨得出「这笔为什么没退成」是这四条边存在的全部理由。都收敛成一个 `failed`，
 「供应商拒赔」和「我方裁定不通过」在账上就长一个样。
@@ -227,7 +227,10 @@ RTV 域是两个（`credited` 与 `settled`），因此 C-R3 要求
 ### 5.2 为什么 `acknowledged` 不等于 `credited`
 
 供应商侧的状态取值域是 `submitted` / `acknowledged` / `issued` / `disputed` /
-`unknown`（T62 的模拟器定死）。其中最危险的一对是：
+`unknown`。其中 `acknowledged` 与 `issued` 由契约 C-R3 定死，另外三个的出处是
+T62 的模拟器 —— 本文成稿时那份代码还不存在，所以 `test_rtv_sop_doc.py` 把这三个
+名字**如实登记成「暂时无源」**（带理由的豁免），整合期合入后应当删掉豁免、
+改由真实模块接住。最危险的一对是：
 
 | 回执值 | 中文 | 能推进到 `credited` 吗 |
 | :-- | :-- | :-- |

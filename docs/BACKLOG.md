@@ -1666,3 +1666,14 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **`MAOS_LLM_TIMEOUT` 没有进 `RouteSpec`**，超时仍是全局唯一一份（`model/client.py::_timeout_from_env`） | 路由表让不同角色走不同家的模型之后，超时却还是一个值。强模型跑长任务需要 300s，轻量分类角色 300s 等于把一次挂死拖成五分钟 | 归接线那一轨（`client.py` 的持有轨）：要么给 `RouteSpec` 加 `timeout_env`，要么明确写死「超时按 tier 分档，不按路由分」。两条都行，别留成「没人决定过」 |
 | 2026-09-01 | P9 | **路由表本轮无人消费**：`routing.resolve()` / `describe()` 写完了，但 `select_model_client()`（A-12 冻结、T57 持有）与 `worker.py` 都还没调它 | 本轨范围就是「只出解析，不接线」，所以这不是缺陷。但它意味着：接线那一轨如果没做，这个模块是**没有任何红灯的死代码** —— 测试全绿，`run.py` 全绿，而 22 个 agent 照旧共用一个全局 client | 接线轨落地后，加一条守卫钉住「`describe()` 报出的 source 与 worker 实际注入的 client 对得上」。在那之前，`describe()` 说的是**配置意图**，不是**运行事实**，读它的人要知道这个区别 |
 | 2026-09-01 | P9 | **tier 这一级路由粒度接近失效**：22 个在池角色里 17 个是 `light`（实测 light 17 / medium 2 / strong 3） | `MAOS_LLM_TIER_LIGHT_MODEL` 一配就同时改掉 17 个角色，等于第二个全局开关；真要给某个理赔角色单独换模型，只能退回角色级逐个配。分档本身没错，错的是「新角色默认落 light」这个惯性 | 归下一轮补角色的那一轨：新增 `AgentIdentity` 时把 `model_tier` 当成必须想一想的字段，而不是抄上一个。不建议加第四档（会撞 `client.py::Tier` 的三档口径） |
+
+## task-T57（按角色注入模型客户端时发现，本轮都不改）
+
+2026-09-01 接线「每个 worker 连一个大模型 API」时撞到的四条。按铁律 4 只记不改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **生成物 `docs/agent-identity.md` 把 `maos/runtime/worker.py` 的 `__init__` 行号写进正文**（本轮 28 -> 39）。任何一轨在 worker.py 顶部加一行 import，`test_generated_docs` 立刻两条变红 | 红灯本身是对的（生成物确实过期了），坏的是**归因**：症状是「文档守卫红了」，原因是「别人加了个 import」，中间隔着一个没人会想到的行号。本轮为此多改了一个白名单外文件 | 做生成器那一轨。行号换成锚点（`AGENT_POOL` 那行的符号名），或者干脆只写文件名不写行号 —— 行号是全仓最容易过期的一种引用 |
+| 2026-09-01 | P9 | **`core/store.py::usage_is_estimated` 判的是客户端的 `isinstance`，与「给客户端加包装层」天然互斥**。本轮靠「Scripted 一律不包」绕开 | 今天无害。但下一轮若真想给缺省路径也留路由归属（比如演示时想看「假模型也按角色分了流」），就没有出路了 —— 包了 `estimated` 翻面，不包就没有归属 | 真需要那天再动，且**不要**改成判 `ModelResponse.model` 字符串：两者同源会让核验器第 8 项判据 c 退化成自己跟自己对账 |
+| 2026-09-01 | P9 | **provider 归属进不了 `model_usage` 表**。`RoutedModelClient` 把 role/provider/route_source 写进 `ModelResponse.meta`，而 `record_model_usage` 不落 meta（表结构是冻结面，铁律 1，本轮一列都没加） | 「这次调用花的钱是打给哪家的」在成本表里查不到，只能拿 `agent_role` 去关联 event_log 里那条 `ModelRouted`。一次运行里成立（路由是不变量），**一旦支持运行中改路由就不成立了** | 与 BACKLOG 里那条「`estimated` 一个字段扛两种语义」一起做，都要新增表 |
+| 2026-09-01 | P9 | **`ModelRouted` 落在 `plan_id` 空串下，进不了 `trace.json`**。Worker 构造在任何 plan 之前，此刻确实没有 plan 可归（编一个更坏），而 `obs/trace.py` 按 plan_id 取 event_log | 路由留痕在库里查得到、在证据束里查不到。演示当天要证明「各角色真的分流了」，得单独开一条查询 | 做可观测那一轨。要么 trace 额外捞一次 `plan_id=""`，要么 Worker 在首次接到派单时补一条带 plan_id 的归属行 |

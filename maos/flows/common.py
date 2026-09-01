@@ -78,12 +78,17 @@ def _wrap_matrix(inner: EventBus) -> EventBus:
         return inner
 
 
-def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | None = None):
+def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | None = None,
+          model_factory: Callable[[str, str], ModelClient] | None = None):
     """装配一套完整运行时，返回冻结的六元组（C-4）。
 
     script：喂给缺省 ScriptedModelClient 的「关键字 -> 应答」表。
     model ：传实例则原样注入（场景 2 的 FlakyModel 由此进入），不再按 script 构造。
     matrix：True 时事件总线经 HiClaw(Matrix) 转发，不可用则自动降级。
+    model_factory：``(role, tier) -> ModelClient``，让 Worker 里每个角色各连各的模型
+        （``runtime/worker.py``）。**缺省 None 时行为逐字节不变**：22 个 Agent 仍共用
+        第 4 位返回的那一个缺省 ``model``。加参数照 C-3 走 keyword-only + 带默认值，
+        返回值仍是六元组、位序与类型不动（C-4）—— 多一个入参不许换成七元组或 dataclass。
 
     总线由 `core/eventbus.py::create_event_bus` 按 `MAOS_EVENTBUS_BACKEND` 造。
     **不设这个环境变量时它返回的就是 `InMemoryEventBus`**，所以「裸 clone 不用任何
@@ -100,7 +105,8 @@ def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | 
         bus = _wrap_matrix(bus)
     cp = ControlPlane(store, bus)
     model = ScriptedModelClient(script) if model is None else model
-    worker = WorkerRuntime(worker_id="w1", bus=bus, control_plane=cp, model=model)
+    worker = WorkerRuntime(worker_id="w1", bus=bus, control_plane=cp, model=model,
+                           model_factory=model_factory)
     gate = ReviewerGate(store, bus, cp)
     return store, bus, cp, model, worker, gate
 

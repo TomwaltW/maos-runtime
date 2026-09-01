@@ -1721,3 +1721,15 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **`git_tool.py::OPS` 没有被纳入对账**。`OPS`（op -> MCP 工具名的手写映射）与 `SERVERS[...].exposes` 仍是两份各自维护的清单，当前值相同纯属人记着 | server 加一个工具时，`exposes` 漏登记会被 `reconcile()` 报 `undeclared`，但 `OPS` 漏加**没有任何东西会红** —— 上层调用点拿到的仍是「未知的 git-mcp 操作」 | 泛化的做法是把 op 映射放进 `McpServerSpec`（比如 `ops: Mapping[str, str]`），让 `reconcile()` 三方对账。本轮没做：那要改 §5.2 定死的 spec 形状，且只有一个 server 时看不出这个抽象对不对 |
 | 2026-09-01 | P9 | **`reconcile()` 没有挂进任何自动入口**，只有 `maos/tests/test_mcp_registry.py` 在跑它 | 加第二个 server 的人如果只跑自己那几条测试、不跑全量 pytest，对账就形同虚设。`scripts/verify.py` 与 `gen_docs --check` 都没有引它 | 挂进 `scripts/verify.py` 之前要先想清楚一件事：对账要**真拉子进程**，而 verify 是证据束核验，多一个会 fork 的步骤要评估它在无网/受限环境下的表现。归做 verify 那一轨 |
 | 2026-09-01 | P9 | **角色到工具的映射仍是两份手写表**：`registry.DEFAULT_ROLE_SERVERS` 与 `maos/agents/*.py` 各自的 `allowed_tools` | 本轮加了一条测试守着「`ports_for("coding")` 挑出来的 port 必须在 `CodingAgent.identity.allowed_tools` 里」，但那是**单向**的：白名单里有而映射里没有的（比如 `sandbox`）无人过问。真正的档案表是别轨的产出，本轨的映射只是兜底 | 归能力档案表那一轨（`profiles` 注入口已经留好）。合并后应当让档案表成为唯一出处，`DEFAULT_ROLE_SERVERS` 退化成「没人注入时的最小可跑集」或直接删掉 |
+
+## task-T60（能力装配层落地时发现，本轮都不改）
+
+2026-09-01 把 Identity 里的名字解析成真能调的 ToolPort 时撞见的四条。装配层只让它们
+**显形**（落进 `AssemblyReport` 与 `evidence/capability-matrix.json`），一处都没修 —— 铁律 4。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`coding` / `testing` 白名单里的 `sandbox` 全仓没有对应 ToolPort**（实际存在的是 `sandbox.git_apply` 与 `sandbox.pytest_run`），22 个角色里就这两处 | 白名单放行了一个不存在的名字 —— 与 `git-mcp` 补上之前是同一个洞。今天无害（没有调用点用这个名字取工具），但装配层一接进 Worker，这两个角色启动时就会看到「有授权无实现」 | 归整合期。两条路二选一：把白名单改成那两个真名，或者真加一个叫 `sandbox` 的聚合 ToolPort。**别只改测试** |
+| 2026-09-01 | P9 | **装配函数还没有生产调用方**：`assemble()` 目前只在测试与证据脚本里被调，Worker 起 Agent 时没有接线 | 每个 Agent 仍然各自 import 各自的 ToolPort，装配层的收窄约束在生产路径上还没生效 —— 它守得住的只是「调过 assemble 的那些」 | 归整合期。接线点在 `maos/runtime/worker.py`（本轨白名单外，T57 持有），一行 `assemble(agent, profile=..., mcp_ports=...)`，等 T57/T58/T59 落地后一起接 |
+| 2026-09-01 | P9 | **`evidence/capability-matrix.json` 没进 `evidence/INDEX.json`，也不在 `scripts/verify.py` 的核验项里** | 这份证据目前只有「首行有出处」这一层保证，没被证据束的索引与核验链条覆盖 | 归整合期。`INDEX.json` 有主仓在制品在动（本轨不许改），`verify.py` 是事实源 |
+| 2026-09-01 | P9 | **`implemented_without_authorization` 目前等于「全仓目录减本角色白名单」**，22 个角色每个都是 8–10 条 | 当计数指标可用（矩阵里只落了 count），但当作「该给谁加授权」的建议清单就是噪音 —— 它没区分「本该有」与「本来就不该有」 | 等职责能力档案（T58）落地后再收窄：档案说得出「这个职责应该有哪些」，差集才有意义 |

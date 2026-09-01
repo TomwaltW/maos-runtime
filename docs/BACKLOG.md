@@ -1603,3 +1603,13 @@ T40–T45 六轨各自读了参照实现 cumora 的一个面，产出 `docs/refs
 | 2026-09-01 | P8 | **三份文档的 pytest 条数家族全面过期**。实测 `36bd036` 上是 **1370 passed, 39 skipped**，而三份文档里散着 `1069` / `802`（7 处）/ `749`（7 处）/ `703`（8 处）/ `645`（5 处）/ `596`（3 处）等至少 15 个不同的历史值 | 台上任何一个数字被评委当场复现打脸，整份材料的可信度一起塌。但**现在刷没有意义** —— T47 / T48 / T49 / T50 / T52 五轨仍在加测试与判据，六轨并轨后还得再刷一遍 | **收尾轨，且必须是并轨之后的最后一步。** 判据：以 `python3 -m pytest maos/tests -q` 的当场输出为唯一真值，三份文档 + `README.md` + `docs/EXECUTION.md` + `artifacts/**` + `scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG` 一次刷齐 |
 | 2026-09-01 | P8 | **`docs/submission-checklist.md` 内部对 `verify.py` 的读数自相矛盾**：`:34` 与 `:267` 写「`verify.py` → **8/8 PASS**」，而 `:123` / `:246` / `:474` / `:502` 写「**7/7 PASS**」 | 两个数指的很可能不是一回事（八束证据 vs 七项核验），但同一份自查清单里并排出现、都不带限定语，被追问「到底几项」时答不上来。**本轨未实跑核实**（`verify.py` 需先有 `evidence/scenario-*/maos.db`，跑它会把 `evidence/` 跑脏，超出本轨零改动范围） | **收尾轨**：跑一次 `make_evidence.py` + `verify.py`，按当场输出统一措辞，把「几束证据」与「七项核验」两个读数分开写 |
 | 2026-09-01 | P8 | **`04-reject-compensation.png` 文件名名不副实，改名要一起动三处**。`evidence/room/README.md` 自己划了边界：房间里拍不到补偿（`CompensationExecuted` 只落 `event_log`、从不 publish），这张图证明的是「驳回生效 + Plan 落 FAILED」 | 文件名比它能证明的东西大，是最容易被追问穿的一处。已记 `## task-T4`，至今未做 | **收尾轨或复赛后。** 改名要同时动 `docs/EXECUTION.md:499/502` 与 `evidence/room/README.md` 三处；**本轨的处置是不改名、改口径** —— 三份文档里凡提到这张图的地方都已写明它证明不了补偿 |
+
+## integrate-p8-t47-t53（七轨整合轮）
+
+本轮只做合并与收口，不做手册范围外的改动。下面是合并态下**已消解**与**仍留账**的条目。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | ✅ **已消解**：`## task-T48` 第 1 条记的 `EXPECT_TESTS_NOPG=1370` 过期。合并态实测 **1456 passed / 39 skipped**，本轮已刷新为 1456 并同步了上面那行历史实测注释 | 录制门禁第 1 步在合并态重新判得准 | 已处理 |
+| 2026-09-01 | P8 | **三份文档的 pytest 条数家族再次全面过期**（`## task-T51` 已记过一次，分母从 1370 变成 1456，那条的具体数字随之作废） | 交付面读数不准；`docs/submission-checklist.md` / `docs/ppt-outline.md` / `docs/demo-script.md` 里散落的 `1069` / `1370` 等数都要重刷 | 下一轮交付面口径轮统一刷，别一轨一轨改 —— 分母每合一轮就变一次 |
+| 2026-09-01 | P8 | **主工作区（仓库根）留着另一会话的 MCP 集成在制品 83 处未提交**，其中 `scripts/check_docs.py` / `maos/tests/test_docs_guard.py` 是 8-31 的 untracked 旧版，与 T52 合入 git 的新版同名不同内容 | `integrate/p8-t47-t53` 快进回 `goai-restructure` 时会被这两个 untracked 文件挡住 | MCP 轨收工提交后，由人类决定用哪一版（T52 版已带 +211 行演进与 318 行测试） |

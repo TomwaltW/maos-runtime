@@ -31,6 +31,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import pathlib
@@ -43,9 +44,14 @@ import pytest
 from maos.agents.base import (AgentIdentity, AgentOutput, BaseAgent, TaskContext,
                               CALL_SITE_ASK)
 from maos.core.store import SqliteStore, record_model_usage, usage_is_estimated
+from maos.flows import scenario_1
 from maos.model.client import (GatewayModelClient, ModelResponse, ScriptedModelClient,
                                Tier)
 from maos.obs import trace as trace_mod
+from maos.obs.call_sites import (REGISTER_HINT, REGISTERED_CALL_SITES, unregistered,
+                                 unregistered_in_store)
+from maos.skills.builtin import code_repo_patch as code_repo_patch_mod
+from maos.skills.builtin import req_normalize as req_normalize_mod
 from maos.skills.builtin.code_repo_patch import CodeRepoPatchSkill
 from maos.skills.builtin.req_normalize import ReqNormalizeSkill
 from maos.skills.contract import SkillContext
@@ -474,3 +480,153 @@ def test_check8_emits_no_warn_lines(tmp_path):
 
 def test_check8_is_registered_in_the_checks_list():
     assert verify.check_cost_attribution in verify.CHECKS
+
+
+# ======================================================================
+# call_site 登记表（T48）—— 新增调用点漏记账必须有信号
+# ======================================================================
+# `call_site` 是 store.py:200 的一列自由字符串，表结构冻结、加不了约束。于是
+# 「谁在烧 token」全靠调用点自觉：新增一个模型调用点忘了记账，`cost_view` 静默
+# 偏低，屏幕上一个数都不会变红。T32 那次「六处补 store=」是这类漏接的实证。
+#
+# 三条守卫，缺一条就漏一种漏法：
+#   1. 登记表与三处源头逐字对齐 —— 抄字面量（为守 maos/obs 的 import 边界）的
+#      代价是可能漂，这条把漂钉死；
+#   2. **静态**扫 record_model_usage 的全部调用点 —— 新增一个调用点、写了个新
+#      字符串，哪怕没有任何场景跑到它，也当场红；
+#   3. **动态**扫真跑过一遍的库 —— 场景 1 真的把三个调用点全烧过一轮，库里的
+#      distinct 值必须全部已登记。跑在真数据上而不是空库上：造一个只有登记值的
+#      假库，这条测试永远绿，等于没写。
+
+_PROD_PKG = ROOT / "maos"
+
+
+def _prod_sources() -> list[pathlib.Path]:
+    """maos/ 下的生产源码（不含 tests/）。"""
+    return sorted(p for p in _PROD_PKG.rglob("*.py")
+                  if "tests" not in p.relative_to(_PROD_PKG).parts)
+
+
+def _module_name(path: pathlib.Path) -> str:
+    rel = path.relative_to(ROOT).with_suffix("")
+    parts = list(rel.parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _recorded_call_sites_in_source() -> list[tuple[str, str]]:
+    """静态扫出每一处 ``record_model_usage(..., call_site=X, ...)`` 的 X 的取值。
+
+    返回 ``[(出处, 取值)]``。``X`` 是常量名就 import 那个模块把值取出来，是字面量
+    就直接用 —— 判据落在**实际会写进库的那个字符串**上，而不是落在写法上。
+    """
+    out: list[tuple[str, str]] = []
+    for path in _prod_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if name != "record_model_usage":
+                continue
+            kw = next((k for k in node.keywords if k.arg == "call_site"), None)
+            where = f"{path.relative_to(ROOT)}:{node.lineno}"
+            assert kw is not None, f"{where} 调 record_model_usage 却没给 call_site"
+            if isinstance(kw.value, ast.Constant):
+                out.append((where, str(kw.value.value)))
+                continue
+            assert isinstance(kw.value, ast.Name), \
+                f"{where} 的 call_site 不是常量名也不是字面量，登记表扫不到它"
+            module = importlib.import_module(_module_name(path))
+            out.append((where, getattr(module, kw.value.id)))
+    return out
+
+
+def test_registered_call_sites_are_byte_for_byte_the_ones_in_the_source():
+    """登记表的字面量与三处源头逐字节相等。
+
+    登记表抄字面量而不是 import 常量，是为了守住 `maos/obs` 只 import
+    `maos.core.store` 的依赖方向（规矩在 obs/trace.py 的模块 docstring 末行）。
+    代价是可能漂 —— 源头改了字符串而登记表没跟着改，于是守卫在一个谁都不会写进库
+    的值上空转。这条测试就是那个代价的对冲，删了它登记表退化成一份注释。
+
+    测试文件可以 import 任何东西，这条边界只约束 `maos/obs` 里的生产代码。
+    """
+    from_source = {
+        CALL_SITE_ASK,
+        req_normalize_mod.CALL_SITE,
+        code_repo_patch_mod.CALL_SITE,
+    }
+    assert set(REGISTERED_CALL_SITES) == from_source, (
+        "登记表与源头对不上了（漂了或漏登记）：\n"
+        f"  登记表独有：{sorted(set(REGISTERED_CALL_SITES) - from_source)}\n"
+        f"  源头独有：{sorted(from_source - set(REGISTERED_CALL_SITES))}\n"
+        f"  {REGISTER_HINT}"
+    )
+
+
+def test_every_record_call_site_in_the_source_tree_is_registered():
+    """静态守卫：生产代码里每一处 record_model_usage 的 call_site 都已登记。
+
+    动态那条（下面一条）只扫得到**跑到过**的调用点。新增一个只在真模型 / 某个
+    尚未进缺省序列的场景里才走到的调用点，动态守卫是绿的，而账已经在漏了 ——
+    这条把判据提到源码上，跑没跑到都拦得住。
+    """
+    found = _recorded_call_sites_in_source()
+    assert found, "一处 record_model_usage 都没扫到 —— 这条守卫在空转，先查扫描口径"
+    offenders = [(where, value) for where, value in found
+                 if value not in REGISTERED_CALL_SITES]
+    assert offenders == [], (
+        f"下列调用点的 call_site 没有登记：{offenders}\n  {REGISTER_HINT}"
+    )
+
+
+def test_a_real_scenario_run_records_only_registered_call_sites(monkeypatch, capsys):
+    """动态守卫：真跑一趟场景 1，库里 distinct 的 call_site 必须全部已登记。
+
+    **跑在真数据上，不是空库上**：场景 1 会把三个调用点全烧一轮（Manager 规划走
+    ask()、需求归一化走 req_normalize、补丁走 code_repo_patch）。手搭一个只塞登记值
+    的假库，这条测试永远绿 —— 一条永远绿的守卫等于没写，所以下面先断言「库里确实
+    有行」，再断言「没有未登记的值」。
+
+    截 `build()` 拿同一个 store 引用：flows 的 store 是 `:memory:` 的，跑完即消
+    （idiom 同 test_demo_seal.py 的 `_run_scenario_6`）。
+    """
+    seen: dict = {}
+    orig_build = scenario_1.build
+
+    def spy_build(*args, **kwargs):
+        parts = orig_build(*args, **kwargs)
+        seen["store"] = parts[0]
+        return parts
+
+    monkeypatch.setattr(scenario_1, "build", spy_build)
+    rc = scenario_1.run()
+    capsys.readouterr()                     # 场景输出很长，不让它进测试报告
+    assert rc == 0, "场景 1 没跑通，这条守卫的前提（真数据）就不成立"
+
+    store = seen["store"]
+    rows = store.list_model_usage()
+    assert rows, "真跑一趟之后 model_usage 竟然是空的 —— 记账整条链路断了"
+
+    seen_sites = {r["call_site"] for r in rows}
+    assert len(seen_sites) >= 3, (
+        f"场景 1 只烧到了 {sorted(seen_sites)} —— 这条守卫的覆盖面缩水了，"
+        f"再多的未登记调用点它也扫不出来"
+    )
+    assert unregistered_in_store(store) == [], (
+        f"库里出现未登记的 call_site：{unregistered_in_store(store)}\n  {REGISTER_HINT}"
+    )
+
+
+def test_unregistered_is_the_thing_that_would_go_red():
+    """守卫本身的负例：给它一个没登记的值，它必须挑出来（且只挑出那一个）。
+
+    上面三条在健康仓库里恒绿，绿得看不出它们到底会不会红。这条把判据函数单独拎出来
+    喂一个假值 —— 判据失灵（比如某次"优化"把它改成恒返回空列表）在这里当场暴露。
+    """
+    assert unregistered([CALL_SITE_ASK]) == []
+    assert unregistered([CALL_SITE_ASK, "maos/agents/newbie.py::Newbie.think"]) == \
+        ["maos/agents/newbie.py::Newbie.think"]

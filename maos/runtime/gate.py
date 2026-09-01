@@ -158,6 +158,14 @@ GATEWAY_MESSAGES: dict[str, str] = {
 #: 「机器返工修不好」，产出侧却判它「本轮产出没问题」，两侧对不上。
 #: ``GW_QUERY_FIRST`` 仍是 info 且不许改：网关自己说不清，判它「本轮产出不合格」
 #: 就是替网关下了它没下的结论（铁律 8），而它还有 ``gateway.query`` 这一招机器动作。
+#:
+#: 🔴 **禁令（T48）：severity 与 disposition 必须留在同一张表里。** 上面整段讲的是
+#: 「为什么这么写」，这一句讲「这看起来多余，拆了会怎样」——把 severity 拆回去按
+#: ``outcome`` 单独算一遍（那是它改造前的样子，只要两行，读起来还更直白），就是
+#: 把上面那个已经修掉的分叉原样造回来：两套判据看的维度不同，必然在某一格对不上，
+#: 而对不上的那一格恰好是官方称「最危险」的 ``GW_QUERY_OR_HUMAN``，症状是一笔
+#: 下落不明的退款被静默放行 —— 不是红灯，是没有灯。要拆之前先回答一个问题：
+#: **你打算用什么机制保证这两套判据永远不分叉？**答不上来就别拆。
 GATEWAY_SEVERITY: dict[str, str] = {
     GW_REPLAN_CHANNEL: "blocker",
     GW_QUERY_FIRST: SEVERITY_INFO,
@@ -534,6 +542,9 @@ class ReviewerGate:
           里报了超阈金额，就必须有任务把它带进任务级判据的触发面 —— 一个任务都没有，
           意味着计划里漏排了财务复核，闸连可判的对象都没有。
 
+        外加一条**留痕**（``_finance_threshold_notice``，T48）：它不是判据，恒为
+        ``info``，只在阈值被调离缺省时说明「本轮是按哪个数判的」。
+
         **两条互斥**，所以拼起来至多命中一条：plan 级只在「没有任何任务的顶层
         ``amount_claimed`` 超阈」时开口，而任务级只对「顶层 ``amount_claimed`` 超阈」的
         任务开口。写成相加而不是 if/else，是为了让这条互斥性由代码形状本身托住 ——
@@ -555,8 +566,60 @@ class ReviewerGate:
         （BACKLOG ``## task-W3`` 第 3 条记的就是这个）。补上 plan 级判据之后它才成立。
         """
         # 相加不是 if/else —— 理由见上面「两条互斥」那段。
+        # 第三项是留痕，不是判据：它恒为 info，永远不会把这道闸从 pass 抬成 fail。
         return (self._gate_finance_plan(task)
-                + self._gate_finance_task(task, artifacts))
+                + self._gate_finance_task(task, artifacts)
+                + self._finance_threshold_notice(task))
+
+    @staticmethod
+    def _finance_threshold_notice(task) -> list[dict]:
+        """阈值被调离缺省时留一条痕（T48）。**只记录，不挡闸、不改判定。**
+
+        补这一条之前，这道闸有一个合法配置值就能静默停用的口径洞：
+        ``MAOS_FINANCE_THRESHOLD=99999999`` 解析得通（不走
+        ``_finance_threshold()`` 里那条回落 WARNING），闸照判 ``pass`` ——
+        于是读 ``gate_results`` 的人分不出「这道闸没话说」和「这道闸被一个大数
+        配置掉了」。三态早就在 ``_review`` 里备好了（``SEVERITY_INFO`` 不挡闸但
+        把结果从 ``pass`` 抬成 ``noted``），这里用的就是它。
+
+        **不写「被配置掉了」这种结论**：调大阈值可能是完全合法的运维动作，闸的
+        职责是把「本轮按哪个数判的、缺省是哪个数」摆出来，判断留给读的人。同理
+        **判定一行不改** —— 阈值调大之后判 pass 是对的，把它改成 fail 等于让
+        「运维调阈值」变成「运维改不动阈值」。
+
+        三条口径：
+
+          · **解析不出数不留痕**。``_finance_threshold()`` 那一档已经回落到缺省
+            并且告了警，这里 ``threshold == DEFAULT`` 于是闭嘴 —— 一件事报两遍，
+            读的人会以为是两个问题。
+          · **显式配成缺省值也不留痕**（``MAOS_FINANCE_THRESHOLD=5000``）。留痕
+            说的是「判定用的数不是缺省」，不是「有人动过这个变量」；取值即缺省时
+            没有任何东西被改变，没有痕可留。
+          · **一次判定至多一条**。``_finance_threshold()`` 有两个调用点
+            （``_gate_finance_task`` / ``_gate_finance_plan``），留痕却挂在它们
+            共同的入口 ``_gate_finance`` 上：两处都覆盖到，而同一次 ``_review``
+            只吐一条 —— 同样的 info 出现两遍，读的人会以为有两个问题。
+
+        触发面与任务级判据对齐（``biz_type == "refund"``）：非退款任务的这道闸
+        本来就不看阈值，给它挂一条「阈值被调过」是与本轮判定无关的噪声，还会把
+        场景 1-5 每一个任务的 finance 从 ``pass`` 变成 ``noted``。
+        """
+        inputs = task.get("inputs") or {}
+        if not isinstance(inputs, dict) or inputs.get("biz_type") != FINANCE_BIZ_TYPE:
+            return []
+
+        threshold = _finance_threshold()
+        if threshold == DEFAULT_FINANCE_THRESHOLD:
+            return []
+
+        return [{
+            "gate": "finance", "severity": SEVERITY_INFO, "path": None,
+            "message": f"第六道闸本轮按阈值 {threshold} 判定，缺省阈值是 "
+                       f"{DEFAULT_FINANCE_THRESHOLD}（{FINANCE_THRESHOLD_ENV} "
+                       f"取到了一个非缺省值）—— 这一条只记录、不挡闸：调阈值可能是"
+                       f"合法运维动作，但这道闸这一轮说的话是按 {threshold} 说的，"
+                       f"不是按 {DEFAULT_FINANCE_THRESHOLD}。",
+        }]
 
     @staticmethod
     def _gate_finance_task(task, artifacts) -> list[dict]:

@@ -1507,3 +1507,15 @@ T40–T45 六轨各自读了参照实现 cumora 的一个面，产出 `docs/refs
 | 2026-09-01 | P8 | 🔴 **对六份文档之一的更正 + kb 缺一个生命期维度**。`docs/refs/cumora-data-model.md` §3 #1 与附录 A #3 都写「kb 只有 `tenant_id` 一维」，**实测不对**：`maos/kb/retriever.py:70-73` 的 `PREFILTER_FIELDS` 有 7 个字段（`tenant_id, biz_type, channel_id, region, sku, policy_version, workflow_version`） | **结论方向仍然成立**（`grep -rn pinned maos/kb/` 零命中，那一档确实没有），但缺的是**生命期维度**而不是「第二个隔离维度」：「这条政策所有单子都适用」和「这条是那一单的经验」在召回时同权。落地**不能**按那份文档说的「过滤链上加一档即可」去做 | 出处 `docs/refs/cumora-data-model.md` §3 #1，原判「赛前做 1.5 人天」，**本轮下调为复赛后**：动手前必须先读完 `retriever.py` 的两阶段检索全流程（那份文档 §5 自己写明这一步没做）。cumora 的 `pinned` 是很便宜的补法（`memory-scope.ts:234`：pinned 无视 scope 永远可见），但那是在它读懂了自己检索链的前提下 |
 | 2026-09-01 | P8 | **没有钉死的「上一个已知良好基线」**。同一条 `python3 -m pytest maos/tests -q` 在不同 worktree 给出不同条数，而没有一处记录「哪个 sha 上是哪个数、当时是什么状态」 | 回归时无法执行「对着上一个已知良好基线做 `git log --since` 逐个 commit 读」这套排查。第 1 条那个门禁失效，成因正是这个 —— 条数散在脚本里、没有跟着 sha 走 | 出处 `docs/refs/cumora-coordination.md` 附录 A #5。cumora 把基线钉到**时间戳 + commit sha + 一句「当时是什么状态」**。这是流程问题不是代码问题；`scripts/demo_preflight.sh` 本轮新加的注释块是这条的局部落地，**全局那份还没有** |
 | 2026-09-01 | P8 | ✅ **已核实，判「不必改」**：`ENV_PASSTHROUGH` 原样透传宿主 `PATH`（`maos/tools/sandbox.py:80`，用在 `:126`） | **不构成新增风险** —— 降级路径本来就在以宿主 uid 执行模型产出的 Python（pytest collection 阶段就会 import 补丁写进 workdir 的文件），PATH 影子不增加任何新能力 | 出处 `docs/refs/cumora-sandbox.md` §3 #7 / 附录 A #3。**记在这里只为一件事**：让后来的人不必把这条推导重来一遍，也不要因为「cumora 做了 PATH 清洗」就顺手给 MAOS 加一个没有收益的加固。真正该修的是上面第 3 条「要么隔离要么不跑」 |
+
+## task-T48（闸与账本要留痕：阈值三态 + call_site 登记）
+
+本轨修的是 `## task-T51` 的第 4、5 两条（第六道闸可被合法配置值静默停用 / `call_site`
+没有登记表），一条不落。下面四条是修的过程中**白名单外**的发现，按铁律 4 只记不改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG=1370` 又过期了**。本轨加了 11 条测试，全量实测 **1381 passed / 39 skipped** | 这正是 `## task-T51` 第 1 条修完那个门禁时写下的规程要防的事：「**加测试的那一轨改这个数**」。本轨改不了 —— `scripts/**` 不在白名单里，且 T47 / T49 / T50 三轨同期也在加测试，谁单独改都会立刻被下一轨顶掉 | **四轨全部并轨之后，由并轨的那一轮按合并态实跑一次改成实测值**。在那之前这个门禁必然报假警（实际 > 期望），录制前看到「不要开始录制」要先确认是不是这个原因 |
+| 2026-09-01 | P8 | **阈值留痕的触发面与任务级判据对齐，于是混合计划里有一个覆盖缺口**。`_finance_threshold_notice` 只在被评审的任务自己 `biz_type == "refund"` 时开口 | 一个计划里既有退款任务、又有非退款任务，而恰好只评审到非退款任务那一轮时，阈值被调过这件事不留痕。**当前不是活 bug**：`_gate_finance_plan` 是逐任务跑的，同一个 plan 里只要有一个退款任务过闸，痕就留下了 | **不建议扩大触发面**。扩到「plan 里有退款任务就留痕」要在留痕这条路上再扫一次 `list_tasks`（多一次存储读，为一条 info），而扩到「无条件留痕」会把场景 1-5 每一个任务的 finance 从 `pass` 变成 `noted`。有真实需求再说 |
+| 2026-09-01 | P8 | **登记表守不住「根本不记账」的新调用点**。两条守卫（静态扫源码 / 动态扫真跑过的库）判据都落在 `record_model_usage` 的调用点上 | 新增一个模型调用点、**连 `record_model_usage` 都没调**，两条守卫都是绿的，而账照漏。T32 那次「六处补 `store=`」漏的正是这一类 | 要堵得把判据挪到模型客户端那一侧（`complete()` 被调用了却没有对应的 usage 行）。**判复赛后**：那需要在 client 上挂计数并与库对账，比登记表重得多，而登记表已经把「改了字符串 / 多了一个记账点」这两类挡住了 |
+| 2026-09-01 | P8 | **`maos/obs/__init__.py` 仍是一行 docstring，`trace` 与新增的 `call_sites` 都没有导出** | 不是缺陷，是口径：`maos/obs` 的两个模块现在都靠全路径 import（`from maos.obs import trace as trace_mod` / `from maos.obs.call_sites import ...`）。记在这里只为一件事 —— 后来的人别以为「没导出」是漏了，顺手加一个 `__all__` 反而会把两种 import 写法都留在仓库里 | **不必改**。真要统一的话，等 `maos/obs` 有第三个模块时一次性定口径 |

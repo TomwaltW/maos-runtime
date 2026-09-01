@@ -1733,3 +1733,19 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **装配函数还没有生产调用方**：`assemble()` 目前只在测试与证据脚本里被调，Worker 起 Agent 时没有接线 | 每个 Agent 仍然各自 import 各自的 ToolPort，装配层的收窄约束在生产路径上还没生效 —— 它守得住的只是「调过 assemble 的那些」 | 归整合期。接线点在 `maos/runtime/worker.py`（本轨白名单外，T57 持有），一行 `assemble(agent, profile=..., mcp_ports=...)`，等 T57/T58/T59 落地后一起接 |
 | 2026-09-01 | P9 | **`evidence/capability-matrix.json` 没进 `evidence/INDEX.json`，也不在 `scripts/verify.py` 的核验项里** | 这份证据目前只有「首行有出处」这一层保证，没被证据束的索引与核验链条覆盖 | 归整合期。`INDEX.json` 有主仓在制品在动（本轨不许改），`verify.py` 是事实源 |
 | 2026-09-01 | P9 | **`implemented_without_authorization` 目前等于「全仓目录减本角色白名单」**，22 个角色每个都是 8–10 条 | 当计数指标可用（矩阵里只落了 count），但当作「该给谁加授权」的建议清单就是噪音 —— 它没区分「本该有」与「本来就不该有」 | 等职责能力档案（T58）落地后再收窄：档案说得出「这个职责应该有哪些」，差集才有意义 |
+
+## task-T64（RTV 域五个薄壳 Agent 与场景 11，本轮都不改）
+
+2026-09-02 往 `AGENT_POOL` 投放 5 个新角色（22 → 27）时撞见的四条。全部落在**本轨
+白名单之外**的文件上，按铁律 4 一处都没改，只记账。**四条同源**：T58 那批「以
+`AGENT_POOL` 为事实源的快照」没有为「新增业务域」留过口子 —— 任何一轨新增 Agent 都会
+同时打红这四处，这不是本轨特有的问题，T61/T62/T63 新增 skill / ToolPort 时会撞上
+它的另外几张脸。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **`maos/capability/profiles.py::PROFILES` 缺 RTV 域五条职责档案**。`test_profiles_cover_every_pooled_role` / `test_profiles_cover_manager_too` 两条以 `AGENT_POOL` 与 `identities()` 为事实源，新角色一进池就报「这些在池角色没有职责档案」 | 2 条红。档案表是 T60 装配层发权限的依据，缺档案意味着这五个角色装配时拿不到收窄约束 | 归整合期，或由人类当场授权本轨补。补的内容已经确定（duty 键 `rtv.intake` / `rtv.disposition` / `rtv.logistics` / `rtv.reconciliation` / `rtv.settlement`，skills 与 tools 照契约 C-R4 / C-R7、tier 全 `light`），**不是**一次判断，是一次誊抄 |
+| 2026-09-02 | P9 | **`test_capability_profiles.py` 的 `BASELINE` / 分组计数快照会随新增角色涨**，且**涨多少取决于测试执行顺序**：`test_rtv_flow.py` 先跑（stub skill 已注册进全局 `SKILL_REGISTRY`）时是 `depends-tool-missing` +4、`skill-not-registered` 0；后跑时是 `skill-not-registered` +6、`depends-tool-missing` 0 | 2 条红，且**改成任一个数都会在另一种执行顺序下翻红** —— 这是比「快照过期」更麻烦的一类：它不是数字不对，是这份快照对「进程级注册表 + 按需注册」这种形状不成立 | 归整合期，且要**先定口径再改数**。两条路：① T62/T63 的真 ToolPort 与真 skill 落地后这些 finding 自然消失，届时快照只需减不需加；② 若要在那之前绿，得让 `check_consistency()` 对「同一进程里注册表内容会变」这件事有明确态度（比如只认 builtin 动态发现的那批） |
+| 2026-09-02 | P9 | **`test_capability_assembly.py::test_drift_matches_the_repo_wide_scan` 的 `TOOL_DIFF` 快照同样以 `AGENT_POOL` 为事实源**；`test_checked_in_matrix_has_the_same_shape` 断言 `evidence/capability-matrix.json` 的角色集合等于 `AGENT_POOL` | 2 条红。后者要重跑证据脚本才能绿，而 `evidence/**` 禁止手改（铁律 3） | 归整合期。矩阵那条必须**重跑生成脚本**，不许手改 json |
+| 2026-09-02 | P9 | **`test_worker_model_routing.py::test_factory_receives_the_role_and_its_declared_tier` 把 tier 分布写死成 `{"light": 17, "medium": 2, "strong": 3}`** | 1 条红（新增五个 `light` 角色 → 22）。判据本身没问题，但它把「池里有多少个 light 角色」当成了不变量，而那恰恰是每加一个业务域就会变的数 | 归整合期。改数只要一行；更耐用的写法是从 `AGENT_POOL` 现算分布再断言「至少有这三档、且与各 identity 自述一致」—— 但那是改判据，不是刷数，得人类裁定 |
+| 2026-09-02 | P9 | **`docs/agent-identity.md` 是 `scripts/gen_docs.py` 的生成投影**，新增五个 identity 后 `test_generated_docs.py` 的两条当场红 | 2 条红。派单 §0.1 明令本轮不许跑 `gen_docs.py`（投影要等五轨齐了统一跑），所以本轨**必然**留着这两条红 | 归整合期，跑一次 `python3 scripts/gen_docs.py` 即可。⚠️ 别手改这份文档 —— 基线 commit `4c956a8` 记的就是上一次手改它踩的坑 |

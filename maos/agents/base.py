@@ -131,6 +131,18 @@ class PermissionDenied(Exception):
 class BaseAgent(ABC):
     identity: AgentIdentity
 
+    #: 能力装配结果的挂载点（``maos/runtime/assembly.py::AssemblyReport``）。
+    #:
+    #: ``None`` = 没装配过，这是缺省态：不调 ``assemble()`` 的 Agent 行为与装配层
+    #: 存在之前逐字节一致 —— 下面 ``check_tool`` 的诊断分支与 ``resolve_tool``
+    #: 都以「装过没有」为门。1568 条存量测试压着本文件，装配只许是纯加法。
+    #:
+    #: 挂在这里而不是往 ``AgentIdentity`` 里加字段：identity 是 ``frozen=True`` 的
+    #: **声明**，装配是**运行时**把名字解析成对象，两件事不该混在一个数据结构里；
+    #: 何况加字段要动 23 个 identity 文件。``assemble()`` 写的是实例属性，
+    #: 遮蔽这个类级缺省值，所以同角色的两个实例不会串味。
+    assembly: Any = None
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """给每个自己实现了 ``run()`` 的子类装上归属绑定（见 ``_ATTRIBUTION``）。
 
@@ -159,11 +171,48 @@ class BaseAgent(ABC):
 
     # ---- Identity 强制执行 ------------------------------------------------
     def check_tool(self, tool: str) -> None:
+        """判据永远是 ``identity.allowed_tools`` —— 装配只解析、只收窄，改不了这一行。
+
+        装配过的 Agent 在**拒绝时**多给一句诊断：这个名字全仓有实现、只是本角色没被
+        授权。区分「越权」与「工具还没人写」在事后排查时是两条完全不同的线索，
+        而它只影响异常消息，不影响准不准。没装配过时 ``hint`` 恒为空串，
+        拼出来的消息与装配层存在之前逐字节相同。
+        """
         if tool not in self.identity.allowed_tools:
+            hint = ""
+            assembly = self.assembly
+            if assembly is not None and tool in assembly.catalog:
+                hint = "；该名字在装配目录里有实现，但本角色没有授权 —— 这是越权，不是缺实现"
             raise PermissionDenied(
                 f"{self.identity.agent_id} 无权调用工具 {tool}"
-                f"（白名单: {sorted(self.identity.allowed_tools)}）"
+                f"（白名单: {sorted(self.identity.allowed_tools)}）" + hint
             )
+
+    def resolve_tool(self, tool: str) -> Any:
+        """取一个**已授权且已装配**的 ToolPort。先过闸，再解析。
+
+        取到之后**必须仍经 ``maos/tools/port.py::invoke_tool`` 调用** —— 本方法只
+        负责把名字换成对象，不接管调用，直接调 ``port.entry`` 就没有 ``ToolInvoked``
+        审计行。
+
+        三种结果分得很开：越权抛 ``PermissionDenied``（安全事件），有授权但没实现或
+        还没装配抛 ``ToolNotAssembled``（实现缺位）。把后者也做成 PermissionDenied
+        会让「有人在越权」和「有个 ToolPort 还没写」在日志里长得一模一样。
+        """
+        from maos.runtime.assembly import ToolNotAssembled   # 延迟 import：装配层可选
+
+        self.check_tool(tool)
+        assembly = self.assembly
+        if assembly is None:
+            raise ToolNotAssembled(
+                f"{self.identity.agent_id} 还没装配过能力，取不到 {tool} 的实现"
+                "（先调 maos.runtime.assembly.assemble(agent)）")
+        port = assembly.get(tool)
+        if port is None:
+            raise ToolNotAssembled(
+                f"{self.identity.agent_id} 有 {tool} 的授权，但全仓没有叫这个名字的 "
+                f"ToolPort（已装配: {list(assembly.resolved_tools)}）")
+        return port
 
     def check_risk(self, risk_level: str) -> None:
         order = {"L": 0, "M": 1, "H": 2}

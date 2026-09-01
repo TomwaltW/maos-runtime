@@ -1623,3 +1623,19 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P9 | `ModelRouted` 的 `plan_id` 填什么 —— Worker 构造在任何 plan 之前 | **如实落空串**，并把「查不到 trace.json」记进 BACKLOG | 口径同 `record_model_usage` 那段「不许编 trace_id」：编一个 plan_id 会让这条留痕挂到一棵不存在的树上，比查不到更坏 |
 | 2026-09-01 | P9 | `provider` / `route_source` 从哪来 —— 路由表和 provider 客户端都是别轨的产出，本轨基线里不存在 | **按客户端自述取**（`getattr(client, "provider" / "route_source")`），取不到回退类名 / `"model_factory"` | 这样本模块一个具体 provider 都不用 import，也就不会跟别轨的产出耦上；别轨只要在自己的客户端上挂两个属性，留痕自动变准 |
 | 2026-09-01 | P9 | 生成物 `docs/agent-identity.md` 里钉的 `worker.py` 行号因本轮加 import 而过期，2 条测试变红；该文件不在 T57 白名单里 | **跑 `scripts/gen_docs.py` 重生成**（人类当场批准），只改了那一处行号 | 手改生成物违铁律 3 的精神（生成物只许来自生成器），而放着不管则 1568 条基线里有 2 条变红。先例是 `4bb6694`「三份生成物按合并后的代码重跑 gen_docs」。脆性本身记进 BACKLOG，不在本轨修 |
+
+## task-T58（职责能力档案与声明一致性闸，2026-09-01）
+
+手册没覆盖、由本轨自行判断的九处。漂移明细在 `docs/BACKLOG.md` 的 `## task-T58`。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | 体检机的角色事实源取 `AGENT_POOL`（22 个）还是全仓 `AgentIdentity`（23 个，多一个刻意不注册的 `manager`） | **取全仓 23 个**：扫 `maos.agents` 包内所有 `BaseAgent` 子类的 `identity` | `manager` 的白名单是真的、三道闸对它一样生效，只是刻意不进池（C-2）。只认池里 22 个的话它永远没人核对，而它恰好是 `req.normalize` / `kb.retrieve` / `issue.aggregate` / `kb.sink` 四个 skill 自述的 owner。两种口径实测差 1 条 finding（按池算 `kb.retrieve` 会被误报成漂移，按全仓算它是对的）—— 按池算会**多报一条假的**，这比少报更糟 |
+| 2026-09-01 | P9 | ToolPort 名怎么收集：正则扫源码，还是 import 后按 `isinstance` 收 | **import + `isinstance(obj, ToolPort)`**，走 `pkgutil.walk_packages` | 正则拿到的是源码里的字面量，对 `ToolPort(name="…")` 的写法敏感：端口若由工厂函数造出、或名字来自常量，整个漏掉，而漏掉的表现是「体检通过」。isinstance 拿的是运行期真值 —— `invoke_tool` 拿到哪个名字，这里就收到哪个名字。两种做法在当前仓库结果相同（都是 11 个），差别只在将来 |
+| 2026-09-01 | P9 | 职责粒度：跨域同职能（四个 `*_intake`）合成一个职责，还是一职责一角色 | **一职责一角色，23 条**；职责键写成 `<域>.<职能>`（`ap.intake` / `claim.intake` / …），`roles` 保持集合类型 | 合并之后这条职责的 `skills` 只能取并集，而 T60 的装配是照着档案发权限的 —— `refund_intake` 会因此拿到 `ap.intake`，四个域的受理彼此越权。最小权限比表少几行值钱。跨域同职能没有丢：`.intake` 后缀一 grep 就聚齐；`roles` 留集合类型是给「两个角色共担一个职责」的将来，那天不必改表的形状 |
+| 2026-09-01 | P9 | 档案记「identity 现在声明了什么」（实然）还是「该职责应该有什么」（应然） | **记应然**，依据一律是**实际调用点**而不是推测 | 照抄实然等于把 bug 抄进档案（`coding` 的 `sandbox` 会被抄成「应有」），这张表也就失去了全部意义。取应然的依据必须硬：`coding` 的工具写 `git-mcp` 因为 `code_repo_patch.py:197` 的 `invoke_tool` 实参就是 `GIT_MCP_PORT`；`testing` 写 `sandbox.pytest_run` 因为 `test_verify.py:68` 调的是 `PYTEST_RUN_PORT` |
+| 2026-09-01 | P9 | `coding` 的应然工具要不要把真端口 `sandbox.git_apply` 补上（identity 里那个 `sandbox` 看起来像是想指它） | **不补，只写 `git-mcp`** | `GIT_APPLY_PORT` 全仓只有定义处一个引用，没有任何生产调用方。把它写进档案就是**用臆测填一个应然值**，下一轮又会有人照着档案去给 `coding` 发权限 —— 凭空多一份沙箱写权限 |
+| 2026-09-01 | P9 | severity 怎么分 | **指向落空 = error，文档漂移 = warning**。`tool-not-declared` / `skill-not-registered` / `depends-tool-missing` / `depends-tool-not-allowed` / `owner-role-unknown` 判 error；`skill-unowned` / `owner-roles-mismatch` 判 warning | 分界线是「会不会让一次调用走到错误的地方」：白名单放行一个不存在的工具、契约指向一个不存在的角色，装配期照着接线**必然接不上**；owner_roles 多一个少一个则接得上，只是自述与事实不符。`owner-role-unknown`（`ap.compensate` 指向全仓不存在的 `ap_compensation`）判 error 而非 warning，就是按这条线 —— 它和「放行一个不存在的工具」是同一种病 |
+| 2026-09-01 | P9 | 派单 §5.1 的乙组是 7 条一锅端，体检机要不要照抄这个粒度 | **拆成三个 kind**：`owner-role-unknown`（指向幽灵角色）/ `skill-unowned`（有实现但无人持有）/ `owner-roles-mismatch`（有持有者但与自述不等） | 派单自己点明「这几条性质不同，你的报告要分得开」。拆开之后 severity 才分得出（前者 error、后两者 warning），BACKLOG 的建议修法也才写得具体。代价是 finding 总数 12 而不是 9：`ap.compensate` 同时触发 unknown + unowned 两条，丙组 2 条与甲组同源但独立计 —— 归并回修改项仍是 11 处 |
+| 2026-09-01 | P9 | `mcp_servers` 字段本轮填什么 | **23 条全部留空**，字段形状定死 | MCP server 的注册表与命名口径是 T59 的产出，在本轨基线里还不存在（本轨不写它的路径：那个文件还没落地，文档守卫会当场判引用落空）。先猜一个名字填进去，等于给整合期埋一次 23 行的返工；而不留字段则要在整合期改表的每一行 |
+| 2026-09-01 | P9 | 「档案（应然）vs identity（实然）」的比对放进 `check_consistency()` 的第五类，还是放进测试 | **放测试**（`test_profile_tool_diff_against_identity_is_the_known_drift`），体检机严格只报派单定的甲/乙/丙/丁四类 | 体检机的输出是本轨的验收判据面（派单 §6 硬判据 2 要求逐条与甲乙丙丁对上），擅自加第五类会让判据对不上号。但这层比对不能没有守卫 —— 它就是 §6 自检 6 那条「差出来的东西你解释得清吗」，所以以基线快照的形式落在测试里：今天差集恰好等于甲组那一处漂移，有人修了 identity 它会红，提醒把基线一起清掉 |

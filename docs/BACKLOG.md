@@ -1677,3 +1677,34 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **`core/store.py::usage_is_estimated` 判的是客户端的 `isinstance`，与「给客户端加包装层」天然互斥**。本轮靠「Scripted 一律不包」绕开 | 今天无害。但下一轮若真想给缺省路径也留路由归属（比如演示时想看「假模型也按角色分了流」），就没有出路了 —— 包了 `estimated` 翻面，不包就没有归属 | 真需要那天再动，且**不要**改成判 `ModelResponse.model` 字符串：两者同源会让核验器第 8 项判据 c 退化成自己跟自己对账 |
 | 2026-09-01 | P9 | **provider 归属进不了 `model_usage` 表**。`RoutedModelClient` 把 role/provider/route_source 写进 `ModelResponse.meta`，而 `record_model_usage` 不落 meta（表结构是冻结面，铁律 1，本轮一列都没加） | 「这次调用花的钱是打给哪家的」在成本表里查不到，只能拿 `agent_role` 去关联 event_log 里那条 `ModelRouted`。一次运行里成立（路由是不变量），**一旦支持运行中改路由就不成立了** | 与 BACKLOG 里那条「`estimated` 一个字段扛两种语义」一起做，都要新增表 |
 | 2026-09-01 | P9 | **`ModelRouted` 落在 `plan_id` 空串下，进不了 `trace.json`**。Worker 构造在任何 plan 之前，此刻确实没有 plan 可归（编一个更坏），而 `obs/trace.py` 按 plan_id 取 event_log | 路由留痕在库里查得到、在证据束里查不到。演示当天要证明「各角色真的分流了」，得单独开一条查询 | 做可观测那一轨。要么 trace 额外捞一次 `plan_id=""`，要么 Worker 在首次接到派单时补一条带 plan_id 的归属行 |
+
+## task-T58（职责能力档案与声明一致性闸）
+
+本轨只造「一张档案表 + 一台体检机 + 一条会红的测试」，**一处漂移都没修**（铁律 4）。
+下面 11 条是 2026-09-01 在 `d386387` 上跑 `maos.capability.profiles.check_consistency()`
+实测出来的，整合期照着这张单子裁定。
+
+体检机报 **12 条 finding**（error 5 / warning 7），归并成 **11 条修改项**：
+`ap.compensate` 一处同时触发 `owner-role-unknown` 与 `skill-unowned` 两条 finding，
+但修法是同一处。四组的口径与派单 §5.1 一致：
+甲（白名单放行不存在的工具）2 条、乙（owner_roles 与实际持有者不符）7 条、
+丙（depends_tools 指向不存在的 ToolPort）2 条、丁（持有者缺依赖工具）**0 条**。
+
+`maos/capability/profiles.py` 的 `PROFILES` 已经按**实际调用点**写好了应然值，
+每条的「建议怎么修」就是把 identity / 契约改成与档案一致；
+改完 `maos/tests/test_capability_profiles.py` 的 `BASELINE`、`TOOL_DIFF_BASELINE`
+与分组计数会一起变红，那是**提醒把这张单子上对应的行划掉**，不是回归。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **甲-1（error）`coding.allowed_tools` 里的 `sandbox` 全仓没有对应的 ToolPort**。出处 `maos/agents/coding.py:33`。全仓真端口只有 11 个，其中沙箱侧叫 `sandbox.git_apply` / `sandbox.pytest_run`，没有裸的 `sandbox` | 白名单放行了一个不存在的东西 —— `check_tool("sandbox")` 会通过，但拿这个名字到任何地方都取不到端口。与 `maos/tools/mcp/git_tool.py` 文件头点名过的 `git-mcp` 那个洞同源，那处已补，这处还留着 | 整合期。建议改成 `frozenset({"git-mcp"})`：`code_repo_patch.py:197` 唯一的 `invoke_tool` 实参是 `GIT_MCP_PORT`，`coding` 今天并不调沙箱；`sandbox.git_apply` 至今没有任何生产调用方（全仓只有定义处 `maos/tools/sandbox.py:723`），不要顺手把它塞进白名单充数 |
+| 2026-09-01 | P9 | **甲-2（error）`testing.allowed_tools` 里的 `sandbox` 同样查不到端口**。出处 `maos/agents/testing.py:165` | 同上。`testing` 是真的要跑沙箱的角色，所以这条一旦有人按 `check_tool` 的结论去接线，会拿着一个错名字接不上 | 整合期。建议改成 `frozenset({"sandbox.pytest_run"})` —— `test_verify.py:68` 调的就是 `PYTEST_RUN_PORT`，实名如此 |
+| 2026-09-01 | P9 | **丙-1（error）`code.repo-patch` 的 `depends_tools` 含 `sandbox`**。出处 `maos/skills/builtin/code_repo_patch.py:171` | 契约自述依赖一个不存在的端口。`docs/toolport-contract.md` 这类生成物是照契约产出的，等于把不存在的依赖写进了对外文档 | 与甲-1 同一轨改，建议改成 `["git-mcp"]`。**两处要一起改**：只改 identity 不改契约，丁类（持有者缺依赖工具）会立刻从 0 条变成有条 |
+| 2026-09-01 | P9 | **丙-2（error）`test.verify` 的 `depends_tools` 含 `sandbox`**。出处 `maos/skills/builtin/test_verify.py:46` | 同上。这份契约的 `security_boundary` 文案里已经写明「一律经 sandbox.pytest_run 这个 ToolPort」（`test_verify.py:53`），**文案是对的、字段是错的** | 与甲-2 同一轨改，建议改成 `["sandbox.pytest_run"]`，与同文件的文案对齐 |
+| 2026-09-01 | P9 | **乙-1（error + warning，两条 finding 一处修法）`ap.compensate` 的 `owner_roles=["ap_compensation"]` 指向一个全仓不存在的角色**，且没有任何角色的 `allowed_skills` 含它。出处 `maos/skills/builtin/ap/compensate.py:97` | 判 error：契约指向落空，装配期照它接线必然接不上，而今天没有任何机制会发现（这正是本轨造这台机器的理由）。同时应付账款域的补偿路径**没有任何角色调得起来** | 整合期，需人类裁定业务口径：应付域的补偿到底该归 `ap_treasury`（它持有 `ap.execute` / `ap.observe`，是唯一碰银行的角色）还是新设角色。对齐参照：`investigation.compensate` 归 `investigation_observe` 且**真的被持有**（`maos/agents/investigation/observe_agent.py`） |
+| 2026-09-01 | P9 | **乙-2（warning）`claim.compensate` 有实现但无人持有**。契约自述 `owner_roles=["claim_payment"]`（`maos/skills/builtin/claim/compensate.py:102`），而 `claim_payment.allowed_skills` 只有 `{claim.pay, claim.observe}`（`maos/agents/claim/payment_agent.py:73`） | 判 warning 而非 error：指向的角色是真存在的，接线接得上，问题是白名单**少授权了一项**。后果是理赔域补偿路径调不起来 —— `SkillInvoker` 会按白名单拒掉 | 整合期。建议把 `claim.compensate` 加进 `claim_payment.allowed_skills`（自述已经这么写了，改白名单比改自述更贴业务）。与乙-3、乙-4 是同一个模式，建议同轨一起改 |
+| 2026-09-01 | P9 | **乙-3（warning）`refund.compensate` 有实现但无人持有**。自述 `owner_roles=["refund_payment"]`（`maos/skills/builtin/refund/compensate.py:103`），而 `refund_payment.allowed_skills` 只有 `{payment.execute, payment.observe}`（`maos/agents/refund/payment_agent.py:64`） | 同乙-2，退款域补偿路径调不起来 | 整合期，同乙-2 的改法 |
+| 2026-09-01 | P9 | **乙-4（warning）`kb.sink` 有实现但无人持有**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/kb_sink.py:50`），而 `manager.allowed_skills` 是 `{req.normalize, kb.retrieve}`（`maos/agents/manager.py:38`） | 知识沉淀这条路今天没有任何 agent 走得通。注意 `maos/runtime/plan_finalizer.py` 的复盘沉淀是**绕开 agent 白名单**直接做的（run.py 输出里那句「复盘完成，沉淀 3 条」），所以现在看不出问题 | 整合期，需裁定：要么给 `manager` 加上 `kb.sink`，要么把自述改成「本 skill 由 plan_finalizer 直接调用，不经 agent 白名单」并在契约里写明。**别只改一边** |
+| 2026-09-01 | P9 | **乙-5（warning）`issue.aggregate` 的实际持有者与自述完全不相交**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/issue_aggregate.py:84`），实际持有 `claim_intake`（`maos/agents/claim/intake_agent.py:26`）与 `refund_intake`（`maos/agents/refund/intake_agent.py:35`） | 判 warning：接线接得上，是自述漂了。但这条漂得最厉害 —— 自述指的角色一个都没持有，两个真持有者一个都没写上 | 整合期。建议把自述改成 `["claim_intake", "refund_intake"]`（多源聚合去重本来就是受理侧的活，两个 intake 角色的 duty 都写着「聚合去重」）。**改自述、不改白名单** |
+| 2026-09-01 | P9 | **乙-6（warning）`policy.match` 的自述少了一个持有者**。自述 `owner_roles=["refund_policy"]`，实际持有 `refund_policy` + `refund_finance`（`maos/agents/refund/finance_agent.py:32`）。两个版本的契约都要改：`maos/skills/builtin/refund/policy.py:91` 与 `refund/policy_v1_1.py:148` | 判 warning。`refund_finance` 持有它是**刻意的**（duty 写着「自行复核规则」，不接受政策侧的结论口述），所以错的是自述 | 整合期，建议两个版本文件的自述都改成 `["refund_policy", "refund_finance"]`。**别删 `refund_finance` 的授权** —— 那会把「财务自行复核」这条设计砍掉 |
+| 2026-09-01 | P9 | **乙-7（warning）`req.normalize` 的自述少了 `requirement`**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/req_normalize.py:69`），实际持有 `manager`（`maos/agents/manager.py:38`）+ `requirement`（`maos/agents/requirement.py:35`） | 判 warning，同乙-6。顺带一条口径提醒：`manager` 有完整 identity 但刻意不进 `AGENT_POOL`（C-2），只按池核对的话这条根本发现不了 —— 本轨的体检机因此按**全仓 23 个 AgentIdentity** 取事实源 | 整合期，建议自述改成 `["manager", "requirement"]` |

@@ -1654,3 +1654,15 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **零重试缺口被复制了一遍**（承接 `## task-T54` 记的第 19 条）。新客户端与 `GatewayModelClient` 一样，一次网络抖动就等于一个任务 failed | 现在是两家都没有，将来做重试要在两处做 —— 或者先把出网那段抽出来共用（但那要改 `client.py`，本轨的只读面） | 做重试的那一轨。抽公共出网层与加重试应当同一轨做完，别先抽后加 |
 | 2026-09-01 | P9 | **`stop_reason == "max_tokens"` 的截断没有任何上层处置**。本轨把 `stop_reason` 记进了 `ModelResponse.meta`，但全仓没有一处读它 | 截断发生时正文是**半截 JSON**，下游解析失败会表现成「模型没按格式回」，而真因是 `max_tokens` 给小了。误诊方向完全相反：会有人去改 prompt，而不是调额度 | 与「按角色配 `max_tokens`」一起做（T56 路由表那一侧更自然）。至少要在解析失败的错误文本里带上 `stop_reason` |
 | 2026-09-01 | P9 | **`model_usage` / `model_call_failure` 两张表都没有 provider 维度**（`maos/core/store.py:557`、`:595` 的参数表里只有 `model`，没有 provider） | 一家的时候不需要。两家并存之后，账上要靠 `model` 字符串反推是哪家 —— 而那一列的值来自服务端回显，不是我方可控的枚举 | 真正接第二家上生产的那一轮。表结构是冻结面，只能新增表或新增列，要和第 1 条的接线一起设计。注：`usage_is_estimated()` 这一处**不用改** —— 它判的是「是不是 `ScriptedModelClient`」，新客户端天然被判为真实计费 |
+
+## task-T56（角色 → 模型路由表，本轮都不改）
+
+2026-09-01 做路由表时撞到的四条。都在本轨白名单外（`conftest.py`、`model/client.py`、
+`runtime/worker.py`、`agents/**`），按铁律 4 记账不动手。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`maos/tests/conftest.py` 的起跑线不含 `MAOS_LLM_*`**。Matrix 五键与存储两键都有 autouse fixture 清场，模型这一族没有，每个用到它的测试文件各自 `delenv`（`test_model_client_hardening.py::_all_missing`、`test_registry_autodiscovery.py:451`，本轮 `test_model_routing.py` 又造了第三个） | 今天不红：现有文件都自防。但这是「靠每个作者记得」而不是「起跑线自己划」——漏一处的症状是**在配了 key 的机器上才红**，而那正是采集演示证据的那台。路由表落地后变量名从 3 个涨到「3 + 角色数 × 4 + tier 数 × 4」，靠人工写死名单必漏 | 归动 `conftest.py` 的那一轨：加一条按 `MAOS_LLM_` 前缀扫的 autouse fixture（本轮 `test_model_routing.py::_no_ambient_llm_env` 就是它的现成实现，抄过去即可），然后把三处各自的 delenv 收掉 |
+| 2026-09-01 | P9 | **`MAOS_LLM_TIMEOUT` 没有进 `RouteSpec`**，超时仍是全局唯一一份（`model/client.py::_timeout_from_env`） | 路由表让不同角色走不同家的模型之后，超时却还是一个值。强模型跑长任务需要 300s，轻量分类角色 300s 等于把一次挂死拖成五分钟 | 归接线那一轨（`client.py` 的持有轨）：要么给 `RouteSpec` 加 `timeout_env`，要么明确写死「超时按 tier 分档，不按路由分」。两条都行，别留成「没人决定过」 |
+| 2026-09-01 | P9 | **路由表本轮无人消费**：`routing.resolve()` / `describe()` 写完了，但 `select_model_client()`（A-12 冻结、T57 持有）与 `worker.py` 都还没调它 | 本轨范围就是「只出解析，不接线」，所以这不是缺陷。但它意味着：接线那一轨如果没做，这个模块是**没有任何红灯的死代码** —— 测试全绿，`run.py` 全绿，而 22 个 agent 照旧共用一个全局 client | 接线轨落地后，加一条守卫钉住「`describe()` 报出的 source 与 worker 实际注入的 client 对得上」。在那之前，`describe()` 说的是**配置意图**，不是**运行事实**，读它的人要知道这个区别 |
+| 2026-09-01 | P9 | **tier 这一级路由粒度接近失效**：22 个在池角色里 17 个是 `light`（实测 light 17 / medium 2 / strong 3） | `MAOS_LLM_TIER_LIGHT_MODEL` 一配就同时改掉 17 个角色，等于第二个全局开关；真要给某个理赔角色单独换模型，只能退回角色级逐个配。分档本身没错，错的是「新角色默认落 light」这个惯性 | 归下一轮补角色的那一轨：新增 `AgentIdentity` 时把 `model_tier` 当成必须想一想的字段，而不是抄上一个。不建议加第四档（会撞 `client.py::Tier` 的三档口径） |

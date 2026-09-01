@@ -41,6 +41,7 @@ from maos.core.store import SqliteStore
 from maos.runtime.gate import (
     DEFAULT_FINANCE_THRESHOLD,
     FINANCE_THRESHOLD_ENV,
+    SEVERITY_INFO,
     ReviewerGate,
 )
 
@@ -577,3 +578,133 @@ def test_runtime_and_core_do_not_import_refund_domain():
         if imports_domain.search(p.read_text(encoding="utf-8"))
     ]
     assert offenders == [], f"运行时内核 import 了业务域：{offenders}"
+
+
+# ======================================================================
+# 第六道闸的阈值留痕（T48）—— 一个合法配置值不许把这道闸静默停用
+# ======================================================================
+# 补这一节之前的洞：MAOS_FINANCE_THRESHOLD=99999999 解析得通（不走
+# _finance_threshold() 那条回落 WARNING），闸照判 pass 且一声不吭 ——
+# 读 gate_results 的人分不出「这道闸没话说」和「这道闸被一个大数配置掉了」。
+# 留痕用的是 _review 里现成的三态：info 不挡闸，但把结果从 pass 抬成 noted。
+#
+# 五条不许被改松的口径，各有一条断言把守：
+#   · 不设变量 -> findings 逐条不变（缺省行为逐字节不变，143 条回归网的前提）；
+#   · 合法但非缺省 -> noted + 一条 info，正文里两个数都在；
+#   · 解析不出数 -> 只剩那条回落 WARNING，不许叠一层 info；
+#   · 判定不许被改 -> 阈值调大之后该 pass 还是 pass，不是 fail；
+#   · 两个调用点共用一条痕 -> 同一次 _review 里至多出现一条。
+
+RAISED_THRESHOLD = "99999999"
+
+
+def _info_findings(payload: dict, gate: str) -> list[dict]:
+    return [f for f in _findings(payload, gate) if f.get("severity") == SEVERITY_INFO]
+
+
+def test_default_threshold_leaves_the_finance_gate_byte_for_byte_unchanged(
+        default_threshold):
+    """不设变量 -> 第六道闸 pass，且一条 finding 都不多出来。
+
+    这条钉的是「缺省行为逐字节不变」：留痕那条 info 只许在阈值非缺省时出现。
+    多吐一条，存量回归网里按 findings 计数 / 按 gate_results 断言的那一批当场变红，
+    而那不是成果，是回归。
+    """
+    payload = _finance_payload(
+        REFUND_OVER,
+        [_finance_entry_artifact({"amount_approved": 9000, "rule_refs": ["R-3"]})],
+    )
+    assert _findings(payload, "finance") == [], "缺省阈值下第六道闸多吐了 finding"
+    assert payload["gate_results"]["finance"] == "pass"
+    assert payload["verdict"] == "pass"
+
+
+def test_threshold_set_to_the_default_value_is_not_a_trace_worth_leaving(monkeypatch):
+    """显式配成 5000 也不留痕 —— 留痕说的是「判定用的数不是缺省」。
+
+    「有人动过这个变量」不是留痕的理由：取值即缺省时判定与不设变量逐字节相同，
+    没有任何东西被改变。按「变量在不在」判会让这条 info 变成一句正确的废话。
+    """
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, str(DEFAULT_FINANCE_THRESHOLD))
+    payload = _finance_payload(
+        REFUND_OVER,
+        [_finance_entry_artifact({"amount_approved": 9000, "rule_refs": ["R-3"]})],
+    )
+    assert _findings(payload, "finance") == [], "阈值取值即缺省，却留了痕"
+    assert payload["gate_results"]["finance"] == "pass"
+
+
+def test_a_raised_threshold_is_visible_in_gate_results(monkeypatch):
+    """阈值被调大 -> 第六道闸从 pass 抬成 noted，正文里两个数都读得到。
+
+    9000 元的退款在缺省阈值 5000 下要交财务凭据，在 99999999 下不用 —— 判定确实
+    该 pass（见下一条），但这一轮闸是按一个非缺省的数说的话，必须留得下。
+    """
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, RAISED_THRESHOLD)
+    payload = _finance_payload(REFUND_OVER)          # 故意不给 finance_entry
+
+    infos = _info_findings(payload, "finance")
+    assert len(infos) == 1, f"阈值留痕应当恰好一条，实得 {infos}"
+    message = infos[0]["message"]
+    assert "99999999" in message, "finding 没说清本轮按哪个阈值判的"
+    assert str(DEFAULT_FINANCE_THRESHOLD) in message, "finding 没说清缺省阈值是多少"
+    assert payload["gate_results"]["finance"] == "noted", \
+        "阈值被调过，gate_results 里却和「这道闸没话说」长得一模一样"
+
+
+def test_a_raised_threshold_does_not_turn_the_verdict_into_rework(monkeypatch):
+    """留痕不是收严：阈值调大之后该放行的照样放行。
+
+    这条一旦红了，说明「运维调阈值」被改成了「运维改不动阈值」——
+    比不留痕更坏，因为它把一个合法运维动作变成了 rework 风暴。
+    """
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, RAISED_THRESHOLD)
+    payload = _finance_payload(REFUND_OVER)
+    blocking = [f for f in _findings(payload, "finance")
+                if f.get("severity") != SEVERITY_INFO]
+    assert blocking == [], f"info 之外还多了挡闸的 finding：{blocking}"
+    assert payload["verdict"] == "pass", "阈值调大之后判定被改成了 rework"
+
+
+def test_unparseable_threshold_keeps_only_its_own_warning(monkeypatch, caplog):
+    """解析不出数 -> 回落 + 那条 WARNING，不许再叠一层 info。
+
+    解析失败已经有它自己的处理（回落收严 + 告警），而回落之后判定用的就是缺省
+    阈值 —— 再吐一条「本轮按非缺省阈值判的」既重复又不实。
+    """
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, "abc")
+    with caplog.at_level("WARNING", logger="maos.gate"):
+        payload = _finance_payload(
+            REFUND_OVER,
+            [_finance_entry_artifact({"amount_approved": 9000, "rule_refs": ["R-3"]})],
+        )
+    assert _findings(payload, "finance") == [], "解析失败那一档被叠了第二层 finding"
+    assert payload["gate_results"]["finance"] == "pass"
+    assert any(FINANCE_THRESHOLD_ENV in r.getMessage() for r in caplog.records), \
+        "回落那条 WARNING 不见了 —— 解析失败反而比以前更安静"
+
+
+def test_a_raised_threshold_is_silent_on_non_refund_tasks(monkeypatch):
+    """非退款任务不留痕 —— 场景 1-5 的每一个任务不该跟着变 noted。
+
+    这道闸对它们本来就不看阈值，挂一条「阈值被调过」是与本轮判定无关的噪声。
+    """
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, RAISED_THRESHOLD)
+    payload = _finance_payload({"workdir": "/tmp/probe", "amount_claimed": 999999})
+    assert _findings(payload, "finance") == [], "非退款任务被挂上了阈值留痕"
+    assert payload["gate_results"]["finance"] == "pass"
+
+
+def test_threshold_notice_fires_once_even_though_two_call_sites_read_it(monkeypatch):
+    """两个调用点共用一条留痕：漏排财务复核的形状下也只吐一条。
+
+    `_finance_threshold()` 有两个调用点（`_gate_finance_task` / `_gate_finance_plan`），
+    留痕挂在它们共同的入口上：两处都覆盖到，而同一次 _review 只出现一条。
+    同一条 info 出现两遍，读结果的人会以为有两个问题。
+    """
+    monkeypatch.setenv(FINANCE_THRESHOLD_ENV, RAISED_THRESHOLD)
+    # 顶层没有 amount_claimed：这正是 plan 级判据开口的那一面（金额没进闸的视野）。
+    payload = _finance_payload(
+        {"biz_type": "refund", "case_seed": {"amount_claimed": 9000}})
+    assert len(_info_findings(payload, "finance")) == 1, \
+        "两个调用点各留了一条痕，读的人会以为有两个问题"

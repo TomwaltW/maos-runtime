@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from maos.core.store import record_model_usage
+from maos.core.store import record_model_failure, record_model_usage
 from maos.model.client import ModelClient, Tier
 from maos.skills.invoker import SkillInvoker
 
@@ -183,12 +183,28 @@ class BaseAgent(ABC):
         接住整个 ``ModelResponse`` 而不是直接 ``.text``：``tokens_in`` / ``tokens_out``
         原先在这一行被丢掉，全仓因此没有一处成本口径。返回值形状不变，调用方零改动。
 
-        抛异常的调用**不落行**：网关没给回用量，编一行 0 token 只会让「调用失败」
-        伪装成「这次很便宜」。失败本身已经由上层的 AgentOutput / 事件链记着。
+        抛异常的调用**不往 ``model_usage`` 落行**：网关没给回用量，编一行 0 token
+        只会让「调用失败」伪装成「这次很便宜」。但它也不再是无声的（T54）——
+        失败落进 ``model_call_failure``（一张不谈 token 的表），异常原样往上抛，
+        上层的 AgentOutput / 事件链照旧。两张表加起来才是「这次跑了几次模型」。
         """
         started = time.perf_counter()
-        resp = self.model.complete(system=system, user=user, tier=self.identity.model_tier)
         attribution = _ATTRIBUTION.get()
+        try:
+            resp = self.model.complete(system=system, user=user,
+                                       tier=self.identity.model_tier)
+        except Exception as exc:
+            record_model_failure(
+                getattr(self.skills, "store", None), exc,
+                agent_role=self.identity.role, call_site=CALL_SITE_ASK,
+                tier=self.identity.model_tier,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                model=getattr(self.model, "model", "") or "",
+                trace_id=attribution.get("trace_id", ""),
+                plan_id=attribution.get("plan_id", ""),
+                task_id=attribution.get("task_id"),
+            )
+            raise
         record_model_usage(
             getattr(self.skills, "store", None), resp,
             client=self.model, agent_role=self.identity.role,

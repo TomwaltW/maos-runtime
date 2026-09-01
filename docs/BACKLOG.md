@@ -1507,3 +1507,15 @@ T40–T45 六轨各自读了参照实现 cumora 的一个面，产出 `docs/refs
 | 2026-09-01 | P8 | 🔴 **对六份文档之一的更正 + kb 缺一个生命期维度**。`docs/refs/cumora-data-model.md` §3 #1 与附录 A #3 都写「kb 只有 `tenant_id` 一维」，**实测不对**：`maos/kb/retriever.py:70-73` 的 `PREFILTER_FIELDS` 有 7 个字段（`tenant_id, biz_type, channel_id, region, sku, policy_version, workflow_version`） | **结论方向仍然成立**（`grep -rn pinned maos/kb/` 零命中，那一档确实没有），但缺的是**生命期维度**而不是「第二个隔离维度」：「这条政策所有单子都适用」和「这条是那一单的经验」在召回时同权。落地**不能**按那份文档说的「过滤链上加一档即可」去做 | 出处 `docs/refs/cumora-data-model.md` §3 #1，原判「赛前做 1.5 人天」，**本轮下调为复赛后**：动手前必须先读完 `retriever.py` 的两阶段检索全流程（那份文档 §5 自己写明这一步没做）。cumora 的 `pinned` 是很便宜的补法（`memory-scope.ts:234`：pinned 无视 scope 永远可见），但那是在它读懂了自己检索链的前提下 |
 | 2026-09-01 | P8 | **没有钉死的「上一个已知良好基线」**。同一条 `python3 -m pytest maos/tests -q` 在不同 worktree 给出不同条数，而没有一处记录「哪个 sha 上是哪个数、当时是什么状态」 | 回归时无法执行「对着上一个已知良好基线做 `git log --since` 逐个 commit 读」这套排查。第 1 条那个门禁失效，成因正是这个 —— 条数散在脚本里、没有跟着 sha 走 | 出处 `docs/refs/cumora-coordination.md` 附录 A #5。cumora 把基线钉到**时间戳 + commit sha + 一句「当时是什么状态」**。这是流程问题不是代码问题；`scripts/demo_preflight.sh` 本轮新加的注释块是这条的局部落地，**全局那份还没有** |
 | 2026-09-01 | P8 | ✅ **已核实，判「不必改」**：`ENV_PASSTHROUGH` 原样透传宿主 `PATH`（`maos/tools/sandbox.py:80`，用在 `:126`） | **不构成新增风险** —— 降级路径本来就在以宿主 uid 执行模型产出的 Python（pytest collection 阶段就会 import 补丁写进 workdir 的文件），PATH 影子不增加任何新能力 | 出处 `docs/refs/cumora-sandbox.md` §3 #7 / 附录 A #3。**记在这里只为一件事**：让后来的人不必把这条推导重来一遍，也不要因为「cumora 做了 PATH 清洗」就顺手给 MAOS 加一个没有收益的加固。真正该修的是上面第 3 条「要么隔离要么不跑」 |
+
+## task-T49（Agent 输出面：自描述截断 + 失败必须给理由）
+
+本轨修的是 `## task-T51` 的第 6 条（`reviewer.py:83` 裸切）与第 17 条
+（「失败但没说为什么」在类型上合法），两条都已落地并配了用例。下面 3 条是本轨
+新发现、按铁律 4 **不当场改**的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`register_skill` 同名同版本静默覆盖，本轨未做**。`maos/skills/registry.py:39` 的 `SKILL_REGISTRY.setdefault(contract.name, {})[contract.version] = cls` | 与 `## task-T51` 第 10 条同一条，本轨派单 §5.3 把它列为可选项。**未做的原因不是判它不值得，而是 `maos/skills/registry.py` 不在本轨白名单** —— 派单明令不许自行扩白名单 | 一行 `if version in versions: log.warning(...)` 即可，推荐 `warning` 不推荐 `raise`（skill 是 import 注册的，raise 会让一次误 import 掀掉整个进程启动）。**待人类裁决是否扩白名单**，裁决前不动 |
+| 2026-09-01 | P8 | **`docs/agent-identity.md` 记录的是声明行号，于是任何在 `maos/agents/*.py` 上方插代码的改动都会让 `gen_docs.py --check` 变红** | 本轨实测踩了两次：§5.1 在 `reviewer.py` 顶部加了 12 行常量，`ReviewerAgent` 声明位置 33→47；§5.2 在 `base.py` 中段加了 `__post_init__`，`BaseAgent` 位置 103→131。两次都与 `AgentIdentity` 的**字段**毫无关系，但门禁照红。派单 §0.1 也只预警了「动字段会红」这一种 | 不是 bug，是**行号作为标识的固有代价**（同 `## task-T51` 第 24 条那类「读数跟着 sha 走」的问题）。真要治就得让生成器记符号名而不是行号，收益不明显。**记在这里只为一件事**：下一轨看到这个红，别去查自己有没有动字段，直接重跑生成器 |
+| 2026-09-01 | P8 | **`AgentOutput.status` 仍是自由字符串**，`__post_init__` 只对 `failed` / `blocked` 立了理由不变量，**没有校验 status 取值本身** | 拼错成 `AgentOutput(status="faild")` 照旧构造成功，且**绕过本轨刚立的不变量** —— 它既不等于 `failed` 也不等于 `blocked`，两条 if 都不命中。实跑核实过下游：`on_task_result` 的分支是 `ok` / `blocked` / `else: # failed`（`maos/core/control_plane.py:365`），拼错的值落进最后那个兜底档，`last_error=p.get("error")` 取到 `None` —— **任务判 FAILED 而库里的 `last_error` 是空的**，正是本轨要堵的那个形状换了个入口进来 | 本轨**没做**：加 status 白名单是一条独立的收严，会波及全仓 55 处构造点与事件契约面的 status 取值口径，超出派单范围（铁律 4）。做的话应与 `maos/contracts/events.py` 里 TaskResult 的 status 口径一起定，那是冻结面，**必须先问人类** |

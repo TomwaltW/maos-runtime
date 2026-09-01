@@ -10,7 +10,7 @@
 
 **字段顺序即冻结契约附录 A 的声明顺序**，由 `dataclasses.fields(AgentIdentity)` 取（maos/agents/base.py:59）：`agent_id`、`role`、`duty`、`allowed_skills`、`allowed_tools`、`write_scope`、`max_risk`、`model_tier`、`max_self_repair`。本文件不另抄一份顺序。
 
-Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_tool / check_risk / check_write`（maos/agents/base.py:103）在越权时抛 `PermissionDenied`；Skill 白名单由 `SkillInvoker` 在调用前校验。
+Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_tool / check_risk / check_write`（maos/agents/base.py:131）在越权时抛 `PermissionDenied`；Skill 白名单由 `SkillInvoker` 在调用前校验。
 
 ## 一览
 
@@ -20,7 +20,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `coding` | `coding` | 软件交付域 | 是 | `maos/agents/coding.py:26` |
 | `manager` | `manager` | 软件交付域 | **否** | `maos/agents/manager.py:33` |
 | `requirement` | `requirement` | 软件交付域 | 是 | `maos/agents/requirement.py:29` |
-| `reviewer` | `reviewer` | 软件交付域 | 是 | `maos/agents/reviewer.py:33` |
+| `reviewer` | `reviewer` | 软件交付域 | 是 | `maos/agents/reviewer.py:47` |
 | `testing` | `testing` | 软件交付域 | 是 | `maos/agents/testing.py:158` |
 | `ap_control` | `ap-control` | ap | 是 | `maos/agents/ap/control_agent.py:30` |
 | `ap_intake` | `ap-intake` | ap | 是 | `maos/agents/ap/intake_agent.py:21` |
@@ -110,7 +110,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 
 ### reviewer — ReviewerAgent
 
-声明位置：`maos/agents/reviewer.py:33`
+声明位置：`maos/agents/reviewer.py:47`
 
 | 字段 | 含义 | 值 |
 | :-- | :-- | :-- |

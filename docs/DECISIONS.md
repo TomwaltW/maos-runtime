@@ -1675,3 +1675,22 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P9 | 整合期误判：把 `docs/agent-identity.md` 的 `worker.py:39` 当成 T57 手改越界写错，按 `grep` 到的 `AGENT_POOL.items()` 实际行号改成了 `:58` | **回退，重跑 `python3 scripts/gen_docs.py`，保持 `:39`** | 这份文档是 `scripts/gen_docs.py` 的生成投影，行号由生成器按 Agent 声明位置算出，不是指向 `AGENT_POOL.items()` 那一行；`test_generated_docs.py` 当场判红。T57 改它是跑了生成器（合规），不是越界。教训：改 `docs/` 前先确认它在不在 `gen_docs.py` 的产出清单里 |
 | 2026-09-01 | P9 | 两份账本六轨各自尾部追加，逐轨合并时五次冲突 | 脚本化解冲突：两段全保留，HEAD 段在前、分支段在后 | 纯追加型冲突，两边内容互不重叠；解完核验 `## task-T55`..`T60` 六个小节齐全、零冲突标记残留 |
 | 2026-09-01 | P9 | `providers` / `routing` / `capability.profiles` 三个模块整合后生产侧仍零引用 | 如实留着，不在整合期顺手接线 | 「只造零件不接线」是派单定的范围，三轨的 BACKLOG 各自记了这条。整合期擅自接线等于把一轨的活塞进合并提交里，出问题时分不清是谁的 |
+
+## task-T61（RTV 域领域层地基）
+
+落 `review/rtv-contracts.md` 的 C-R1 / C-R2 / C-R3 时自行做的十处判断。
+契约冻结的东西（表结构、状态机、权威事实归属、`acknowledged` 不进判据）不在自选之列，
+下面没有一条动它们。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | 五张源单据表复用 ap 域的定义，那本域自己怎么保证它们存在 | **不建，加显式探针 `require_upstream_tables()` + 自有异常 `UpstreamSchemaMissing`，缺表时抛一句指得出去处的错** | 建一份「看起来一样」的定义是契约红线：`CREATE TABLE IF NOT EXISTS` 撞名不报错、是**静默跳过**，两处漂开之后症状离原因非常远。让 sqlite 自己报 `no such table` 也不行 —— 那句话指不出「该让持有方建表，不是本域补定义」。代价是本域不自足，已记进 BACKLOG |
+| 2026-09-02 | P9 | `objects.execute()` 除 `rtv_case` 外还该封哪些表 | **另封 `credit_note` 与 `rtv_settlement_observation`，比 ap 域多守两张** | ap 域对 `ap_payment_observation` 不设限，靠「guard 自己不走 execute」维持，那边 docstring 自陈这是「给伪造回单留了个后门」。铁律 8 说的是权威事实不许我方写死，那么承载权威事实的表就不该有第二条写入路径。守卫自己直连底层连接拿事务，不受影响 |
+| 2026-09-02 | P9 | 派单 §5.3 第 4 条只要求 `credited` 有 `credit_note_id`、`settled` 有 `adjustment_id`，凭据的其余字段要不要必填 | **各再加一个可对账字段：`credited` 要 `amount_credited`，`settled` 要 `ap_reference`** | 口径同 ap 域「比退款域多一条」那段：「供应商说认了」是一句话，「供应商给了单号和金额」才是一张能拿去对账的凭据。本域的核心比对就是「我方自称应退 × 供应商认的金额」，金额缺失时那次比对根本做不成，而 `credited` 的全部含义正是「供应商认了**多少钱**」。整合期若与 T63 的回执构造对不上，改回执不改守卫（已记 BACKLOG） |
+| 2026-09-02 | P9 | `rtv_case.return_action` 由 `rtv.dispose` 裁定后写入，但 `rtv_case` 只许两个入口写，第三个入口从哪来 | **不开第三个入口：走 `update_biz_status(..., return_action=...)`，只在推进到 `disposed` 时接受，且必填（`DispositionRequired`）** | 开第三个写入口就把「不留第二条路径」这句话打了折。挂在 `disposed` 这一跳上是因为两者本来就是同一件事的两面：「已裁定」而裁不出结果是矛盾状态，分两次写会出现「状态是 disposed 但 return_action 是空串」的中间态，而下游（发运、对账）要靠它决定退回来的是货还是钱 |
+| 2026-09-02 | P9 | 派单 §5.2 把 `get_case` 等只读查询列在 `objects.py`，而 ap / refund 两域把 `get_case` 挂在 `guard.py` 上 | **实现放 `objects.py`，`guard.py` 只给三个别名** | 守的是**写入**，读取不设限（`query()` 同一个口径），实现放 objects 更诚实；但换域的人不该被迫记「这个域的读函数在哪个模块」，所以调用面与另外两域保持一致。别名是零成本的 |
+| 2026-09-02 | P9 | `record_observation()` 落哪张表 —— 本域有两张权威表，而 ap 域只有一张 | **固定落 `rtv_settlement_observation`；供应商侧的非终态事实刻意没有落表路径** | C-R1 给供应商侧的表只有 `credit_note`，而写一行没有真实单号的贷项通知单等于自己给自己开票。「供应商收到退货了」这类事实属于承运商回执（`rtv_shipment.carrier_status`）或对账结论（`rtv_reconciliation.findings_json`），不属于贷项通知单 |
+| 2026-09-02 | P9 | `record_observation()` 该挡哪些 `observed_state` | **挡所有权威终态判据值的**并集**（`issued` 与 `settled`），不是只挡 `settled`** | ap 域那条只挡 `settled` 是因为它只有一个权威终态。本域有两个，只挡 `settled` 会把 `credited` 的判据 `issued` 漏在外面 —— 那条旁路就能单独落一条「供应商开票了」的观察，再让别人读它当成已认账 |
+| 2026-09-02 | P9 | `money()` / 迁移机制 / `attach_business_ref()` 与 ap 域几十行几乎逐字相同 | **刻意各写一份，不 `import maos.domain.ap`，在 docstring 里注明口径出处** | 抽成公共基类之后那个基类就成了几个域共同持有的面，动它等于动所有域 —— `docs/domain-portability.md` §1 那张表里 `maos/domain/` 一行标的是 ❌「按域实现」，共用一层就把它变成 ✅ 了，而那句话本仓库给不出证据。由 `test_rtv_guard.py::test_rtv_domain_does_not_import_another_domain` 钉住 |
+| 2026-09-02 | P9 | 派单 §6 硬判据第 6 条说状态机是「七个状态、十条边」，冻结契约 C-R2 那份数出来是九条边 | **按契约那份逐键照抄（9 条），并把 9 这个数钉进测试** | 派单同一条自己写了「对不上就改回契约那份」，且契约是五轨唯一的跨轨口径 —— 改代码去凑派单的计数会让另外四轨对不上。已在 BACKLOG 记一条请编排侧刷派单 |
+| 2026-09-02 | P9 | C-R1 冻结的 `rtv_business_ref` 没有 `tenant_id` 列，而本域所有业务表都以 `tenant_id` 打头 | **`resolve_business_ref()` 要求调用方显式递 `tenant_id`，不从引用行里取** | 不递就只能按 `object_id` 查，那条查询会跨租户命中 —— 租户隔离靠的是主键前缀而不是 WHERE 约定，少一个条件就是真的漏。契约冻结了表的形状，没冻结读函数的签名，所以补在签名上而不是往表里加列 |

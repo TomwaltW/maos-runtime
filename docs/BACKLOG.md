@@ -1733,3 +1733,18 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **装配函数还没有生产调用方**：`assemble()` 目前只在测试与证据脚本里被调，Worker 起 Agent 时没有接线 | 每个 Agent 仍然各自 import 各自的 ToolPort，装配层的收窄约束在生产路径上还没生效 —— 它守得住的只是「调过 assemble 的那些」 | 归整合期。接线点在 `maos/runtime/worker.py`（本轨白名单外，T57 持有），一行 `assemble(agent, profile=..., mcp_ports=...)`，等 T57/T58/T59 落地后一起接 |
 | 2026-09-01 | P9 | **`evidence/capability-matrix.json` 没进 `evidence/INDEX.json`，也不在 `scripts/verify.py` 的核验项里** | 这份证据目前只有「首行有出处」这一层保证，没被证据束的索引与核验链条覆盖 | 归整合期。`INDEX.json` 有主仓在制品在动（本轨不许改），`verify.py` 是事实源 |
 | 2026-09-01 | P9 | **`implemented_without_authorization` 目前等于「全仓目录减本角色白名单」**，22 个角色每个都是 8–10 条 | 当计数指标可用（矩阵里只落了 count），但当作「该给谁加授权」的建议清单就是噪音 —— 它没区分「本该有」与「本来就不该有」 | 等职责能力档案（T58）落地后再收窄：档案说得出「这个职责应该有哪些」，差集才有意义 |
+
+## task-T61（RTV 域领域层地基落地时发现，本轮都不改）
+
+2026-09-02 把 `review/rtv-contracts.md` 的 C-R1 / C-R2 / C-R3 落成代码时撞见的七条。
+本轨只落业务对象、状态机与权威事实守卫，一处都没修 —— 铁律 4。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **RTV 域不是自足的**：`supplier` / `purchase_order` / `purchase_order_line` / `goods_receipt` / `goods_receipt_line` 五张源单据表归 `ap` 域持有，本域只引用不重建（契约红线），所以跑本域之前必须先有人调 `maos.domain.ap.objects.ensure_schema` | 场景 11（T64）与任何只 `ensure_schema` 了 rtv 的调用方，一读源单据就撞 `UpstreamSchemaMissing`。本轨给了显式探针 + 指得出去处的错误信息，但**没有**替调用方建表 —— 建了就是重建，正是这条红线要挡的事 | 归整合期。`scenario_11.py` 的建库那一步要显式先跑 ap 域的 `ensure_schema`，或者由更上层统一建所有域的 schema。别在 rtv 的 schema.sql 里补一份定义 |
+| 2026-09-02 | P9 | **`rtv_line.reason_code` 与 `rtv_disposition.rationale_json` 的 `rule_id` 本域不校验取值域** —— 码表 `RETURN_REASONS` / `RULES` 在 T62 的 `rtv_codes` 模块里，该模块在本轨基线里还不存在（**所以这里刻意不写它的完整路径** —— `test_docs_guard.py` 会把指向不存在文件的路径引用判红，而它此刻确实不存在） | 现在往 `rtv_line` 里塞任何字符串都进得去。「理由可核对」这句话目前只由 ToolPort / Skill 层保证，域层是敞的 | 归整合期。校验该放在**能拿到那份码表的层**（T62 的 ToolPort 或 T63 的 skill）；在域层塞一份「自己的码表」就是第二份取值域，两份一定会漂 |
+| 2026-09-02 | P9 | **`_OBSERVATION_REQUIRED` 比派单 §5.3 第 4 条的最小集多要求两个字段**：`credited` 多要 `amount_credited`，`settled` 多要 `ap_reference`（理由见 DECISIONS `## task-T61` 第 3 条） | 若 T63 的 `rtv.observe` 只按派单最小集构造回执，整合时会被守卫拒，报「缺字段」 | 归整合期，与 T63 对一次口径。**不许为了让它绿而放宽守卫** —— 该改的是回执的构造方 |
+| 2026-09-02 | P9 | **推进到 `disposed` 必须同时给出 `return_action`**（`DispositionRequired`），这是本轨自定的不变量，契约没写 | 若 T63 的 `rtv.dispose` 只调 `update_biz_status(..., "disposed", ...)` 而不带裁定结果，整合时会红 | 同上，归整合期与 T63 对口径。理由见 DECISIONS `## task-T61` 第 4 条 |
+| 2026-09-02 | P9 | **`rtv_disposition` / `rtv_shipment` / `rtv_reconciliation` / `rtv_compensation_record` 四张表本域只建表 + 只读查询，没有写入口径** | 这四张不是权威事实表，写入走 `objects.execute()` 即可，但目前每个调用方要自己拼 SQL —— 拼法一多就有第二份口径 | 归 T63。真正的写入形状要等 skill 落地才看得清（比如 attempt 号怎么算），现在造一层包装是凭空猜 |
+| 2026-09-02 | P9 | **派单 §6 硬判据第 6 条说 `BIZ_STATUS_FLOW` 是「七个状态、十条边」，而冻结契约 C-R2 那份实际是七个状态、九条边** | 照契约落就与派单的自证句对不上一条，容易被后来的人当成回归 | 已按派单自己那句「对不上就改回契约那份」处置：代码逐键照抄 C-R2，并在 `test_rtv_guard.py::test_biz_status_flow_matches_the_frozen_contract` 里把 9 这个数钉死。派单那句计数请编排侧刷一次 |
+| 2026-09-02 | P9 | **`ap` 域的 `objects.execute()` 对 `ap_payment_observation` 不设限**（那边 `guard.record_observation` 的 docstring 自陈「等于给伪造回单留了个后门」）。本域把同类的两张权威表一并封住了，**ap 侧一个字节没动** | ap 域仍有一条运行时旁路可以伪造银行回单 —— 今天靠「guard 自己不走 execute」维持 | 归 ap 域自己那一轨。改法照抄本域 `objects._GUARDED_TABLES`（正则里多列两张表名即可），但那是别人的白名单，本轨不碰（铁律 4） |

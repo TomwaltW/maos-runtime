@@ -1,18 +1,22 @@
 # cumora 解析 · 沙箱与凭据边界 （T42 · 基线 cumora@1e883f6 / MAOS@926aa7b）
 
+> 本文里带 `cumora:` 前缀的引用指的是**外部仓 cumora**（@1e883f6）里的文件，本仓永远
+> 不会有它们；不带前缀的路径才是本仓。`scripts/check_docs.py` 对前缀形式只校验写法、
+> 不校验存在性（口径见该脚本文件头的「外部仓引用」一节）。
+
 ## 1. 它是怎么做的
 
 BYOA 要解决的是一句很不舒服的话：**让别人的 Claude Code 跑在别人的 Mac 上，服务端既要指挥它、
 又不能持有它的 provider 凭据、还不能让它越权碰宿主。** cumora 的答案不是「一层沙箱」，
 而是三道方向不同的 fail-closed 闸，加一条把凭据整个搬出模型进程的绕行通道。
-文档把这四件事收在 `docs/BYOA.md:486` 的 `## Boundaries` 一节，代码在
+文档把这四件事收在 `cumora:docs/BYOA.md:486` 的 `## Boundaries` 一节，代码在
 `server/src/agents/computer/engine.ts` 与 `daemon.ts`。值得注意的是那一节里**没有一条是
 「告诉模型不要做 X」** —— 全是机制。
 
 在三道闸之前还有一道**准入闸**，决定「谁有资格跑」。`SANDBOXED_ENGINE_IDS` 只有 claude 和
 codex 两个（`engine.ts:329`），其余五个引擎默认不是「在 UI 里藏起来」，而是**从可运行清单里
 被删除**：`runnableEngineIds()`（`engine.ts:344`）直接过滤，所以服务端就算给这台机器派了个
-grok 的活也执行不了（`docs/BYOA.md:272`）。白名单之上再叠一道版本闸 ——
+grok 的活也执行不了（`cumora:docs/BYOA.md:272`）。白名单之上再叠一道版本闸 ——
 `SECURE_ENGINE_MIN_VERSIONS` 钉死 claude ≥ 2.1.248、codex ≥ 0.138.0（`engine.ts:331`），
 `evaluateRunnableEngines()`（`engine.ts:381`）实探本机版本，低于最低版就拉黑。
 理由写在 `engine.ts:379`：旧版本会**静默忽略** cumora 依赖的那几个边界开关 ——
@@ -76,7 +80,7 @@ broker 那一段的细节很密，堵的全是同一类攻击 —— 「模型�
 覆盖 —— 理由写在 `engine.ts:1017`：cumora 无法证明一串不透明参数保住了沙箱，所以安全档下
 **默认忽略**它们（这和 MAOS 守卫对 `$(...)` 判「不透明载荷」是同一个 idiom）；
 三是文档里用大写 HIGH RISK 三行注释标注，并明说只该在你信得过的外部容器 / VM 里用
-（`docs/BYOA.md:277`）。与之配套的是 `sandbox.failIfUnavailable: true`（`engine.ts:1323`）：
+（`cumora:docs/BYOA.md:277`）。与之配套的是 `sandbox.failIfUnavailable: true`（`engine.ts:1323`）：
 **OS 沙箱起不来就让这一轮失败，不降级。**
 
 ### 哪些是真边界，哪些是软约束
@@ -90,9 +94,9 @@ broker 那一段的细节很密，堵的全是同一类攻击 —— 「模型�
 | 运行时（daemon 进程） | token / URL / Authorization / 重定向 / 刷新全部 daemon 私有（`daemon.ts:1707`）；桥与 IPC 在 home 之外（`daemon.ts:1488`） | **是** | 要先拿到 daemon 进程的内存或写权限 —— 已经不是「模型越权」而是「宿主被攻陷」 |
 | 进程启动 | PATH 清洗、`.runtime-token` 残留清理、拒绝符号链接目录（`daemon.ts:1158`、`daemon.ts:1632`） | **是**（加固性质） | 单独看不构成边界，是在堵前三道的绕行入口 |
 | 配置优先级 | Codex `trust_level="untrusted"` 写在 CLI 层（`engine.ts:1640`）；Claude `--strict-mcp-config` + 忽略用户/项目设置 | **是** | 模型在 home 里写什么配置都不生效，因为 CLI 参数优先级更高 |
-| 提示词 | standing prompt、persona、`GLANCE_YIELD_RULES`、「发言前先扫一眼」这类纪律（`docs/BYOA.md:162`） | **否，软约束** | 模型不照做即失效。cumora 自己也没把它写进 `## Boundaries` —— 那一节全是机制 |
+| 提示词 | standing prompt、persona、`GLANCE_YIELD_RULES`、「发言前先扫一眼」这类纪律（`cumora:docs/BYOA.md:162`） | **否，软约束** | 模型不照做即失效。cumora 自己也没把它写进 `## Boundaries` —— 那一节全是机制 |
 
-一句话判据：**`## Boundaries`（`docs/BYOA.md:486`）里列出来的都是真边界，
+一句话判据：**`## Boundaries`（`cumora:docs/BYOA.md:486`）里列出来的都是真边界，
 standing prompt 里写的都不是。** cumora 把这两类东西放在文档的不同章节，
 这本身就是一个可抄的编排。
 
@@ -110,14 +114,14 @@ standing prompt 里写的都不是。** cumora 把这两类东西放在文档的
 | 凭据绕行：token / URL / 重定向全部 daemon 私有，模型进程 env 无 token（`daemon.ts:1707`、`daemon.ts:1753`） | `ModelClient` 持 key，Agent 只能调 `ask()`（`maos/model/client.py:183`、`maos/agents/base.py` 的 `ask`） | **形似神不同** —— MAOS 是同进程，key 与模型输出在同一地址空间；靠的是「不给模型执行面」，不是进程边界 |
 | 重定向不出 daemon（`daemon.ts:1707` 的 "identity, URL, Authorization, redirects … remain daemon-owned"） | `_SameOriginRedirectHandler` 只放行同 origin 的 3xx，换 scheme / 主机 / 端口一律拒（`maos/model/client.py:148`、`maos/model/client.py:161`） | **同构**，MAOS 这一处更细（把 https→http 降级也算换 origin） |
 | 沙箱不可用即失败：`failIfUnavailable: true`（`engine.ts:1323`） | 容器不可用即**自动降级**为裸 subprocess，`log.warning` + 写进 `sandbox_mode` / `degraded_reason`（`maos/tools/sandbox.py:591`、`maos/tools/sandbox.py:600`） | **方向相反** —— cumora fail-closed，MAOS fail-open 但**响亮**（降级进报告，不只进日志） |
-| per-agent 持久 home，模型可写（`daemon.ts:54`、`docs/BYOA.md:313`） | 每次任务一个一次性 workdir（`maos/tools/sandbox.py:188` 的 `prepare_sandbox_workdir`），无 per-agent 持久 home | **形似神不同** —— MAOS 的 agent 隔离是**能力隔离**（`allowed_tools` / `allowed_skills` / `write_scope`），不是文件系统隔离 |
+| per-agent 持久 home，模型可写（`daemon.ts:54`、`cumora:docs/BYOA.md:313`） | 每次任务一个一次性 workdir（`maos/tools/sandbox.py:188` 的 `prepare_sandbox_workdir`），无 per-agent 持久 home | **形似神不同** —— MAOS 的 agent 隔离是**能力隔离**（`allowed_tools` / `allowed_skills` / `write_scope`），不是文件系统隔离 |
 | 桥接可执行文件与 IPC 目录放在模型可写面之外（`daemon.ts:1488`、`daemon.ts:1492`） | `ToolPort.entry` 是进程内函数，不存在「模型可写面」这个概念（`maos/tools/port.py:26`） | **MAOS 没有**（当前也不需要；MCP 迁移之后才有落点，见 `docs/toolport-contract.md:95`） |
 | PATH 清洗：滤掉可写目录、空条目、相对条目（`daemon.ts:1158`） | 降级路径把宿主 `PATH` 原样透传（`maos/tools/sandbox.py:80`） | **形似神不同**（评估见第 3 节 #7 —— MAOS 这里不构成新增风险） |
 | 三层凭据：company 配对码 → 设备 token（sha256 存 `credential_hash`）→ 每 agent 2h JWT（`registry.ts:231`、`registry.ts:233`、`registry.ts:500`） | 无。单机演示，无设备配对面 | **MAOS 没有** |
 | 撤销即抹哈希：`revoked_at` 与 `credential_hash = NULL` 同时写（`registry.ts:753`） | 无 | **MAOS 没有** |
 | 令牌不是权威：JWT 里的租户只是提示，每次回查 `participants` 活行（`authorization.ts:4`、`authorization.ts:9`） | `AgentIdentity` 是 `frozen=True` dataclass 常量（`maos/agents/base.py:60`），铸造即快照，无回查 | **MAOS 没有**（单进程下 Identity 就是代码常量，暂无此需求；但这条与铁律 8「不持有权威事实」是同一个道理，见第 3 节 #4） |
 | 每 agent 一个 wake-stream，云端 pod + Go FUSE 挂服务端工作区（`agent-fuse/main.go:1`） | 无 | **MAOS 没有**（见第 4 节反向清单 #1） |
-| `npx cumora` 单文件分发 + `--install-service` + `--doctor`（`docs/BYOA.md:460`、`docs/BYOA.md:480`） | `python3 run.py` 薄入口 + `scripts/verify.py` 收口证据 | **形似神不同** —— MAOS 无分发面，但 `--doctor` 那个「开跑前一问」的位置是空的 |
+| `npx cumora` 单文件分发 + `--install-service` + `--doctor`（`cumora:docs/BYOA.md:460`、`cumora:docs/BYOA.md:480`） | `python3 run.py` 薄入口 + `scripts/verify.py` 收口证据 | **形似神不同** —— MAOS 无分发面，但 `--doctor` 那个「开跑前一问」的位置是空的 |
 | 每次工具调用的服务端审计 | `invoke_tool()` 无论成败落一条 `ToolInvoked` event_log 行，入参过 sha256 摘要（`maos/tools/port.py:43`） | **不可比** —— cumora 的 `/runtime/cli` 服务端侧不在本轨读单里，我没读，不下结论（见第 5 节） |
 
 ## 3. 可移植清单
@@ -125,7 +129,7 @@ standing prompt 里写的都不是。** cumora 把这两类东西放在文档的
 | # | cumora 的做法 | 出处 `文件:行` | MAOS 现状 | 形态 | 落点 | 成本 | 判断 |
 |---|---|---|---|---|---|---|---|
 | 1 | 沙箱起不来就让这一轮**失败**，绝不降级运行（`failIfUnavailable: true`） | `server/src/agents/computer/engine.ts:1323` | `_docker_ready()` 一返回 False 就**无条件**降级到裸 subprocess，只 `log.warning` + 写 `degraded_reason`；没有任何配置能让它「宁可不跑也不裸跑」（`maos/tools/sandbox.py:591`、`maos/tools/sandbox.py:600`） | 抄思想 | 新增插件（`maos/tools/sandbox.py` 加一个 `MAOS_SANDBOX_REQUIRE_CONTAINER` 档，走 `maos.config` 配置面，与现有 `MAOS_SANDBOX_TIMEOUT` 同一读法） | 0.5 人天 | **赛前做** —— 评审/演示档下「容器隔离」这句话要么成立要么这一轮不跑；测试与 CI 的 `MAOS_SANDBOX_FORCE_SUBPROCESS=1` 行为一个字不改，两条路径都仍被测到 |
-| 2 | `--doctor`：开跑前一条命令端到端探大脑、小脑与 wake 全链路，绿了才认为真实唤醒能跑 | `docs/BYOA.md:480` | 有 `scripts/verify.py` 在**跑完之后**收口证据，但没有「这台机器上容器档能不能走」的**开跑前一问**；现在要等报告出来看 `degraded_reason` 才知道 | 抄思想 | 新增插件（`scripts/` 下新增一个 preflight 脚本，不碰 `maos/`） | 0.5 人天 | **赛前做** —— 现场演示前一条命令回答「容器档能不能走」，比跑完看报告早一步；与 #1 配套（#1 决定失败，#2 让人提前知道会失败） |
+| 2 | `--doctor`：开跑前一条命令端到端探大脑、小脑与 wake 全链路，绿了才认为真实唤醒能跑 | `cumora:docs/BYOA.md:480` | 有 `scripts/verify.py` 在**跑完之后**收口证据，但没有「这台机器上容器档能不能走」的**开跑前一问**；现在要等报告出来看 `degraded_reason` 才知道 | 抄思想 | 新增插件（`scripts/` 下新增一个 preflight 脚本，不碰 `maos/`） | 0.5 人天 | **赛前做** —— 现场演示前一条命令回答「容器档能不能走」，比跑完看报告早一步；与 #1 配套（#1 决定失败，#2 让人提前知道会失败） |
 | 3 | 能力**实探**而非存在性判断：版本低于最低版即拉黑，理由是旧版会静默忽略边界开关 | `server/src/agents/computer/engine.ts:331`、`engine.ts:381` | `_docker_ready()` 只回答「daemon 在不在、镜像有没有」（`maos/tools/sandbox.py:147`），不回答「`--network none` 这一次是否真生效」 | 抄思想 | 新增插件（`maos/tools/sandbox.py` + `deploy/sandbox.Dockerfile` 里加一条自证探针） | 1 人天 | **复赛后** —— 靶场里已有 `test_no_network` 这类探针间接证明；再加一层开跑前自证，收益在演示可信度上，但要动镜像（属「改 Docker」，须先问人），三周内不值得 |
 | 4 | **令牌不是权威，活行才是**：JWT 里的租户只是铸造时的快照，每次鉴权都回查 `participants` 活行，所以移走或离职一个 agent 会让之前铸出的所有令牌立刻失效 | `server/src/agents/runtime/authorization.ts:4`、`authorization.ts:9` | `AgentIdentity` 是 `frozen=True` dataclass 常量（`maos/agents/base.py:60`），`check_tool` / `check_risk` / `check_write` 三查都对着这份快照判（`maos/agents/base.py:133`、`:140`、`:148`） | 抄思想 | **动内核**（`maos/agents/**` 的 Identity 取值路径 + `maos/core/**` 的活行来源） | 3 人天 | **复赛后** —— 单进程下 Identity 就是代码里的常量，不存在「撤权后旧令牌还能用」这个窗口，现在抄是解决不存在的问题；等 Identity 落库、多进程之后这条才成立。**但它与铁律 8 是同一条道理的另一个应用面**（权威事实不在自己手里的东西，不许缓存成终态），值得整合轮记一笔 |
 | 5 | 模型可写面与桥接/IPC **物理分离**：桥可执行文件和 rendezvous 目录都在 agent home 之外，模型改不了桥也写不进 responses | `server/src/agents/computer/daemon.ts:1488`、`daemon.ts:1492` | `ToolPort.entry` 是进程内函数（`maos/tools/port.py:26`），没有「模型可写面」这个概念；模型产出只有补丁，越界由 `_check_path` 的内含性校验拦（`maos/tools/sandbox.py:326`） | 抄思想 | 新增插件（`maos/tools/**`，仅体现在 workdir 与工具通道的布局上） | 1 人天 | **复赛后** —— 只有等 `docs/toolport-contract.md:95` 说的 MCP 迁移真发生、`entry` 变成跨进程 stub 时，「桥放哪」才成为一个真问题；现在没有落点 |
@@ -169,7 +173,7 @@ standing prompt 里写的都不是。** cumora 把这两类东西放在文档的
    这条要点出来是因为它很容易被误抄：看到「危险选项要显式且有成本」这个漂亮设计，
    顺手就把逃生口一起抄了 —— **该抄的是 `failIfUnavailable` 的方向，不是逃生口。**
 
-6. **每 agent 一个持久 home + 引擎原生 memory/skills 目录**（`docs/BYOA.md:313`）。
+6. **每 agent 一个持久 home + 引擎原生 memory/skills 目录**（`cumora:docs/BYOA.md:313`）。
    它解决的是「引擎 CLI 有自己的记忆与技能格式（`CLAUDE.md` / `AGENTS.md` / `.claude/skills/`），
    要顺着它走」。MAOS 的 Skill 层和 kb 是自己的，agent 是同进程对象 —— 给每个 agent 造一个
    磁盘 home，会凭空多出一个需要清理、需要隔离、需要备份、还需要在证据束里脱敏的状态面。

@@ -1,45 +1,49 @@
 # cumora 解析 · 协调与防撞机制 （T40 · 基线 cumora@1e883f6 / MAOS@926aa7b）
 
+> 本文里带 `cumora:` 前缀的引用指的是**外部仓 cumora**（@1e883f6）里的文件，本仓永远
+> 不会有它们；不带前缀的路径才是本仓。`scripts/check_docs.py` 对前缀形式只校验写法、
+> 不校验存在性（口径见该脚本文件头的「外部仓引用」一节）。
+
 ## 1. 它是怎么做的
 
 **问题形状先于机制。** cumora 的多智能体协作是「同一台机器上 N 个独立的本地引擎会话，
 各自被服务端 SSE 事件唤醒，各自读同一个房间，各自独立决定说什么」
-（`docs/COORDINATION.md:31-33`）。作者把失败拆成正交的两类，整份文档都建在这个划分上：
+（`cumora:docs/COORDINATION.md:31-33`）。作者把失败拆成正交的两类，整份文档都建在这个划分上：
 一是 **race collision** —— 两个 agent 同时醒来、都决定发同一句、都 INSERT 进 `messages`，
 服务端能靠一次 pre-INSERT 检查抓住；二是 **brain misjudgment** —— agent 看到的状态
 是对的，脑子仍然判错，服务端抓不住，只能靠提示词塑形，而提示词有天花板
-（`docs/COORDINATION.md:36-45`）。由此得出全篇的总判据，也是最该抄走的一句：
+（`cumora:docs/COORDINATION.md:36-45`）。由此得出全篇的总判据，也是最该抄走的一句：
 **「代码机制能修的，绝不写成提示词规则；脑子在正确状态面前做出的明确决定，
-绝不加代码机制去改」**（`docs/COORDINATION.md:47-49`）。七层防御就是按这条判据分层的 ——
+绝不加代码机制去改」**（`cumora:docs/COORDINATION.md:47-49`）。七层防御就是按这条判据分层的 ——
 第 1–4 层是基础设施（完全不占脑子注意力），第 5 层是服务端硬闸，第 6 层是廉价模型闸，
 第 7 层才是提示词。
 
 **第 1–4 层解决的是「同一个外部配额被 N 个进程同时打爆」，与业务语义无关。**
-第 1 层把模型版本钉死在部署环境变量上（`docs/COORDINATION.md:57-69`），起因是本地 CLI
+第 1 层把模型版本钉死在部署环境变量上（`cumora:docs/COORDINATION.md:57-69`），起因是本地 CLI
 在一次会话中途把默认模型从 opus-4-7 悄悄翻成 4-8，而后者对类提示注入的模式更谨慎、
 在多智能体流程里行为不同 —— 不钉死，供应商每发一次模型，所有用户的行为就漂一次。
-第 2 层是每台机器的大脑并发信号量（默认 6，`docs/COORDINATION.md:71-88`）：N 个 agent 在
+第 2 层是每台机器的大脑并发信号量（默认 6，`cumora:docs/COORDINATION.md:71-88`）：N 个 agent 在
 同一次 SSE 扇出里醒来，没有这道闸就会整齐划一地撞上供应商的短窗突发限流
 （实测「7 人数数游戏 17 分钟内 130 次限流」）。第 3 层是**确定性**的最小 spawn 间隔
 （默认 500ms），它替换掉了更早的 `random(0..1500ms)` 抖动 —— 随机抖动是概率性的，
 四个同时醒来的 agent 可以同时掷到低值，仍然整齐撞墙；间隔闸让突发率**按构造**恒为
-1/interval（`docs/COORDINATION.md:90-98`）。第 3a 层是同一形状的小脑并发闸（默认 8），
+1/interval（`cumora:docs/COORDINATION.md:90-98`）。第 3a 层是同一形状的小脑并发闸（默认 8），
 它的存在纯粹是一次事故的产物，见下一段。第 3b 层 AdaptivePacer 在任意一次引擎调用
 返回限流时把全局间隔**翻倍**（上限 8s），连续 5 轮干净后**减半**回落，且必须同时挂在
 冷启动路径和常驻会话路径上 —— 因为常驻会话的 `session.send` 根本不再经过原来的
-spawn 闸（`docs/COORDINATION.md:120-134`）。第 4 层是每个 agent 的限流冷却（60s），
+spawn 闸（`cumora:docs/COORDINATION.md:120-134`）。第 4 层是每个 agent 的限流冷却（60s），
 它顺带做一件容易被忽略的事：**把 `byoa_engine_failed` 通知压掉**，因为供应商限流
-不是 cumora 的故障，不该冒到聊天里去（`docs/COORDINATION.md:164-172`）；同时**保留未读
-收件箱**，让冷却结束后的下一次唤醒自然重试（`docs/COORDINATION.md:175-176`）。
+不是 cumora 的故障，不该冒到聊天里去（`cumora:docs/COORDINATION.md:164-172`）；同时**保留未读
+收件箱**，让冷却结束后的下一次唤醒自然重试（`cumora:docs/COORDINATION.md:175-176`）。
 
 **第 3c 层是唤醒经济学，它决定了「N 条消息 → 几次昂贵推理」。** 首次唤醒起一个 2500ms
 的防抖定时器，窗口内到达的唤醒折叠进去，这一轮快照**全部**未读 —— 一串群消息塌成
-一次引擎回合而不是 N 次，且判据是内容无关的（`docs/COORDINATION.md:143-147`）。
+一次引擎回合而不是 N 次，且判据是内容无关的（`cumora:docs/COORDINATION.md:143-147`）。
 回合运行中再来的唤醒合并成单次待重跑，重跑会重读收件箱、已处理完就空转。
 折叠会伤延迟，所以开了两个逃生口：DM / @提及 / 人类消息在流的安全边界处**注入正在
 运行的会话**，让 agent 在任务中途就答；普通群活动只给一条内容无关的「N 条新消息，
-瞄一眼，是你的就接」（`docs/COORDINATION.md:150-159`）。另有 20s 的慢轮询兜底，
-用来在 SSE 流被静默切断时把漏掉的活捞回来（`docs/COORDINATION.md:161-162`）。
+瞄一眼，是你的就接」（`cumora:docs/COORDINATION.md:150-159`）。另有 20s 的慢轮询兜底，
+用来在 SSE 流被静默切断时把漏掉的活捞回来（`cumora:docs/COORDINATION.md:161-162`）。
 
 **第 5 层是全篇的核心：seen-cursor freshness preflight，以及它的四个补丁。**
 每个 (agent, 会话) 在 Redis 里存一个「已被展示到的最高 peer seq」，10 分钟 TTL，
@@ -51,27 +55,27 @@ spawn 闸（`docs/COORDINATION.md:120-134`）。第 4 层是每个 agent 的限�
 展示的最高 seq（`cli.ts:1971`「Shown ⇒ seen」），所以看过之后**平铺直叙地重发就能过，
 不需要任何标志位仪式**；其二，选 Redis 而**不是** `conversation_reads.last_read_at`，
 是因为后者是 loadInbox 的 SELECT 游标，把它推到 `NOW()` 会让下一次 loadInbox 返回空行、
-守护进程静默假忙（`docs/COORDINATION.md:204-211`、`seen-boundary.ts:8-15`）——
+守护进程静默假忙（`cumora:docs/COORDINATION.md:204-211`、`seen-boundary.ts:8-15`）——
 **任何与收件箱游标共享状态的东西在结构上就是不安全的**。作者同样诚实地写下这道闸
 **抓不住什么**：Nova 在 Iris 的「5」落库之前就决定发「6」，两人的 preflight 在各自的
-INSERT 时刻都通过，这是脑子层面的乱序，服务端无从否决（`docs/COORDINATION.md:216-220`）。
+INSERT 时刻都通过，这是脑子层面的乱序，服务端无从否决（`cumora:docs/COORDINATION.md:216-220`）。
 
 **第 5a 层是一段被撤掉的方案，而它的撤退理由比方案本身值钱。** compose-anchor 是钉在
 **回合开始**的时间戳、不被 `glance` 推进的第二道边界，用来堵一个真实的洞：B 的
 `cumora glance` 正确地让 B 看见了 A 刚落的帖，但**副作用**是把 B 的 seen 基线推过了 A，
-于是 B 的 preflight 判「没有更新的」，重复内容照发（`docs/COORDINATION.md:226-232`、
+于是 B 的 preflight 判「没有更新的」，重复内容照发（`cumora:docs/COORDINATION.md:226-232`、
 `seen-boundary.ts:82-99`）。撤掉它是因为它在任何繁忙房间里都**保证第一次尝试必被 HELD**，
 哪怕 agent 确实读完了一切 —— 转录里满是「同一个 HELD，那些消息就是我刚 glance 过的
-→ send-anyway」，每条回复多烧 1–2 次大模型往返（`docs/COORDINATION.md:234-240`）。
+→ send-anyway」，每条回复多烧 1–2 次大模型往返（`cumora:docs/COORDINATION.md:234-240`）。
 它唯一独占抓到的那类重复，改由不可旁路的逐字重复闸兜住。**一道恒假警的闸，成本是
 真的，收益要单独证明。**
 
 **第 5b 层把重复检查放进事务里，第 5d 层把旁路标志变成「承认」而不是「跳过」。**
 逐字重复闸在 `pool.connect()` + `BEGIN/COMMIT` 包住的序号申领 + INSERT 块内部、
 拿到 `conversation_counters` 行锁之后，重查最近一条非自己 peer 消息与草稿逐字比对，
-相同就 `ROLLBACK` + HELD（`docs/COORDINATION.md:246-257`、`cli.ts:2188-2222`）。
+相同就 `ROLLBACK` + HELD（`cumora:docs/COORDINATION.md:246-257`、`cli.ts:2188-2222`）。
 放进事务是因为 pre-INSERT 版本有 TOCTOU：相隔 2 秒的两个 agent 可以都通过快照检查、
-然后都写进去（`docs/COORDINATION.md:253-257`）。而它**不接受 `--send-anyway` 旁路** ——
+然后都写进去（`cumora:docs/COORDINATION.md:253-257`）。而它**不接受 `--send-anyway` 旁路** ——
 理由是「逐字重复前一条 peer 消息没有任何正当用例，哪怕在 DM 里」，与序号闸
 （可旁路，因为 agent 可能确实要回一个特定 @提及）形成明确分工（`cli.ts:2188-2196`）。
 第 5d 层则是本轨最该被抄走的形状：`--send-anyway` / `--force` 只在服务端**确实给这个
@@ -79,9 +83,9 @@ agent 展示过一个 HELD** 时才生效，令牌在展示时写入、消费时
 （`seen-boundary.ts:197-204`、`:222-238`、`:246-261`）。起因是 agent 学会了**抢先**
 带上标志省一次往返 —— saga 编完整个故事、零次 glance 直接 `--send-anyway`，
 比 nova 发出同一份交付物晚 49 秒，而本该给她看 nova 那条的 preflight 在运行之前就被
-绕过了（`docs/COORDINATION.md:309-317`）。第一版加固自己还留了个洞：令牌被「让路」
+绕过了（`cumora:docs/COORDINATION.md:309-317`）。第一版加固自己还留了个洞：令牌被「让路」
 这个正确动作**存了起来**（只有成功发送才清），3.5 分钟后一个新回合的抢先标志把它消费掉，
-一路越过两条没看见的消息（`docs/COORDINATION.md:321-327`）。于是令牌被收紧成
+一路越过两条没看见的消息（`cumora:docs/COORDINATION.md:321-327`）。于是令牌被收紧成
 **一个瞬间而不是一段会话**：绑定 HELD 展示过的最高 peer seq（`seq:<n>`），消费时
 `cmdReply` 重查是否有更新的、有就令牌作废并返回一个新的 HELD（`cli.ts:1880-1926`）；
 回合结束即死（`unmarkThinking` 清掉本回合会话的 `reply:*`）；`cumora ack` 即死
@@ -92,7 +96,7 @@ agent 展示过一个 HELD** 时才生效，令牌在展示时写入、消费时
 **第 5c 层是主动唤醒的安全网，它示范了「AI 判断底下压一层确定性地板」。** 聊天安静时，
 心跳用便宜 SQL 捞出 [5 分钟, 6 小时] 窗口内的停滞会话，交给分类器判是否 actionable；
 判是、且该 agent 抢到 Redis NX 声明（`cumora:nudge:<convoId>`）才唤醒大脑 ——
-**每次停滞永远只有一个成员去捅**（`docs/COORDINATION.md:268-275`、
+**每次停滞永远只有一个成员去捅**（`cumora:docs/COORDINATION.md:268-275`、
 `server/src/agents/agenda.ts:136-174`）。冷却分两档：分类器**说了 yes** 用 45 分钟
 （一次就够）；分类器**不可用**时用 5 分钟，因为此时无法把那一个被唤醒 agent 的判断
 当作定论（`agenda.ts:115-124`）。分类器 503 时**不是简单 fail-closed** —— 那会让整张
@@ -117,7 +121,7 @@ agent 展示过一个 HELD** 时才生效，令牌在展示时写入、消费时
 `:197-209`、`:211-227`）。`HARD_LOOP_CAP` 上方挂着一条罕见的注释：
 **「这条兜底被以『AI 原生的优雅』为名删过两次，两次都回归了 —— 不要删」**
 （`triage-core.ts:206-208`）。第 7 层的契约是**简洁**：整份系统提示约 5KB，
-五条规则、只讲形状（`docs/COORDINATION.md:405-409`、`server/src/agents/glance-protocol.ts:20`）。
+五条规则、只讲形状（`cumora:docs/COORDINATION.md:405-409`、`server/src/agents/glance-protocol.ts:20`）。
 支撑这五条的关键设计在 `glance-protocol.ts:8-18`：agent 只能看到**已发布的消息流**
 加一个私有游标，**没有**「谁在编、谁排在你前面」的花名册 —— 于是「按位次占坑」
 （我是第 3 个声明的所以我发 3）在结构上**不可表达**，那面按场景堆砌的提示词墙
@@ -228,14 +232,14 @@ MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dis
 | # | cumora 的做法 | 出处 `文件:行` | MAOS 现状 | 形态 | 落点 | 成本 | 判断 |
 |---|---|---|---|---|---|---|---|
 | 1 | **驳回时回灌「你从未被展示过的新事实」，并让脑子对着新状态重判**；且驳回信封自身推进游标（「展示即已读」），重试不会在同一批事实上再挡一次 | `server/src/agents/cli.ts:1948-1990`、`:1971` | rework 只回灌 Gate 对**本轮产出**的 findings（`control_plane.py:472-480` → `:301`），不含「别的任务在你跑的时候产出了什么」；且每次 rework 必烧一个 attempt（`control_plane.py:296`），`max_attempts` 默认 3 | 抄思想 | 动内核（`maos/core/control_plane.py`） | 3 人天 | **复赛后** —— DAG 串行（`control_plane.py:294`）下并行任务看不见彼此，现在做是空转；`flows/common.py:112` 写明「换 RocketMQ 后循环消失」，那一次并行化 PR 里必须带上这条 |
-| 2 | **旁路一道闸必须留痕**：HELD 文本会明说「你的 `--send-anyway` 被忽略了，以及为什么」 | `cli.ts:1983-1985`；判据 `docs/COORDINATION.md:578-594` | `MAOS_FINANCE_THRESHOLD` 调大即**静默停用**第六道闸 —— 解析失败会告警收严（`gate.py:169-188`），但 `99999999` 是**合法值**，闸照判 pass，`gate_results` 里看不出它被配置掉了 | 抄思想 | 动内核（`maos/runtime/gate.py`：阈值非默认时补一条 `SEVERITY_INFO` finding） | 半天 | **赛前做** —— MAOS 已有三态 `pass/noted/fail`（`gate.py:271-272`），这条只是把现成机制用上；且「闸怎么证明它真的在判」是演示现场最可能被问的一句 |
+| 2 | **旁路一道闸必须留痕**：HELD 文本会明说「你的 `--send-anyway` 被忽略了，以及为什么」 | `cli.ts:1983-1985`；判据 `cumora:docs/COORDINATION.md:578-594` | `MAOS_FINANCE_THRESHOLD` 调大即**静默停用**第六道闸 —— 解析失败会告警收严（`gate.py:169-188`），但 `99999999` 是**合法值**，闸照判 pass，`gate_results` 里看不出它被配置掉了 | 抄思想 | 动内核（`maos/runtime/gate.py`：阈值非默认时补一条 `SEVERITY_INFO` finding） | 半天 | **赛前做** —— MAOS 已有三态 `pass/noted/fail`（`gate.py:271-272`），这条只是把现成机制用上；且「闸怎么证明它真的在判」是演示现场最可能被问的一句 |
 | 3 | **放行标志必须绑定服务端展示过的那个状态**（令牌存 `seq:<n>`，消费时重查房间有没有往前走，走了就作废并重新 HELD） | `server/src/agents/seen-boundary.ts:222-261`、`cli.ts:1880-1926` | `human_decision` 只认 `task_id`（`control_plane.py:702`）；房间卡片渲染了 `attempt`（`hiclaw/room_demo.py:141`），但 `/approve <task_id>`（`room_demo.py:145`）把它丢掉了 | 抄接口 | 动内核（`control_plane.py` 加可选 `seen_attempt`；`hiclaw/room_demo.py` 指令带上 attempt） | 1.5 人天 | **复赛后** —— `assert_transition`（`control_plane.py:726`）已让陈旧批准**响亮失败**而非静默生效，且 BLOCKED 期间产物不会变，当前不是活 bug；异步审批 / 多 worker 后升级为必做 |
 | 4 | **硬上限与「新事实重置预算」配成一对**：兜底唤醒 3 次不推进就停，会话里落任何新消息即重置计数 | `server/src/agents/agenda.ts:140-154`、`:176-183` | 只有上限那一半：`max_attempts`（`control_plane.py:452`）、`_max_replan` 默认 2（`:577-591`）；REWORK 次数从 event_log 数起（`:569-571`），**永不重置** | 抄思想 | 动内核（`maos/core/control_plane.py`） | 1 人天 | **复赛后** —— `max_attempts` 默认才 3，在这个量级上重置的收益很小；「先有上限、再谈重置」的顺序本身是对的 |
 | 5 | **故障时不 fail-closed 成「没活干」，而是切出最窄的确定性用例**：分类器 503 时只保「恰好一处停滞 + 别人最后发言 + ≤30 分钟 + 无其它卡片」，其余仍 fail-closed | `agenda.ts:526-564` | 同构已有：`_finance_threshold` 读不出数回落**收严**并告警、不抛（`gate.py:169-188`）；`_over_finance_threshold` 解析不出即触发（`gate.py:191-208`）。缺的不是哲学，是**逐处显式写死方向并注明写反的后果**的规程 | 抄思想 | 新增插件（落在 `docs/` + `maos/tests/`，不碰内核） | 半天 | **赛前做** —— 基线 `926aa7b` 那次事故正是「白名单判据方向写反」；这条是把已有的正确做法固化成检查单，不改任何跑绿的代码 |
 | 6 | **回归守卫注释**：`HARD_LOOP_CAP` 头上明写「这条兜底被以『AI 原生的优雅』为名删过两次，两次都回归了 —— 不要删」 | `server/src/agents/triage-core.ts:206-208` | MAOS 注释密度极高、且大量写了「为什么这么写」，但**没有「这条被删过 N 次 / 这条看起来多余但删了会怎样」这一形态** | 抄思想 | 新增插件（`docs/` 注释规程 + 若干处补注释，不碰逻辑） | 半天 | **赛前做** —— 零风险；`gate.py:146-158`（四象限 severity 曾分叉）、`control_plane.py:310-319`（幂等键顺序）这两处正是最该挂这种注释的地方 |
-| 7 | **共享同一份外部配额的两类调用必须成对设闸**（大脑信号量 + 小脑信号量，都走同一个 spawn pacer） | `docs/COORDINATION.md:489-499`、`:100-118` | 一层并发闸都没有；`maos/tools/port.py:31` 的 `rate_limit` 是**声明了却全仓零处执行**的死旋钮（所有实例填 `""`） | 抄思想 | 动内核（`maos/runtime/` + `maos/model/`） | 2 人天 | **复赛后** —— 单线程下是空转。关键约束：**必须和并行化在同一次改动里做完**，不能分两次 —— 第 3a 层就是「只加了大脑闸忘了小脑闸」的事故产物 |
+| 7 | **共享同一份外部配额的两类调用必须成对设闸**（大脑信号量 + 小脑信号量，都走同一个 spawn pacer） | `cumora:docs/COORDINATION.md:489-499`、`:100-118` | 一层并发闸都没有；`maos/tools/port.py:31` 的 `rate_limit` 是**声明了却全仓零处执行**的死旋钮（所有实例填 `""`） | 抄思想 | 动内核（`maos/runtime/` + `maos/model/`） | 2 人天 | **复赛后** —— 单线程下是空转。关键约束：**必须和并行化在同一次改动里做完**，不能分两次 —— 第 3a 层就是「只加了大脑闸忘了小脑闸」的事故产物 |
 | 8 | **唤醒经济学当成一等指标**：一次 run 唤醒了 agent，10 分钟内它在触发会话里什么都没发 = **silent run**，按这个口径发布过 26.3% 的群聊静默率 | `server/src/__integration__/wake-economics.test.ts:1-13` | 成本侧已有：`maos/obs/trace.py:281-330` 按 trace_id 聚合 `model_usage`，且刻意区分「没调」与「调了没记」。**缺产出侧配对** —— 花了钱的这一轮到底产出了什么，没有指标 | 抄思想 | 新增插件（`maos/obs/**`，不碰内核） | 1 人天 | **复赛后** —— 成本归因刚在 T32 收口，再叠一层指标是手册范围外（铁律 4） |
-| 9 | **AdaptivePacer**：任一次调用限流就把全局间隔翻倍（上限 8s），连续 5 轮干净后减半回落 | `docs/COORDINATION.md:120-134` | 无退避；`maos/model/client.py:212-223` 只识别超时与 URLError，不识别限流 | 抄代码 | 动内核（`maos/model/client.py`） | 1.5 人天 | **不做** —— MAOS 一个 plan 的模型调用是几十次量级，够不上供应商突发窗口。先做第 7 条的固定并发闸就够；**在没有症状的地方加自适应机制**，正是反面教材第 6 条（「加第五条之前先查哪一条没抓住」）的另一种版本 |
+| 9 | **AdaptivePacer**：任一次调用限流就把全局间隔翻倍（上限 8s），连续 5 轮干净后减半回落 | `cumora:docs/COORDINATION.md:120-134` | 无退避；`maos/model/client.py:212-223` 只识别超时与 URLError，不识别限流 | 抄代码 | 动内核（`maos/model/client.py`） | 1.5 人天 | **不做** —— MAOS 一个 plan 的模型调用是几十次量级，够不上供应商突发窗口。先做第 7 条的固定并发闸就够；**在没有症状的地方加自适应机制**，正是反面教材第 6 条（「加第五条之前先查哪一条没抓住」）的另一种版本 |
 
 **分布**：赛前做 3（#2、#5、#6）／复赛后 5（#1、#3、#4、#7、#8）／不做 1（#9）。
 落点：新增插件 3（#5、#6、#8）／动内核 6（#1、#2、#3、#4、#7、#9）／**动冻结契约 0** ——
@@ -257,28 +261,28 @@ MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dis
 
 2. **不要抄 hold token 的 TTL 语义去改 MAOS 的幂等键。** cumora 的令牌语义是
    「承认**一个瞬间**」，所以 2 分钟 TTL 是对的，长 TTL 会把让路时存下的令牌变成
-   将来的旁路弹药（`seen-boundary.ts:184-186`、`docs/COORDINATION.md:321-342`）。
+   将来的旁路弹药（`seen-boundary.ts:184-186`、`cumora:docs/COORDINATION.md:321-342`）。
    MAOS 的 `human:<task_id>`（`control_plane.py:728`）语义是「一个任务只被人工决策
    一次」，是**永久**的；给它加 TTL 会直接引入重复决策，而驳回路径带着**真实外部
    副作用**（反向打补丁，`control_plane.py:736`）。形状像，语义相反 —— 这是本轮
    最容易抄错的一条。
 
 3. **不要抄多租户与规模包袱。** 两档 nudge 冷却（`agenda.ts:115-124`）、
-   global/project 两层记忆隔离（`docs/COORDINATION.md:725-740`，见 `memory-scope.ts`）、
+   global/project 两层记忆隔离（`cumora:docs/COORDINATION.md:725-740`，见 `memory-scope.ts`）、
    `convene.ts:41-52` 的 `company_id` + `FOR SHARE` 参与者校验、
-   每引擎一个 `CUMORA_DEFAULT_*_MODEL` 回落（`docs/COORDINATION.md:667-681`）——
+   每引擎一个 `CUMORA_DEFAULT_*_MODEL` 回落（`cumora:docs/COORDINATION.md:667-681`）——
    这些解决的是「N 个租户 × M 个用户 × 向后兼容」。判据照 §6 那句：
    *这个设计在解决我也有的问题，还是在解决它的用户量才有的问题？*
    一人公司抄进来是纯负债。
 
-4. **不要抄唤醒防抖 / 合并 / 同回合插话那一整套。** `docs/COORDINATION.md:143-162`
+4. **不要抄唤醒防抖 / 合并 / 同回合插话那一整套。** `cumora:docs/COORDINATION.md:143-162`
    的四个旋钮（2500ms 防抖、运行中唤醒合并成单次重跑、DM 插进活会话、群消息内容无关
    nudge）是**消息驱动**架构的特产：同一个 agent 会被同一件事叫醒 N 次。MAOS 是
    派单驱动，一次 `dispatch_ready` 只发一个 `(task_id, attempt)`，重复投递由
    `claim:<task_id>:<attempt>` 幂等键挡（`control_plane.py:325-328`）。
    抄过来是给一个不存在的问题加三个旋钮 —— 反面教材第 6 条的教科书形态。
 
-5. **不要抄 5e「共享资源同名近期去重」。** `docs/COORDINATION.md:348-362` 解决的是
+5. **不要抄 5e「共享资源同名近期去重」。** `cumora:docs/COORDINATION.md:348-362` 解决的是
    「两个 agent 各建一份《第七天的猫》」，前提是**共享命名空间里的资源可以被任意
    agent 创建**。MAOS 的 artifact 按 `(task_id, version)` 隔离，两个任务在结构上
    造不出同一个对象。
@@ -287,15 +291,15 @@ MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dis
    的五条是为「N 个 agent 抢同一个发言位」这个具体形状调出来的（不许按位次占坑、
    乐观发送靠服务端兜底、缺人时谁在谁补位）。MAOS 的 Agent 不抢发言位，这五条一条
    都不适用。值得抄的是元规则：**「保持五条、只讲形状、编辑时改 const 不加条」**
-   （`docs/COORDINATION.md:483`）与「整份系统提示约 5KB」的字节预算
-   （`docs/COORDINATION.md:405-409`）。
+   （`cumora:docs/COORDINATION.md:483`）与「整份系统提示约 5KB」的字节预算
+   （`cumora:docs/COORDINATION.md:405-409`）。
 
 ## 5. 我没看懂 / 没时间看的
 
 1. 🔴 **第 1–4 层我读的是文档，没读实现。** `BigBrainSemaphore`、`AdaptivePacer`、
    `standingPrompt()`、`runTurn()` 全在 `server/src/agents/computer/daemon.ts`
-   里（`docs/COORDINATION.md:783` 的文件表点名了它），我一行没读。所以 §1 第二、
-   三段与 §2.1 前四行的所有引用都指向 `docs/COORDINATION.md` 而不是实现 ——
+   里（`cumora:docs/COORDINATION.md:783` 的文件表点名了它），我一行没读。所以 §1 第二、
+   三段与 §2.1 前四行的所有引用都指向 `cumora:docs/COORDINATION.md` 而不是实现 ——
    **这是有意的（宁可粗定位也不编行号），但那四层结论的可靠性因此低一档**：
    我只能证明作者是这么写文档的，不能证明代码就是这么写的。
 2. `server/src/agents/steer.ts`（454 行）只 grep 了关键词。我知道有
@@ -314,7 +318,7 @@ MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dis
      `timeout`）—— 影响 §2.2 第 8 条「不会踩」的完整性。
    - `maos/agents/reviewer.py`（`:43` 走 STRONG tier）在模型不可用时怎么退化 ——
      影响 §2.2 第 11 条。cumora 在这里踩过最贵的一次坑（分类器 100% 503 而整张
-     安全网静默死掉，`docs/COORDINATION.md:596-610`）。
+     安全网静默死掉，`cumora:docs/COORDINATION.md:596-610`）。
 6. cumora 的 `observability.ts`（809 行）与 `llm-ledger.ts`（956 行）没碰 —— 成本账本
    那一面是别的轨的题目。
 
@@ -352,7 +356,7 @@ MAOS 现在对整个 cumora 问题类免疫，靠的是两条结构性质：`dis
 5. **没有钉死的「上一个已知良好基线」，所以反面教材第 14 条在本仓无法执行。**
    同一条 `python3 -m pytest maos/tests -q` 在本 worktree 是 1069 passed / 39 skipped，
    在主干工作区是 1114 或 1117（派单 §0.1）。cumora 把基线钉到了
-   **时间戳 + commit sha + 一句「当时是什么状态」**（`docs/COORDINATION.md:12-25`），
+   **时间戳 + commit sha + 一句「当时是什么状态」**（`cumora:docs/COORDINATION.md:12-25`），
    回归时第一步就是对着那个 sha 做 `git log --since` 逐个 commit 读
    （`:653-663`）。这是流程问题不是代码问题，且 T33 轨看名字正在做同一件事，
    本条只记不重复派活。

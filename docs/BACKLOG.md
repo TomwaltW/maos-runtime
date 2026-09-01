@@ -1733,3 +1733,17 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P9 | **装配函数还没有生产调用方**：`assemble()` 目前只在测试与证据脚本里被调，Worker 起 Agent 时没有接线 | 每个 Agent 仍然各自 import 各自的 ToolPort，装配层的收窄约束在生产路径上还没生效 —— 它守得住的只是「调过 assemble 的那些」 | 归整合期。接线点在 `maos/runtime/worker.py`（本轨白名单外，T57 持有），一行 `assemble(agent, profile=..., mcp_ports=...)`，等 T57/T58/T59 落地后一起接 |
 | 2026-09-01 | P9 | **`evidence/capability-matrix.json` 没进 `evidence/INDEX.json`，也不在 `scripts/verify.py` 的核验项里** | 这份证据目前只有「首行有出处」这一层保证，没被证据束的索引与核验链条覆盖 | 归整合期。`INDEX.json` 有主仓在制品在动（本轨不许改），`verify.py` 是事实源 |
 | 2026-09-01 | P9 | **`implemented_without_authorization` 目前等于「全仓目录减本角色白名单」**，22 个角色每个都是 8–10 条 | 当计数指标可用（矩阵里只落了 count），但当作「该给谁加授权」的建议清单就是噪音 —— 它没区分「本该有」与「本来就不该有」 | 等职责能力档案（T58）落地后再收窄：档案说得出「这个职责应该有哪些」，差集才有意义 |
+
+## task-T63（RTV 域 Skill 层落地时发现，本轮都不改）
+
+2026-09-02 把 SOP 五步做成六个 skill 时撞见的六条。本轨只做 `maos/skills/builtin/rtv/`
+与它的测试，其余一处没修 —— 铁律 4。前两条是**整合期必须处理**的，不是可选项。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **四条既有测试因「注册表多了六个 skill」变红**：`test_generated_docs.py` 两条（`docs/skill-catalog.md` 仍写着 30 个 skill）、`test_capability_profiles.py` 两条（新增 16 条 `rtv.*` finding，全部是 `depends-tool-missing` 4 条 + `owner-role-unknown` 6 条 + `skill-unowned` 6 条） | 本轮判据要求 1707 条一条不许变红，实测 `1731 passed, 4 failed`。这四条**不是本轨的实现缺陷**：投影文档要按派单 §0.1 等五轨齐了整合期统一跑 `gen_docs.py`；16 条 finding 全部源自 T62（工具未落地 -> depends-tool-missing）与 T64（角色未落地 -> owner-role-unknown / skill-unowned），那两轨一到就自然消失 | **整合期第一件事**：先跑 `python3 scripts/gen_docs.py`，再按当时的真实结果刷 `test_capability_profiles.py` 的 `BASELINE` 与计数表。刷之前要逐条确认剩下的 finding 确实只剩「已知漂移」，不是把本轨的洞一起洗白 |
+| 2026-09-02 | P9 | **`maos/skills/builtin/rtv/_common.py` 里有一份与 T61 重复的权威守卫**（`AUTHORITATIVE_*` 常量、`create_case` / `update_biz_status` / 回执落库） | T61 的 rtv 域 guard 模块不在本轨基线里（契约 C-R8），而「只有 rtv.observe 写得进 credited/settled」这条不能等到整合期才成立。整合前两份实现并存，**常量一旦漂开，守的就不是同一条边界了** | 整合期把 `_common.py` 的守卫段删掉、改调 T61 的 `guard`，并保留本轨那条 `test_frozen_constants_match_the_contract` 作为两边同步的哨兵。`_ensure_schema_fallback` 与内嵌的 C-R1 SQL 同批删除（`_rtv_domain_objects()` 已经把切换点收在一个函数里） |
+| 2026-09-02 | P9 | **退货理由码与规则编号（`RETURN_REASONS` / `RULES` / `REASON_RULE`）是本轨自己造的临时表**，权威那份在 T62 的 rtv 码表模块（`rtv_codes`）| 契约 C-R1 要求 `rationale_json` / `findings_json` 的每条 `rule_id` 必在 `rtv_codes.RULES` 里，而契约没冻结编号本身。两份表的编号很可能对不上，届时落库的历史裁定会引用查不到的编号 | 整合期把这三个 dict 换成 `rtv_codes` 的同名表（`dispose.py` / `reconcile.py` 只用 `require_reason` / `require_rule` / `cite`，改的是 `_common.py` 一处）。若编号确实对不上，要同时决定既有 `rtv_disposition` 行怎么处理 |
+| 2026-09-02 | P9 | **契约 C-R1 的两张回执表都没有 `poll_count` 列**（`credit_note` / `rtv_settlement_observation`） | 「终态是问出来的」这条证据只能落在 `RtvBizStatusChanged` 事件的 `detail.poll_count` 里，查证据要从事件日志走，而不是从回执那一行直接看到 | 契约冻结，本轮不动。将来若要把轮询次数落进回执表，那是一次契约变更，得走人类解锁 |
+| 2026-09-02 | P9 | **`rtv_business_ref` 没有主键**（契约 C-R1 原样如此，与 ap 域的 `ap_business_ref` 同形） | `INSERT OR REPLACE` 在无主键表上不去重，返工重跑会攒出重复行。本轨用「先删后插」自守，但那是**约定**，不是数据库保证 —— 别的轨往这张表写时不照做就会漂 | 归整合期或 T61：要么加唯一索引，要么把写入口径收到一个函数里。两条都要动契约或 T61 的文件，本轨不碰 |
+| 2026-09-02 | P9 | **本轨的 fallback 建表顺带执行了 `maos/domain/ap/schema.sql`**（读文件、不 import），好让 `supplier` / `purchase_order` / `goods_receipt` 三类源单表存在 | 那五张表按契约 C-R1 属于复用面，本域「只引用不重建」；由 skill 层的 fallback 去建它们是权宜之计，正式归属应当由 T61 的 `maos/domain/rtv/objects.py::ensure_schema` 或场景装配决定 | 整合期随 fallback 一起删。删之前要确认 T61 或 T64 的装配路径确实建了那五张表，否则 `rtv.intake` 会以 `no such table` 的面目失败，而真实原因是「这库还没装配 ap 域源单」 |

@@ -1,0 +1,1032 @@
+# generated at 2026-09-01T15:38:04.140861+00:00 from e0c68d5928ef22232d7adf6e228373c73c8dc9fe
+{
+  "summary": {
+    "roles": 22,
+    "skills_registered": 30,
+    "tool_ports": 11,
+    "mcp_backed_tool_ports": 1,
+    "roles_with_tool_drift": 2,
+    "authorized_tools_without_impl": [
+      "sandbox"
+    ],
+    "authorized_skills_without_impl": []
+  },
+  "tool_ports": [
+    {
+      "name": "bank.pay",
+      "module": "maos.tools.ap",
+      "backing": "local",
+      "owner": "ap_treasury",
+      "purpose": "向银行发出一条付款指令；返回受理回单，**永远不是终态**",
+      "rate_limit": ""
+    },
+    {
+      "name": "bank.query",
+      "module": "maos.tools.ap",
+      "backing": "local",
+      "owner": "ap_treasury",
+      "purpose": "问一次银行回单 —— 应付账款域**唯一**能取得付款终态的途径",
+      "rate_limit": ""
+    },
+    {
+      "name": "clearing.cancel",
+      "module": "maos.tools.investigation",
+      "backing": "local",
+      "owner": "task-t38",
+      "purpose": "向清算方发出 camt.056 撤销请求；返回受理回执，**不返回决议**（决议须经 clearing.resolution 问询，资金证据更须等 pacs.004）",
+      "rate_limit": ""
+    },
+    {
+      "name": "clearing.resolution",
+      "module": "maos.tools.investigation",
+      "backing": "local",
+      "owner": "task-t38",
+      "purpose": "问询清算方对撤销请求的决议（camt.029）与资金退回（pacs.004）——本域终态的唯一合法来源",
+      "rate_limit": ""
+    },
+    {
+      "name": "gateway.query",
+      "module": "maos.tools.gateway",
+      "backing": "local",
+      "owner": "task-r3",
+      "purpose": "查询一笔退款在支付网关侧的当前状态 —— 终态的唯一合法来源",
+      "rate_limit": ""
+    },
+    {
+      "name": "gateway.refund",
+      "module": "maos.tools.gateway",
+      "backing": "local",
+      "owner": "task-r3",
+      "purpose": "向支付网关发起退款；返回受理回执，**不返回终态**（终态须经 gateway.query 观察）",
+      "rate_limit": ""
+    },
+    {
+      "name": "git-mcp",
+      "module": "maos.tools.mcp.git_tool",
+      "backing": "mcp",
+      "owner": "task-mcp",
+      "purpose": "经 MCP（stdio / JSON-RPC 2.0）做只读 git 查询：仓库基线、文件清单、单文件内容",
+      "rate_limit": ""
+    },
+    {
+      "name": "payer.query",
+      "module": "maos.tools.claim",
+      "backing": "local",
+      "owner": "task-T37",
+      "purpose": "查询一笔赔付在赔付方侧的当前状态 —— paid 这个终态的唯一合法来源",
+      "rate_limit": ""
+    },
+    {
+      "name": "payer.submit",
+      "module": "maos.tools.claim",
+      "backing": "local",
+      "owner": "task-T37",
+      "purpose": "向赔付方发起赔付指令；返回受理回执，**不返回 paid**（到账须经 payer.query 观察）",
+      "rate_limit": ""
+    },
+    {
+      "name": "sandbox.git_apply",
+      "module": "maos.tools.sandbox",
+      "backing": "local",
+      "owner": "task-b",
+      "purpose": "在沙箱工作目录内应用或回滚补丁集，落盘前完成三重路径校验",
+      "rate_limit": ""
+    },
+    {
+      "name": "sandbox.pytest_run",
+      "module": "maos.tools.sandbox",
+      "backing": "local",
+      "owner": "task-b",
+      "purpose": "在容器沙箱里跑 workdir 的测试，产出结构化 test_report",
+      "rate_limit": ""
+    }
+  ],
+  "skills": [
+    {
+      "name": "ap.compensate",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "ap.execute",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "ap.intake",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "ap.match",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "ap.observe",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "ap.plan-payment",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "claim.adjudicate",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "claim.compensate",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "claim.intake",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "claim.observe",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "claim.pay",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "claim.settle",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "code.repo-patch",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "finance.settle",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "investigation.cancel",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "investigation.classify",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "investigation.compensate",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "investigation.file",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "investigation.observe",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "issue.aggregate",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "kb.retrieve",
+      "versions": [
+        "1.1.0"
+      ],
+      "latest": "1.1.0"
+    },
+    {
+      "name": "kb.sink",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "notify.customer",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "payment.execute",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "payment.observe",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "policy.match",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "refund.compensate",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "refund.intake",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "req.normalize",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "test.verify",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    }
+  ],
+  "roles": [
+    {
+      "role": "ap_control",
+      "agent_id": "ap-control",
+      "duty": "按三单匹配的结论出付款计划（金额/付款方式/到期日/依据），交人工审批",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "ap.plan-payment",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "ap_intake",
+      "agent_id": "ap-intake",
+      "duty": "收供应商发票，确认采购订单与收货单齐备，建出应付案子并挂上业务对象引用",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "ap.intake",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "ap_match",
+      "agent_id": "ap-match",
+      "duty": "三单匹配：逐行比数量与单价、按 EN16931/Peppol 规则验勾稽，产出可核对的拒付理由与应付金额",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "ap.match",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "ap_treasury",
+      "agent_id": "ap-treasury",
+      "duty": "核对审批后向银行发出付款指令，并轮询取得终态回单（settled 只能由观察得到）",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "ap.execute",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "ap.observe",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "bank.pay",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.ap"
+        },
+        {
+          "name": "bank.query",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.ap"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "bank.pay",
+          "bank.query"
+        ],
+        "resolved_count": 2,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 9,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "architecture",
+      "agent_id": "architecture",
+      "duty": "产出 API / 幂等 / 审计 / 可逆性四项俱全的架构契约，并拒绝不可逆的高风险自动执行",
+      "model_tier": "strong",
+      "max_risk": "M",
+      "max_self_repair": 1,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "claim_adjudicator",
+      "agent_id": "claim-adjudicator",
+      "duty": "按保单快照锁定的条款版本检索适用条款并裁定赔付责任，产出带条款编号与版本的裁定",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "claim.adjudicate",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "claim_intake",
+      "agent_id": "claim-intake",
+      "duty": "受理三源报案信号（工单 / 客服记录 / 定损照片），聚合去重后建案并挂上证据",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "claim.intake",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "issue.aggregate",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "claim_payment",
+      "agent_id": "claim-payment",
+      "duty": "核对审批后向赔付方发起赔付指令，并轮询取得到账回执（paid 只能由观察得到）",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "claim.observe",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "claim.pay",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "payer.query",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.claim"
+        },
+        {
+          "name": "payer.submit",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.claim"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "payer.query",
+          "payer.submit"
+        ],
+        "resolved_count": 2,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 9,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "claim_settlement",
+      "agent_id": "claim-settlement",
+      "duty": "按裁定命中的条款逐行核算赔款，写 claim_line.amount_allowed 与裁定行上的赔付额",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "claim.settle",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "coding",
+      "agent_id": "coding",
+      "duty": "按契约生成代码变更，以补丁集形式产出并完成本地自检",
+      "model_tier": "medium",
+      "max_risk": "M",
+      "max_self_repair": 2,
+      "write_scope": [
+        "artifact",
+        "repo_branch"
+      ],
+      "allowed_skills": [
+        {
+          "name": "code.repo-patch",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "kb.retrieve",
+          "implemented": true,
+          "version": "1.1.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "git-mcp",
+          "implemented": true,
+          "backing": "mcp",
+          "module": "maos.tools.mcp.git_tool"
+        },
+        {
+          "name": "sandbox",
+          "implemented": false,
+          "backing": null,
+          "module": ""
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "git-mcp"
+        ],
+        "resolved_count": 1,
+        "authorized_without_impl": [
+          "sandbox"
+        ],
+        "authorized_without_impl_count": 1,
+        "implemented_without_authorization_count": 10,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "investigation_cancel",
+      "agent_id": "investigation-cancel",
+      "duty": "核对人工调账审批后向清算方发出 camt.056 撤销请求（写不出 returned）",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "investigation.cancel",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "clearing.cancel",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.investigation"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "clearing.cancel"
+        ],
+        "resolved_count": 1,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 10,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "investigation_classify",
+      "agent_id": "investigation-classify",
+      "duty": "给支付差错定性并选定官方撤销原因码，推进到 classified",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "investigation.classify",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "investigation_intake",
+      "agent_id": "investigation-intake",
+      "duty": "受理支付差错诉求，核对原始支付快照后建案（filed）",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "investigation.file",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "investigation_observe",
+      "agent_id": "investigation-observe",
+      "duty": "问询清算方取得决议与资金下落；returned 只能由本角色的观察促成",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "investigation.compensate",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "investigation.observe",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "clearing.resolution",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.investigation"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "clearing.resolution"
+        ],
+        "resolved_count": 1,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 10,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "refund_channel",
+      "agent_id": "refund-channel",
+      "duty": "按政策规则要求登记经销渠道的核销事项，并保留其规则出处",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "refund_finance",
+      "agent_id": "refund-finance",
+      "duty": "按锁定政策自行复核规则并核算退款金额，写 finance_entry 并产出复核凭据",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "finance.settle",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "policy.match",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "refund_intake",
+      "agent_id": "refund-intake",
+      "duty": "受理多源退款诉求、聚合去重并建案；处理完成后通知客户并跟踪回执",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "issue.aggregate",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "notify.customer",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "refund.intake",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "refund_payment",
+      "agent_id": "refund-payment",
+      "duty": "核对审批后向支付网关发起退款，并轮询取得终态回执（settled 只能由观察得到）",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "payment.execute",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "payment.observe",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "gateway.query",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.gateway"
+        },
+        {
+          "name": "gateway.refund",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.gateway"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "gateway.query",
+          "gateway.refund"
+        ],
+        "resolved_count": 2,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 9,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "refund_policy",
+      "agent_id": "refund-policy",
+      "duty": "按订单快照锁定的政策版本检索适用规则并裁定退款资格",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "policy.match",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "requirement",
+      "agent_id": "requirement",
+      "duty": "把用户目标归一成可执行、可验收的需求；说不清的地方挂成 open_questions 而不是替人拍板",
+      "model_tier": "strong",
+      "max_risk": "L",
+      "max_self_repair": 1,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "req.normalize",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "reviewer",
+      "agent_id": "reviewer",
+      "duty": "对全部产物做语义审查，产出缺陷清单与结论，供人工审批参考",
+      "model_tier": "strong",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "testing",
+      "agent_id": "testing",
+      "duty": "在沙箱里跑真实测试并产出结构化报告，为 Gate 提供可验证的验收证据",
+      "model_tier": "medium",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "test.verify",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "sandbox",
+          "implemented": false,
+          "backing": null,
+          "module": ""
+        }
+      ],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [
+          "sandbox"
+        ],
+        "authorized_without_impl_count": 1,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    }
+  ]
+}

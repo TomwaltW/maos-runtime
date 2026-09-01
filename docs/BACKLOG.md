@@ -1639,3 +1639,14 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T57（按角色注入模型客户端时发现，本轮都不改）
+
+2026-09-01 接线「每个 worker 连一个大模型 API」时撞到的四条。按铁律 4 只记不改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **生成物 `docs/agent-identity.md` 把 `maos/runtime/worker.py` 的 `__init__` 行号写进正文**（本轮 28 -> 39）。任何一轨在 worker.py 顶部加一行 import，`test_generated_docs` 立刻两条变红 | 红灯本身是对的（生成物确实过期了），坏的是**归因**：症状是「文档守卫红了」，原因是「别人加了个 import」，中间隔着一个没人会想到的行号。本轮为此多改了一个白名单外文件 | 做生成器那一轨。行号换成锚点（`AGENT_POOL` 那行的符号名），或者干脆只写文件名不写行号 —— 行号是全仓最容易过期的一种引用 |
+| 2026-09-01 | P9 | **`core/store.py::usage_is_estimated` 判的是客户端的 `isinstance`，与「给客户端加包装层」天然互斥**。本轮靠「Scripted 一律不包」绕开 | 今天无害。但下一轮若真想给缺省路径也留路由归属（比如演示时想看「假模型也按角色分了流」），就没有出路了 —— 包了 `estimated` 翻面，不包就没有归属 | 真需要那天再动，且**不要**改成判 `ModelResponse.model` 字符串：两者同源会让核验器第 8 项判据 c 退化成自己跟自己对账 |
+| 2026-09-01 | P9 | **provider 归属进不了 `model_usage` 表**。`RoutedModelClient` 把 role/provider/route_source 写进 `ModelResponse.meta`，而 `record_model_usage` 不落 meta（表结构是冻结面，铁律 1，本轮一列都没加） | 「这次调用花的钱是打给哪家的」在成本表里查不到，只能拿 `agent_role` 去关联 event_log 里那条 `ModelRouted`。一次运行里成立（路由是不变量），**一旦支持运行中改路由就不成立了** | 与 BACKLOG 里那条「`estimated` 一个字段扛两种语义」一起做，都要新增表 |
+| 2026-09-01 | P9 | **`ModelRouted` 落在 `plan_id` 空串下，进不了 `trace.json`**。Worker 构造在任何 plan 之前，此刻确实没有 plan 可归（编一个更坏），而 `obs/trace.py` 按 plan_id 取 event_log | 路由留痕在库里查得到、在证据束里查不到。演示当天要证明「各角色真的分流了」，得单独开一条查询 | 做可观测那一轨。要么 trace 额外捞一次 `plan_id=""`，要么 Worker 在首次接到派单时补一条带 plan_id 的归属行 |

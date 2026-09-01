@@ -1580,3 +1580,17 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P8 | `docs/skill-catalog.md` / `docs/toolport-contract.md` 两个冲突怎么合 | **不手合，重跑 `scripts/gen_docs.py`** | 这两份是生成物，判据是「与代码逐字节一致」而不是「两侧文字都保留」。手合必然写出一份对不上代码的版本，`gen_docs --check` 当场非零退出。重跑后三份生成物 `[OK]` |
 | 2026-09-01 | P8 | `docs/BACKLOG.md` / `docs/DECISIONS.md` 两本账怎么合 | **取并集**，integrate 的小节（T37…T54）在前，主仓的 `## task-mcp` 系两节接尾 | 两侧都是「在文件尾部另起 `##` 小节」的纯追加，没有一行是对同一段的两种写法。账本的价值就在于一条都不掉，挑哪一节留都是错的 |
 | 2026-09-01 | P8 | `maos/skills/builtin/code_repo_patch.py` 唯一那个冲突块 | **两侧都要**：外层用 integrate 的 `try/except` + `record_model_failure`（T54 失败留账），内层保留主仓给 `_build_prompt` 加的第三个入参 `baseline`（git-mcp 取到的补丁基线） | 两侧改的是同一段但目的正交 —— 一个管「调用失败也要留账」，一个管「补丁产出要带基线」。二选一都会静默丢掉一整条能力，而丢掉的那条不会有任何测试变红：`_build_prompt` 的 `baseline` 是带默认值的可选参数 |
+
+## task-T57（按角色注入模型客户端 + 路由留痕，2026-09-01）
+
+手册没覆盖、由本轨自行判断的六处。核心那条是第 1 行：**包装层会把 `estimated` 翻面**，
+而它翻得一声不响 —— 屏幕上看不出来，成本视图却已经在把假 token 说成真实计费。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | 包装 `ScriptedModelClient` 会让 `usage_is_estimated` 的 `isinstance` 变 False，`model_usage.estimated` 从 1 翻成 0 | **估算口径的客户端一律不包装**（`route_model_client` 原样返回 inner），且判据**直接借 `usage_is_estimated` 本身**，不另写一份 | 另一条路是让包装器转发 `isinstance`，要动 `__class__` 之类的把戏，`type()` 和 `isinstance(x, RoutedModelClient)` 会一起失真。而本模块要守的不变量恰好就是「包装不许改变 `usage_is_estimated` 的答案」——拿它当谓词，两处永远同步，也不会有第二处「什么算估算」的口径 |
+| 2026-09-01 | P9 | 工厂对某个 role **抛异常**时怎么办（派单只规定了返 None 回落） | **回落到缺省客户端 + WARNING**，不让 Worker 起不来 | 口径同 `model/client.py::select_model_client`：缺配置就降级、不崩。但必须留声，且正文写明**后果**（该角色这一跑不走它本该走的模型）—— 静默降级正是 T47 那一轨命名的那类病 |
+| 2026-09-01 | P9 | 路由留痕落哪儿：`model_usage` 加列 / 新建表 / event_log | **落 `event_log` 的 `ModelRouted`**，一张表都不加 | 现有表结构是冻结面（铁律 1），而新建表要配 abstract 方法、后端降级、trace 侧读取，为一个不变量开一张表不划算。先例现成：`tools/port.py::invoke_tool` 的 `ToolInvoked` 行，detail 就是自由 JSON |
+| 2026-09-01 | P9 | `ModelRouted` 的 `plan_id` 填什么 —— Worker 构造在任何 plan 之前 | **如实落空串**，并把「查不到 trace.json」记进 BACKLOG | 口径同 `record_model_usage` 那段「不许编 trace_id」：编一个 plan_id 会让这条留痕挂到一棵不存在的树上，比查不到更坏 |
+| 2026-09-01 | P9 | `provider` / `route_source` 从哪来 —— 路由表和 provider 客户端都是别轨的产出，本轨基线里不存在 | **按客户端自述取**（`getattr(client, "provider" / "route_source")`），取不到回退类名 / `"model_factory"` | 这样本模块一个具体 provider 都不用 import，也就不会跟别轨的产出耦上；别轨只要在自己的客户端上挂两个属性，留痕自动变准 |
+| 2026-09-01 | P9 | 生成物 `docs/agent-identity.md` 里钉的 `worker.py` 行号因本轮加 import 而过期，2 条测试变红；该文件不在 T57 白名单里 | **跑 `scripts/gen_docs.py` 重生成**（人类当场批准），只改了那一处行号 | 手改生成物违铁律 3 的精神（生成物只许来自生成器），而放着不管则 1568 条基线里有 2 条变红。先例是 `4bb6694`「三份生成物按合并后的代码重跑 gen_docs」。脆性本身记进 BACKLOG，不在本轨修 |

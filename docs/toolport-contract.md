@@ -158,7 +158,7 @@
 
 ### `sandbox.git_apply`
 
-声明：`maos/tools/sandbox.py:634`（`GIT_APPLY_PORT`）　入口实现：`maos/tools/sandbox.py:365`
+声明：`maos/tools/sandbox.py:723`（`GIT_APPLY_PORT`）　入口实现：`maos/tools/sandbox.py:439`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -174,7 +174,7 @@
 
 ### `sandbox.pytest_run`
 
-声明：`maos/tools/sandbox.py:658`（`PYTEST_RUN_PORT`）　入口实现：`maos/tools/sandbox.py:562`
+声明：`maos/tools/sandbox.py:747`（`PYTEST_RUN_PORT`）　入口实现：`maos/tools/sandbox.py:636`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

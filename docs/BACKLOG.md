@@ -1639,3 +1639,15 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T56（角色 → 模型路由表，本轮都不改）
+
+2026-09-01 做路由表时撞到的四条。都在本轨白名单外（`conftest.py`、`model/client.py`、
+`runtime/worker.py`、`agents/**`），按铁律 4 记账不动手。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`maos/tests/conftest.py` 的起跑线不含 `MAOS_LLM_*`**。Matrix 五键与存储两键都有 autouse fixture 清场，模型这一族没有，每个用到它的测试文件各自 `delenv`（`test_model_client_hardening.py::_all_missing`、`test_registry_autodiscovery.py:451`，本轮 `test_model_routing.py` 又造了第三个） | 今天不红：现有文件都自防。但这是「靠每个作者记得」而不是「起跑线自己划」——漏一处的症状是**在配了 key 的机器上才红**，而那正是采集演示证据的那台。路由表落地后变量名从 3 个涨到「3 + 角色数 × 4 + tier 数 × 4」，靠人工写死名单必漏 | 归动 `conftest.py` 的那一轨：加一条按 `MAOS_LLM_` 前缀扫的 autouse fixture（本轮 `test_model_routing.py::_no_ambient_llm_env` 就是它的现成实现，抄过去即可），然后把三处各自的 delenv 收掉 |
+| 2026-09-01 | P9 | **`MAOS_LLM_TIMEOUT` 没有进 `RouteSpec`**，超时仍是全局唯一一份（`model/client.py::_timeout_from_env`） | 路由表让不同角色走不同家的模型之后，超时却还是一个值。强模型跑长任务需要 300s，轻量分类角色 300s 等于把一次挂死拖成五分钟 | 归接线那一轨（`client.py` 的持有轨）：要么给 `RouteSpec` 加 `timeout_env`，要么明确写死「超时按 tier 分档，不按路由分」。两条都行，别留成「没人决定过」 |
+| 2026-09-01 | P9 | **路由表本轮无人消费**：`routing.resolve()` / `describe()` 写完了，但 `select_model_client()`（A-12 冻结、T57 持有）与 `worker.py` 都还没调它 | 本轨范围就是「只出解析，不接线」，所以这不是缺陷。但它意味着：接线那一轨如果没做，这个模块是**没有任何红灯的死代码** —— 测试全绿，`run.py` 全绿，而 22 个 agent 照旧共用一个全局 client | 接线轨落地后，加一条守卫钉住「`describe()` 报出的 source 与 worker 实际注入的 client 对得上」。在那之前，`describe()` 说的是**配置意图**，不是**运行事实**，读它的人要知道这个区别 |
+| 2026-09-01 | P9 | **tier 这一级路由粒度接近失效**：22 个在池角色里 17 个是 `light`（实测 light 17 / medium 2 / strong 3） | `MAOS_LLM_TIER_LIGHT_MODEL` 一配就同时改掉 17 个角色，等于第二个全局开关；真要给某个理赔角色单独换模型，只能退回角色级逐个配。分档本身没错，错的是「新角色默认落 light」这个惯性 | 归下一轮补角色的那一轨：新增 `AgentIdentity` 时把 `model_tier` 当成必须想一想的字段，而不是抄上一个。不建议加第四档（会撞 `client.py::Tier` 的三档口径） |

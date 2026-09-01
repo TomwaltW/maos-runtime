@@ -1538,3 +1538,19 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P8 | `docs/toolport-contract.md` 在合并态 `gen_docs --check` 变红（两处声明行号漂移，T47 给沙箱加了 fail-closed 档） | 重跑生成器提交，不手改 | 生成物是代码的纯投影，实测差异只有两行行号。这正是 T47 记进 BACKLOG 的那条（生成器没有「只是行号变了」这一档），本轮不动生成器 |
 | 2026-09-01 | P8 | `scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG=1370` 被本轮合并冲掉（实测 1456），是否顺手改 | **改，只改这一个数**，并把它上面那行历史实测注释同步到本轮合并态 | 沿用整合轮惯例（`36bd036` 同样修过一次过期期望值）。不改的话录制门禁第 1 步必红，而它红起来的症状是「测试回归」，指向离原因极远。差值不变量 `PG_GATED_TESTS=29` 与算式一个字没动 —— 那才是这一档真正要守的东西 |
 | 2026-09-01 | P8 | 证据束在哪个态重跑 | 在七轨合并 + 生成物刷新之后的收敛态 `51833ca` 上全量重跑一次，出处 sha 干净（非 dirty） | 铁律 3。跑早了证据对应的是中间态。另：`demo_preflight.sh` 自己会再跑一次证据束，那一次按脚本给的 B 档还原掉，库里只留合并态那一份 |
+
+## task-T54（cumora 折账第 7、18 两条 —— 失败调用留账 + usage 两家口径）
+
+修的是 `## task-T51` 折账的第 7 条（失败的模型调用完全不落账，延迟同理）与
+第 18 条（usage 解析只认一家 provider 的口径）。以下是手册没覆盖、由本轨拍板的地方（铁律 7）。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | 失败的调用落在哪：给 `model_usage` 加一列 `status`，还是另起一张表 | **新增 `model_call_failure` 表**，`model_usage` 一个字节不动 | 铁律 1 明写「现有表结构禁改，只允许新增表」，加列直接违铁律。而且两者的**字段集本来就不同** —— 失败行没有 `tokens_in` / `tokens_out` 可填，网关根本没回用量。同一张表里一半行的 token 列恒为 0，读表的人分不出「这次很便宜」和「这次没成」 |
+| 2026-09-01 | P8 | 失败行要不要补一个 0 token 的用量数 | **一个 token 都不编**，失败表里干脆没有 token 列 | `BaseAgent.ask()` 原来的 docstring 就写着「编一行 0 token 只会让『调用失败』伪装成『这次很便宜』」。本轨不推翻这句话，只是给失败换了张不谈 token 的表。变异检验 M2 把落账改回 `insert_model_usage`（编 0 token），6 条用例当场变红 |
+| 2026-09-01 | P8 | `insert_model_call_failure` / `list_model_call_failures` 要不要挂成 `Store` 的抽象方法 | **不挂**，走 `getattr` 探测 | 口径抄 T29 给 `list_model_usage` 定的那条：成本面是可选能力。挂成抽象方法会让一个新后端（PolarStore）因为少一张统计表就实例化不了，而统计不该有这个权力。`obs/trace.py` 探不到就把 `failures.available` 置 false 并说明理由 |
+| 2026-09-01 | P8 | 取不到失败行时返回 `[]` 还是 `None` | **`None`** —— `_failure_rows` 与 `_cost_rows` 在这一点上刻意不同 | 空列表是「查过了，一次没失败」，`None` 是「没查成」。两者的 `calls` 都是 0，合成一个空列表就会让「这个后端没有失败记账」长得像「这条链路从没失败过」。这是 `cost_view` 自己那条铁律（「取不到」和「一次都没花」必须分得开）在失败面的复用，`test_unqueried_failures_are_not_reported_as_zero` 钉着 |
+| 2026-09-01 | P8 | Anthropic 的三个输入字段（`input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`）求和还是只取第一个 | **求和**；而 OpenAI 口径的 `cached_tokens` **不加**，只进明细 | 两家的包含关系相反：Anthropic 三个字段互不重叠，都是真花掉的输入侧 token；OpenAI 的 `prompt_tokens` 已经**包含**命中缓存的部分（`prompt_tokens_details.cached_tokens` 是它的子集），再加一次就是重复计数。混算的话两家各错一个方向 |
+| 2026-09-01 | P8 | 缓存读比普通输入便宜，求和会不会高估成本 | **不为此分列**，明细放 `ModelResponse.meta["usage_detail"]` | `model_usage` 只存 token 数、没有任何单价模型（`cost_view` 通篇不谈钱），所以求和不会让任何金额失真；而分列要加列，那是冻结面。明细进 meta 保证排查「这次为什么这么贵」时看得到分项 |
+| 2026-09-01 | P8 | 认不出的 usage 口径怎么办 | **记 0 并 warning**，不猜、不抛 | 抛会让一次已经成功的调用因为记账失败（口径同 `_safe_int`）；猜会让一个错数字冒充真实计费。记 0 且留声之后，`cost_view` 会因为「真客户端却 0 token」而显出异常 —— 那正是该被看见的 |
+| 2026-09-01 | P8 | 本轨落点：`goai-restructure` 主工作区仍被另一会话的 MCP 在制品占着 | 在 `.worktrees/integrate-p8` 上开 `task-T54` 分支做，做完并回 `integrate/p8-t47-t53` | 沿用本轮整合的既定落点（同 `## integrate-p8-t47-t53` 第 1 条），不为一轨活再建 worktree |

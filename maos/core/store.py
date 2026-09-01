@@ -207,6 +207,23 @@ class SqliteStore(Store):
                     created_at  TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_model_usage_trace ON model_usage(trace_id);
+
+                CREATE TABLE IF NOT EXISTS model_call_failure (
+                    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trace_id    TEXT NOT NULL,
+                    plan_id     TEXT NOT NULL DEFAULT '',
+                    task_id     TEXT,
+                    agent_role  TEXT NOT NULL,
+                    call_site   TEXT NOT NULL,
+                    model       TEXT NOT NULL,
+                    tier        TEXT NOT NULL,
+                    latency_ms  INTEGER NOT NULL DEFAULT 0,
+                    error_kind  TEXT NOT NULL,
+                    error_msg   TEXT NOT NULL DEFAULT '',
+                    created_at  TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_model_call_failure_trace
+                    ON model_call_failure(trace_id);
                 """
             )
             self._conn.commit()
@@ -481,6 +498,38 @@ class SqliteStore(Store):
         with self._lock:
             return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
+    # -- 失败的模型调用（T54）--------------------------------------------
+    # 这两个方法**不是** Store 的抽象方法，口径同 T29 给 ``list_model_usage``
+    # 定的那条：成本面是可选能力，后端没实现就由上层降级（``obs/trace.py`` 用
+    # ``getattr`` 探，探不到就把 ``failures.available`` 置 false 并说清原因），
+    # 而不是让一个新后端因为少一张统计表就实例化不了。
+    def insert_model_call_failure(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO model_call_failure (trace_id, plan_id, task_id,"
+                " agent_role, call_site, model, tier, latency_ms, error_kind,"
+                " error_msg, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row.get("trace_id", ""), row.get("plan_id", ""), row.get("task_id"),
+                    row["agent_role"], row["call_site"], row.get("model", ""),
+                    row.get("tier", ""), int(row.get("latency_ms") or 0),
+                    row.get("error_kind", ""), row.get("error_msg", ""), _now(),
+                ),
+            )
+            self._conn.commit()
+
+    def list_model_call_failures(self, *, trace_id: str | None = None) -> list[dict]:
+        """按 trace_id 取失败调用行；不给就取全部。判 ``is None`` 的理由同
+        ``list_model_usage``（空串是「取归属不上的那些」这个有意义的查询）。"""
+        sql = "SELECT * FROM model_call_failure"
+        params: list[Any] = []
+        if trace_id is not None:
+            sql += " WHERE trace_id=?"
+            params.append(trace_id)
+        sql += " ORDER BY seq"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
 
 # ---------------------------------------------------------------------------
 # 模型用量记账（T29）
@@ -536,3 +585,46 @@ def record_model_usage(store: Any, response: Any, *, client: Any, agent_role: st
     except Exception as exc:                    # noqa: BLE001 —— 见 docstring
         log.warning("模型用量落库失败（call_site=%s trace_id=%s）：%s；"
                     "本次成本统计会偏低", call_site, trace_id, exc)
+
+
+#: 失败行里 ``error_msg`` 的截断长度。留够看清是哪一类错（网关 HTTP 码、超时秒数、
+#: 协议不符的那句话都在前 200 字符里），又不让一条上游返回的长错误把库撑大。
+FAILURE_MSG_LIMIT = 200
+
+
+def record_model_failure(store: Any, exc: BaseException, *, agent_role: str,
+                         call_site: str, tier: str, latency_ms: int,
+                         model: str = "", trace_id: str = "", plan_id: str = "",
+                         task_id: str | None = None) -> None:
+    """把一次**失败的**模型调用挂到 ``trace_id`` 上。``store=None`` 就跳过（不抛）。
+
+    为什么不写进 ``model_usage``：那张表每一行都带 ``tokens_in`` / ``tokens_out``，
+    而失败的调用**网关根本没回用量**。往那儿写一行 0 token，「调用失败」就伪装成了
+    「这次很便宜」—— 这正是 ``BaseAgent.ask()`` 原来那段 docstring 拒绝落行的理由，
+    本函数不推翻它，只是给失败换了张不谈 token 的表。表结构是冻结面（铁律 1），
+    所以是**新增表**而不是给 ``model_usage`` 加一列 ``status``。
+
+    落的是「有过这么一次调用、烧了输入侧的钱、耗了这么久、错在哪一类」。
+    token 数一个字不编 —— 不知道就是不知道。
+
+    ``error_msg`` 存的是异常的 ``str()`` 截断版。上游客户端已经在
+    ``model/client.py::_scrub`` 里把 key 从错误文本里抹掉了，本函数不做二次脱敏，
+    也不该做：真有密钥漏进来，该修的是产生它的那一处，不是在记账口打补丁。
+
+    落库失败只 warning 不抛：调用已经失败了，记账再抛一次会把原始异常换掉，
+    上层看到的就不是模型出的错，而是记账出的错 —— 那是最难查的一类偷换。
+    """
+    if store is None:
+        return
+    try:
+        store.insert_model_call_failure({
+            "trace_id": trace_id or "", "plan_id": plan_id or "", "task_id": task_id,
+            "agent_role": agent_role, "call_site": call_site,
+            "model": model or "", "tier": tier or "",
+            "latency_ms": latency_ms,
+            "error_kind": type(exc).__name__,
+            "error_msg": str(exc)[:FAILURE_MSG_LIMIT],
+        })
+    except Exception as rec_exc:                 # noqa: BLE001 —— 见 docstring
+        log.warning("模型失败调用落库失败（call_site=%s trace_id=%s）：%s；"
+                    "这次失败在成本视图里会查不到", call_site, trace_id, rec_exc)

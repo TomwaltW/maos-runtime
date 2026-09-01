@@ -302,6 +302,12 @@ ZERO_CALLS_NOTE = (
     "「真的没调」与「调了没记」在这个数字上分不开，不要读成零成本。"
 )
 
+FAILURE_NOTE = (
+    "失败的模型调用单列在这里，不并进上面的 calls / tokens。它们照样烧掉了输入侧的 "
+    "token，但网关没回用量，所以这里一个 token 数都不给 —— 不知道就是不知道。"
+    "只读成本视图会把「这条链路很省」和「这条链路一直在失败」读成同一件事。"
+)
+
 
 def _bucket(dst: dict, key: Any, row: dict) -> None:
     b = dst.setdefault(key, {"calls": 0, "tokens_in": 0, "tokens_out": 0,
@@ -323,11 +329,55 @@ def _ranked(buckets: dict, label: str) -> list[dict]:
         buckets.items(), key=lambda kv: (-kv[1]["tokens_total"], str(kv[0])))]
 
 
-def cost_view(rows: list[dict], *, unavailable: str = "") -> dict:
+def failure_view(rows: list[dict] | None, *, unavailable: str = "") -> dict:
+    """一组 ``model_call_failure`` 行的聚合（T54）。形状恒定，口径同 ``cost_view``。
+
+    失败的调用**没有 token 数**（网关根本没回），所以这里一个 token 字段都不出 ——
+    出了就得编。它出的是「有过几次、烧了多少墙钟、错在哪一类、哪个调用点在错」。
+
+    为什么非要单列一块：一次超时或被限流的调用照样烧掉了输入侧的钱，而它在
+    ``cost_view`` 里**完全不存在**。只看成本视图的人会把「这条链路很省」和
+    「这条链路一直在失败重试」读成同一件事。
+    """
+    if rows is None:
+        return {"available": False,
+                "unavailable_reason": unavailable or "未提供失败行",
+                "calls": 0, "latency_ms": 0, "by_error_kind": [], "by_call_site": [],
+                "note": FAILURE_NOTE}
+    kinds: dict = {}
+    sites: dict = {}
+    latency = 0
+    for r in rows:
+        kinds[r.get("error_kind") or "unknown"] = (
+            kinds.get(r.get("error_kind") or "unknown", 0) + 1)
+        sites[r.get("call_site") or "unknown"] = (
+            sites.get(r.get("call_site") or "unknown", 0) + 1)
+        latency += int(r.get("latency_ms") or 0)
+    return {
+        "available": not unavailable,
+        "unavailable_reason": unavailable or None,
+        "calls": len(rows),
+        "latency_ms": latency,
+        # 恒按 (次数降序, 名字升序) —— 与 _ranked 同一个排序口径，可复现。
+        "by_error_kind": [{"error_kind": k, "calls": v}
+                          for k, v in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))],
+        "by_call_site": [{"call_site": k, "calls": v}
+                         for k, v in sorted(sites.items(), key=lambda kv: (-kv[1], kv[0]))],
+        "note": FAILURE_NOTE,
+    }
+
+
+def cost_view(rows: list[dict], *, unavailable: str = "",
+              failures: list[dict] | None = None,
+              failures_unavailable: str = "") -> dict:
     """一组 ``model_usage`` 行的成本聚合。形状恒定，取不到就 ``available=false``。
 
     「取不到」和「一次都没花」必须分得开：两者都能让总数是 0，但前者是**不知道**，
     后者是**知道且为零**。合成一个 0 会让「成本记账没接上」长得像「这条链路很省」。
+
+    ``failures`` 是 T54 加的第二本账（``model_call_failure`` 行）。它**不并进**
+    ``calls`` / ``tokens_*`` 任何一个数 —— 成功与失败混算会让「花了多少」不可读；
+    它挂在 ``failures`` 键下单列。缺省 None 是「没人告诉我」，不是「一次没失败」。
     """
     roles: dict = {}
     tasks: dict = {}
@@ -365,6 +415,8 @@ def cost_view(rows: list[dict], *, unavailable: str = "") -> dict:
         "note": ESTIMATED_NOTE,
         # 只在 calls==0 时非空 —— 形状恒定，有话说的时候才有话。
         "zero_calls_note": None if (unavailable or totals["calls"]) else ZERO_CALLS_NOTE,
+        # 失败的调用单列，一个 token 都不并进上面的数（见 failure_view）。
+        "failures": failure_view(failures, unavailable=failures_unavailable),
     }
 
 
@@ -385,6 +437,24 @@ def _cost_rows(store: Any, trace_id: str) -> tuple[list[dict], str]:
         return list(fn(trace_id=trace_id)), ""
     except Exception as exc:                    # noqa: BLE001 —— 旧库没有 model_usage 表
         return [], f"读 model_usage 失败：{type(exc).__name__}"
+
+
+def _failure_rows(store: Any, trace_id: str) -> tuple[list[dict] | None, str]:
+    """取一条 trace 的失败调用行。返回 ``(rows, 取不到的理由)``，口径同 ``_cost_rows``。
+
+    取不到时返回的是 ``None`` 而不是 ``[]`` —— 空列表是「查过了，一次没失败」，
+    None 是「没查成」。两者在 ``failure_view`` 里显示成不同的 ``available``，
+    合成一个空列表就会让「这个后端没有失败记账」长得像「这条链路从没失败过」。
+    """
+    if not trace_id:
+        return None, "plan 没有 trace_id，无法按 Run id 归集失败调用"
+    fn = getattr(store, "list_model_call_failures", None)
+    if fn is None:
+        return None, "store 未实现 list_model_call_failures（后端早于 T54 的失败记账）"
+    try:
+        return list(fn(trace_id=trace_id)), ""
+    except Exception as exc:                    # noqa: BLE001 —— 旧库没有这张表
+        return None, f"读 model_call_failure 失败：{type(exc).__name__}"
 
 
 def export_trace(store: Any, plan_id: str) -> dict:
@@ -568,6 +638,7 @@ def export_trace(store: Any, plan_id: str) -> dict:
     spans.sort(key=lambda s: (s.get("start") or "", s["kind"], s["span_id"]))
     errors = check_span_tree(spans)
     usage_rows, usage_gap = _cost_rows(store, trace_id)
+    failure_rows, failure_gap = _failure_rows(store, trace_id)
     return {
         "schema": SCHEMA,
         "plan_id": plan_id,
@@ -577,7 +648,8 @@ def export_trace(store: Any, plan_id: str) -> dict:
         "spans": spans,
         # 成本挂在 trace_id 上，与 span 树、event_log 同一个关联键 —— 复赛规则要的
         # 「trace / Log / Metrics 关联到同一个 Run id」就是这一个键，不另造。
-        "cost": cost_view(usage_rows, unavailable=usage_gap),
+        "cost": cost_view(usage_rows, unavailable=usage_gap,
+                          failures=failure_rows, failures_unavailable=failure_gap),
         "summary": {
             "span_count": len(spans),
             "task_count": len(tasks),
@@ -698,6 +770,13 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
             "measured_model_calls": total_calls - estimated_calls,
             "all_estimated": total_calls > 0 and estimated_calls == total_calls,
             "cost_note": ESTIMATED_NOTE,
+            # 失败的模型调用（T54）。只数**查得到**的那些树 —— 后端没有这张表时
+            # 每棵树自己的 failures.available=false 已经说清了，这里不把
+            # 「没查成」混成 0。与 model_calls 分开列：成功与失败不是一本账。
+            "failed_model_calls": sum(
+                t["cost"]["failures"]["calls"] for t in traces
+                if t["cost"]["failures"]["available"]),
+            "failure_note": FAILURE_NOTE,
             "event_count": sum(t["summary"]["event_count"] for t in traces),
             "unsourced_artifacts": sum(t["summary"]["unsourced_artifacts"] for t in traces),
             "seeded_artifacts": sum(t["summary"]["seeded_artifacts"] for t in traces),

@@ -25,7 +25,7 @@ import posixpath
 import time
 from typing import Any
 
-from maos.core.store import record_model_usage
+from maos.core.store import record_model_failure, record_model_usage
 from maos.model.client import Tier
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
@@ -202,11 +202,26 @@ class CodeRepoPatchSkill(Skill):
 
         tier = ctx.extras.get("tier") or Tier.MEDIUM
         started = time.perf_counter()
-        resp = ctx.model.complete(
-            system=SYSTEM,
-            user=self._build_prompt(payload, ctx, baseline),
-            tier=tier,
-        )
+        try:
+            resp = ctx.model.complete(
+                system=SYSTEM,
+                user=self._build_prompt(payload, ctx, baseline),
+                tier=tier,
+            )
+        except Exception as exc:
+            # 失败也要留账（T54），口径同 req_normalize：补丁是本仓最贵的一类调用，
+            # 一次超时烧掉的输入侧 token 原先在成本视图里完全不存在。
+            record_model_failure(
+                ctx.store, exc,
+                agent_role=getattr(ctx.identity, "role", "") or "unknown",
+                call_site=CALL_SITE, tier=tier,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                model=getattr(ctx.model, "model", "") or "",
+                trace_id=ctx.extras.get("trace_id") or "",
+                plan_id=ctx.extras.get("plan_id") or "",
+                task_id=ctx.extras.get("task_id"),
+            )
+            raise
         record_model_usage(
             ctx.store, resp, client=ctx.model,
             agent_role=getattr(ctx.identity, "role", "") or "unknown",

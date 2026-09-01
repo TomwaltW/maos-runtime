@@ -1435,6 +1435,199 @@ exit=0，`gen_docs.py --check` exit=0，`demo_preflight.sh` 5 步全过 exit=0�
 | 2026-08-31 | P7 | **T34 新加的白名单判据方向写反了**。它的判据是「DNS 解析成功 + TCP **超时** → 大概率白名单没放行」，但本机出口 IP 漂移后实测的真实症状是「DNS 成功 + TCP **握手成功** → 连接随即被断，`OperationalError`、**无 SQLSTATE**」，于是脚本打印的是「网络通，问题在 PG 鉴权层（账号 / 库名 / SSL 策略）」 | **在真正的白名单场景下把人指向错误方向** —— 会去查账号口令和 SSL 策略，而实际只需在控制台加一条白名单。这比没有判据更糟：`## polardb-live` 里那条老结论（「白名单不放行的症状是 TCP 静默超时」）应该也只在**某些链路**成立，公网地址前有 SLB 时 TCP 是能握上的 | 判据改成三分支：TCP 超时 → 白名单（链路 A）；**TCP 握手成功但 PG 层无 SQLSTATE 地断开 → 同样优先怀疑白名单**（链路 B，实测形态）；有 SQLSTATE → 才是真的鉴权层。归下一轮 PolarDB 轨。改之前先把两种链路各复现一次，别照抄本条 |
 | 2026-08-31 | P7 | **本机出口 IP 会漂**，白名单是一次性配置但需要反复维护。T34 收尾时报的是一个 IP，几小时后并轨复验时已换成另一个 | 有库档全量（1098）与云库冒烟（5/5）**随时可能因为 IP 漂移而跑不出来**，且症状看起来像回归。交付前如果撞上，容易误判成代码问题 | 两条路：① 白名单放宽到运营商网段（安全性下降，需人拍板）；② 在 `polardb_smoke.py` 的诊断里直接打印当前出口 IP（`dig +short myip.opendns.com @resolver1.opendns.com`，**不泄漏目标 host**），让人一眼看出要加哪个。②成本低且无风险，推荐先做 |
 
+## task-T37
+
+保险理赔域纵向切片（新域轮）。基线 `926aa7b`。以下八条都在**本轨白名单外**、或**属于
+手册没覆盖而不该当场改**的面，一条都没有顺手修（铁律 4）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-31 | P8 | 🔴 **第七道闸 `_gate_gateway` 的码表硬绑在 `maos/tools/gateway_codes.py`（支付宝那张）上**，而它的触发判据是纯数据形状：任一 artifact 的 `content["receipt"]` 是带 `code` 的 dict 就进闸。于是**第二个「有外部回执」的域接不进去** —— X12 的 CARC `96` 送进去只会得到一条「未知错误码」的 blocker | 理赔域只能把回执挂在 `content["payer_receipt"]` 上避开这道闸（`maos/agents/claim/_base.py::RECEIPT_FIELD`，有 `test_claim_scenario.py` 两条回归钉着）。代价是**本域拿不到第七道闸那套四象限处置**，等价能力由 `claim_codes.recourse_of()` 在域内自己实现了一份。`docs/domain-portability.md` §2.3 说第六、第七两道闸「换第三个域一行都不用改」——**第七道闸这半句在理赔域上不成立**，那份文档该补一句 | 归**持有 `maos/runtime/gate.py` 的那一轨**。真要做，方向是把「码 -> disposition」从闸里提出来变成可注册的判据表（按 `receipt["code_system"]` 之类的字段分派），而不是给闸加一个 if。**本轮不动内核**是派单明令 |
+| 2026-08-31 | P8 | **`scripts/gen_docs.py` 的 `DOMAIN_NAMES`（:161）只有 `software` / `refund` 两项**，理赔域的四个 Agent 与六个 skill 在生成物里印成裸 key `claim`（「分域：软件交付域 6 个；claim 4 个；制造售后退款域 5 个」） | 只是显示，无行为影响 —— 生成器本来就设计成「标签查不到就直接印字段名，不静默丢弃」，所以这不是 bug 而是**没配标签**。但评委读 `docs/agent-identity.md` 时会看到中英夹杂 | `scripts/**` 不在本轨白名单，且同期 T38 / T39 也在新增域，三轨同改这一个 dict 必冲突。**归整合轮**，一次把三个域的中文名一起加进去 |
+| 2026-08-31 | P8 | **场景 8 不在 `maos/main.py::DEFAULT_SCENARIOS`（仍是 1..7）** | `python3 run.py` 跑不到理赔域；本轮它的唯一调用方是 `maos/tests/test_claim_scenario.py` | 派单 §8 明令不改（三轨都新增 flow，谁改谁冲突）。**归整合轮**，连同 `--scenario` 的 argparse choices、`scripts/make_evidence.py` 的场景列表、证据束数量、README 里写死的「场景 1-7」一起改 |
+| 2026-08-31 | P8 | 🔴 **房间审批桥只写任务级决定，不写域级审批记录**。`RoomApprovalBridge.handle_message` 走的是 `HumanApprovalQueue.decide()`，它只推 Task 状态；而 `claim.pay` / `payment.execute` 都要求库里先有一行 `approved` 的域审批记录（`claim_approval` / `approval_record`），那一行在两个域里都是由**场景**在 `hq.decide()` 旁边显式落的 | 于是**纯房间驱动的业务流程走不完**：房间里 `/approve` 生效、任务 DONE，下一个任务却因「没有 approved 的审批记录，不许发起赔付」而失败。本轮 §5.4 的真房间实跑撞上过这一条（第一次运行的 Plan 收在 FAILED），补一行 `record_approval` 后 Plan 正常推进 | 归**持有 `hiclaw/**` 的那一轨**。两条路：① 桥上挂一个可注册的「决定落地回调」，由各域自己登记怎么把人的决定写进本域的表；② 或者把域审批记录改成从 `event_log` 的 `human_approve` 迁移事件里现读。①更正、②更省。**别在桥里 import 业务域** —— 那会让 `hiclaw` 认识两个域 |
+| 2026-08-31 | P8 | **`hiclaw/matrix_bus.py::RoomApprovalBridge._say` 在 429 限流下把一次成功的回话记成失败**。`_NioChannel.send` 走 `_await(...)`，默认超时 10s；Synapse 限流时房间发送会排到 10s 之后，于是 `_say` 捕获超时打出「房间回话失败（），判定已生效」——**而那条回执随后确实送进了房间**（本轮实测：三条 warning，房间里三条回执一条不少） | 日志里出现「回话失败」而房间里明明有回执，排查时会往通道坏了的方向找。异常对象的 `str()` 还是空的（`concurrent.futures.TimeoutError`），warning 里那对括号是空的，更难认 | 归 `hiclaw/**` 那一轨。最小改法是把 `_NioChannel` 的 `timeout` 提到构造参数（现在写死 10.0）并在 `open_channel` 里给一个对限流友好的值；顺手把 warning 改成打 `type(exc).__name__`，空 `str()` 的异常不至于印成一对空括号 |
+| 2026-08-31 | P8 | **`hiclaw/room_demo.py` 的等待循环在 `926aa7b` 上仍是坏的**（派单 §5.4 第 4 条已点名）：只 `decided.wait(timeout)` 等回调置位，而回调里 `decided.set()` 排在「把回执发进房间」之后 | 后果是一次**审批已经生效**的运行报 `exit=2`，并打出「未等到审批 …… 任务仍停在 DONE」这种自相矛盾的话 | 本轨没用它 —— §5.4 自己写了等待循环，判据取**先到者**（回调置位 **或** 库里任务已离开 BLOCKED），实测正是「先到者」那一支救回来的。修复归 `hiclaw/**` 那一轨；照抄本轨那段循环即可 |
+| 2026-08-31 | P8 | **`maos/tests/conftest.py` 没剥本轮新增的 `MAOS_CLAIM_APPROVAL_THRESHOLD`**（`## task-T28` 第 4 条、`## task-T35` 第 6 条记的是同一类问题，本轮又长出一个） | 一台 export 了这个变量的机器上跑全量，`test_claim_adjudication.py` 那三条阈值用例的结果会跟着机器走。症状是「某台机器上红、别的机器全绿」 | 归 conftest 的正当持有轨。照既有 `STORE_ENV_VARS` 的写法加一组 `CLAIM_ENV_VARS`；**注意别把它加进那条会饿死 live 测试的路径**（见 conftest 里那段关于时序的长注释） |
+| 2026-08-31 | P8 | **`MockPayer` 不建模「金额被调整」**。X12 的 `1` / `2` / `3`（起付线 / 共保 / 自付额）与 `45` / `97`（合同价 / 已并入他项）这五条码的 `effect` 是 `patient_share` / `reduced` —— 真实赔付方回执会**同时**给出一个被削减后的实付金额，而 mock 只在 `detail.adjusted_by` 里留个码，到账金额仍是发出去的那个数 | 当前**无正确性影响**：本域从不从回执读金额，赔款一律取 `adjudication.allowed_amount`（`claim.pay` 里那一行）。所以这是**演示保真度**的缺口，不是 bug —— 但它意味着那五条码在流程上一次都没影响过钱，码表里的 `reduced` / `patient_share` 两档只被单元测试覆盖过 | 真要补，`PayerReceipt` 加一个 `paid_amount` 字段，并让 `claim.observe` 在到账时把「发出去的」与「实际到账的」两个数一起落进观察行 —— 那时才谈得上「对账」。**归下一轮理赔轨**；本轮不做是因为它会牵动权威边界的判据（到账金额与申报金额不符算不算 paid？那是个需要人拍板的业务问题，不是实现问题） |
+| 2026-08-31 | P8 | **`maos/domain/claim/objects.py` 与 `maos/domain/refund/objects.py` 结构性重复**（`execute` / `query` / `lock_of` / `_atomic` / `_has_column` / 迁移记账那一整套，逐行同构，只换表名与保存点名）。`guard.py` 的四道闸同理 | 本轮是**有意的重复**：抽一层共用会让两个域焊死，而「换域只新增文件」正是本轮要证的那句话（`test_claim_isolation.py::test_the_two_business_domains_do_not_import_each_other` 钉着它）。代价是同一个 bug 要修两处 —— 比如 `_has_column` 那条「不用 PRAGMA」的坑 | **上第三个域之前**再决定。判据不是「重复了多少行」，而是「这些代码里有没有一行是领域相关的」：如果确实一行都没有，它就该下沉成 `maos/domain/_sql.py` 这样的**基础设施**（不是共用的域），且下沉后那条互不 import 的守卫仍要绿 |
+## task-T38（银行差错处理域纵向切片）
+
+以下六条都在**本轨白名单外**或**需要人类动作**，一条都没有当场改（铁律 4）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-31 | P8 | 🔴 **三份生成物过期，4 条存量测试变红**：本域新增 4 个角色 / 5 个 skill / 2 个 ToolPort，`docs/agent-identity.md`、`docs/skill-catalog.md`、`docs/toolport-contract.md` 与代码不再逐字节一致，`test_generated_docs.py` 的 4 条用例因此失败 | **派单 §6 与 §4 在这里自相矛盾**：§6 把 `python3 scripts/gen_docs.py --check` exit=0 列为验收项（并注明「新 skill/tool 落进生成物且与代码一致」），而 §4 的白名单里没有这三份文件。更要紧的是 **T37 / T38 / T39 三轨都新增 skill/tool/agent**，三轨都得重跑同一个生成器、改同一份文件 —— 谁先提交谁就给另两轨造一次三方冲突，性质与 §0.1 说明「谁改 `main.py` 谁就和另两轨冲突」完全相同 | **卡在人类裁决**，不是代码问题。两条路：① 三轨都不碰，**整合轮统一跑一次** `python3 scripts/gen_docs.py`（推荐 —— 生成物是机器产的，合并时重跑一次即可，零信息损失，且与 `main.py` 的处理口径一致）；② 授权本轨现在就跑，那么 T37/T39 合入时必然要再跑一次并解冲突。选 ① 的话，建议把这三份文件与 `maos/main.py` 一起写进后续派单的「整合轮统一处理」清单 |
+| 2026-08-31 | P8 | **`hiclaw/room_demo.py` 的等待循环在基线 `926aa7b` 上是坏的**（派单 §5.4 第 4 条已点名，本轮实跑复核属实）：它只 `decided.wait(timeout)` 等回调置位，而回调里 `decided.set()` 排在「把回执发进房间」**之后**，429 限流下那一步实测撞满超时 | 一次**审批已经生效**的运行会报 `exit=2`，并打出「未等到审批 …… 任务仍停在 DONE」这种自相矛盾的话。演示当天撞上会被当成「审批没接通」 | `hiclaw/**` 不在本轨白名单，没动。修法很小：等待判据取**先到者** —— 回调置位 **或** 库里那个任务已离开 BLOCKED（后者是权威的）。本轨的房间脚本已经这么写了，可直接照搬（在 scratchpad 里，不入库）。归持有 `hiclaw/**` 的那一轨 |
+| 2026-08-31 | P8 | **`maos/main.py` 的 `DEFAULT_SCENARIOS` 不含场景 9**（派单 §0.1 有意如此，记账备查） | `python3 run.py` 跑不到本域这条链路；场景 9 目前只由 `maos/tests/test_investigation_flow.py` 调用。评委按 README 跑 `run.py` 看不到银行域 | 整合轮。接进去要一并动 `--scenario` 的 argparse choices、`scripts/make_evidence.py` 的场景列表、证据束数量、以及 README / 自查单里写死的「场景 1-7」——与 §0.1 说的是同一笔账 |
+| 2026-08-31 | P8 | **守卫对含中文引号的 heredoc / 嵌套引号命令解析失败**，报文是「blocked: 该操作触碰受保护面 `<命令无法解析: No closing quotation>`（解析失败）。停止当前工作并向人类报告。」 | **措辞误导**：它说的是「触碰受保护面」并要求停手报告，而实际只是 shell 词法解析失败（我的引号问题），与受保护面无关。本轮撞了 3 次，每次都要先判断是不是真的碰了禁改面。按派单 §3.1 的判据表，这属于「你在动自己白名单内的文件却被拦」= 异常拦截 = 应停手 —— 但实际上换个写法（Write 工具代替 heredoc，见 §3.2 招式 3）就过了 | 守卫是禁改面，没动。建议把解析失败那一档的报文与「命中受保护面」分开，例如「blocked: 命令无法解析（引号不成对），换用 Write/Edit 工具或简化引号后重试」—— 它不需要人停手，只需要换写法。归有守卫授权的那一轨；`## task-p7-docs` 里「引号不成对误触守卫」记的是同一类，本条补上了**报文措辞**这一半 |
+| 2026-08-31 | P8 | **`business_ref` 表被退款域独占**：它建在 `maos/domain/refund/schema.sql` 里，由 `refund/objects.py` 的 `attach_business_ref` / `resolve_business_ref` 读写，`_REF_TARGETS` 只认退款域那五种 `object_type` | 本域的 Task 与业务对象之间**没有等价的引用表**，`investigation_case` 挂在哪个 task 上只能靠 `plan_id` 反查。演示与测试都不需要它，所以本轮没造 —— 但「DAG 挂到业务对象」这条能力在本域是缺的，`docs/domain-portability.md` 的对照表里那一行对退款域成立、对本域不成立 | 下一轮做「两个域共用一张 business_ref」时一起：要么把表与访问器上提到一个域无关的位置（`maos/domain/__init__.py` 旁边），要么每个域各建一张。**别顺手在本域复制一份同名表** —— 两个域的 `schema.sql` 都 `CREATE TABLE IF NOT EXISTS business_ref` 会让「谁的形状说了算」变成看谁先建 |
+| 2026-08-31 | P8 | **ISO 20022 码表取的是 3Q2022 v2（2022 年发布），已知有更新版但本机取不到** | 本轨用到的 3 个码集经独立第三方镜像交叉验证**零条冲突**，镜像只多出 5 条新码（`AACR` / `DT04` / `DUPL` / `RC03` / `RC04`），所以判据全部可信 —— 但码表不含 2022 年之后的增量。若评委拿最新版对，会发现少几条码 | 沙箱只放行 iso20022.org 的 `/sites/default/files/` 静态路径，站点所有 HTML 路径（含目录页、`robots.txt`、首页）一律 read timeout（实测 3 次），因此无法从目录页读到最新版文件名；按命名规律猜了 108 个候选 URL 全部 404。**需要人类在浏览器里打开目录页、把最新版 xlsx 的直链给回来**，之后重跑 `review/tools/` 那套提取脚本即可（提取脚本在 scratchpad，逻辑是纯 stdlib 读 xlsx，无依赖）|
+## task-T39（应付账款域纵向切片）
+
+2026-08-31 上应付账款域时发现的，**本轮都不改**（铁律 4）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-08-31 | P8 | 🔴 **第七道闸 `_gate_gateway` 的触发面是「产物里有没有 `content["receipt"]` 且带 `code`」，与业务域无关，但它拿到 code 之后去查的是 `maos/tools/gateway_codes.py` 的支付宝码表** —— 任何新域只要用了 `receipt` 这个字段名装自己的外部回执，就会被这道闸对着一张它根本不认识的码表判成「未知码 -> blocker -> 最危险的一档」 | 症状极难反推：新域每一份产物都返工，而报错指向「网关码不在已核对清单内」，读的人会去查支付宝文档。本轨绕过的方式是把回单字段命名成 `bank_advice`（`maos/tools/ap.py` 的 `ADVICE_FIELD`，有两条用例钉着），但那是**约定**不是机制 —— 下一个域仍会踩 | 归内核轨。两条路：① 闸的触发面加一个显式的域标记（如 `content["receipt_codelist"]`），认不出码表就**不判**而不是判 blocker；② 让 `gateway_codes` 支持按码表名注册，闸按产物声明的码表去查。① 成本低、语义更保守，推荐先做。改之前先把本域的 `test_ap_tools.py::test_gateway_gate_would_fire_if_we_used_the_wrong_field_name` 读一遍，那条用例就是这个坑的最小复现 |
+| 2026-08-31 | P8 | **`scripts/verify.py` 第 3 项 authoritative-fact 只认退款域**：`AUTHORITATIVE_WRITER = "payment.observe"`（`verify.py:68`）、对账查的是 `refund_case` / `payment_observation` 两张表（`verify.py:424`）。本域的 `ap.observe` / `ap_case` / `ap_payment_observation` 完全不在它的视野里 | 「权威事实边界」这条外部核验对本域**是空的** —— 本域自己的守卫与 116 条用例都绿，但 `verify.py` 那一项不会因为本域被绕过而变红。派单 §0.1 已明说本轮 `verify.py` 不作为验收项，所以不是回归，但它是一个**将来会被误读成「已核验」的空白** | 归证据束轨（下一轮跑 `make_evidence.py` 的那一轨）。第 3 项应当改成按域循环：每个域声明自己的 `(writer, case 表, observation 表, 终态判据)` 四元组，`verify.py` 逐个域跑同一套三头检查。四元组的形状两个域已经一模一样（见 `maos/domain/*/guard.py` 的 `AUTHORITATIVE_*` 常量），抽出来不难 |
+| 2026-08-31 | P8 | **`docs/domain-portability.md` 已经不全**：全文按「两个域」写（§1 对照表、§5「两个域，不是 N 个域」），本域落地后是三个。§4 那份「换一个新域要做什么」的清单本轮**逐条照着走通了**，可以回填一次实证 | 那份文件是复赛材料里最核心的论证之一。停在「两个域」而仓库里有三个，评委翻到会当场发现文档落后于代码 —— 而这一轮恰恰是那份清单第一次被**第三方**（不是写它的人）照着执行，是最有说服力的一次验证 | 归文档轨。回填时要**分开算**：本域的 `contracts/` 与 `core/` diff 同样是空的（本轮实测），但 `runtime/` 也是空的 —— 这比退款域那一次更强（那次 `gate.py` +126）。别把两次合并成一个数 |
+| 2026-08-31 | P8 | **三份生成物（`docs/agent-identity.md` / `skill-catalog.md` / `toolport-contract.md`）不在本轨 §4 白名单，但 §6 把 `gen_docs.py --check` exit=0 列成验收项** —— 只有重跑生成器才满足得了，本轮据此重跑并记进 DECISIONS | 同期 T37 / T38 / T39 三轨都新增 skill / agent / tool，三轨都会重跑这三份 —— **整合轮必冲突**，且冲突点全在自动生成的表格行里，人工 merge 极易漏行 | 归整合轮。**不要手工 merge 这三份**：任取一方的版本落地，然后在合并态上重跑一次 `python3 scripts/gen_docs.py`，再跑 `--check` 确认 exit=0。生成器的三条自我约束（字段顺序取自 dataclass、数量不写死、不写时间戳）保证了这样做的结果是唯一的 |
+| 2026-08-31 | P8 | **`maos/main.py` 的 `DEFAULT_SCENARIOS` 不含场景 10**（派单 §0.1 有意为之：三轨都新增 flow，谁改谁冲突）。本域的两条路径目前只由 `maos/tests/test_ap_flow.py` 调用 | `python3 run.py` 跑不到本域，演示时看不见应付账款这条链路 | 归整合轮。接进去要一并动的东西已经在 `scenario_7.py::drive_human_exit` 的 docstring 里列全了：`--scenario` 的 argparse choices、`scripts/make_evidence.py` 的场景列表、证据束数量、`verify.py` 的来源数，以及 README / 自查单 / PPT 里写死的「场景 1-7」。`test_ap_flow.py::test_scenario_10_is_not_wired_into_default_scenarios` 会在那一刻变红，那正是提醒改这些的时机 |
+| 2026-08-31 | P8 | **`hiclaw/room_demo.py` 的等待循环在 `926aa7b` 上是坏的**（派单 §5.4 第 4 条已点名）：它只 `decided.wait(timeout)` 等回调置位，而回调里的 `decided.set()` 排在 `bridge.handle_message()` **之后**，后者会把回执发进房间 —— 429 限流下那一步实测撞满超时 | 一次**审批已经生效**的运行会报 `exit=2`，并打出「未等到审批 …… 任务仍停在 DONE」这种自相矛盾的话。本轨的 §5.4 runner 自己写了「先到者」判据绕过它（回调置位 **或** 库里任务已离开 BLOCKED），但 `room_demo.py` 本身没动（不在白名单） | 归 hiclaw 轨。修法就是本轨 runner 那个：等待条件取先到者。顺带把回调里的 `decided.set()` 提到 `handle_message()` **之前**（判定已经生效了，发回执是旁路） |
+| 2026-08-31 | P8 | 🔴 **`Sender` 那类「一条命令一次登陆」的写法在 Synapse 上会卡死，不是报错**。`rc_login` 的限流比消息限流狠得多，第二次 `login()` 就吃 429；nio 于是 sleep 42s 重试，而 429 响应体里没有 `user_id`，nio 的 schema 校验再报一次 `Error validating response: 'user_id' is a required property` —— 表现是进程**静止**。本轨第一版实测 10 分钟没走完第一条命令 | 任何要「模拟多个人在房间里发言」的脚本都会踩（演示彩排、证据采集、集成测试）。它的坏处不在慢，在于**看起来像挂了**，排查方向会指向房间或网络 | 归 hiclaw / 演示轨。口径定成「每个账号只登陆一次、复用同一个 client 与同一个事件循环」，并在两次登陆之间留 3 秒。本轨 runner 的 `Sender` docstring 里写了完整现象，照抄即可 |
+| 2026-08-31 | P8 | **`ap.match` 不处理单据级折扣与附加费**（BR-CO-11 / BR-CO-12、PEPPOL-EN16931-R040/R041/R042），于是 BR-CO-13 的算式退化成「不含税总额 = Σ 行净额」、R120 退化成「行净额 = 数量 × 单价」 | 真实发票带整单折扣时会被判成 BR-CO-13 勾稽失败 —— 一条**假的拒付理由**，而它挂着一个真实的规则编号，看起来毫无破绽。当前靶场与用例都不带折扣，所以不咬人 | 归下一轮应付轨。补的时候要一并加 `supplier_invoice_allowance` / `_charge` 两张表与对应的 UNCL5189 / UNCL7161 码表（两张表的出处在 `docs.peppol.eu/poacc/billing/3.0/codelist/`，本轮没抄）。**别只改判据不加码表** —— 折扣理由码同样要可核对 |
+| 2026-08-31 | P8 | **本域的五个 artifact kind 没进 `maos/artifacts.py` 的 `ALL_KINDS`**（刻意：那是跨轨冻结面，单轨往里加必撞，口径同 `agents/refund/_base.py`） | Gate 对非代码类产物不查 kind 白名单，所以运行时无影响。但 `maos/artifacts.py` 那份清单已经不是「全部 kind」了，读它的人会以为是 | 归整合轮或冻结面轨。要么把三轨的新 kind 一次性加进去，要么在 `ALL_KINDS` 旁边写明它只覆盖软件交付域 |
+| 2026-08-31 | P8 | **`maos/tests/conftest.py` 仍没剥 `MAOS_CONFIG_SOURCE` 与 `MAOS_NACOS_*`**（`## task-T28` 第 4 条、`## task-T35` 复核过两次） | 本轮没有新增 env 旋钮，所以这个面**没有变大**。记在这里只是复核确认它还在 | 无需本轮处理，见 `## task-T35` 那条给的清单 |
+
+## task-T51（cumora 六轨解析整合轮 · T40–T45 附录 A 折账）
+
+T40–T45 六轨各自读了参照实现 cumora 的一个面，产出 `docs/refs/cumora-*.md` 六份文档
+（1808 行）。每份末尾都有一节「顺手发现的 MAOS 问题」，六份都写着「本轮不改、留给整合轮
+统一折进 BACKLOG」——**那个整合轮一直没发生**（T46 整的是 T37–T39 三个业务域，不是这六轨）。
+本节就是那次折账，共 24 条。
+
+🔴 **三条关于本节可信度的说明，读表之前先看：**
+
+1. **六份文档的基线是 `926aa7b`，本节的行号全部在 `4bb6694`（T46 tip）上重取。**
+   T37–T39 三个业务域加了 20831 行，行号大面积漂移；逐条重跑之后有 **2 条的读数变了**
+   （见第 8、9 条，两条都是「变严重了」），其余 22 条事实不变、只是行号变了。
+   **本节的行号是 T46 合并态的，不是主干 `1438ba3` 的**；主干合 T46 之前照着查会对不上。
+2. **本轮只折账、不修**（铁律 4），唯一的例外是第 1 条 —— 它是**录制门禁本身**，
+   留着不修等于让门禁在录制当天继续报假警。理由记在 `DECISIONS ## task-T51`。
+3. **有一条是对六份文档之一的更正**（第 22 条）：`docs/refs/cumora-data-model.md` 说
+   「kb 只有 `tenant_id` 一维」，实测 `PREFILTER_FIELDS` 有 7 个字段。结论方向不变，
+   但落地口径要改，那条不能按「过滤链上加一档即可」去做。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | ✅ **已修**：`scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG` 停在 1069，而 T46 合并态实测 1370 passed / 39 skipped | 本脚本第 1 步逐条断言测试条数，对不上即 `die` —— T46 tip 上实跑得到「实际 1370 / 期望 1069」、打出「前置未通过，**不要开始录制**」、exit=1，**而当时代码是全绿的**。录制前唯一的机器判据自己变成了假警报，是最坏的一种失效：下一次它真红了，人会先怀疑是这个数又没刷 | **本轮已改成 1370 并实跑五步全过 exit=0**。规程写进了该文件的注释块：**加测试的那一轨改这个数，不要留给录制当天的人**。`PG_GATED_TESTS=29` 不变（三个新域一条门控测试都没加），有库档由算式得 1399，**未实测** |
+| 2026-09-01 | P8 | **真模型降级只有一行 `log.info`**。`select_model_client` 三个环境变量缺任一个就回落 `ScriptedModelClient`（`maos/model/client.py:294`） | 「以为在跑真模型、其实在跑假模型」不会有任何显眼提示，而它恰好会让**一切验证结论失真** —— 复赛现场 key 配错，「真模型跑通了」就成了假结论 | 出处 `docs/refs/cumora-runtime.md` §3 #1，判「赛前做，0.5 人天」。cumora 对同类静默降级的处理是打阈值告警**并在告警正文里写明后果**（`http-client.ts:347-357`）。已派 **T47** |
+| 2026-09-01 | P8 | **沙箱降级路径没有 fail-closed 档**。`_docker_ready()` 返回 False 就**无条件**降级裸 subprocess（`maos/tools/sandbox.py:591`、`:600`、`:603`），没有任何配置能表达「宁可不跑，也不裸跑」 | 现状已把原因写进 `sandbox_mode` / `degraded_reason` 并进 summary（这比只打日志好很多，`sandbox.py:596-599` 的注释解释了为什么），但**没有人必须同意**。「容器隔离」是提交材料里的一句断言，降级发生时那句断言就不成立 | 出处 `docs/refs/cumora-sandbox.md` §3 #1，对照 `engine.ts:1323` 的 `failIfUnavailable: true`。加一个走 `maos.config` 配置面的开关即可，测试与 CI 的 `MAOS_SANDBOX_FORCE_SUBPROCESS=1` 一个字不用改。已派 **T47** |
+| 2026-09-01 | P8 | **第六道闸可被一个合法配置值静默停用**。`MAOS_FINANCE_THRESHOLD` 填 `99999999` 解析得通、不告警、闸判 `pass`（`maos/runtime/gate.py:96`、`:169`、`:182`） | 读 `gate_results` 的人分不出「这道闸没话说」和「这道闸被配置掉了」。解析**失败**的路径反而做对了（回落收严并告警，`gate.py:186-188`）—— 缺的是合法但异常取值这一档 | MAOS 自己已经发明了三态 `pass/noted/fail`，这里没用上。阈值非默认时补一条 `SEVERITY_INFO` finding 即可。「闸怎么证明它真的在判」是演示现场最可能被问的一句。已派 **T48** |
+| 2026-09-01 | P8 | **`call_site` 没有登记表**。它是自由字符串（`maos/core/store.py:200`），全仓当前只有 3 个取值（`maos/agents/base.py:24` 的 `CALL_SITE_ASK`、两个 skill 各一个 `CALL_SITE`） | 新增一个模型调用点忘了记账**不会有任何信号**，成本统计静默偏低。T32 那次「六处补 `store=`」正是这类漏接的实证 | 出处 `docs/refs/cumora-cost-obs.md` §3 #1。cumora 把 `purpose` 做成穷举枚举、漏接由 CI 守卫 `guard-llm-tracked.mjs` 报红。抄思想即可：登记表 + 一条「出现未登记值即红」的测试，不改表、不改调用点。已派 **T48** |
+| 2026-09-01 | P8 | **`maos/agents/reviewer.py:83` 从 JSON 中间裸切**：`json.dumps(artifacts, ensure_ascii=False, default=str)[:8000]` | Reviewer 模型收到的是语法破损的片段，**且不知道自己被截了**。artifact 一多（或某个 patch_set 的 `files` 字段一大），语义审查就基于残片出意见；模型硬着头皮输出了合法 JSON 的话，这是一个**完全静默的审查盲区**（`_parse` 只在输出不合契约时才兜底） | 出处 `docs/refs/cumora-turn-loop.md` §3 #1，对照 `turn.ts:867` 的自描述截断（返回 `{truncated, originalBytes, head, note}`，注释原话：keep the output self-describing instead of silently slicing JSON）。约 10 行。已派 **T49** |
+| 2026-09-01 | P8 | **失败的模型调用完全不落账，延迟同理**。`record_model_usage` 只在成功路径被调（`maos/core/store.py:508`），`latency_ms`（`:205`）随之只覆盖成功路径 | 一次超时或被限流的调用照样烧掉了 input token，但在 `cost_view` 里根本不存在，而且**一句提示都没有** —— 这与 `ZERO_CALLS_NOTE` 想防的「调了没记」是同一类假象，区别是那一类有提示。超时调用往往是最贵的（烧了墙钟没有产出） | 出处 `docs/refs/cumora-cost-obs.md` §3 #2 / 附录 A #1 #5。cumora 把失败调用当一等公民记（`llm-ledger.ts:184-195`，catch 分支照样带 `latencyMs`）。🔴 **要给 `model_usage` 加 `status`/`error` 两列 = 动冻结契约**，判**复赛后**；退路是新开一张附表（铁律 1 允许新增表） |
+| 2026-09-01 | P8 | **`ToolPort.rate_limit` 是声明了却零读取的死字段，而且本轮变严重了**。定义在 `maos/tools/port.py:31`，赋值处从六轨解析时的 **4 处涨到 10 处**（`gateway.py` / `sandbox.py` / `claim.py` / `ap.py` / `investigation.py` 各 2 处），全部填 `""`，**全仓没有任何读取方** | 风险不是「现在限流不生效」（现在也不需要），是**将来有人给模型调用加限流时，会以为工具这一层已经有了**。每上一个新域就多两处赋值，等于每上一个域就多两处「看起来配置过了」的假象 | 出处 `docs/refs/cumora-coordination.md` 附录 A #1。处置二选一：删掉字段，或在 ToolPort 注册时对非空值抛 `NotImplementedError`。**别第三次让它跟着新域长** |
+| 2026-09-01 | P8 | **`AgentIdentity.max_self_repair` 是死字段，本轮同样变严重了**。定义在 `maos/agents/base.py:69`，赋值处从 **10 处涨到 22 处**（三个新域的 agent 各自赋了值），读取点仍然是 **0**；`scripts/gen_docs.py:158` 还把它当真字段生成进 `docs/agent-identity.md` 的角色表 | **文档在承诺一个运行时不存在的约束**，而 `docs/agent-identity.md` 因为是自动生成的，看上去还很权威。评委真去问「自修复上限怎么生效的」，答不上来 | 出处 `docs/refs/cumora-turn-loop.md` 附录 A #2。要么给它接上执行点（失败重试在 agent 内做几次，那要改 worker 主循环），要么删掉。**同上：别让它跟着第四个域再长一轮** |
+| 2026-09-01 | P8 | **`register_skill` 同名同版本静默覆盖**。`maos/skills/registry.py:39` 是 `SKILL_REGISTRY.setdefault(contract.name, {})[contract.version] = cls`，两个模块注册同名同版本的 skill，后 import 的静默赢，不报警 | `registry.py` 的模块注释花了很大篇幅解释「保留历史版本是为了旧 Plan 可复现」，而同版本被悄悄换掉恰恰打破这条承诺。MAOS 的 skill 是 import 注册的、不是运行时装的，撞名概率低，但这是个真实的调试陷阱 | 出处 `docs/refs/cumora-turn-loop.md` §3 #9 / 附录 A #3。一行 `if version in versions: log.warning(...)` 即可。cumora 的同款约束更硬：**拒绝覆盖同名**，要重装得先显式删（`skills.ts:221`） |
+| 2026-09-01 | P8 | **`claim` 幂等键无过期、无撤销口，PG store 上存在永久卡死的可能**。`maos/core/control_plane.py:309` 的 docstring 自陈「store 只有 claim/finish，没有撤销口」，键烧在 `:325` | Worker 若在 `_transit(RUNNING)` 之后、`_reply` 之前**硬崩**（进程被杀 / OOM），该 attempt 再也无法被认领，任务永久停在 RUNNING。`SqliteStore(":memory:")` 上库随进程消失所以看不出来；**PG store 上会留下卡死的行** | **当前不是活 bug** —— 单进程同步执行，且 `_invoke` 兜住了所有 Python 异常。出处 `docs/refs/cumora-runtime.md` 附录 A #1；cumora 对同一问题的解法是租约超时接管（`inproc-client.ts:955-968`）。**与 PolarDB 上线绑定** |
+| 2026-09-01 | P8 | **`maos/core/store.py:1-5` 的开篇承诺对并发语义不成立**。原话是「换 PolarDB 时只改这一个文件……上层零改动」，但 `SqliteStore` 的隔离全靠单连接 + 进程内 `threading.RLock`（`:110`），PolarStore 上**没有这把锁的等价物** | `claim_idempotency` 的 INSERT/catch 还能用（靠唯一约束），但 `update_task` 的读-改-写、以及退款域「写 settled 与插 observation 同事务」（借的正是这把 RLock）都需要显式事务或行锁。PolarStore 落地那天按字面理解这句话，会漏掉一整类并发缺陷 | 出处 `docs/refs/cumora-data-model.md` 附录 A #1。**最小处置成本极低**：那句 docstring 补一句「**并发语义不随文件迁移**」。cumora 在这个位置的解法是多行加锁按 id 排序 + 授权谓词下沉进 UPDATE 的 WHERE |
+| 2026-09-01 | P8 | **kb 的 `_MIGRATIONS` 没有并发保护**。`maos/kb/__init__.py:23-28` 自己说明了「迁移没跑」的后果，但没说**两个进程同时跑迁移**的后果 | 演示期的库都是 `:memory:` 或每次新建，两者的区别看不出来；PolarDB 是持久库就看得出来了 | 出处 `docs/refs/cumora-data-model.md` 附录 A #2。这正是 cumora 付过**两次硬故障**的地方（40P01 死锁让所有 pod 起不来；整批 DDL 一个隐式事务锁住约 30 张表直到提交）。它的解法是 session 级 advisory lock + `lock_timeout`。**与 PolarDB 上线绑定** |
+| 2026-09-01 | P8 | **`AgentIdentity` 是 `frozen=True` 的代码常量，不是活行**（`maos/agents/base.py:60`），`check_tool` / `check_risk` / `check_write` 三查都对着这份快照判 | 单进程下 Identity 就是代码里的常量，**不存在「撤权后旧令牌还能用」这个窗口**，所以现在抄没有收益。记在这里是因为它与**铁律 8 是同一条道理的另一个应用面**：权威事实不在自己手里的东西，不许缓存成终态 | 出处 `docs/refs/cumora-sandbox.md` §3 #4。cumora 的判据是「令牌不是权威，活行才是」—— JWT 里的租户只是铸造时的快照，每次鉴权回查 `participants` 活行。**等 Identity 落库、多进程之后这条才成立** |
+| 2026-09-01 | P8 | **人工放行不绑定操作人被展示的那一版**。`human_decision` 只认 `task_id`（`maos/core/control_plane.py:702`，幂等键 `human:{task_id}` 在 `:728`）；房间卡片把 `attempt` 渲染进了 Envelope（`hiclaw/room_demo.py:141`），但 `/approve {task_id}`（`:145`）把它丢掉了 | **当前不是活 bug** —— `assert_transition` 让陈旧批准响亮失败而非静默生效，且 BLOCKED 期间产物不会变。异步审批 / 多 worker 之后变成活 bug | 出处 `docs/refs/cumora-coordination.md` §3 #3 / 附录 A #3。cumora 的做法是放行标志绑定服务端展示过的那个状态（令牌存 `seq:<n>`，消费时重查房间有没有往前走，走了就作废并重新 HELD）。加**可选** `seen_attempt` 参数即可，不新增状态、不新增迁移 |
+| 2026-09-01 | P8 | **四条止损机制并存，且相对顺序本身是判定的一部分**。`max_attempts`（`control_plane.py:452`）、第三出口 `_human_exit`（`:491`）、`_should_replan`（`:534`）、`_max_replan`（`:577`），而 `:442-443` 的注释自己承认第三出口「必须排在 max_attempts 之前」 | 这不是现在的缺陷，是**再加第五条时会出事的形状** —— 顺序是隐式的、只活在一处注释里 | 出处 `docs/refs/cumora-coordination.md` 附录 A #4。建议在 `on_review_verdict` 头上挂一条回归守卫注释：*四条止损的相对顺序是判定的一部分；加第五条之前，先证明现有四条里是哪一条没抓住。* cumora 的同款形态是 `HARD_LOOP_CAP` 头上那句「这条兜底被以『AI 原生的优雅』为名删过两次，两次都回归了——不要删」。已派 **T50** |
+| 2026-09-01 | P8 | **「失败但没说为什么」在类型上合法**。`AgentOutput` 的 `open_questions` 默认空列表、`error` 默认 None（`maos/agents/base.py:94-95`），所以 `AgentOutput(status="failed")` 和 `AgentOutput(status="blocked")` 都是合法构造 | `ReviewerAgent._needs_human` 已经在局部守住了这条（注释：产出空白意见书比没有意见书危险得多），但这是 **agent 自觉，不是运行时强制** | 出处 `docs/refs/cumora-turn-loop.md` §3 #2 / 附录 A #4。cumora 把 `reason` 做成协议**必填**，缺了直接判 invalid 并把「reason is required so the runtime can audit why the turn stopped」写回给模型。一个 if 把它从可能变成不可能。已派 **T49** |
+| 2026-09-01 | P8 | **usage 解析只认一家 provider 的口径**。`maos/model/client.py:238-239` 只读 `prompt_tokens` / `completion_tokens` | Anthropic 口径把缓存读写单列为 `cache_read_input_tokens` / `cache_creation_input_tokens`，这些字段在 MAOS 侧会被**整体忽略** —— 接第二家网关时 token 数会**系统性偏低且无声**，而 `_safe_int` 的告警只覆盖「字段不是整数」，覆盖不到「字段压根没被读」 | 出处 `docs/refs/cumora-cost-obs.md` §3 #4 / 附录 A #2。cumora 做了双口径映射：OpenAI 的 `input_tokens` **含**缓存需减、Anthropic 的**已排除**需分别取（`cost.ts:166-193`）。**现在只有一家网关，接第二家之前必须先做这条**；赛前动解析层是无收益的回归风险 |
+| 2026-09-01 | P8 | **`GatewayModelClient` 无任何重试**。一次 `urlopen`，`URLError` / `TimeoutError` / `OSError` 直接转 `RuntimeError`（`maos/model/client.py:223-225`） | 演示现场一次网络抖动 = 一个任务 failed，而 MAOS 的失败会一路走到 REWORK 或 FAILED —— 观众看到的是「系统判错了」而不是「网断了」 | 出处 `docs/refs/cumora-runtime.md` §3 #2 / 附录 A #3。cumora 的判断是「连接类失败短重试能救回本回合，且**不该让用户看见失败**」，重试次数与退避写在客户端内部、调用方无感。**判复赛后**：赛前缺省路径是 Scripted，真模型只在演示时开，而重试会让演示时长不可预测——彩排价值高于健壮性 |
+| 2026-09-01 | P8 | **`estimated` 一个字段扛了会分叉的语义**。现在它的含义是「token 数是不是 `len(user)//4` 编的」（`maos/obs/trace.py:283-291`） | 接真模型后会出现第三种情况：**真模型、真调用，但网关没回 usage**。届时这一个字段读不出区别，而给它加列会碰冻结面 | 出处 `docs/refs/cumora-cost-obs.md` 附录 A #4。cumora 用两个正交旗子分开这件事：`measured`（provider 报没报）与 `cost_estimated`（价格是不是猜的）。**值得在还没接真模型的现在就想清楚**，因为想清楚是免费的、加列不是 |
+| 2026-09-01 | P8 | **`security_boundary` 的措辞容易被读成「降级也隔离了」**。`docs/toolport-contract.md:187` 写的是「降级路径裸 subprocess，env 按白名单重建（只放行 PATH/LANG，HOME 指向一次性空目录）」—— 每个字都对 | **没说的那半句**是：降级路径没有任何文件系统与网络隔离，模型产出的 Python 在 pytest collection 阶段就以宿主 uid 执行，能读该 uid 可读的一切**绝对路径**（换掉 `HOME` 不影响 `~/.ssh` 这种硬编码路径被读到）。这是**文档口径问题，不是代码 bug**，但 `security_boundary` 是「评审会逐条对」的字段 | 出处 `docs/refs/cumora-sandbox.md` 附录 A #2。建议在 ⑦ 里补一句明说降级路径隔离为零。**注意该文件由 `scripts/gen_docs.py` 生成，要改得改代码里的声明**，不能直接改生成物 |
+| 2026-09-01 | P8 | 🔴 **对六份文档之一的更正 + kb 缺一个生命期维度**。`docs/refs/cumora-data-model.md` §3 #1 与附录 A #3 都写「kb 只有 `tenant_id` 一维」，**实测不对**：`maos/kb/retriever.py:70-73` 的 `PREFILTER_FIELDS` 有 7 个字段（`tenant_id, biz_type, channel_id, region, sku, policy_version, workflow_version`） | **结论方向仍然成立**（`grep -rn pinned maos/kb/` 零命中，那一档确实没有），但缺的是**生命期维度**而不是「第二个隔离维度」：「这条政策所有单子都适用」和「这条是那一单的经验」在召回时同权。落地**不能**按那份文档说的「过滤链上加一档即可」去做 | 出处 `docs/refs/cumora-data-model.md` §3 #1，原判「赛前做 1.5 人天」，**本轮下调为复赛后**：动手前必须先读完 `retriever.py` 的两阶段检索全流程（那份文档 §5 自己写明这一步没做）。cumora 的 `pinned` 是很便宜的补法（`memory-scope.ts:234`：pinned 无视 scope 永远可见），但那是在它读懂了自己检索链的前提下 |
+| 2026-09-01 | P8 | **没有钉死的「上一个已知良好基线」**。同一条 `python3 -m pytest maos/tests -q` 在不同 worktree 给出不同条数，而没有一处记录「哪个 sha 上是哪个数、当时是什么状态」 | 回归时无法执行「对着上一个已知良好基线做 `git log --since` 逐个 commit 读」这套排查。第 1 条那个门禁失效，成因正是这个 —— 条数散在脚本里、没有跟着 sha 走 | 出处 `docs/refs/cumora-coordination.md` 附录 A #5。cumora 把基线钉到**时间戳 + commit sha + 一句「当时是什么状态」**。这是流程问题不是代码问题；`scripts/demo_preflight.sh` 本轮新加的注释块是这条的局部落地，**全局那份还没有** |
+| 2026-09-01 | P8 | ✅ **已核实，判「不必改」**：`ENV_PASSTHROUGH` 原样透传宿主 `PATH`（`maos/tools/sandbox.py:80`，用在 `:126`） | **不构成新增风险** —— 降级路径本来就在以宿主 uid 执行模型产出的 Python（pytest collection 阶段就会 import 补丁写进 workdir 的文件），PATH 影子不增加任何新能力 | 出处 `docs/refs/cumora-sandbox.md` §3 #7 / 附录 A #3。**记在这里只为一件事**：让后来的人不必把这条推导重来一遍，也不要因为「cumora 做了 PATH 清洗」就顺手给 MAOS 加一个没有收益的加固。真正该修的是上面第 3 条「要么隔离要么不跑」 |
+
+## task-T47（降级要留痕 —— 模型客户端 + 沙箱）
+
+本轨修的是 `## task-T51` 的第 2、3 两条（真模型静默降级、沙箱没有 fail-closed 档），
+两条都已落地并实跑自证，不再重复记账。下面是**动手过程中撞到、但按铁律 4 不当场修**的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`gen_docs --check` 会因为纯行号漂移变红，而它没有「只是行号变了」这一档**。`docs/toolport-contract.md` 把声明位置写成 `maos/tools/sandbox.py:634` 这样的行号；本轨往 `sandbox.py` 里加了代码，两个 ToolPort 的行号 `:634→:723` / `:365→:439` 全漂，`security_boundary` 等**声明内容一字未变** | 派单 §0.1 写着「本轨不新增 skill / agent / tool，所以 `--check` 应当一直 exit=0；变红说明改到了声明面」——**这个判据不成立**：任何往这三个源文件里加行的轨都会让它变红，而变红的原因跟「声明面被改」完全无关。同轮 T48（`gate.py`/`obs`）、T49（`agents/**`，喂 `agent-identity.md`）大概率各撞一次，每轨都要停下来判一次「我是不是动了不该动的」 | **处置口径已有先例，缺的是把它写下来**：`4bb6694` 那次就是「三份生成物按合并后的代码重跑 `gen_docs`」，即**由整合轮统一重跑**、各轨不碰生成物。建议把这条写进 `docs/phases/common.md` 的并行约定，并把派单模板里 §0.1 那句话改成「`--check` 报的若**只有行号**，属预期，交整合轮重跑；报到字段内容才是声明面被改」。另一个更彻底的方向是让 `gen_docs` 输出锚点（符号名 + 相对位置）而不是绝对行号，那样生成物就不再随无关改动漂 —— 但那是改生成器，得单独一轨 |
+| 2026-09-01 | P8 | **`select_model_client` 的 docstring 与本轨改后的实现有一处措辞落差**（`maos/model/client.py:277-283`）：它写「降级回 ScriptedModelClient 并只记录**缺失的变量名**」，没说记在哪个级别 | 不是错，是**没说到点上**。这条 docstring 是 A-12 冻结签名的说明文字，而「降级留痕」这件事的关键恰恰是级别（INFO 看不见、WARNING 才看得见）。将来有人照着 docstring 重写这段，很容易又写回 `log.info` —— 本轨买到的东西就这么丢了 | 本轨**没改 docstring**：派单 §8 明写「只动降级分支那几行，不要顺手把 `select_model_client` 的其它部分改好看」。补一句「且级别为 WARNING（降级必须看得见）」是十个字的活，**留给下一个正当动这个函数的轨顺手带上**。当前有测试 `test_degradation_is_a_warning_not_an_info` 钉着，回归会红，不是无防护状态 |
+| 2026-09-01 | P8 | **`_clean_env` 原样透传宿主 `PATH`，会让降级路径在削过 PATH 的环境里「跑不起来」而不是「裸跑」**（`maos/tools/sandbox.py:80` 的 `ENV_PASSTHROUGH`，用在 `:126` 附近）。本轨演示 fail-closed 时用 `env PATH=/usr/bin:/bin` 制造「找不到 docker」，同一削法让降级路径里的 pytest 也找不到了，报 `pytest 没有产出 junit 报告，多半根本没跑起来` | **不是新增缺陷，也不影响本轨结论**（正常 PATH 下降级路径跑得好好的，`test_unset_flag_still_degrades_exactly_as_before` 实测 `passed > 0`）。记在这里是因为它揭示了一个**误判形态**：`tool_error` 说的是「pytest 没跑起来」，真实原因是「这个 env 里根本没有 python」，两者在报告上分不开。演示现场若在削过 env 的 shell 里跑，会往「代码/靶场有问题」的方向查 | 与 `## task-T51` 最后一条（已核实判「不必改」的 `PATH` 透传）是同一处代码的**另一面**，那条判的是安全面、这条是可诊断性。处置成本很低：`_run_degraded` 起 pytest 前先确认解释器可执行，不可执行时把 `tool_error` 写成「降级路径的 env 里找不到 python 解释器」。**判复赛后** —— 赛前不会有人在削过 PATH 的 shell 里跑演示 |
+
+## task-T48（闸与账本要留痕：阈值三态 + call_site 登记）
+
+本轨修的是 `## task-T51` 的第 4、5 两条（第六道闸可被合法配置值静默停用 / `call_site`
+没有登记表），一条不落。下面四条是修的过程中**白名单外**的发现，按铁律 4 只记不改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG=1370` 又过期了**。本轨加了 11 条测试，全量实测 **1381 passed / 39 skipped** | 这正是 `## task-T51` 第 1 条修完那个门禁时写下的规程要防的事：「**加测试的那一轨改这个数**」。本轨改不了 —— `scripts/**` 不在白名单里，且 T47 / T49 / T50 三轨同期也在加测试，谁单独改都会立刻被下一轨顶掉 | **四轨全部并轨之后，由并轨的那一轮按合并态实跑一次改成实测值**。在那之前这个门禁必然报假警（实际 > 期望），录制前看到「不要开始录制」要先确认是不是这个原因 |
+| 2026-09-01 | P8 | **阈值留痕的触发面与任务级判据对齐，于是混合计划里有一个覆盖缺口**。`_finance_threshold_notice` 只在被评审的任务自己 `biz_type == "refund"` 时开口 | 一个计划里既有退款任务、又有非退款任务，而恰好只评审到非退款任务那一轮时，阈值被调过这件事不留痕。**当前不是活 bug**：`_gate_finance_plan` 是逐任务跑的，同一个 plan 里只要有一个退款任务过闸，痕就留下了 | **不建议扩大触发面**。扩到「plan 里有退款任务就留痕」要在留痕这条路上再扫一次 `list_tasks`（多一次存储读，为一条 info），而扩到「无条件留痕」会把场景 1-5 每一个任务的 finance 从 `pass` 变成 `noted`。有真实需求再说 |
+| 2026-09-01 | P8 | **登记表守不住「根本不记账」的新调用点**。两条守卫（静态扫源码 / 动态扫真跑过的库）判据都落在 `record_model_usage` 的调用点上 | 新增一个模型调用点、**连 `record_model_usage` 都没调**，两条守卫都是绿的，而账照漏。T32 那次「六处补 `store=`」漏的正是这一类 | 要堵得把判据挪到模型客户端那一侧（`complete()` 被调用了却没有对应的 usage 行）。**判复赛后**：那需要在 client 上挂计数并与库对账，比登记表重得多，而登记表已经把「改了字符串 / 多了一个记账点」这两类挡住了 |
+| 2026-09-01 | P8 | **`maos/obs/__init__.py` 仍是一行 docstring，`trace` 与新增的 `call_sites` 都没有导出** | 不是缺陷，是口径：`maos/obs` 的两个模块现在都靠全路径 import（`from maos.obs import trace as trace_mod` / `from maos.obs.call_sites import ...`）。记在这里只为一件事 —— 后来的人别以为「没导出」是漏了，顺手加一个 `__all__` 反而会把两种 import 写法都留在仓库里 | **不必改**。真要统一的话，等 `maos/obs` 有第三个模块时一次性定口径 |
+
+## task-T49（Agent 输出面：自描述截断 + 失败必须给理由）
+
+本轨修的是 `## task-T51` 的第 6 条（`reviewer.py:83` 裸切）与第 17 条
+（「失败但没说为什么」在类型上合法），两条都已落地并配了用例。下面 3 条是本轨
+新发现、按铁律 4 **不当场改**的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`register_skill` 同名同版本静默覆盖，本轨未做**。`maos/skills/registry.py:39` 的 `SKILL_REGISTRY.setdefault(contract.name, {})[contract.version] = cls` | 与 `## task-T51` 第 10 条同一条，本轨派单 §5.3 把它列为可选项。**未做的原因不是判它不值得，而是 `maos/skills/registry.py` 不在本轨白名单** —— 派单明令不许自行扩白名单 | 一行 `if version in versions: log.warning(...)` 即可，推荐 `warning` 不推荐 `raise`（skill 是 import 注册的，raise 会让一次误 import 掀掉整个进程启动）。**待人类裁决是否扩白名单**，裁决前不动 |
+| 2026-09-01 | P8 | **`docs/agent-identity.md` 记录的是声明行号，于是任何在 `maos/agents/*.py` 上方插代码的改动都会让 `gen_docs.py --check` 变红** | 本轨实测踩了两次：§5.1 在 `reviewer.py` 顶部加了 12 行常量，`ReviewerAgent` 声明位置 33→47；§5.2 在 `base.py` 中段加了 `__post_init__`，`BaseAgent` 位置 103→131。两次都与 `AgentIdentity` 的**字段**毫无关系，但门禁照红。派单 §0.1 也只预警了「动字段会红」这一种 | 不是 bug，是**行号作为标识的固有代价**（同 `## task-T51` 第 24 条那类「读数跟着 sha 走」的问题）。真要治就得让生成器记符号名而不是行号，收益不明显。**记在这里只为一件事**：下一轨看到这个红，别去查自己有没有动字段，直接重跑生成器 |
+| 2026-09-01 | P8 | **`AgentOutput.status` 仍是自由字符串**，`__post_init__` 只对 `failed` / `blocked` 立了理由不变量，**没有校验 status 取值本身** | 拼错成 `AgentOutput(status="faild")` 照旧构造成功，且**绕过本轨刚立的不变量** —— 它既不等于 `failed` 也不等于 `blocked`，两条 if 都不命中。实跑核实过下游：`on_task_result` 的分支是 `ok` / `blocked` / `else: # failed`（`maos/core/control_plane.py:365`），拼错的值落进最后那个兜底档，`last_error=p.get("error")` 取到 `None` —— **任务判 FAILED 而库里的 `last_error` 是空的**，正是本轨要堵的那个形状换了个入口进来 | 本轨**没做**：加 status 白名单是一条独立的收严，会波及全仓 55 处构造点与事件契约面的 status 取值口径，超出派单范围（铁律 4）。做的话应与 `maos/contracts/events.py` 里 TaskResult 的 status 口径一起定，那是冻结面，**必须先问人类** |
+
+## task-T50（判据与规程 · 失败姿态 + 回归守卫注释）
+
+本轨零逻辑改动，产出是 `docs/failure-posture.md` 与两处回归守卫注释。读面很宽（全仓
+`fail-closed` / `fail-open` 字样 10 处、`except → return 默认值` 分支 39 处），
+下面三条是读到但**按铁律 4 没有当场改**的东西。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **「吞掉型分支必须说明方向」做不成机器判据 —— 判据太粗**。按「`except` 之后紧跟 `return <默认值>`」扫 `maos/`（不含 tests），命中 **39 处**，其中只有 **7 处**在同函数 docstring 或就近注释里出现过方向词（收严/放宽/fail-closed/fail-open/回落/降级/触发/保守/宁可）。7 处分别在 `maos/runtime/gate.py`（1）、`maos/skills/builtin/claim/_common.py`（2）、`maos/tools/sandbox.py`（4） | 39 > 派单 §5.3 定的 20 处门槛，所以**没有**做成测试 —— 硬做会得到一条 32 处红、且大多数是误报的门禁，下一个人只会给它加白名单直到它失效（`docs/refs/cumora-coordination.md` 附录 B #1 那条「恒假警的闸，成本是真的」） | 判据要先收窄再谈门禁。两个可行方向：①只扫**被判定的业务量**（金额、阈值、白名单、权限），把 `_has_column` 这种能力探测和 `_dec` 这种数值转换排除掉；②不扫代码扫**测试** —— 断言每个 fail-closed 分支都有一条名字带方向的用例（`test_*_is_fail_closed` 现有 5 条，形态已经在了）。复赛后做；在那之前 `docs/failure-posture.md` 判据三那份检查单靠人记得用 |
+| 2026-09-01 | P8 | **`task.state` 一个字段同时是调度游标和展示状态**。控制面靠它决定下一步派谁（`dispatch_ready` 挑 PENDING、`claim` 要求 DISPATCHED、`_advance` 看依赖是不是 DONE），房间卡片与演示脚本靠它显示「现在到哪一步了」 | **现在不咬人**，理由是结构性的：单进程、事件总线单线程串行 drain、DAG 串行推进、无第二个 worker、房间与控制面同进程。异步审批 / 多 worker / 房间与控制面跨进程，三者任一成立即变成活 bug —— 展示的那份必然过期，而没有任何东西保证它与调度用的那份一致 | 出处 `docs/refs/cumora-data-model.md` §3 #3（cumora 侧 `seen-boundary.ts:8-15`）。判据全文已写进 `docs/failure-posture.md` 判据二。**现在唯一要做的是不再往这个字段上挂第三种用途**；真要拆是并行化那次改动的一部分（铁律 9 是同一句话在业务状态那一侧的说法）。与上游 `## task-T51` 那条「人工放行不绑定操作人被展示的那一版」是同一个根因的两个面 |
+| 2026-09-01 | P8 | **回归守卫注释这一形态本轮只落了 2 处**，`maos/core/control_plane.py` 的 `on_review_verdict`（四条止损顺序）与 `claim`（幂等键顺序） | `docs/refs/cumora-coordination.md` §3 #6 点名的候选还有一处没挂：`maos/runtime/gate.py` 里四象限 severity 的判定（那处曾经分叉过）。形态缺失的代价是隐性的 —— 不会有人报「这里少一条注释」，只会在某次「顺手简化」之后回归 | 半天以内的事，但**必须由持有那个文件的轨来做**：本轮 T48 正在改 `gate.py`，本轨若同时改会撞车（这也是本轨判「零逻辑改动」的边界之一）。留给 T48 之后的任意一轨，或复赛后统一补。判据是「下一个想动它的人会先停一下」，不是「有注释」 |
+
+## task-T52（文档引用守卫转绿 · 外部引用与工作区无关性）
+
+以下五条都在**本轨白名单外**，或需要先拍板口径，一条都没有当场改（铁律 4）。
+第 1 条是本轨最大的一笔欠账：它是把「文档守卫」从「永远红」拉到「阻断类全绿」时
+被显式分出去的那一档，不是被消失掉的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | 🔴 **113 条排版欠账（提示类）**。`scripts/check_docs.py` 现在把判据分成阻断类与提示类，主判据只钉阻断类；当前提示类共 113 条：`A-lang` 82（代码围栏没写语言标注）、`C-dup` 30（同级标题锚点重名）、`C-h1` 1（第二个 H1）。按文件：`docs/matrix-room-runbook.md` 18、`docs/hiclaw-probe.md` 18、`docs/EXECUTION.md` 11+23、`docs/demo-script.md` 14、`docs/clone-smoke-report.md` 9、`docs/gateway-rationale.md` 7、`README.md` 4、`docs/ppt-outline.md` 2+1、`docs/authoritative-facts.md` 2、`REVIEW.md` / `CONTRIBUTING.md` / `CLAUDE.md` / `docs/submission-checklist.md` 各 1 | 不影响文档说的话是否为真，所以不该拦住阻断类的判据；但放着不管就是 113 条永远不会被清的账。`--all-blocking` 一开就能看到完整清单 | **归各文档的持有轨**，各清各的（`docs/demo-script.md` / `ppt-outline.md` / `submission-checklist.md` 三份归 T53）。`C-dup` 那 30 条要当心：`docs/EXECUTION.md` 里 `### 目标 / 步骤 / 验收 / 提交` 是每个 Phase 重复一遍的**有意结构**，改名会动到别处按标题引它的地方 —— 更可能的结论是把 `C-dup` 从判据里摘掉，而不是改文档 |
+| 2026-09-01 | P8 | **cumora 六份解析里对外部仓 `.ts` 文件的引用没有统一前缀**。本轨给 46 处 `.md` 外部引用加了 `cumora:` 前缀，但同样指向外部仓的 `engine.ts:1323`、`cli.ts:2188-2222`、`daemon.ts:54`、`seen-boundary.ts:8-15` 等仍是裸写 | 它们不报错**纯属侥幸** —— `PATHREF` 的扩展名表里没有 `.ts`，守卫根本看不见它们。同一份文档里两种外部引用长得不一样，下一个读的人会以为 `.ts` 那批是本仓文件 | 归下一轮碰 `docs/refs/cumora-*.md` 的轨。本轨只动派单 §5.2 划定的那 46 处 `.md`，没有顺手扩面 |
+| 2026-09-01 | P8 | **`docs/DECISIONS.md:1457` 正文里裸提 `COORDINATION.md`**（不在反引号里，守卫看不见），指的同样是 cumora 仓那份 | 与上一条同源：外部引用的写法在本仓还没有统一。这一条守卫永远抓不到，只能靠人 | `docs/DECISIONS.md` 是共享账本，不属任何一轨独占。归日后统一外部引用写法的那一次 |
+| 2026-09-01 | P8 | **`PATHREF` 的扩展名表不含 `.png` / `.ts` / `.jpg` / `.svg`**，只认 `py/md/json/toml/sh/ya?ml/ini/cfg/lock/txt/Dockerfile` | 后果是双向的：`evidence/room/*.png` 这类引用**不会被误判红**（这正是本轮要的），但也**守不住**它们断链。真要守证据截图的引用，得先决定 `evidence/` 的口径（那批文件由脚本重生成，行号/存在性的语义和源码不同） | 想守证据引用时再做。**别顺手扩表** —— 扩表会立刻把一批现存引用判红，而它们分散在多轨手里 |
+| 2026-09-01 | P8 | **`ALLOW_MISSING` 里有两条已成冗余**：`maos/skills/builtin/probe_autodiscovery_tmp.py` 与 `maos/skills/builtin/_private_probe.py` 都写在 `.gitignore` 里，被「git 忽略即出射程」这条新规则天然覆盖，豁免再也不会被用到 | 无功能影响，但 `test_allow_missing_has_no_dead_entries` 只查「被豁免的文件是不是已经建出来了」，查不出「这条豁免已经被另一条规则接管」。清单会慢慢积压这种看不见的死条目 | 归下一轮碰这个脚本的轨。删之前要确认 `.gitignore` 里那两行还在（它们是有意写死的两个确切文件名，不是通配） |
+
+## task-T53（答辩自伤口径根治 · 白名单外的命中）
+
+本轨把「真房间未接通」这个**已被本仓自己的证据推翻**的口径，从
+`docs/submission-checklist.md` / `docs/ppt-outline.md` / `docs/demo-script.md`
+三份文档里全量根治。下面是**白名单外**的命中，一处都没改（铁律 4）。
+
+🔴 **第 1 条是本节唯一的高优先级项** —— 它在评委真正会打开的那份制品里。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | 🔴 **已导出的 PPT 制品里有 5 处旧房间口径，其中一处是三重错误**。`artifacts/maos-复赛方案.html`：`:517` 状态标签「代码就绪／真房间未接通」、`:541`「**真房间未接通。Synapse 账号需人类手工注册。matrix-nio 未安装**」、`:549` slot「房间实拍：待 T4 回填」、`:1027` A-4 表「真房间待接通」、`:1114`「失败与缺口没有删：……真房间未接通……」 | **这是评委真正会打开的东西**，比三份 Markdown 严重一个量级。`:541` 那句三个分句**逐条被实测证伪**：房间已接通；三个 Matrix 账号全部由 `register_new_matrix_user` 脚本注册、**没有一步需要人类点 GUI**（`docs/agentteams-mapping.md:64-66` 明写上一版那个前提是错的）；matrix-nio 0.26.0 装在 `~/.maos-matrix/venv/`，**只有系统 `python3` 没装**（漏了主语）。`:1114` 尤其伤 —— 它把一句错的自曝当成「我们很诚实」的例证 | **收尾轨，且优先级高于本节其余各条。** 改 `:549` 那个 slot 时按 `docs/ppt-outline.md` 的「留给整合轮的一件事」执行：填 `evidence/room/01-approval-card.png`，base64 内联不外链 |
+| 2026-09-01 | P8 | **`artifacts/README.md` 两处同源旧口径**：`:68`「房间实拍：待 T4 回填」、`:89`「同时改 P6 与 P13 的口径。当前两页写的都是『真房间待接通』」 | 它是上一条那份 HTML 的回填手册。手册不改，回填的人照着做还是会写回旧口径 | **与上一条同轨同时改**，两者必须一起动，单改一边会再次分叉 |
+| 2026-09-01 | P8 | **`docs/agentteams-mapping.md:89-92` 的注记已反向过期**。那段写着「`docs/submission-checklist.md` §A-4 那一行仍写着『真房间待接通』+ 复核结论『真房间未接通』——**该行已过期**，本轮只读不改，已记 `## task-T4`」 | 该行**已由本轨 T53 修好**。注记留着，会让下一个读 mapping 的人以为 §A-4 还是旧的，进而去「修」一个已经对的地方 | **收尾轨**：删掉那段注记，或改成「已由 T53 修正」。`docs/agentteams-mapping.md` 不在本轨可改面内 |
+| 2026-09-01 | P8 | **三份文档的 pytest 条数家族全面过期**。实测 `36bd036` 上是 **1370 passed, 39 skipped**，而三份文档里散着 `1069` / `802`（7 处）/ `749`（7 处）/ `703`（8 处）/ `645`（5 处）/ `596`（3 处）等至少 15 个不同的历史值 | 台上任何一个数字被评委当场复现打脸，整份材料的可信度一起塌。但**现在刷没有意义** —— T47 / T48 / T49 / T50 / T52 五轨仍在加测试与判据，六轨并轨后还得再刷一遍 | **收尾轨，且必须是并轨之后的最后一步。** 判据：以 `python3 -m pytest maos/tests -q` 的当场输出为唯一真值，三份文档 + `README.md` + `docs/EXECUTION.md` + `artifacts/**` + `scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG` 一次刷齐 |
+| 2026-09-01 | P8 | **`docs/submission-checklist.md` 内部对 `verify.py` 的读数自相矛盾**：`:34` 与 `:267` 写「`verify.py` → **8/8 PASS**」，而 `:123` / `:246` / `:474` / `:502` 写「**7/7 PASS**」 | 两个数指的很可能不是一回事（八束证据 vs 七项核验），但同一份自查清单里并排出现、都不带限定语，被追问「到底几项」时答不上来。**本轨未实跑核实**（`verify.py` 需先有 `evidence/scenario-*/maos.db`，跑它会把 `evidence/` 跑脏，超出本轨零改动范围） | **收尾轨**：跑一次 `make_evidence.py` + `verify.py`，按当场输出统一措辞，把「几束证据」与「七项核验」两个读数分开写 |
+| 2026-09-01 | P8 | **`04-reject-compensation.png` 文件名名不副实，改名要一起动三处**。`evidence/room/README.md` 自己划了边界：房间里拍不到补偿（`CompensationExecuted` 只落 `event_log`、从不 publish），这张图证明的是「驳回生效 + Plan 落 FAILED」 | 文件名比它能证明的东西大，是最容易被追问穿的一处。已记 `## task-T4`，至今未做 | **收尾轨或复赛后。** 改名要同时动 `docs/EXECUTION.md:499/502` 与 `evidence/room/README.md` 三处；**本轨的处置是不改名、改口径** —— 三份文档里凡提到这张图的地方都已写明它证明不了补偿 |
+
+## integrate-p8-t47-t53（七轨整合轮）
+
+本轮只做合并与收口，不做手册范围外的改动。下面是合并态下**已消解**与**仍留账**的条目。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | ✅ **已消解**：`## task-T48` 第 1 条记的 `EXPECT_TESTS_NOPG=1370` 过期。合并态实测 **1456 passed / 39 skipped**，本轮已刷新为 1456 并同步了上面那行历史实测注释 | 录制门禁第 1 步在合并态重新判得准 | 已处理 |
+| 2026-09-01 | P8 | **三份文档的 pytest 条数家族再次全面过期**（`## task-T51` 已记过一次，分母从 1370 变成 1456，那条的具体数字随之作废） | 交付面读数不准；`docs/submission-checklist.md` / `docs/ppt-outline.md` / `docs/demo-script.md` 里散落的 `1069` / `1370` 等数都要重刷 | 下一轮交付面口径轮统一刷，别一轨一轨改 —— 分母每合一轮就变一次 |
+| 2026-09-01 | P8 | **主工作区（仓库根）留着另一会话的 MCP 集成在制品 83 处未提交**，其中 `scripts/check_docs.py` / `maos/tests/test_docs_guard.py` 是 8-31 的 untracked 旧版，与 T52 合入 git 的新版同名不同内容 | `integrate/p8-t47-t53` 快进回 `goai-restructure` 时会被这两个 untracked 文件挡住 | MCP 轨收工提交后，由人类决定用哪一版（T52 版已带 +211 行演进与 318 行测试） |
+
+## task-T54（失败调用留账 + usage 两家口径）
+
+本轨修的是 `## task-T51` 折账的第 7、18 两条，两条都已落地并配了变异检验
+（M1 撤掉 `ask()` 的失败记账 / M2 把失败改回编 0 token 写进 `model_usage` /
+M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）。
+下面是动手过程中撞到、按铁律 4 **不当场改**的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P8 | **`GatewayModelClient` 仍然零重试**（`## task-T51` 折账第 19 条，本轨没动）。现在失败**留痕了**，但一次网络抖动照旧等于一个任务 failed | 留痕让「演示当天为什么这个任务红了」查得到，但没有减少它红的概率。两件事要分开做 | 下一轨。重试要跟本轨的失败表配套 —— 每次重试各落一行，否则「重试了 3 次」在账上看起来像「失败了 3 个不同的调用」 |
+| 2026-09-01 | P8 | **`estimated` 仍是一个字段扛两种语义**（折账第 20 条）。本轨给失败面新增了 `usage_detail.dialect`，其中 `dialect="unknown"` 恰好就是第 20 条说的第三种情况（真模型、真调用、但网关没回可识别的 usage） | 现在这个信息只在 `ModelResponse.meta` 里，**没有落库** —— 库里那行仍然是 `estimated=0` 且 `tokens_in=0`，读库的人分不出「真的没花」和「没读懂它回了什么」 | 与第 20 条一起做。落库要新增表（`model_usage` 是冻结面），或者接受只在日志里可见 |
+| 2026-09-01 | P8 | **失败表没有 `attempt` 列，重试语义上无法归并**。`model_call_failure` 认得到 task_id，但同一个 task 的第 2 次尝试与第 1 次在表上长得一样 | 现在没有重试，所以还看不出来；上一条那个重试一旦做了，这张表立刻需要它 | 做重试的那一轨顺手加（新增列在新表上不违铁律 1 —— 冻结的是**现有**表结构，但要在同一轨里改完，不要留半张表） |
+| 2026-09-01 | P8 | **`record_model_failure` 不做二次脱敏**，依赖 `model/client.py::_scrub` 在上游把 key 抹干净 | 判断是对的（该修的是产生它的那一处），但这条依赖**没有测试守着**：`_scrub` 哪天漏一条路径，密钥会经由 `error_msg` 落进库、再进 evidence | 与铁律 6 的哨兵机制合并做：证据束落盘时已有反查，但**库**没有。加一条守卫扫 `model_call_failure.error_msg` |
+
 ## task-mcp（接 `git-mcp` 时发现，本轮都不改）
 
 2026-09-01 落地第一个 MCP 工具时发现的三条。前两条是**刻意不迁**的理由，

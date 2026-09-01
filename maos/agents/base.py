@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from maos.core.store import record_model_usage
+from maos.core.store import record_model_failure, record_model_usage
 from maos.model.client import ModelClient, Tier
 from maos.skills.invoker import SkillInvoker
 
@@ -95,6 +95,34 @@ class AgentOutput:
     error: str | None = None
     metrics: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """失败必须给理由 —— 从「可能」变成「不可能」（T49 §5.2）。
+
+        ``AgentOutput(status="failed")`` 不带 ``error`` 原先是**合法构造**：
+        类型上完全成立，下游拿到的却是一个「失败了但没说为什么」的结果，
+        审计链就断在这里 —— 事后没人答得上这次为什么没成。
+
+        ``ReviewerAgent._needs_human`` 的 docstring 早就守着同一条（「产出空白
+        意见书会让下游以为『审过了、没问题』」），但那是**一个 Agent 的自觉**，
+        管不到另外几十个构造点。立在 dataclass 上才对全仓生效。
+
+        参照 cumora 的工具协议（``docs/refs/cumora-turn-loop.md`` §3 #2）：
+        ``reason`` 是必填字段，缺了直接判 invalid，理由写得很直白 ——
+        reason is required so the runtime can audit why the turn stopped。
+
+        ``blocked`` 收 ``open_questions`` **或** ``error``：它有两种正当形态 ——
+        「有问题要问人」和「被挡住了」，两者都算说明了为什么停。
+        """
+        if self.status == "failed" and not (self.error or "").strip():
+            raise ValueError(
+                "AgentOutput(status='failed') 必须带 error 说明为什么失败 —— "
+                "失败而不给理由会让审计链断在这里，事后没人答得上这次为什么没成。")
+        if self.status == "blocked" and not (
+                self.open_questions or (self.error or "").strip()):
+            raise ValueError(
+                "AgentOutput(status='blocked') 必须带 open_questions 或 error —— "
+                "说明是「有问题要问人」还是「被挡住了」，光说停了等于没说。")
+
 
 class PermissionDenied(Exception):
     """Agent 越权。不要 catch，这是安全事件，应当中止并记录。"""
@@ -155,12 +183,28 @@ class BaseAgent(ABC):
         接住整个 ``ModelResponse`` 而不是直接 ``.text``：``tokens_in`` / ``tokens_out``
         原先在这一行被丢掉，全仓因此没有一处成本口径。返回值形状不变，调用方零改动。
 
-        抛异常的调用**不落行**：网关没给回用量，编一行 0 token 只会让「调用失败」
-        伪装成「这次很便宜」。失败本身已经由上层的 AgentOutput / 事件链记着。
+        抛异常的调用**不往 ``model_usage`` 落行**：网关没给回用量，编一行 0 token
+        只会让「调用失败」伪装成「这次很便宜」。但它也不再是无声的（T54）——
+        失败落进 ``model_call_failure``（一张不谈 token 的表），异常原样往上抛，
+        上层的 AgentOutput / 事件链照旧。两张表加起来才是「这次跑了几次模型」。
         """
         started = time.perf_counter()
-        resp = self.model.complete(system=system, user=user, tier=self.identity.model_tier)
         attribution = _ATTRIBUTION.get()
+        try:
+            resp = self.model.complete(system=system, user=user,
+                                       tier=self.identity.model_tier)
+        except Exception as exc:
+            record_model_failure(
+                getattr(self.skills, "store", None), exc,
+                agent_role=self.identity.role, call_site=CALL_SITE_ASK,
+                tier=self.identity.model_tier,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                model=getattr(self.model, "model", "") or "",
+                trace_id=attribution.get("trace_id", ""),
+                plan_id=attribution.get("plan_id", ""),
+                task_id=attribution.get("task_id"),
+            )
+            raise
         record_model_usage(
             getattr(self.skills, "store", None), resp,
             client=self.model, agent_role=self.identity.role,

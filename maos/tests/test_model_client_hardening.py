@@ -21,9 +21,20 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
-from maos.model.client import GatewayModelClient, HigressModelClient, ModelClient
+from maos.model.client import (
+    ENV_API_KEY,
+    ENV_BASE_URL,
+    ENV_MODEL,
+    GatewayModelClient,
+    HigressModelClient,
+    ModelClient,
+    ScriptedModelClient,
+    select_model_client,
+)
 
 # 一眼能认出来的哨兵。真出现在输出里，grep 得到。
 CANARY = "sk-LEAK-CANARY-0123456789"
@@ -105,3 +116,88 @@ def test_higress_error_text_has_no_key():
     with pytest.raises(NotImplementedError) as exc:
         client.complete(system="s", user="u", tier="strong")
     assert CANARY not in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# T47 · 静默降级要留痕（真模型 -> Scripted）
+#
+# 上面几条守的是「key 不许漏出去」。这几条守的是另一件事：**降级不许安静**。
+#
+# ``select_model_client`` 三个环境变量缺任一个就回落 ScriptedModelClient，原先只有
+# 一条 ``log.info``。降级本身是对的（缺 key 时不该去打网络），坏的是它没有声音 ——
+# 「以为在跑真模型、其实在跑假模型」不会有任何显眼提示，而这一跑的成本读数、
+# 延迟、模型行为结论全部作废。复赛现场 key 配错，「真模型跑通了」就是假结论。
+#
+# 所以两条判据分开钉：
+#   ① 级别是 WARNING，且正文说得出**后果**（不是只说「降级了」）；
+#   ② 正文里不许出现任何变量的**值**（铁律 6）—— 这条是机器判据，比人眼复核可靠。
+# ---------------------------------------------------------------------------
+ENV_TRIPLE = (ENV_BASE_URL, ENV_API_KEY, ENV_MODEL)
+
+# 后果那半句必须点到的东西。措辞可以改，「读完知道哪些结论作废」这件事不许丢。
+_CONSEQUENCE_WORDS = ("不成立", "成本", "脚本回放")
+
+
+def _all_missing(monkeypatch):
+    for name in ENV_TRIPLE:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_degradation_is_a_warning_not_an_info(monkeypatch, caplog):
+    """三个变量都不配时，降级必须是 WARNING。
+
+    INFO 在演示现场是看不见的 —— ``run.py`` 一屏几十行 INFO，多一条不多。真正要防的
+    不是「没记录」，是「记录了但没人会注意到」。
+    """
+    _all_missing(monkeypatch)
+    with caplog.at_level(logging.INFO, logger="maos.model"):
+        client = select_model_client()
+
+    assert isinstance(client, ScriptedModelClient), "缺变量还去构造真客户端就是打网络"
+    degraded = [r for r in caplog.records if "ScriptedModelClient" in r.getMessage()]
+    assert len(degraded) == 1, [r.getMessage() for r in caplog.records]
+    assert degraded[0].levelno == logging.WARNING, \
+        f"降级记在了 {degraded[0].levelname}，INFO 级的降级等于没说"
+
+
+def test_degradation_warning_spells_out_the_consequences(monkeypatch, caplog):
+    """正文得让人读完知道**这一跑的哪些结论作废**，不是只说「降级了」。
+
+    只说「降级了」，读日志的人还要自己推后果；写明后果，他一眼知道接下来哪些
+    结论不能信。这条判的就是那半句在不在。
+    """
+    _all_missing(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="maos.model"):
+        select_model_client()
+
+    text = caplog.text
+    for word in _CONSEQUENCE_WORDS:
+        assert word in text, f"降级告警没说到「{word}」这层后果：{text}"
+    for name in ENV_TRIPLE:
+        assert name in text, f"没点名缺的是哪个变量（{name}），现场没法照着补：{text}"
+
+
+@pytest.mark.parametrize("absent", ENV_TRIPLE)
+def test_degradation_warning_never_echoes_any_value(monkeypatch, caplog, absent):
+    """铁律 6 的机器判据：告警里只许出现**变量名**，一个值都不许有。
+
+    改的正是那条打日志的路径，而 ``env`` 这个 dict 就在手边 —— 把它顺手带进
+    格式化参数是最容易的手滑，且手滑之后 base_url 与 key 会一起进日志、进证据。
+    所以三个变量各设一个一眼能认的哨兵，逐个缺一个跑一遍，断言哨兵不在文本里。
+    """
+    sentinels = {name: f"{CANARY}-{name}" for name in ENV_TRIPLE}
+    for name, value in sentinels.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv(absent, raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="maos.model"):
+        client = select_model_client()
+
+    assert isinstance(client, ScriptedModelClient), "缺一个也得降级，不许拿两个去凑"
+    text = caplog.text
+    assert absent in text, "缺的那个变量名要点出来"
+    for name, value in sentinels.items():
+        if name == absent:
+            continue
+        assert value not in text, f"{name} 的**值**漏进了日志：{text}"
+    assert CANARY not in text

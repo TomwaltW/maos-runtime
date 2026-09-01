@@ -32,12 +32,33 @@
 
 所以 `test_allowlists_*` 反过来查这份清单本身：每条都要有理由，且**每条都必须
 当前真的在起作用**。
+
+## 判决必须与 checkout 无关（`test_guard_scope_*` / `test_git_ignored_*`）
+
+2026-09-01 的实测：同一个 commit、同一份脚本，在主仓跑报 46 条、在 worktree 里跑报
+74 条。28 条差额全部来自 `review/`（编排面，走 `.git/info/exclude`，只存在于主仓的
+文件系统里）。**一个在不同 checkout 里给不同判决的守卫不是守卫** —— 它报出来的每一条
+都要先问一句「你是在哪儿跑的」，等于没有判决。
+
+于是射程按 git 划：在册面取 `git ls-files --cached --others --exclude-standard`，
+被 git 忽略的路径整个不在射程内。下面几条钉的就是这条口径，且**必须在主仓和任一
+worktree 里都绿**。
+
+## 提示类不进主判据（`SEVERITY`）
+
+主判据只钉**阻断类**（断链、指不到的锚点、不存在的引用、过期行号、坏掉的结构）。
+排版偏好（围栏语言标注、标题重名、第二个 H1）归提示类，照报照计数，但不让主断言
+变红 —— 两档绑在一起时它从来没绿过，而一条永远红的断言会把真正的断链一起淹掉。
+分档表本身也受查：脚本里能报出来的每个类别都必须在 `SEVERITY` 里显式登记。
 """
 
 from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
+import shutil
+import subprocess
 import sys
 import types
 
@@ -65,13 +86,16 @@ check_docs = _load_script("check_docs")
 # 1. 主判据：仓库当前的 md 必须全过
 # ---------------------------------------------------------------------------
 def test_docs_structure_and_references_are_sound():
-    """`docs/**/*.md` + 仓库根 `*.md` 一条问题都不许有（白名单已扣除）。
+    """`docs/**/*.md` + 仓库根 `*.md` 一条**阻断类**问题都不许有（白名单已扣除）。
 
     红了不要往白名单里加 —— 先读报出来的那一条：它多半是真的。
     白名单只放「有意引用不存在的东西」，且必须写得出理由。
+
+    提示类（排版偏好）不进这条断言，见模块头。它们的欠账记在
+    `docs/BACKLOG.md ## task-T52`，由持有各文档的轨去清。
     """
-    issues = check_docs.run()
-    assert not issues, "文档守卫报出 %d 条：\n%s" % (
+    issues = check_docs.blocking(check_docs.run())
+    assert not issues, "文档守卫报出 %d 条阻断类：\n%s" % (
         len(issues),
         "\n".join(f"  [{k}] {rel}:{n}  {msg}" for rel, k, n, msg in issues[:40]),
     )
@@ -92,6 +116,7 @@ BROKEN_SAMPLES = [
     ("链接指向不存在的文件", "# T\n\n见 [那份文档](./nope-not-here.md)。\n", "D-link"),
     ("锚点指不到标题", "# T\n\n见 [下一节](#根本没有这一节)。\n", "D-anchor"),
     ("引用的路径不存在", "# T\n\n见 `maos/core/nope_not_here.py`。\n", "E-missing"),
+    ("外部仓引用写坏了", "# T\n\n见 `cumora:docs/COORDINATION`。\n", "E-extref"),
     ("行号超出文件长度", "# T\n\n见 `maos/main.py:999999`。\n", "E-line"),
     ("文件末尾无换行", "# T\n\n正文", "F-eof"),
     ("行尾空格", "# T\n\n正文有空格   \n", "F-trail"),
@@ -119,6 +144,8 @@ def test_guard_passes_a_clean_doc(tmp_path):
     doc = tmp_path / "clean.md"
     doc.write_text(
         "# 标题\n\n## 一节\n\n正文，引用 `maos/main.py:1` 与 `maos/core/store.py`。\n\n"
+        "外部仓写 `cumora:docs/COORDINATION.md:31-33`，散文简写写 `scenario_5/6.py`，\n"
+        "cumora 自己的事件命名空间写 `cumora:nudge:<convoId>`，三者都不该报。\n\n"
         "```python\nx = 1\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
         encoding="utf-8",
     )
@@ -187,3 +214,105 @@ def test_guard_never_reads_protected_files():
             assert check_docs.line_count(rel) == -1, (
                 f"{rel} 属受保护面，line_count 应返回 -1（只判存在性），"
                 f"实际返回了真实行数 —— 说明守卫读了它的内容")
+
+
+# ---------------------------------------------------------------------------
+# 5. 判决与 checkout 无关
+# ---------------------------------------------------------------------------
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None or not (ROOT / ".git").exists(),
+    reason="射程口径由 git 回答；没有 git 时守卫退回文件系统口径，本节判据不适用",
+)
+
+
+@requires_git
+def test_guard_scope_is_exactly_what_git_can_see():
+    """在册面必须**逐字**等于 `git ls-files --cached --others --exclude-standard`。
+
+    这是「判决与 checkout 无关」的地基：只要射程里混进一个 git 管不到的文件，
+    同一份文档在主仓和在 worktree 里就会得到不同判决 —— 而两边的差异
+    （别人的在制品、编排面草稿、构建残渣）跟文档本身对不对毫无关系。
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=ROOT, capture_output=True, check=True,
+    ).stdout.decode("utf-8")
+    expected = {p for p in out.split("\0") if p}
+    assert check_docs.universe() == expected
+
+
+#: 被 git 忽略的采样路径。挑这两条是因为它们**在两种 checkout 里的磁盘状态不同**，
+#: 而正确的判决必须一样：
+#:   - `docs/superpowers/plans/**` 由**被跟踪的** `.gitignore` 挡掉（新克隆也一样），
+#:     主仓里可能真有这个文件、worktree 里一定没有；
+#:   - `.worktrees/**` 同样由 `.gitignore` 挡掉，只在主仓的文件系统里存在。
+#: 两条都不许因为「磁盘上有」就被守卫看见。
+IGNORED_SAMPLES = [
+    "docs/superpowers/plans/parallel-build-plan.md",
+    ".worktrees/probe/README.md",
+]
+
+
+@requires_git
+@pytest.mark.parametrize("rel", IGNORED_SAMPLES)
+def test_git_ignored_paths_are_out_of_scope(rel):
+    """被 git 忽略 = 按设计进不了版本库 = 不归守卫管，且**与磁盘上有没有无关**。"""
+    assert check_docs.out_of_scope(rel), f"{rel} 应判为不在射程内"
+    assert check_docs.resolve(rel) is None, (
+        f"{rel} 被 git 忽略，却仍被解析成了在册路径 —— 说明射程漏到文件系统上去了")
+
+
+@requires_git
+def test_a_doc_citing_an_ignored_path_is_not_flagged(tmp_path):
+    """端到端：引用一条被忽略的路径，守卫一条都不该报。
+
+    这正是 2026-09-01 那 28 条差额的形状 —— 编排面文件（`review/**`、gitignored 的
+    操作剧本）只在主仓的文件系统里有，在任何 worktree 里都没有。
+    """
+    doc = tmp_path / "cites-ignored.md"
+    doc.write_text(
+        "# T\n\n任务定义的原始出处是 "
+        "`docs/superpowers/plans/parallel-build-plan.md`（gitignored 操作剧本）。\n",
+        encoding="utf-8",
+    )
+    assert check_docs.check(str(doc)) == []
+
+
+# ---------------------------------------------------------------------------
+# 6. 分档表自己也受查
+# ---------------------------------------------------------------------------
+#: 脚本里真正能报出来的类别，从源码里扒 —— 比手抄一份清单可靠：
+#: 新加一类判据却忘了分档时，这里会立刻发现。
+EMITTED_KINDS = set(re.findall(
+    r'issues\.append\(\(\s*"([A-Za-z]-[\w\-]+)"',
+    (ROOT / "scripts" / "check_docs.py").read_text(encoding="utf-8"),
+))
+
+
+def test_every_kind_the_guard_can_emit_is_classified():
+    """能报出来的每个类别都必须在 `SEVERITY` 里显式登记。
+
+    不登记也不会静默变松（缺省是阻断），但会**静默地变严** —— 新判据一上来就把
+    主判据顶红，而没人记得它是哪一档。分档是要有人拍板的，不是默认出来的。
+    """
+    assert EMITTED_KINDS, "没从脚本里扒到任何类别 —— 正则跟脚本写法漂了"
+    unclassified = sorted(EMITTED_KINDS - set(check_docs.SEVERITY))
+    assert not unclassified, f"这些类别没在 SEVERITY 里分档：{unclassified}"
+
+
+def test_severity_defaults_to_blocking():
+    """没登记的类别按阻断处理（fail-closed）。
+
+    反过来（缺省提示）意味着「忘了登记」= 「悄悄不管了」，那是守卫最坏的坏法。
+    """
+    assert check_docs.severity("Z-brand-new-kind") == "blocking"
+
+
+def test_advisory_kinds_never_reach_the_main_verdict():
+    """`blocking()` 必须真的把提示类滤掉，且不动阻断类的顺序与内容。"""
+    sample = [
+        ("a.md", "E-missing", 1, "x"),
+        ("a.md", "A-lang", 2, "y"),
+        ("b.md", "D-link", 3, "z"),
+    ]
+    assert check_docs.blocking(sample) == [sample[0], sample[2]]

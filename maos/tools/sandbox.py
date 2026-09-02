@@ -52,6 +52,7 @@ from xml.etree import ElementTree
 
 from maos.config import get_config_source
 
+from maos.tools.paths import PROTECTED_SEGMENTS, _path_segments, unquote_c_style
 from maos.tools.port import ToolPort
 
 log = logging.getLogger("maos.tools.sandbox")
@@ -318,14 +319,13 @@ def _diff_targets(diff: str) -> list[str]:
     `\\t` 切分排在解码**之前**：diff 头里跟在路径后面的时间戳是真 tab 分隔的，
     而路径自身的 tab 在 C-quoted 里是 `\\t` 两个字符，切不到。
     """
-    unquote = _unquote_c_style()
     targets: list[str] = []
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             parts = line.split()
-            targets.extend(_strip_ab(unquote(p)) for p in parts[2:4])
+            targets.extend(_strip_ab(unquote_c_style(p)) for p in parts[2:4])
         elif line.startswith(("--- ", "+++ ")):
-            raw = unquote(line[4:].strip().split("\t")[0])
+            raw = unquote_c_style(line[4:].strip().split("\t")[0])
             if raw and raw != "/dev/null":
                 targets.append(_strip_ab(raw))
     return [t for t in targets if t]
@@ -370,44 +370,27 @@ def _numstat_targets(base: str, cmd: list[str],
     return targets
 
 
-def _protected_path_rules():
-    """取受保护路径的判定件 —— 复用 code_repo_patch 那一处，不在这里抄第二份。
-
-    抄一份到 tools 层，两处一定会漂，而漂的那次没人会发现，直到有人靠改测试
-    让测试通过。`_path_segments` 带下划线仍然直接引：它做的四件归一（反斜杠、
-    ./..、前导斜杠、casefold）每一件不做都是一个绕过口，重写一遍的风险远大于
-    跨模块引一个私有名。
-
-    **必须延迟到函数里 import**：tools 层在 skills 层下面，模块级 import 会成环 ——
-    maos.tools.sandbox → skills.builtin.code_repo_patch → 触发 builtin/__init__ 的
-    discover() → import test_verify → 回到还没定义完的 maos.tools.sandbox，
-    在 PYTEST_RUN_PORT 上炸 ImportError。放进函数里，环在调用时才闭合，
-    那时两边都已装载完。常量该不该下沉到 tools 层是另一回事，已记 BACKLOG。
-    """
-    from maos.skills.builtin.code_repo_patch import PROTECTED_SEGMENTS, _path_segments
-    return PROTECTED_SEGMENTS, _path_segments
-
-
-def _unquote_c_style():
-    """取 C-quoted 解引号函数 —— 同样只留 code_repo_patch 那一处，理由见上。
-
-    延迟 import 的原因与 `_protected_path_rules` 完全相同（模块级会成环）。
-    """
-    from maos.skills.builtin.code_repo_patch import unquote_c_style
-    return unquote_c_style
-
-
 def _check_path(candidate: str, base: str) -> dict[str, Any] | None:
-    """三条校验，命中任一条返回结构化错误；全过返回 None。"""
-    protected_segments, path_segments = _protected_path_rules()
-    segments = path_segments(candidate)
+    """三条校验，命中任一条返回结构化错误；全过返回 None。
+
+    判定件（`PROTECTED_SEGMENTS` / `_path_segments` / `unquote_c_style`）在文件顶部
+    **模块级** import，取自 `maos/tools/paths.py` —— 全仓唯一一处，skills 层
+    (`code_repo_patch`) 从同一处取。抄第二份，两处一定会漂，而漂的那次没人会发现，
+    直到有人靠改测试让测试通过。
+
+    这三个名字曾经定义在 skills 层，tools 反向 import 上层会成环，只能延迟到函数里
+    import 绕过去。判定下沉到 tools 层之后依赖方向摆正了（tools 不再 import skills），
+    环从根上没有了，所以这里是普通的模块级 import，**不要**再改回函数内延迟 import。
+    `_path_segments` 带下划线仍然直接引：它是跨层公共件，改名不产生任何价值。
+    """
+    segments = _path_segments(candidate)
     if not segments:
         return _error("path_check", candidate, None, "补丁路径为空或无法解析")
 
-    # 1) 受保护目录：复用 code_repo_patch 的 PROTECTED_SEGMENTS，分段相等。
+    # 1) 受保护目录：取 maos/tools/paths.py 的 PROTECTED_SEGMENTS，分段相等。
     #    清单里存的是**裸目录名**，不带斜杠 —— 写成 "tests/" 在分段相等下
     #    永远匹配不上，不报错只放行，那正是上一轮修掉的失效形态。
-    hit = protected_segments.intersection(segments)
+    hit = PROTECTED_SEGMENTS.intersection(segments)
     if hit:
         return _error("path_check", candidate, None,
                       f"触碰受保护目录 {sorted(hit)}：路径按 / 分段后任一段命中即拒")
@@ -426,7 +409,7 @@ def _check_path(candidate: str, base: str) -> dict[str, Any] | None:
     #    这里必须拿**解码后**的路径去 join：`"a/\056\056/x"` 的字面量拼进 base 只是
     #    一个名字古怪的子路径，落不出去；git 解码出的 `../x` 才是真会写的位置。
     #    第 1、2 条经由 _path_segments 已各自解过码，只有这条是自己 join 的。
-    target = os.path.realpath(os.path.join(base, _unquote_c_style()(candidate)))
+    target = os.path.realpath(os.path.join(base, unquote_c_style(candidate)))
     if target != base and not target.startswith(base + os.sep):
         return _error("path_escape", candidate, None,
                       f"补丁路径规范化后落在 workdir 之外: {target}")

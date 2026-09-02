@@ -157,7 +157,6 @@ ALLOW_MISSING: dict[str, str] = {
     # —— 手册/账本里写的是**待建**文件，不是现状 ——
     "obs/otel.py": "docs/EXECUTION.md 是执行手册，写的是 Phase 6 待建的可观测后端",
     "maos/obs/otel.py": "同上，EXECUTION.md 的待建文件",
-    "maos/tools/paths.py": "BACKLOG 提议的下沉落点，尚未建",
     "maos/domain/_sql.py":
         "同类：docs/BACKLOG.md 里 claim/refund 两域 SQL 样板去重那一条提议的下沉落点，"
         "原文是「它就该下沉成 … 这样的基础设施」，属待建，且明写「上第三个域之前再决定」",

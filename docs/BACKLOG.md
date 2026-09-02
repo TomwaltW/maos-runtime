@@ -1639,3 +1639,35 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T83（受保护路径判定下沉，2026-09-02）
+
+本节记的是**了结**与**没做的边界**，不是新欠账。
+
+### 折账：`## task-B` 第 1 条（依赖方向反了）—— 本轨了结
+
+2026-08-28 记的那条「`PROTECTED_SEGMENTS` / `_path_segments` 住在 skills 层，
+tools 层要用只能延迟 import 绕环」已做完，了结到这个程度：
+
+- 判定**只剩一处**：`maos/tools/paths.py`。`PROTECTED_SEGMENTS`、`unquote_c_style`、
+  `_path_segments` 三个名字全在那里，skills 与 tools 都从那里取。
+- **环已消**：`maos/tools/sandbox.py` 不再 import `maos.skills` 的任何东西，
+  改成文件顶部的模块级 import。原先那两个函数内延迟 import 的壳
+  （`_protected_path_rules` / `_unquote_c_style`）**已删**，不是留着不用。
+- **没留第二个入口**：`code_repo_patch.py` 不转出这些名字，只 import 用。
+  `maos/tests/test_protected_paths_single_source.py` 扫全仓源码，
+  `PROTECTED_SEGMENTS` 的赋值出现第二次就红。
+
+### 本轨**没碰** `scripts/guard_bash.py` —— 那是另一套东西
+
+`scripts/guard_bash.py` 里也有一份「受保护路径」，名字像，但它是 **Bash 侧守卫**：
+挡的是会话自己去改冻结契约面（`contracts/**`、`store.py`、`artifacts.py`、
+`.contracts.lock` 等），判据、清单、触发时机与本轨这套**补丁路径判定**（挡的是
+模型产出的补丁写进 `infra` / `.github` / `secrets` / `tests`）没有一处重叠。
+
+**所以「受保护路径判定已经全仓统一到一处」是错的** —— 统一的只是补丁路径那一套。
+这两套本来就该分开：一个管人/会话，一个管模型产出，合并只会让两边的清单互相污染。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | `maos/tests/test_sandbox_isolation.py:199` / `:233` 的注释仍写「复用 code_repo_patch 的 `PROTECTED_SEGMENTS`」，判定已搬到 `maos/tools/paths.py` | 只是注释，不影响判定；但下一个照注释去 `code_repo_patch` 找定义的人会扑空 | 该文件不在本轨白名单（铁律 4，没当场改）。谁下次动那个文件顺手改掉即可 |

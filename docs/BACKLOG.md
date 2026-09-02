@@ -1639,3 +1639,16 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T77（收案面：证据 kind 归一化与供应链审批单字段）
+
+2026-09-02。本轨把 `refund.intake` 落库的证据 `kind` 收敛到五个规范值
+（`maos/skills/builtin/refund/_common.py::EVIDENCE_KINDS`），并让审批单能进来。
+以下四条是这次的**取舍**，不是遗漏，写在这里免得下一轮当成 bug 重查一遍。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **归一化表只覆盖常见写法**（`_common.py::_KIND_ALIASES`：photo/img/screenshot、mp4/mov、voice/录音、pdf/扫描件 等），真实渠道一定会送来表外的值 | 表外的值归 `attachment`。证据一条都不丢（成员判据仍是有没有 uri），但政策里若写 `requires_evidence_kinds:["image"]`，一张写成「实拍图」的照片仍然数不进 image。这是**已知的覆盖不全**，不是静默失效——`kind_raw` 留得下原值，查得出来 | 接真渠道后按 `event_log` 里 `kind_raw` 的实际分布补表。补表是加别名，不是加规范值——五个规范值是跨轨口径，改它要先改 `review/refund-skill-contracts.md` |
+| 2026-09-02 | P9 | **`kind_raw` 不落库**：提交方的原始声明只在 `refund.intake` 的出参与 `event_log` 里，`customer_evidence` 表没有这一列 | 库里查不到「这条证据当初声明的是什么」——只查得到归一化后的规范值。要复原原始声明，得从 `event_log` 里那次 `SkillInvoked` 的 output 捞 | 本轮红线是退款域 14 张表一列不改，所以只能这么放。哪天证据面真要审计原始声明（比如渠道扯皮「我明明报的是 image」），再给 `customer_evidence` 加一列 `kind_raw`，那是**加列**不是改列，届时一并把历史行回填成空 |
+| 2026-09-02 | P9 | **`applicant_ref` 走 `business_ref` 是不扩表的权宜**：供应链退款的审批单（supplier_id / po_no / approver / approved_amount / doc_no）只落成一条 `object_type="applicant_ref"`、`object_id=doc_no` 的引用，五个字段本身一个都没有自己的列 | 单号之外的字段库里查不到（`purpose` 那句文字里带了供应商/采购单/审批人，但那是给人看的说明，不是可查询的列）。按供应商统计、按采购单反查退款，今天都做不了 | 供应链退款真要做深，它该有自己的域（口径同 `ap` / `claim`：自己的表、自己的 guard、自己的 skill），不是往退款域塞列。塞列会把「消费者售后」与「供应链退款」两套完全不同的业务对象压进同一张表，然后一半的列永远为空 |
+| 2026-09-02 | P9 | **`docs/skill-catalog.md` 落后于代码**：本轨改了 `RefundIntakeSkill.contract` 的 `input_schema` / `output_schema` / `security_boundary` 三个**字段值**（`SkillContract` 的 dataclass 字段一个没动），生成物随之陈旧 | `python3 scripts/gen_docs.py --check` 退出码 1，连带 `maos/tests/test_generated_docs.py` 两条变红：`test_generated_doc_matches_code[docs/skill-catalog.md]` 与 `test_check_mode_agrees_and_writes_nothing`。差异只有 `refund.intake` 一条目（三个字段值 + 实现行号 59→110），别的 skill 一个字没变 | **交整合轮统一重跑 `python3 scripts/gen_docs.py`**，本轨不碰生成物（`docs/skill-catalog.md` 是六轨都不许碰的文件，见 `review/refund-skill-contracts.md` §4；口径同 `4bb6694` 那次） |

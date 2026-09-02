@@ -1649,3 +1649,13 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-02 | P9 | **跨轨契约 `review/nl-contracts.md` 不在版本库里**，只躺在主仓工作区。四轨都被要求「照抄同一份定义」，但从 worktree 里 `git show` 不出来它 | 今天无害（四轨手里各有一份）。代价在并轨之后：谁都无法回答「当时那份契约到底怎么写的」，字段名一旦有分歧就成了各说各话，而这种冲突**不会有任何红灯** —— 两侧都能各自跑绿 | 整合轨落库。要么入 `docs/`，要么至少提交进 `review/`；答辩要讲「四轨零交集怎么保证」时也要指得到它 |
 | 2026-09-02 | P9 | **关键词词表会有两份**：本轨的 `_KW_APPROVE` 等四张表，与 T67 自带的 `_KeywordParser`（跨轨契约 §1.3 明写 T67 不许 import `maos.nlu`） | 并行期间是对的，整合后就是同一件事的两处实现。分叉的症状很温和：房间里「不同意」判成驳回、而某条旁路仍判成同意，两边测试各自全绿 | 整合时按契约 §5 grep `# INTEGRATION-POINT:`，把 T67 那份换成本轨的 `parse_intent` 偏函数并**删掉**它的词表，不要留成兜底的兜底 |
 | 2026-09-02 | P9 | **降级客户端认不出来，只能靠 `isinstance(model, ScriptedModelClient)` 判**。`ModelClient` 上没有任何「我是降级来的」标记，`ModelResponse.meta` 里也没有 | 本轨的关键词兜底就挂在这个 isinstance 上。哪天 `select_model_client` 的降级目标换成别的类（`HigressModelClient` 今天还是占位），兜底会**静默不触发** —— 无 key 的机器上一句「同意」直接变 unknown，没有任何报错 | 归动 `maos/model/client.py` 的那一轨（本轨只读，未动）：给 `ModelClient` 加一个 `degraded: bool` 类属性，或让降级路径在 `ModelResponse.meta` 里落一个 `degraded=True`。改完把本轨的 isinstance 换掉 |
+## task-T67（房间常驻监听器，本轮都不改）
+
+2026-09-02 建 `hiclaw/room_agent.py` 时撞到的四条。都在本轨白名单之外，一行没动。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **`MirrorChannel.listen` 的回调签名是 `(sender, body)`，不带 `event_id`** —— 真房间里监听器拿不到消息 id | 去重只能退到「`sender` + 正文指纹 + 5s 时间窗」这一档（`room_agent.RoomAgent._is_duplicate`）。它挡得住 sync 重连的连续重放，挡不住「重放隔了 5s 才来」；而窗口不敢调大，调大就会把人隔一会儿再说一遍的**合法第二次发言**一起吃掉。审批是不可逆动作，这个缺口有真实代价 | 要根治得放宽 `MirrorChannel` 协议、让 `_NioChannel.listen` 把 `event.event_id` 一路带下来 —— 那是**冻结参照物** `hiclaw/matrix_bus.py`，本轮不许改。归下一轮真房间轨，与「回调形状」一起改一次，别分两次 |
+| 2026-09-02 | P9 | **`HumanApprovalQueue.decide()` 对库里不存在的 task_id 抛的是 `TypeError: 'NoneType' object is not subscriptable`** | 这句会被 `RoomApprovalBridge` 原样贴进房间回执：实跑截到的是「审批未生效：task_997ca4541e66 —— 'NoneType' object is not subscriptable」。演示当天房间里的人看到这句，既不知道是自己打错了 id，也不知道该怎么办 | 归 `maos/runtime/gate.py` 那一轨：`decide` 开头查一次任务，查不到就抛一个说人话的异常（「库里没有这条任务，请核对 task_id」）。不在本轨白名单 |
+| 2026-09-02 | P9 | **`known_task_ids` 只能靠 `--plan-id` 显式喂**：`Store` 没有「跨 plan 按状态列任务」的方法，`HumanApprovalQueue.pending()` 又只接受单个 `plan_id` | 常驻监听器上线时并不知道房间里将来会出现哪些 plan。不给 `--plan-id` 时自然语言路径认不出任何 task_id（一律降 UNKNOWN 静默）——**保守是对的**，但可用性上等于自然语言只在「盯着某个 plan」时才活着。显式 `/approve` 不受影响 | 归下一轮：要么给 `Store` 加一个只读的 `list_blocked_tasks()`（新增方法不动现有表结构，不违铁律 1），要么让监听器订阅 `TaskBlocked` 事件自己维护待审集合。后者更贴事件溯源，但要碰 `maos/core/**` |
+| 2026-09-02 | P9 | **`_KeywordParser` / `_StubDispatcher` 是并行期替身，整合后必须删掉** | 留着就是第二份解析与派发口径，而两份判据一定会漂；漂了的症状是「同一句话在冒烟里认得出、在房间里认不出」，且不会有任何测试变红 | 整合时（T66/T68 落地后）按两处 `# INTEGRATION-POINT:` 注释替换，**删掉替身类本身**，不要留成「默认实现」。`maos/tests/test_room_agent.py` 里针对替身的那两节（第 2、11 节）跟着删或改喂真实现 |

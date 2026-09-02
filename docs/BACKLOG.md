@@ -1639,3 +1639,14 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T67（房间常驻监听器，本轮都不改）
+
+2026-09-02 建 `hiclaw/room_agent.py` 时撞到的四条。都在本轨白名单之外，一行没动。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **`MirrorChannel.listen` 的回调签名是 `(sender, body)`，不带 `event_id`** —— 真房间里监听器拿不到消息 id | 去重只能退到「`sender` + 正文指纹 + 5s 时间窗」这一档（`room_agent.RoomAgent._is_duplicate`）。它挡得住 sync 重连的连续重放，挡不住「重放隔了 5s 才来」；而窗口不敢调大，调大就会把人隔一会儿再说一遍的**合法第二次发言**一起吃掉。审批是不可逆动作，这个缺口有真实代价 | 要根治得放宽 `MirrorChannel` 协议、让 `_NioChannel.listen` 把 `event.event_id` 一路带下来 —— 那是**冻结参照物** `hiclaw/matrix_bus.py`，本轮不许改。归下一轮真房间轨，与「回调形状」一起改一次，别分两次 |
+| 2026-09-02 | P9 | **`HumanApprovalQueue.decide()` 对库里不存在的 task_id 抛的是 `TypeError: 'NoneType' object is not subscriptable`** | 这句会被 `RoomApprovalBridge` 原样贴进房间回执：实跑截到的是「审批未生效：task_997ca4541e66 —— 'NoneType' object is not subscriptable」。演示当天房间里的人看到这句，既不知道是自己打错了 id，也不知道该怎么办 | 归 `maos/runtime/gate.py` 那一轨：`decide` 开头查一次任务，查不到就抛一个说人话的异常（「库里没有这条任务，请核对 task_id」）。不在本轨白名单 |
+| 2026-09-02 | P9 | **`known_task_ids` 只能靠 `--plan-id` 显式喂**：`Store` 没有「跨 plan 按状态列任务」的方法，`HumanApprovalQueue.pending()` 又只接受单个 `plan_id` | 常驻监听器上线时并不知道房间里将来会出现哪些 plan。不给 `--plan-id` 时自然语言路径认不出任何 task_id（一律降 UNKNOWN 静默）——**保守是对的**，但可用性上等于自然语言只在「盯着某个 plan」时才活着。显式 `/approve` 不受影响 | 归下一轮：要么给 `Store` 加一个只读的 `list_blocked_tasks()`（新增方法不动现有表结构，不违铁律 1），要么让监听器订阅 `TaskBlocked` 事件自己维护待审集合。后者更贴事件溯源，但要碰 `maos/core/**` |
+| 2026-09-02 | P9 | **`_KeywordParser` / `_StubDispatcher` 是并行期替身，整合后必须删掉** | 留着就是第二份解析与派发口径，而两份判据一定会漂；漂了的症状是「同一句话在冒烟里认得出、在房间里认不出」，且不会有任何测试变红 | 整合时（T66/T68 落地后）按两处 `# INTEGRATION-POINT:` 注释替换，**删掉替身类本身**，不要留成「默认实现」。`maos/tests/test_room_agent.py` 里针对替身的那两节（第 2、11 节）跟着删或改喂真实现 |

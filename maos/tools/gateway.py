@@ -43,6 +43,12 @@
 
 直接调 ``MockGateway.refund()`` 就没有 ToolInvoked 审计行，出事之后查不到是谁、
 什么参数、跑了多久。上层请走 ``invoke_tool(GATEWAY_REFUND_PORT, {...}, store=...)``。
+
+## params 里只放名字，不放实例
+
+两个 ToolPort 收的是 ``gateway_name``，实例由本模块的注册表持有
+（``register_gateway`` / ``get_gateway``）。params 全是标量，所以
+``params_digest`` 天然可复现，也跨得了进程 —— 见注册表那一节的完整理由。
 """
 
 from __future__ import annotations
@@ -231,10 +237,11 @@ class MockGateway:
         self._ledger: dict[str, _Entry] = {}  # idempotency_key -> 账本
         self._by_request: dict[str, str] = {}  # request_id -> idempotency_key
 
-    def __repr__(self) -> str:
-        # 不带内存地址：这个对象会进 invoke_tool 的 params_digest，
-        # 带地址会让同样参数每次算出不同的 digest，审计就对不上了。
-        return f"MockGateway(settle_after={self.settle_after}, scripted={len(self.script)})"
+    # 这里曾有一个不带内存地址的 __repr__，理由是「这个对象会进 invoke_tool 的
+    # params_digest」。T76 之后**活对象不再进 params**（两个 ToolPort 只收
+    # gateway_name），那个理由随之消失，补丁一并拆掉 —— 留着会让下一个人
+    # 以为 digest 仍然依赖 repr，从而不敢动别处。digest 的稳定性现在由
+    # 「params 全是标量」这条机制保证，不再靠实现方自觉写 __repr__。
 
     @property
     def refund_count(self) -> int:
@@ -344,37 +351,90 @@ class AlipaySandboxAdapter:
 
 
 # ---------------------------------------------------------------------------
+# 工具侧网关注册表 —— params 只带名字，实例由**工具这一侧**持有
+# ---------------------------------------------------------------------------
+#
+# 为什么要有这张表（`docs/BACKLOG.md:1640`）：两个 ToolPort 原先直接收
+# ``GatewayPort`` 活对象，而 ``invoke_tool`` 会对 params 算 sha256 落审计行 ——
+# 对象进 digest，稳定性就只能靠每个实现自己写一个不带内存地址的 ``__repr__``
+# 来维持，**那是打补丁不是机制**。第三个实现只要忘了写，同样的参数每次算出不同
+# 的 digest，审计对不上账，而且不报错、无症状。
+#
+# 改成按名取实例之后，params 全是标量，digest 天然可复现；同时这也是迁 MCP 的
+# 前置条件 —— 活对象跨不了进程，而名字可以。届时 **本文件整个搬到 server 侧**，
+# 客户端只发 ``gateway_name``。
+#
+# 这张表**刻意不复用** ``skills/builtin/refund/_common.py`` 里那张同名表：
+# tools 层 import skills 层是层间倒挂，迁 MCP 时会把整个 skill 包拖到 server 侧去。
+# 两张表各自存在，由装配方各注册一次。
+
+_GATEWAYS: dict[str, Any] = {}
+
+
+def register_gateway(name: str, gateway: Any) -> Any:
+    """把一个网关实现登记成一个名字，供两个 ToolPort 按名取用。"""
+    _GATEWAYS[str(name)] = gateway
+    return gateway
+
+
+def get_gateway(name: str) -> Any:
+    """按名取网关。**取不到就抛，不兜底成默认网关。**
+
+    口径与 `_common.get_gateway` 一致：自动兜底会把「忘了注册网关」变成
+    「悄悄用了一个空账本的 mock」—— 幂等、轮询次数、错误注入全部失真，
+    而表面上一路绿灯，只会在演示现场暴露。
+    """
+    key = str(name or "")
+    gateway = _GATEWAYS.get(key)
+    if gateway is None:
+        raise LookupError(
+            f"工具侧没有登记名为 {key!r} 的支付网关（已登记：{sorted(_GATEWAYS)}）；"
+            "请在装配处调用 maos.tools.gateway.register_gateway(name, MockGateway(...))"
+        )
+    return gateway
+
+
+def reset_gateways() -> None:
+    """清空登记表 —— 只给测试用，保证用例之间不互相串账本。"""
+    _GATEWAYS.clear()
+
+
+# ---------------------------------------------------------------------------
 # 两个 ToolPort 声明（A-6 九要素）—— 调用一律走 invoke_tool()，直接调没有审计行
 # ---------------------------------------------------------------------------
 
-def gateway_refund(*, gateway: Any, out_trade_no: str, refund_amount: str,
+def gateway_refund(*, gateway_name: str, out_trade_no: str, refund_amount: str,
                    idempotency_key: str, reason: str = "") -> dict:
     """ToolPort 入口：发起退款，返回回执 dict。
 
-    入参摊平成基本类型而不是收一个 RefundRequest 对象：``invoke_tool`` 会把 params
-    做 sha256 进审计行，摊平之后 digest 才对得上「同样的参数」这个直觉。
+    入参**全是标量**（网关只给名字，不给实例）：``invoke_tool`` 会把 params
+    做 sha256 进审计行，标量化之后 digest 才对得上「同样的参数」这个直觉，
+    且跨进程传得过去（迁 MCP 的前置条件）。
     """
+    gateway = get_gateway(gateway_name)
     req = RefundRequest(out_trade_no=out_trade_no, refund_amount=refund_amount,
                         idempotency_key=idempotency_key, reason=reason)
     return gateway.refund(req).to_dict()
 
 
-def gateway_query(*, gateway: Any, request_id: str) -> dict:
+def gateway_query(*, gateway_name: str, request_id: str) -> dict:
     """ToolPort 入口：查一笔退款的当前状态。终态只能从这里来。"""
-    return gateway.query(request_id).to_dict()
+    return get_gateway(gateway_name).query(request_id).to_dict()
 
 
 GATEWAY_REFUND_PORT = ToolPort(
     name="gateway.refund",
     purpose="向支付网关发起退款；返回受理回执，**不返回终态**（终态须经 gateway.query 观察）",
     entry=gateway_refund,
-    params_schema={"gateway": "GatewayPort", "out_trade_no": "str",
+    params_schema={"gateway_name": "str（已 register_gateway 的名字；实例由工具侧持有）",
+                   "out_trade_no": "str",
                    "refund_amount": "str（金额不进浮点）", "idempotency_key": "str",
                    "reason": "str（可选）"},
     returns_schema={"request_id": "str", "status": "processing|unknown（非终态）",
                     "code": "str", "retriable": "bool", "outcome": "success|failed|unknown",
                     "remedy": "str", "source": "str（错误码出处）", "is_terminal": "bool"},
     failure_modes=[
+        "LookupError: gateway_name 没有登记过 —— **不兜底成默认网关**",
         "ValueError: 缺 idempotency_key（对应支付宝 out_request_no）",
         "status=unknown: 网关说不清结果（ACQ.SYSTEM_ERROR / code 20000）——"
         "**不许在本地推断成败**，必须 gateway.query",
@@ -396,11 +456,13 @@ GATEWAY_QUERY_PORT = ToolPort(
     name="gateway.query",
     purpose="查询一笔退款在支付网关侧的当前状态 —— 终态的唯一合法来源",
     entry=gateway_query,
-    params_schema={"gateway": "GatewayPort", "request_id": "str"},
+    params_schema={"gateway_name": "str（已 register_gateway 的名字；实例由工具侧持有）",
+                   "request_id": "str"},
     returns_schema={"status": "processing|unknown|settled|failed",
                     "poll_count": "int（问过几次，证明终态是问出来的）",
                     "outcome": "success|failed|unknown", "is_terminal": "bool"},
     failure_modes=[
+        "LookupError: gateway_name 没有登记过 —— **不兜底成默认网关**",
         "KeyError: 未知 request_id",
         "status 仍为 processing/unknown: 还没到终态，继续轮询，**不许当成失败**",
         "NotImplementedError: 用了 AlipaySandboxAdapter 而沙箱未接通",

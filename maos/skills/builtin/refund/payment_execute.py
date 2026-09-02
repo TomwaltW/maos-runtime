@@ -20,7 +20,7 @@ import json
 from maos.domain.refund import guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
-from maos.tools.gateway import GATEWAY_REFUND_PORT
+from maos.tools.gateway import GATEWAY_REFUND_PORT, register_gateway as register_tool_gateway
 from maos.tools.port import invoke_tool
 
 from . import _common as C
@@ -107,9 +107,18 @@ class PaymentExecuteSkill(Skill):
 
         # ---- 发起退款：一律经 invoke_tool，直接调没有 ToolInvoked 审计行 --------
         key = idempotency_key_of(tenant_id, case_id)
-        gateway = C.get_gateway(payload.get("gateway"))
+        # 装配桥接：params 里**只放名字**。活对象跨不了进程，还会进
+        # `invoke_tool` 的 params_digest，把 digest 的可复现性押在实现方
+        # 自觉写 `__repr__` 上（`docs/BACKLOG.md:1640`）。实例改由工具侧
+        # 注册表持有，这里把 skill 层登记的那一个转登记过去。
+        # **迁 MCP 时要搬走的就是下面这一行** —— 届时网关在 server 侧装配处
+        # 直接 register_gateway，客户端只发 gateway_name，本行随之消失。
+        # 名字取不到实例时 `C.get_gateway` 当场抛（不自动造 MockGateway），
+        # 工具侧 `get_gateway` 也照样抛：两头都 fail-closed。
+        gateway_name = str(payload.get("gateway") or C.DEFAULT_GATEWAY)
+        register_tool_gateway(gateway_name, C.get_gateway(gateway_name))
         receipt = invoke_tool(GATEWAY_REFUND_PORT, {
-            "gateway": gateway,
+            "gateway_name": gateway_name,
             "out_trade_no": case["order_id"],
             "refund_amount": amount,
             "idempotency_key": key,
@@ -133,7 +142,7 @@ class PaymentExecuteSkill(Skill):
             "INSERT OR REPLACE INTO refund_request (tenant_id, case_id, request_id, amount,"
             " gateway, idempotency_key, submitted_at) VALUES (?,?,?,?,?,?,?)",
             (tenant_id, case_id, receipt["request_id"], float(entry["amount_approved"]),
-             str(payload.get("gateway") or C.DEFAULT_GATEWAY), key, C.now_iso()),
+             gateway_name, key, C.now_iso()),
         )
 
         plan_id = str(extras.get("plan_id") or "")

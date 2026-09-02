@@ -1709,3 +1709,18 @@ skill 侧、`SkillResult`、落库那行三处同值。本轨因此把 §5.1 做
 | 2026-09-02 | P9 | **`kind_raw` 不落库**：提交方的原始声明只在 `refund.intake` 的出参与 `event_log` 里，`customer_evidence` 表没有这一列 | 库里查不到「这条证据当初声明的是什么」——只查得到归一化后的规范值。要复原原始声明，得从 `event_log` 里那次 `SkillInvoked` 的 output 捞 | 本轮红线是退款域 14 张表一列不改，所以只能这么放。哪天证据面真要审计原始声明（比如渠道扯皮「我明明报的是 image」），再给 `customer_evidence` 加一列 `kind_raw`，那是**加列**不是改列，届时一并把历史行回填成空 |
 | 2026-09-02 | P9 | **`applicant_ref` 走 `business_ref` 是不扩表的权宜**：供应链退款的审批单（supplier_id / po_no / approver / approved_amount / doc_no）只落成一条 `object_type="applicant_ref"`、`object_id=doc_no` 的引用，五个字段本身一个都没有自己的列 | 单号之外的字段库里查不到（`purpose` 那句文字里带了供应商/采购单/审批人，但那是给人看的说明，不是可查询的列）。按供应商统计、按采购单反查退款，今天都做不了 | 供应链退款真要做深，它该有自己的域（口径同 `ap` / `claim`：自己的表、自己的 guard、自己的 skill），不是往退款域塞列。塞列会把「消费者售后」与「供应链退款」两套完全不同的业务对象压进同一张表，然后一半的列永远为空 |
 | 2026-09-02 | P9 | **`docs/skill-catalog.md` 落后于代码**：本轨改了 `RefundIntakeSkill.contract` 的 `input_schema` / `output_schema` / `security_boundary` 三个**字段值**（`SkillContract` 的 dataclass 字段一个没动），生成物随之陈旧 | `python3 scripts/gen_docs.py --check` 退出码 1，连带 `maos/tests/test_generated_docs.py` 两条变红：`test_generated_doc_matches_code[docs/skill-catalog.md]` 与 `test_check_mode_agrees_and_writes_nothing`。差异只有 `refund.intake` 一条目（三个字段值 + 实现行号 59→110），别的 skill 一个字没变 | **交整合轮统一重跑 `python3 scripts/gen_docs.py`**，本轨不碰生成物（`docs/skill-catalog.md` 是六轨都不许碰的文件，见 `review/refund-skill-contracts.md` §4；口径同 `4bb6694` 那次） |
+
+## integrate-p9-t74-t79（整合轮：六轨合并、生成物重跑、接缝守卫、证据束重跑）
+
+合并顺序按跨轨契约 §6：T78 → T79 → T74 → T75 → T76 → T77。
+六轨的代码面零冲突（白名单确实不相交），全部冲突集中在两份账本的尾部追加，
+按「两侧全留、按合并顺序拼接」解。合并态实测 1662 passed / 39 skipped、
+`run.py` exit=0、`gen_docs --check` exit=0、`verify.py` 8/8 PASS。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | 🔴 **两轨之间的接缝无人看守**：T74 只验 `policy.match` **产出** `eligibility`，T75 只验 `finance.settle` **消费**（自造 fixture 入参，不跑 policy.match）。没有任何一条测试把真实出参喂进下游 | 形状分叉、方向写反、键名写错，**两轨的测试都不会红**。这一轮买的那句话（「交一张图和不交，金额必须不同」）在合并前从未被端到端证明过 | **本轮已补**：`maos/tests/test_refund_evidence_end_to_end.py`，6 条，拿真出参跑。实测 800.00（没图，排除规则不予适用）vs 0（有图，排除规则生效）。**这类接缝测试应当成为并行分轨的固定收尾**：凡是「A 轨产出、B 轨消费」的跨轨契约，整合轮都要补一条真链路断言，否则契约只被两份 fixture 各自守着 |
+| 2026-09-02 | P9 | **派单 T76 的白名单漏列了存量测试 `maos/tests/test_gateway.py`** | T76 改了 `GATEWAY_REFUND_PORT` / `GATEWAY_QUERY_PORT` 的入参（活对象 → `gateway_name`），存量测试**必然**要跟着改，但那个文件不在它 §4 的独占清单里。T76 照实改了并记了账 —— 属合理越界，不是偷跑 | **是派单的缺陷不是执行的问题**。下次写「改某个 ToolPort / 公共签名」的派单时，要把**该签名的存量测试**一并列进白名单；不列的话执行方要么越界、要么交一个红的树 |
+| 2026-09-02 | P9 | **`finance.settle` 的 `applied_rules` / `excluded_rules` 落在 `breakdown` 里，不在出参顶层** | 跨轨契约 §1.1 只冻结了 `eligibility` 的形状，没规定 finance 侧留痕放哪 —— 所以这不是违约，是实现自由。但整合轮写接缝测试时按顶层取，当场红了一条，查了两轮才定位 | 放 `breakdown` 是**对的**（它随 `finance_entry.breakdown_json` 一起落库，对账查得到；放顶层反而不落库）。要记的是：**跨轨契约只冻结了上游的出参形状，没冻结下游的**，下一轮若有第三方要读 finance 的留痕，得先把这个位置也写进契约 |
+| 2026-09-02 | P9 | **`evidence/scenario-*/trace.json` 里没有 `decision` 字段**，契约 §1.3 那条「decision 必须与基线逐字节一致」的判据在 trace 上验不了 | trace 存的是 span 结构，不含 skill output 明细。整合轮改用**等价判据**验证：三个退款场景的 `rule_refs` 逐字节一致、`amount_approved` 全部未变（金额不变 = 裁定结果不变）。结论成立，但验的路径与契约写的不是一条 | 下次写这类判据时先确认它在证据里查得到。要让 `decision` 真的可外部核验，得让 `make_evidence` 把 skill output 的关键字段落进 `business-objects.json`，那是证据束轨的活 |
+| 2026-09-02 | P9 | **`scripts/verify.py` 第 3 项 authoritative-fact 仍只认退款域**（承接本文件 `:1473` 那条，本轮未动） | 本轮六轨全在退款域，所以第 3 项 3/3 PASS 是**真的**核验到了。但 ap / claim / investigation 三个域仍在它视野外，那条老账没有因为本轮而变好 | 仍归证据束轨。本轮新增的 `eligibility` 也没有进第 3 项的对账口径 —— 举证判据是否被绕过，外部核验目前看不见 |

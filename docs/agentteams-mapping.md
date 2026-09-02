@@ -15,13 +15,23 @@ MAOS 的做法是**装饰器镜像**：进程内 EventBus 照常跑，`MatrixEve
 
 ## 五项映射
 
-| # | AgentTeams 概念 | MAOS 落点 | 代码位置 | 状态 |
-| :-- | :-- | :-- | :-- | :-- |
-| 1 | **Team / 房间** | 一个 Matrix 房间 = 一条流水线的全部事件；配置四项走环境变量 `MATRIX_HOMESERVER` / `MATRIX_USER` / `MATRIX_TOKEN` / `MATRIX_ROOM_ID`，缺一即降级 | `hiclaw/matrix_bus.py::MatrixBusConfig`<br>`hiclaw/matrix_bus.py::MatrixBusConfig.from_env`<br>`hiclaw/matrix_bus.py::REQUIRED_ENV` | ✅ **真房间已接通**（本机自建 Synapse v1.159.0 的非加密房，`evidence/room/` 五张图 + 41 条逐字副本） |
-| 2 | **Member / Worker** | 可插拔 Agent 池：role → Agent 类，投放一个文件即注册；Worker 收到 `TaskAssignment` 按 role 取执行者 | `maos/agents/base.py::AGENT_POOL`<br>`maos/agents/base.py::register`（`@register` 装饰器）<br>`maos/runtime/worker.py::Worker.__init__`（一行构造全池） | ✅ 已跑通（11 个角色带 Identity，其中 10 个注册进 `AGENT_POOL`、可被 Worker 按 role 派单，见 [`agent-identity.md`](agent-identity.md)） |
-| 3 | **事件链 / 消息流** | `publish()` 先走 inner bus，再镜像进房间：一行人话摘要 + 折叠的 Envelope JSON | `hiclaw/matrix_bus.py::MatrixEventBus.publish`<br>`hiclaw/matrix_bus.py::summarize`（人话摘要）<br>`hiclaw/matrix_bus.py::render_mirror`（摘要 + JSON） | ✅ **真房间实测**：两轮跑出 41 条房间消息，逐字副本 `evidence/room/transcript.md`；迁移逐条镜像见 `02-transitions.png` |
-| 4 | **人工介入 / HITL** | 房间里 `/approve <task_id>`、`/reject <task_id> [原因]` → `HumanApprovalQueue.decide()`；只认 `MAOS_APPROVERS` 名单内的用户，名单外回「无审批权限」**并落一条 event_log** | `hiclaw/matrix_bus.py::parse_approval_command`<br>`hiclaw/matrix_bus.py::RoomApprovalBridge`<br>`hiclaw/matrix_bus.py::RoomApprovalBridge.handle_message`（先查名单再解析）<br>`hiclaw/matrix_bus.py::RoomApprovalBridge._record_denied`（越权落库） | ✅ **三种在真房间各实测一次**：`/approve`→DONE（`03`）、`/reject`→FAILED（`04`）、intern 越权两次被拒且闲聊零回复（`05`） |
-| 5 | **可观测 / 回放** | 事件链的权威记录不在房间里，在 `event_log` 表；`maos/obs/trace.py` 把它转成 OTel 对齐的 span 树，`scripts/verify.py` 第 4 项重放校验「无孤儿、无环、与库逐字节一致」 | `maos/obs/trace.py`<br>`scripts/verify.py::check_trace_tree`（第 4 项 trace-tree） | ✅ 已跑通（8 束证据 = 场景 1–7 + R5，见 `evidence/`） |
+| # | AgentTeams 概念 | 实现方 | MAOS 落点 | 代码位置 | 状态 |
+| :-- | :-- | :--: | :-- | :-- | :-- |
+| 1 | **Team / 房间** | `hiclaw/` | 一个 Matrix 房间 = 一条流水线的全部事件；配置四项走环境变量 `MATRIX_HOMESERVER` / `MATRIX_USER` / `MATRIX_TOKEN` / `MATRIX_ROOM_ID`，缺一即降级 | `hiclaw/matrix_bus.py::MatrixBusConfig`<br>`hiclaw/matrix_bus.py::MatrixBusConfig.from_env`<br>`hiclaw/matrix_bus.py::REQUIRED_ENV` | ✅ **真房间已接通**（本机自建 Synapse v1.159.0 的非加密房，`evidence/room/` 五张图 + 41 条逐字副本） |
+| 2 | **Member / Worker** | **`maos/`** | 可插拔 Agent 池：role → Agent 类，投放一个文件即注册；Worker 收到 `TaskAssignment` 按 role 取执行者 | `maos/agents/base.py::AGENT_POOL`<br>`maos/agents/base.py::register`（`@register` 装饰器）<br>`maos/runtime/worker.py::Worker.__init__`（一行构造全池） | ✅ 已跑通（11 个角色带 Identity，其中 10 个注册进 `AGENT_POOL`、可被 Worker 按 role 派单，见 [`agent-identity.md`](agent-identity.md)） |
+| 3 | **事件链 / 消息流** | `hiclaw/` | `publish()` 先走 inner bus，再镜像进房间：一行人话摘要 + 折叠的 Envelope JSON | `hiclaw/matrix_bus.py::MatrixEventBus.publish`<br>`hiclaw/matrix_bus.py::summarize`（人话摘要）<br>`hiclaw/matrix_bus.py::render_mirror`（摘要 + JSON） | ✅ **真房间实测**：两轮跑出 41 条房间消息，逐字副本 `evidence/room/transcript.md`；迁移逐条镜像见 `02-transitions.png` |
+| 4 | **人工介入 / HITL** | `hiclaw/` | 房间里 `/approve <task_id>`、`/reject <task_id> [原因]` → `HumanApprovalQueue.decide()`；只认 `MAOS_APPROVERS` 名单内的用户，名单外回「无审批权限」**并落一条 event_log** | `hiclaw/matrix_bus.py::parse_approval_command`<br>`hiclaw/matrix_bus.py::RoomApprovalBridge`<br>`hiclaw/matrix_bus.py::RoomApprovalBridge.handle_message`（先查名单再解析）<br>`hiclaw/matrix_bus.py::RoomApprovalBridge._record_denied`（越权落库） | ✅ **三种在真房间各实测一次**：`/approve`→DONE（`03`）、`/reject`→FAILED（`04`）、intern 越权两次被拒且闲聊零回复（`05`） |
+| 5 | **可观测 / 回放** | **`maos/`** | 事件链的权威记录不在房间里，在 `event_log` 表；`maos/obs/trace.py` 把它转成 OTel 对齐的 span 树，`scripts/verify.py` 第 4 项重放校验「无孤儿、无环、与库逐字节一致」 | `maos/obs/trace.py`<br>`scripts/verify.py::check_trace_tree`（第 4 项 trace-tree） | ✅ 已跑通（8 束证据 = 场景 1–7 + R5，见 `evidence/`） |
+
+> **「实现方」这一列是 2026-09-01 补的，补它是为了不占便宜。** 五项映射里第 2、5 项
+> （Member/Worker、可观测/回放）的落点**本来就在 `maos/` 下** —— 它们是把 AgentTeams 的
+> *概念*映到 MAOS 自己的实现，不是把实现托管给基座。不标出来的话，一张全是 ✅ 的表
+> 容易被读成「五项都由基座提供」，那是我们没做的事。
+> 真正落在 `hiclaw/` 的是第 1、3、4 项：房间、事件镜像、房间内审批。
+>
+> 与之对应的一条实测（`docs/defense-brief.md` A1）：把 `hiclaw` 从 import 系统里整个抹掉，
+> `python3 run.py` 仍 exit 0、1361 条测试仍绿，坏的只有 4 个房间测试文件（206 条）。
+> 这既证明「房间是旁路不是主路」，也**同时说明基座集成的深度止于这三项**，两句话是一体的。
 
 > **代码位置为什么写 `file::symbol` 而不是 `file:line`。** 这张表原来给的是行号，
 > 到 T31 复核时 16 处里有 15 处已经漂了（偏 +1 到 +152 行），照着翻会翻到不相干的行 ——

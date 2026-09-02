@@ -1,0 +1,131 @@
+{
+  "_note": "底账 —— IT / 顾问配一次，之后不用天天动。里面是「执行前从企业系统读到的那一版」：客户、渠道、商品、订单快照，加上公司自己的售后政策。老板每天要给的不是这份文件，而是 refund-requests.csv 那张四列的表。真实落地时这份底账由 ERP / 订单系统导出，不用手写。",
+  "_provenance": "按行业惯例构造的合成数据，不得作为真实企业数据引用。",
+
+  "gateway": {
+    "settle_after": 2,
+    "fail_with": null
+  },
+
+  "tenant": [
+    {
+      "tenant_id": "tnt-demo",
+      "name": "示例精密制造",
+      "region": "cn-hangzhou"
+    }
+  ],
+
+  "channel": [
+    {
+      "tenant_id": "tnt-demo",
+      "channel_id": "ch-online",
+      "kind": "marketplace",
+      "name": "官方自营旗舰店"
+    }
+  ],
+
+  "product_snapshot": [
+    {
+      "tenant_id": "tnt-demo",
+      "sku": "SKU-BRG-6204",
+      "version": 1,
+      "name": "深沟球轴承 6204",
+      "category": "bearing",
+      "warranty_months": 12,
+      "payload_json": "{}"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "sku": "SKU-SEAL-772",
+      "version": 1,
+      "name": "骨架油封 772",
+      "category": "seal",
+      "warranty_months": 6,
+      "payload_json": "{}"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "sku": "SKU-CPL-330",
+      "version": 1,
+      "name": "梅花联轴器 330",
+      "category": "coupling",
+      "warranty_months": 24,
+      "payload_json": "{}"
+    }
+  ],
+
+  "order_snapshot": [
+    {
+      "tenant_id": "tnt-demo",
+      "order_id": "ORD-2026-0001",
+      "version": 1,
+      "sku": "SKU-BRG-6204",
+      "amount_paid": 6800.0,
+      "paid_at": "2026-07-01T10:00:00+00:00",
+      "channel_id": "ch-online",
+      "policy_version_at_order": 1,
+      "payload_json": "{}",
+      "read_at": "2026-09-01T00:00:00+00:00"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "order_id": "ORD-2026-0002",
+      "version": 1,
+      "sku": "SKU-SEAL-772",
+      "amount_paid": 1280.0,
+      "paid_at": "2026-06-20T09:00:00+00:00",
+      "channel_id": "ch-online",
+      "policy_version_at_order": 1,
+      "payload_json": "{}",
+      "read_at": "2026-09-01T00:00:00+00:00"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "order_id": "ORD-2026-0003",
+      "version": 1,
+      "sku": "SKU-CPL-330",
+      "amount_paid": 24000.0,
+      "paid_at": "2026-08-20T08:00:00+00:00",
+      "channel_id": "ch-online",
+      "policy_version_at_order": 1,
+      "payload_json": "{}",
+      "read_at": "2026-09-01T00:00:00+00:00"
+    }
+  ],
+
+  "policy_rule": [
+    {
+      "tenant_id": "tnt-demo",
+      "rule_no": "AS-001",
+      "version": 1,
+      "title": "无理由退货期（30 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 30, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "rule_no": "AS-002",
+      "version": 1,
+      "title": "质保期内质量问题全额退",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "rule_no": "AS-003",
+      "version": 1,
+      "title": "发错货全额退并免手续费",
+      "body": "{\"applies_when\": {\"reason_code\": [\"wrong_item\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"wrong_item\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    }
+  ]
+}

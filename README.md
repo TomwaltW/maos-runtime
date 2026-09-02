@@ -279,7 +279,7 @@ evidence/
 | **降级路径** | Docker 不可用时裸 subprocess，但 env **按白名单重建**（只放行 `PATH`/`LANG`，`HOME` 指向一次性空目录） | 白名单是「按名放行」不是「按名拦截」—— 新增一个 `*_TOKEN` 变量不需要有人记得去加拦截 |
 | **补丁落盘** | 三重路径校验：受保护目录分段相等 / `conftest.py` 任意层级禁改 / `workdir` 内含性 | 任一条不过即拒，不重试、不降级 |
 | **工具调用** | Agent 只能调 Identity `allowed_tools` 里的工具，越权抛 `PermissionDenied` | 运行时强制，见 [`docs/agent-identity.md`](docs/agent-identity.md) |
-| **跨进程工具（MCP）** | `git-mcp` 全部操作只读；路径按 `--root` 关押（先 resolve 再 `relative_to`，不用 `startswith`）；不打网络；子进程 env 按白名单重建；超时 15s 并杀子进程 | 连不上/超时**一律抛，不回落本地 `git`** —— 悄悄降级会让「这一步走没走 MCP」在证据里查不出来 |
+| **跨进程工具（MCP）** | `git-mcp` 全部操作只读；路径按 `--root` 关押（先 resolve 再 `relative_to`，不用 `startswith`）；不打网络；子进程 env 按白名单重建；超时 15s 并关子进程 | 连不上/超时**一律抛，不回落本地 `git`** —— 悄悄降级会让「这一步走没走 MCP」在证据里查不出来 |
 | **Skill 调用** | 同上，白名单在 `SkillInvoker` 里前置校验 | 每次调用落一条 `SkillInvoked` 审计行 |
 | **权威事实** | 全系统只有 `payment.observe` 写得进 `settled`，且必须同事务附回执 | 越权**不静默失败**：抛异常 + 落 `AuthoritativeFactViolation` 事件 |
 | **密钥** | 只读环境变量，禁止写进任何文件；`MatrixBusConfig.token` 用 `field(repr=False)` | 证据束落盘时出口脱敏 + 写完拿哨兵串反查，命中即销毁目录并失败 |

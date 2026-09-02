@@ -1639,3 +1639,17 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T74（政策判定器：证据与条件成为真判据）
+
+2026-09-02。本轨把 `policy.match` 的条件判据补上了，**但只补到 `eligibility` 为止**——
+金额面归 T75。下面五条是本轨结清的、留下的、以及交给别人的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **`## task-D2` 那条（本文件 `:185`）已了结一半**：`no_reason_days` / `warranty_basis` / `min_evidence_count` / `requires_evidence_kinds` 四条判据现在都有判定器（`policy.py::evaluate_conditions`），R3 那组租户对照跑得出差异了（`test_refund_policy_eligibility.py::test_tenant_window_difference_makes_exactly_one_side_ineffective`） | **剩下的一半是金额**：判定结果只落在新出参 `eligibility` 里，`finance.settle` 还没读它，所以 R3 两侧的**金额仍然相同**。那条账在 T75 合并前不能划掉 | T75（`finance.settle` 消费 `ineffective_rules`）。两轨合完再回来划 `:185` |
+| 2026-09-02 | P9 | **三个证据判据字段（`min_evidence_count` / `requires_evidence_kinds` / `evidence_source`）零消费方这条已结清**：本轨之前 `grep -rn` 在 `maos/**/*.py` 里零命中，现在 `policy.py` 有判定器且有 13 条测试守着 | 「同一个案子交一张图和不交，裁定结论逐字节相同」这条静默失效在 `policy.match` 这一侧消失了 —— 出参里的 `eligibility.evidence_seen` 与 `ineffective_rules` 会变 | 已结。**注意派单里把这条记成 `docs/BACKLOG.md:1642`，实际那一行是 MCP 节的「三处绕过 invoke_tool 的裸调用」**，内容对得上的是 `:185`。行号失真，按内容认 |
+| 2026-09-02 | P9 | **中间态：举证不足只影响 `eligibility`，不影响金额**。`finance.settle` 的 `_params_of` 仍只读 `refund_ratio` / `deduct_fee`，不看 `ineffective_rules` | 在 T74 与 T75 合并之前，**端到端还没生效**：演示时交一张图与不交，`decision` 与最终退款金额仍然相同，只有 `policy.match` 的出参不同了。整合轮不要把本轨当成「已端到端生效」 | T75。这一条是本轮的已知中间态，不是缺陷 |
+| 2026-09-02 | P9 | **`docs/EXECUTION.md:843` 仍写着「AS-003 人为损坏免责 / 需 `customer_evidence` 中有图片证据」**，措辞像是已实现 | 本轨让它**接近**成立了（判据真的在读证据），但那格所在的差异点表描述的是端到端效果，在 T75 合并前仍然偏乐观 | **归 T78**（`docs/EXECUTION.md` 是它的独占文件）。本轨只读未改 |
+| 2026-09-02 | P9 | **`unmet[].direction` 目前是个只有一个取值的"枚举"**（恒为 `not_applied`），写死在出参里 | 今天无害，是刻意的：方向必须在出参里显式可读，不能靠下游推断。但一旦将来出现「条件不满足反而要收紧」的规则类型，这个字段需要第二个取值，而**加取值必须先改跨轨契约文件**（`review/refund-skill-contracts.md` §1.2 的同款约束） | 出现第二种方向时。别顺手加 —— T75 是按单值写的 |
+| 2026-09-02 | P9 | **`gen_docs.py --check` 与 `test_generated_docs.py` 两条当前是红的**：本轨按派单补了 `policy.match` 的 `output_schema.eligibility` 与 `security_boundary`，`docs/skill-catalog.md` 随之对不上代码 | 不是回归，是派单 §0.3 预见到的情况（生成物由整合轮统一重跑 `python3 scripts/gen_docs.py`）。本轨一行没碰三份生成物 | 整合轮。重跑一次即转绿 |

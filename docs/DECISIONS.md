@@ -1583,3 +1583,16 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P8 | 人类要一条「放自己的数据进去就出结果」的入口，手册与既有场景都没有这条通道（场景 1-7 的输入全写死在 flows 里，`contrast.py` 那条要 `_expected` 判据块） | 新增 `maos/flows/custom_case.py` + `scripts/run_case.py` + `scenarios/custom/refund-case.json`：政策视图、指令展开、窗口判定、DAG 骨架**逐个复用** `maos/flows/contrast.py` 的函数，只在骨架后补一段支付；`contracts/`、`core/` 与既有 flows 一行未动 | 另写一套政策展开迟早与 contrast 分叉，症状是「同一份数据两个结论」且不报错。分成两条入口而不是给 contrast 加开关，是因为两者的判据模型相反：对照实验必须有 `_expected` 才有意义，自定义数据则根本没有标准答案 —— 混在一个函数里，早晚有人给自定义 case 编一个期望值 |
 | 2026-09-01 | P8 | 承上一条：那份 case JSON 逐列对齐 `schema.sql`，不写代码的人根本填不出来 —— 「老板该以什么格式把退款交给 MAOS」没有答案 | 拆成**底账 + 申请表**两份：`scenarios/custom/ledger.json`（客户/渠道/商品/订单/政策，配一次，真实落地由 ERP 导出）与一张四列 CSV（订单号/诉求类型/申报金额/申请日期），入口 `scripts/run_requests.py` 按订单号从底账补齐其余字段，诉求类型认中文 | 让人每次手抄租户/渠道/SKU/订单版本，抄错一个字段裁定就错一次，**而且不会报错** —— 订单号是唯一该由人填的钥匙。诉求类型看不懂时报错不猜：猜错一个词，套用的就是另一条政策。两份分开还有一层：底账是外部系统快照（铁律 8 的「读到的那一版」），申请表是每天变的业务输入，混在一个文件里等于让人每天重抄一遍外部事实 |
 | 2026-09-02 | P8 | `docs/usage.md` 第 7 节写着「场景 5 与全部测试强制 scripted」，实际是**除场景 1 外全部**显式传 `force_scripted=True`；且没写 `BASE_URL` 拼接口径、静默降级怎么自证、`MAOS_LLM_TIMEOUT` 这三件事 | 按代码实况改准那句，并补：`/v1` 拼接、一行 `select_model_client` 自证命令、跨 origin 3xx 拒绝的理由、key 不落 `.env` 的持久化方式 | 手册没覆盖「人拿到 key 之后照哪份文档配」。原文那句会让人以为「除场景 5 都在跑真模型」，而实际只有场景 1 会出网 —— 配错 key 时的静默降级本来就无声，再加一句失真的范围描述，就成了「以为跑通了真模型」的假结论。只改文档，代码与证据一行未动 |
+
+## task-T68（意图派发与权限闸）
+
+2026-09-02。派单 `review/paste-T68.md` 与跨轨契约 `review/nl-contracts.md` §1.2 之外
+自行做的判断，五条。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | 派单 §0.2 说名单口径落在 `RoomApprovalBridge._effective_approvers`（私有方法）、且「不许 import 它」，但代码实况是那个方法只有一行 `current_approvers() or self.config.approvers` —— 真正的解析在**公开**的 `parse_approvers` / `current_approvers` | 对照测试对**公开** API（两个函数各对一遍），不碰私有方法；生产代码 `intent_dispatch.py` 一行都不 import hiclaw | 要钉的是**行为一致**，不是共享符号。对私有方法会让本轨测试绑在一个随时可改的面上；对公开函数既满足派单硬判据 5，又不在生产代码里制造轨间依赖（`maos.runtime` 不该为读一个名单绑上 hiclaw 这个可选依赖层）。派单 §8「不要 import hiclaw」按「生产代码不 import」执行，测试面为对照必须触及对方实现 —— 既有 `test_matrix_bus.py` / `test_config_source.py` 也是直接 import hiclaw，与仓库惯例一致 |
+| 2026-09-02 | P9 | `resolve_approvers(env)` 要不要有「不传 env 就读 `os.environ`」那一支 | **`env` 必传**，没有隐式读进程环境的路径 | 隐式读 `os.environ` 等于绕开 `maos.config` 的配置源 —— `MAOS_CONFIG_SOURCE=nacos` 时房间侧现读 Nacos，本模块却读进程环境，**这就是分叉的起点**，而分叉的症状是「同一个人两条路径待遇不同」，不报错。调用方从哪读，由调用方说了算 |
+| 2026-09-02 | P9 | `status` 查不到那个任务、以及 `approve`/`reject` 没带 task_id 时，该给哪种结局（派单只规定了正常路径） | 都给 `KIND_IGNORED`，不给 `KIND_DONE` / `KIND_CONFIRM` | `KIND_DONE` 的语义是「这条请求真的被回答了」，把「没查到」也算成 DONE，上游就分不出答了和没答。没带 task_id 的 approve 更不能猜一个出来 —— 猜错就是让人确认了一个他没说过的任务，那是 R2 在解析侧防的东西，派发侧不该把它放回来 |
+| 2026-09-02 | P9 | 派单 §5.4 的表里写「`MAOS_APPROVERS` 未设置 → 任何人任何意图都 `KIND_DENIED`」，但 §5.1 的判定顺序又把 `UNKNOWN` 放在权限闸**之前** | 按 §5.1 的顺序执行：空名单下 `approve`/`reject`/`status` 全 `DENIED`（六种组合逐个覆盖），`UNKNOWN` 仍 `IGNORED`，并各写一条测试把两者的分界钉死 | 判定顺序是安全面，改不得；而 `UNKNOWN` 本来就产不出任何动作，放行它不扩大任何权限面，把闲聊判成「无审批权限」只会在房间里刷噪音。两条测试放一起读，这个分界是显式的，不是漏网 |
+| 2026-09-02 | P9 | 名单外账号问「现在什么情况」（`status`）要不要放行 | 一并 `DENIED`，且拒绝的回话里**不带 task_id** | 任务状态是内部信息，权限闸判的是「你是谁」，不是「你想读还是想写」。回话里带上 task_id 等于顺带确认「这个任务存在」—— 拒绝路径不该泄漏它刚才拒绝掉的那条信息 |

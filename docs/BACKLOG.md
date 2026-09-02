@@ -1706,3 +1706,31 @@ tools 层要用只能延迟 import 绕环」已做完，了结到这个程度：
 | 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
 |---|---|---|---|---|
 | 2026-09-02 | P8 | `maos/tests/test_sandbox_isolation.py:199` / `:233` 的注释仍写「复用 code_repo_patch 的 `PROTECTED_SEGMENTS`」，判定已搬到 `maos/tools/paths.py` | 只是注释，不影响判定；但下一个照注释去 `code_repo_patch` 找定义的人会扑空 | 该文件不在本轨白名单（铁律 4，没当场改）。谁下次动那个文件顺手改掉即可 |
+
+## integrate-p9-t80-t83（四轨整合轮 · 域骨架下沉）
+
+T80/T81/T82/T83 四轨并入 `integrate/p9-t80-t83`，基线 `b35c618`，跨轨契约见
+`review/domain-slim-contracts.md`（该目录走 `.git/info/exclude`，按惯例不入库）。
+本轮只做合并、审查与收口，不做手册范围外的改动。
+
+合并态实测（编排侧在 `.worktrees/integrate-p9-slim` 当场跑，不是转述）：
+
+```text
+python3 -m pytest maos/tests -q   →  1631 passed, 39 skipped   exit=0   （基线 1584/39，+47 条新测试，零回归）
+python3 run.py                    →  exit=0，末行「全部场景通过：…」
+python3 scripts/check_docs.py     →  阻断 0 / 提示 37          exit=0   （基线提示 38）
+python3 scripts/gen_docs.py --check →  3 份文档与代码逐字节一致  exit=0
+```
+
+代码零冲突，四轨只在 `docs/BACKLOG.md` / `docs/DECISIONS.md` 尾部追加处撞车，
+双方内容全保留。冻结契约一行没碰，T74–T79 那轮的持有面零越界。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | **本轮生产代码净增 157 行，不是净减**（`maos/domain` + `maos/agents` + `maos/tools` + `maos/skills` 合计 +1676 / −1519）。骨架四个文件共 998 行，三域削掉 733 行、依赖方向纠正削掉 108 行 | 本轮真正买到的是「重复判定从 4 份收敛到 1 份 + tools→skills 依赖环消除 + 47 条测试守着行为不变」，**不是行数瘦身**。编排侧当初按 diff 同构度估的压缩空间偏乐观，记在这里是为了让后面的人不要拿「行数」当这类下沉轨的验收判据 —— 判据应当是「判定还剩几处」 | 不必处理，属口径备查 |
+| 2026-09-02 | P8 | **T80 与 T81 的削减比例分化，根因在跨轨契约不在执行**。`objects.py` 三域 338→199 / 354→200 / 274→179（削 41–45%，净减 80 行）；`guard.py` 三域 493→408 / 410→320 / 600→527（削 12–17%，净增 242 行） | guard 层削不动是三条契约约束叠加的结果：①报错文案必须保住具体表名（→ 每域一张 `CaseGuardTexts`）②对外 import 路径不许变（→ 每域一层转出包装）③各域异常类型独立（`ApCaseIdentityConflict` 与 `ClaimCaseIdentityConflict` 是调用方要分开 catch 的两类）。三条各自都对，叠一起就让每个域必须留一套装配代码。**T81 是照契约做的，不是没做到位** | 下一轮若要继续收敛 guard 层，得先决定放弃上面三条里的哪一条 —— 不放弃就到此为止了。放弃任何一条都要先想清楚代价：①丢了排查时看不出是哪张表 ②动 import 路径要改全部调用方 ③合并异常类型会让调用方分不清是哪个域炸的 |
+| 2026-09-02 | P8 | **T83 有三处白名单外改动，经复核判「被迫且正确」**：`scripts/check_docs.py`（删 `ALLOW_MISSING` 里那条 `maos/tools/paths.py` 尚未建的豁免）、`docs/skill-catalog.md`、`docs/toolport-contract.md`（纯行号漂移，`code_repo_patch.py:153→62`、`sandbox.py:723→706`） | 两处都是连锁：`paths.py` 一旦建出来，那条豁免就成死条目、`test_allow_missing_has_no_dead_entries` 变红；代码搬走后声明行号上移，`gen_docs.py --check` 变红。**是派单漏了预警**，不是子会话越界 —— T83 派单的 §4 白名单没列这三个文件，§0 也没像别的派单那样预警「本轨会让 gen_docs --check 变红」 | 已消解（本轮合并态四道门禁全绿）。**记在这里是给派单模板用的**：凡是新建文件或搬动带行号声明的代码，白名单里要预留 `scripts/check_docs.py` 与两份生成物文档 |
+| 2026-09-02 | P8 | **`scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG=1476` 过期 155 条**（合并态实测 1631） | **不是本轮造成的** —— 基线 `b35c618` 上就已经是 1584 vs 1476。`## integrate-p8-t47-t53` 第 1 条把它刷到 1456 之后，主干又涨了两轮 | **不在本轮刷**。T74–T79 那轮（退款 skill 重定制六轨）尚未并轨，条数还会再变一次，现在刷会立刻再过期。按 `## task-T51` 立的规程：由**两轮都并完之后**的那一次按合并态实跑一次改成实测值 |
+| 2026-09-02 | P8 | **退款域三层都没接骨架**（T80/T81/T82 各自记过一条，此处汇总）：`maos/domain/refund/objects.py` 未接 `_case_store`、`maos/domain/refund/guard.py` 未接 `_case_guard`、`maos/agents/refund/_base.py` 未接 `_domain_base` | 本轮终态是**中间态**：三个陪跑域接了骨架，refund 保持原样。不是漏了 —— 本轮它归 T74–T79 只读面（跨轨契约 §4），四轨若去改它，两轮合并时会在存储骨架这种地基上冲突 | **两轮都并完之后的整合轮接入**。接入判据三条：①`_guarded` 的表名报错文案里仍是 `refund_case` ②`agents/refund/_base.py` 的 docstring 是**第三种写法**，要与 `_domain_base` 里那两种用途一并核对，别直接覆盖 ③接完 `python3 run.py` 的场景 6/7 仍 exit=0 |
+| 2026-09-02 | P8 | **`_case_guard.py` 里的 `_CaseStore` 是按契约 §5 自写的薄封装，没有 import T80 的 `_case_store`** | 跨轨契约明写「并行轨之间只对形状负责，不对代码负责」，所以这是有意的中间态，不是重复实现漏了合 | **下一轮整合时把这层薄封装换掉**，让 `_case_guard` 直接用 `_case_store`。换的时候要确认 `query` / `lock_of` / `conn` 三个方法的语义仍然对得上 |
+| 2026-09-02 | P8 | **合回 `goai-restructure` 当前被挡**：主工作区有 12 处未提交，其中 `docs/BACKLOG.md`、`docs/DECISIONS.md` 是 `M`，属 ingress 轨（另一会话）的在制品，与本轮改的是同两份账本 | 直接 merge 必在这两份账本上撞。与 `## integrate-p8-t47-t53` 第 3 条是同一类情形（那次是 MCP 轨的 83 处在制品挡住快进） | 人类裁决三选一：①等 ingress 轨提交那两份账本 ②由人类先 stash ③本整合分支先挂着。**编排侧建议第 ①/③ 条**：本分支已自成一体且四门禁全绿，等 T74–T79 也并完再一次性合回并统一刷条数门禁，比现在合回少解一次账本冲突 |

@@ -36,6 +36,16 @@ CENT = Decimal("0.01")
 DEFAULT_RATIO = Decimal("1")
 DEFAULT_FEE = Decimal("0")
 
+#: `eligibility.unmet[*].requirement` 的封闭取值域（跨轨契约 §1.2 定义，本轨只读）。
+#: 枚举外的取值一律抛错而不是忽略：忽略会让「政策侧新加了一类条件判据」表现成
+#: 「金额悄悄按老口径算了」—— 而金额算错要到对账时才暴露。
+REQUIREMENT_KINDS = frozenset({
+    "min_evidence_count",
+    "requires_evidence_kinds",
+    "no_reason_days",
+    "warranty_basis",
+})
+
 
 def _dec(value, default: Decimal) -> Decimal:
     """把规则参数收敛成 Decimal。转不动就用缺省，不抛 —— 政策 body 是人维护的。"""
@@ -118,7 +128,7 @@ class FinanceSettleSkill(Skill):
         # 诉求金额不得超过实付：客户可以少要，不能多要。上限取实付而不是报错 ——
         # 多写一位数是常见笔误，按上限收敛并在 breakdown 里写清楚，比直接失败可用。
         base = min(claimed, paid)
-        ratio, fee, applied = self._params_of(policy)
+        ratio, fee, applied, excluded = self._params_of(policy)
         gross = _q(base * ratio)
         approved = _q(max(gross - fee, Decimal("0")))
 
@@ -134,6 +144,7 @@ class FinanceSettleSkill(Skill):
             "amount_approved": str(approved),
             "policy_version": policy.get("policy_version"),
             "applied_rules": applied,
+            "excluded_rules": excluded,
         }
 
         entry = {
@@ -167,23 +178,99 @@ class FinanceSettleSkill(Skill):
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _params_of(policy: dict) -> tuple[Decimal, Decimal, list[str]]:
-        """把命中规则的参数合成一组核算参数。
+    def _reason_of(item: dict) -> str:
+        """把一条 `unmet` 渲染成人读的排除原因。
 
-        多条规则同时命中时：比例取**最不利于商家**的一条（最大 ratio），扣费取最大 ——
+        **只搬 `unmet` 里已有的字段，本轨一个判据都不重算。** 两边各算一套的话，
+        「这条为什么被排除」在整合后就会分叉：政策侧说差一张图，金额侧说差两天，
+        对账的人无从判断哪一边是对的。
+        """
+        return (f"{item.get('requirement')} {item.get('required')} "
+                f"> actual {item.get('actual')}")
+
+    @staticmethod
+    def _ineffective_reasons(policy: dict) -> dict[str, str] | None:
+        """从 `policy["eligibility"]` 取「不予适用的规则 → 原因」。
+
+        返回 ``None`` 表示入参**没有** `eligibility` 键 —— 旧 Plan、v1.0.0 的历史
+        调用都是这个形状，一律按「全部规则均适用」处理，行为与引入本函数之前一致。
+
+        键在、但形状不对时**抛异常，不静默当成空**（跨轨契约 R5）：静默会把
+        「上游把结构改坏了」表现成「金额悄悄算错了」，而后者是本仓最难查的一类缺陷。
+        """
+        if "eligibility" not in policy:
+            return None
+
+        elig = policy.get("eligibility")
+        if not isinstance(elig, dict):
+            raise ValueError(
+                f"policy['eligibility'] 必须是 dict，实际 {type(elig).__name__}")
+        refs = elig.get("ineffective_rules")
+        if not isinstance(refs, list):
+            raise ValueError(
+                "policy['eligibility'] 缺少 list 型的 ineffective_rules，"
+                f"实际 {type(refs).__name__}")
+        unmet = elig.get("unmet", [])
+        if not isinstance(unmet, list):
+            raise ValueError(
+                f"policy['eligibility']['unmet'] 必须是 list，实际 {type(unmet).__name__}")
+
+        reasons: dict[str, list[str]] = {}
+        for item in unmet:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"eligibility.unmet 的元素必须是 dict，实际 {type(item).__name__}")
+            requirement = item.get("requirement")
+            if requirement not in REQUIREMENT_KINDS:
+                raise ValueError(
+                    f"eligibility.unmet 出现取值域外的 requirement={requirement!r}；"
+                    f"新增取值要先改跨轨契约再改代码，取值域：{sorted(REQUIREMENT_KINDS)}")
+            reasons.setdefault(str(item.get("rule_ref")), []).append(
+                FinanceSettleSkill._reason_of(item))
+
+        out: dict[str, str] = {}
+        for ref in refs:
+            ref = str(ref)
+            if ref not in reasons:
+                # 排除了却说不出为什么 —— 这样的 excluded_rules 在对账时等于没有。
+                raise ValueError(
+                    f"eligibility.ineffective_rules 列了 {ref}，但 unmet 里没有对应条目，"
+                    f"无从说明排除原因")
+            out[ref] = "；".join(reasons[ref])
+        return out
+
+    @staticmethod
+    def _params_of(policy: dict) -> tuple[Decimal, Decimal, list[str], list[dict]]:
+        """把**真正适用**的规则的参数合成一组核算参数。
+
+        条件不满足的规则（`eligibility.ineffective_rules`）先剔出去再合成：一条
+        「人为损坏免责」的排除规则在举证不足时本就不予适用，让它照样参与合成，
+        它那个 `refund_ratio: "0"` 会把金额一路压到零 —— 举证责任就这么被倒置了。
+
+        剩下的规则同时命中时：比例取**最不利于商家**的一条（最大 ratio），扣费取最大 ——
         这不是随手定的口径，而是「政策对客户的承诺是并集」的直接后果：
         任何一条当时生效的规则承诺了全额，商家就不能按另一条只退八成。
         """
         ratio, fee = DEFAULT_RATIO, DEFAULT_FEE
         applied: list[str] = []
+        excluded: list[dict] = []
         rules = policy.get("matched_rules") or []
+        reasons = FinanceSettleSkill._ineffective_reasons(policy)
         if not rules:
-            return ratio, fee, applied
+            return ratio, fee, applied, excluded
         ratios, fees = [], []
         for r in rules:
             params = r.get("params") if isinstance(r, dict) else None
             params = params if isinstance(params, dict) else {}
+            ref = f"{r.get('rule_no')}@v{r.get('version')}"
+            if reasons is not None and ref in reasons:
+                excluded.append({"rule_ref": ref, "reason": reasons[ref]})
+                continue
             ratios.append(_dec(params.get("refund_ratio"), DEFAULT_RATIO))
             fees.append(_dec(params.get("deduct_fee"), DEFAULT_FEE))
-            applied.append(f"{r.get('rule_no')}@v{r.get('version')}")
-        return max(ratios), max(fees), applied
+            applied.append(ref)
+        if not ratios:
+            # 命中的规则全被剔光：落回缺省口径（全额、不扣费），而不是返回 0。
+            # 「一条都不适用」的意思是没有任何规则限制退款，不是没得退。
+            return DEFAULT_RATIO, DEFAULT_FEE, applied, excluded
+        return max(ratios), max(fees), applied, excluded

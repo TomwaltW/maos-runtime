@@ -1,0 +1,93 @@
+{
+  "_note": "应付账款底账 —— IT / 顾问配一次，之后不用天天动。里面是「执行前从企业系统读到的那一版」：供应商主数据、采购订单、收货单。业务方每天要给的不是这份文件，而是 ap-invoices.csv 那张发票明细表。真实落地时这份底账由 ERP / WMS 导出，不用手写。字段与 maos/domain/ap/fixtures.py 的 seed_supplier / seed_three_way 形参一一对齐 —— 三单落库只走那一条路径。",
+  "_provenance": "按行业惯例构造的合成数据，不得作为真实企业数据引用。",
+  "_fields": "supplier.payment_means_code 取 UNCL4461 的合法值（30 = 信用转账），ap.plan-payment 会验它，写不在码表里的值当场拒。purchase_orders[].version 是订单快照版本 —— 权威在 ERP，这里存的是读到的那一版（铁律 8）。goods_receipts[].lines[].rejected 是收货不合格数，发票数量要与「到货数 − 不合格数」比，不是与到货数比。",
+  "_not_wired": "ordered_at / received_at / warehouse 三个字段本轮只留档，不下传到库：fixtures.seed_three_way 目前统一用开票日期当三单的读取时刻、仓库写死 WH-1，下传它们要改引擎面。已记 docs/BACKLOG.md。",
+
+  "suppliers": [
+    {
+      "tenant_id": "tnt-ap-demo",
+      "supplier_id": "SUP-8801",
+      "name": "临港精密铸造",
+      "payment_means_code": "30",
+      "payment_terms": "月结 30 天",
+      "bank_account": "62220000****8801"
+    },
+    {
+      "tenant_id": "tnt-ap-demo",
+      "supplier_id": "SUP-8802",
+      "name": "甬江密封材料",
+      "payment_means_code": "30",
+      "payment_terms": "月结 45 天",
+      "bank_account": "62220000****8802"
+    }
+  ],
+
+  "purchase_orders": [
+    {
+      "po_id": "PO-2026-0901",
+      "version": 1,
+      "supplier_id": "SUP-8801",
+      "currency": "CNY",
+      "ordered_at": "2026-07-06",
+      "lines": [
+        {"line_no": 1, "sku": "SKU-FLG-DN80", "quantity": 120, "unit_price": "86.00"},
+        {"line_no": 2, "sku": "SKU-GSK-DN80", "quantity": 240, "unit_price": "7.50"}
+      ]
+    },
+    {
+      "po_id": "PO-2026-0902",
+      "version": 1,
+      "supplier_id": "SUP-8802",
+      "currency": "CNY",
+      "ordered_at": "2026-07-13",
+      "lines": [
+        {"line_no": 1, "sku": "SKU-ORING-45", "quantity": 500, "unit_price": "3.20"}
+      ]
+    },
+    {
+      "po_id": "PO-2026-0903",
+      "version": 2,
+      "supplier_id": "SUP-8802",
+      "currency": "CNY",
+      "ordered_at": "2026-07-20",
+      "lines": [
+        {"line_no": 1, "sku": "SKU-SEAL-90", "quantity": 60, "unit_price": "128.00"}
+      ]
+    }
+  ],
+
+  "goods_receipts": [
+    {
+      "gr_id": "GR-2026-0901",
+      "po_id": "PO-2026-0901",
+      "po_version": 1,
+      "received_at": "2026-08-05",
+      "warehouse": "WH-1",
+      "lines": [
+        {"line_no": 1, "sku": "SKU-FLG-DN80", "received": 120, "rejected": 0},
+        {"line_no": 2, "sku": "SKU-GSK-DN80", "received": 240.3, "rejected": 0}
+      ]
+    },
+    {
+      "gr_id": "GR-2026-0902",
+      "po_id": "PO-2026-0902",
+      "po_version": 1,
+      "received_at": "2026-08-11",
+      "warehouse": "WH-2",
+      "lines": [
+        {"line_no": 1, "sku": "SKU-ORING-45", "received": 500, "rejected": 20}
+      ]
+    },
+    {
+      "gr_id": "GR-2026-0903",
+      "po_id": "PO-2026-0903",
+      "po_version": 2,
+      "received_at": "2026-08-18",
+      "warehouse": "WH-1",
+      "lines": [
+        {"line_no": 1, "sku": "SKU-SEAL-90", "received": 60, "rejected": 0}
+      ]
+    }
+  ]
+}

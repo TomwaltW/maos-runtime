@@ -1609,3 +1609,15 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-02 | P9 | `--allow-degraded` 下没有房间，也就没有任何消息进来，进程只能空转 | 降级时改从 **stdin** 逐行读 `<sender>\|<正文>` 驱动（`_stdin_pump`），EOF 收工 | 派单没要求这条，但不做的话 `--allow-degraded` 是个验不了任何东西的空循环：本地没 Synapse 的机器（含本 worktree）根本无法自证路由是否成立。格式故意选最土的一种，一行 `printf` 就能喂，且一行网络都不走 —— T69 的冒烟脚本可以直接用 |
 | 2026-09-02 | P9 | `RoomApprovalBridge` 自己带 `channel` 就会自己发送，与 `RoomAgent` 的发送路径构成两个出口 | 构造 bridge 时传 `channel=None`，让它只判定、只返回文本，**发送统一走 `RoomAgent.say()`** | 退避重试、`RoomSendTimeout` 不重发、失败不退出这三条只写在一个出口里才守得住。两个出口的症状是「显式指令的回执撞上 429 就丢了，自然语言的却重试了」，而这种不一致在房间里看不出来，只能靠读两份代码发现 |
 | 2026-09-02 | P9 | 人说「同意」但没写 task_id 时，要不要取「全场唯一那条待审任务」 | **取，但只给 `CONF_LOW`**；一旦人自己写出了一个对不上 `known_task_ids` 的 id（形如 `task_xxxx`），立刻降 `UNKNOWN`，不再回退到唯一那条 | 只有一条在等人时，「同意」指的就是它，这是房间里最常见的说法，不认等于自然语言层白做。但回退**不能覆盖人已经写明的意图**：他说 A、机器人回「你是想批准 B 吗」，而 B 恰好是真在等人的那条 —— 这是把 R2 的「不许编 id」换了个形式再犯一次。R1 之下最坏结果只是一句引导错的确认话，可那句话正是要引导人去打不可逆命令的 |
+## task-T68（意图派发与权限闸）
+
+2026-09-02。派单 `review/paste-T68.md` 与跨轨契约 `review/nl-contracts.md` §1.2 之外
+自行做的判断，五条。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | 派单 §0.2 说名单口径落在 `RoomApprovalBridge._effective_approvers`（私有方法）、且「不许 import 它」，但代码实况是那个方法只有一行 `current_approvers() or self.config.approvers` —— 真正的解析在**公开**的 `parse_approvers` / `current_approvers` | 对照测试对**公开** API（两个函数各对一遍），不碰私有方法；生产代码 `intent_dispatch.py` 一行都不 import hiclaw | 要钉的是**行为一致**，不是共享符号。对私有方法会让本轨测试绑在一个随时可改的面上；对公开函数既满足派单硬判据 5，又不在生产代码里制造轨间依赖（`maos.runtime` 不该为读一个名单绑上 hiclaw 这个可选依赖层）。派单 §8「不要 import hiclaw」按「生产代码不 import」执行，测试面为对照必须触及对方实现 —— 既有 `test_matrix_bus.py` / `test_config_source.py` 也是直接 import hiclaw，与仓库惯例一致 |
+| 2026-09-02 | P9 | `resolve_approvers(env)` 要不要有「不传 env 就读 `os.environ`」那一支 | **`env` 必传**，没有隐式读进程环境的路径 | 隐式读 `os.environ` 等于绕开 `maos.config` 的配置源 —— `MAOS_CONFIG_SOURCE=nacos` 时房间侧现读 Nacos，本模块却读进程环境，**这就是分叉的起点**，而分叉的症状是「同一个人两条路径待遇不同」，不报错。调用方从哪读，由调用方说了算 |
+| 2026-09-02 | P9 | `status` 查不到那个任务、以及 `approve`/`reject` 没带 task_id 时，该给哪种结局（派单只规定了正常路径） | 都给 `KIND_IGNORED`，不给 `KIND_DONE` / `KIND_CONFIRM` | `KIND_DONE` 的语义是「这条请求真的被回答了」，把「没查到」也算成 DONE，上游就分不出答了和没答。没带 task_id 的 approve 更不能猜一个出来 —— 猜错就是让人确认了一个他没说过的任务，那是 R2 在解析侧防的东西，派发侧不该把它放回来 |
+| 2026-09-02 | P9 | 派单 §5.4 的表里写「`MAOS_APPROVERS` 未设置 → 任何人任何意图都 `KIND_DENIED`」，但 §5.1 的判定顺序又把 `UNKNOWN` 放在权限闸**之前** | 按 §5.1 的顺序执行：空名单下 `approve`/`reject`/`status` 全 `DENIED`（六种组合逐个覆盖），`UNKNOWN` 仍 `IGNORED`，并各写一条测试把两者的分界钉死 | 判定顺序是安全面，改不得；而 `UNKNOWN` 本来就产不出任何动作，放行它不扩大任何权限面，把闲聊判成「无审批权限」只会在房间里刷噪音。两条测试放一起读，这个分界是显式的，不是漏网 |
+| 2026-09-02 | P9 | 名单外账号问「现在什么情况」（`status`）要不要放行 | 一并 `DENIED`，且拒绝的回话里**不带 task_id** | 任务状态是内部信息，权限闸判的是「你是谁」，不是「你想读还是想写」。回话里带上 task_id 等于顺带确认「这个任务存在」—— 拒绝路径不该泄漏它刚才拒绝掉的那条信息 |

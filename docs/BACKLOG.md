@@ -1659,3 +1659,13 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-02 | P9 | **`HumanApprovalQueue.decide()` 对库里不存在的 task_id 抛的是 `TypeError: 'NoneType' object is not subscriptable`** | 这句会被 `RoomApprovalBridge` 原样贴进房间回执：实跑截到的是「审批未生效：task_997ca4541e66 —— 'NoneType' object is not subscriptable」。演示当天房间里的人看到这句，既不知道是自己打错了 id，也不知道该怎么办 | 归 `maos/runtime/gate.py` 那一轨：`decide` 开头查一次任务，查不到就抛一个说人话的异常（「库里没有这条任务，请核对 task_id」）。不在本轨白名单 |
 | 2026-09-02 | P9 | **`known_task_ids` 只能靠 `--plan-id` 显式喂**：`Store` 没有「跨 plan 按状态列任务」的方法，`HumanApprovalQueue.pending()` 又只接受单个 `plan_id` | 常驻监听器上线时并不知道房间里将来会出现哪些 plan。不给 `--plan-id` 时自然语言路径认不出任何 task_id（一律降 UNKNOWN 静默）——**保守是对的**，但可用性上等于自然语言只在「盯着某个 plan」时才活着。显式 `/approve` 不受影响 | 归下一轮：要么给 `Store` 加一个只读的 `list_blocked_tasks()`（新增方法不动现有表结构，不违铁律 1），要么让监听器订阅 `TaskBlocked` 事件自己维护待审集合。后者更贴事件溯源，但要碰 `maos/core/**` |
 | 2026-09-02 | P9 | **`_KeywordParser` / `_StubDispatcher` 是并行期替身，整合后必须删掉** | 留着就是第二份解析与派发口径，而两份判据一定会漂；漂了的症状是「同一句话在冒烟里认得出、在房间里认不出」，且不会有任何测试变红 | 整合时（T66/T68 落地后）按两处 `# INTEGRATION-POINT:` 注释替换，**删掉替身类本身**，不要留成「默认实现」。`maos/tests/test_room_agent.py` 里针对替身的那两节（第 2、11 节）跟着删或改喂真实现 |
+## task-T68（意图派发与权限闸，本轮都不改）
+
+2026-09-02 做 `maos/runtime/intent_dispatch.py` 时发现的三条。都在本轨白名单外，
+按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **两条审批路径在「env 没给名单」时行为不同**：房间侧 `RoomApprovalBridge._effective_approvers` 是 `current_approvers() or self.config.approvers` —— 读到空会**回落到构造时那份快照**；本轨的 `resolve_approvers(env)` 没有这一支，空就是空、一律拒绝 | 今天不出事：真房间跑的时候 `MAOS_APPROVERS` 是配着的，两边给出同一个名单（对照测试覆盖的正是这一段）。但 `MatrixBusConfig.from_env({...})` / `room_demo.py` 降级自检那种「env 没配、config 有快照」的场景下，同一个人走显式指令能批、走自然语言会被拒 —— **症状是「时灵时不灵」，不会报错** | 归整合轨（T66→T67/T68→T69 并轨那一步）。要么给 `dispatch_intent` 的调用方显式传 bridge 那份 effective 名单，要么把回落语义也搬进 `resolve_approvers`。**别让调用方各自决定**，那正是分叉的来源 |
+| 2026-09-02 | P9 | **`maos/config/__init__.py` 的配置键登记表只记了一个读取点**：`MAOS_APPROVERS` 那行写的是 `hiclaw/matrix_bus.py::RoomApprovalBridge._effective_approvers`，本轮新增的 `maos/runtime/intent_dispatch.py::resolve_approvers` 没登记 | 那张表是「动这个键会影响谁」的唯一索引，也是安全事件时的排查起点。少一个读取点，排查时会漏掉自然语言这条路径 | `maos/config/**` 是配置审计面（只读，动它属于安全事件），本轨没动。归有权改配置面的那一轨，补一行即可 |
+| 2026-09-02 | P9 | **状态查询只认单个任务，没有 plan 级概览**：`dispatch_intent` 的签名（跨轨契约 §1.2）不带 `plan_id`，所以「现在什么情况」这种不带 task_id 的问法只能反问「想查哪个任务」 | 人在房间里最自然的问法恰恰是不带 id 的那种。现在的回答虽然不错，但没解决他的问题 | 归 T69 端到端冒烟之后再定：要加就得改跨轨契约的签名，属于四轨共同口径，**不许单轨自己加参数** |

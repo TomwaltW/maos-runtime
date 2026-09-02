@@ -164,3 +164,47 @@ def required(payload: dict, *keys: str) -> tuple:
     if missing:
         raise ValueError(f"缺必填入参：{missing}")
     return tuple(out)
+
+
+# ---------------------------------------------------------------- 证据 kind 归一化
+#: `customer_evidence.kind` 的规范值域。**只有这五个**，由收案面（refund.intake）定义，
+#: 政策面按它对证据计数（政策规则里的 `requires_evidence_kinds` 写的就是这套词）。
+#:
+#: 为什么需要它：渠道送进来的 kind 是自由文本 —— 同一张照片可能写成 `photo` /
+#: `img` / `screenshot`。政策里写 ["image"]，库里落 photo，一条都对不上，
+#: 举证闸于是永远判「证据不足」，**而且不报错**。这是一条静默失效。
+EVIDENCE_KINDS = ("image", "video", "audio", "document", "attachment")
+
+#: 常见写法 -> 规范值。**只认字面同义词，不做语义猜测**。
+#: 表只覆盖常见写法，覆盖不全是预期内的 —— 认不出的走 attachment 兜底，不是异常。
+_KIND_ALIASES = {
+    "img": "image", "photo": "image", "picture": "image", "screenshot": "image",
+    "jpg": "image", "jpeg": "image", "png": "image",
+    "mp4": "video", "mov": "video", "recording": "video",
+    "voice": "audio", "mp3": "audio", "录音": "audio",
+    "pdf": "document", "doc": "document", "docx": "document",
+    "scan": "document", "扫描件": "document",
+}
+
+
+def normalize_evidence_kind(raw: Any) -> str:
+    """把渠道送来的 kind 归一化到 `EVIDENCE_KINDS` 之一。三条口径：
+
+    1. **这不是白名单过滤**：认不出的归到 attachment，证据本身**一条都不丢**。
+       证据集合的成员判据仍然只是「有没有 uri」（见 `intake.py::_evidence_of`）——
+       按 kind 白名单挑会把没见过的证据类型静默丢掉，那比对不上更糟。
+    2. 大小写不敏感、去首尾空白，但**不按 uri 后缀反推**：`.jpg` 结尾而 kind 声明
+       document 时以声明为准。后缀是传输细节，kind 是提交方的声明 —— 声明优先，
+       且可审计（谁声明的、声明了什么，都留得下痕）。
+    3. 认不出**不抛异常**：渠道送来没见过的词是常态。收案面只负责归一化并留痕
+       （原始声明由调用方保留成出参里的 `kind_raw`），举证够不够由政策面判。
+
+    库里只存规范值 —— `customer_evidence` 本轮不加列，`kind_raw` 只在出参与
+    event_log 里（取舍已记 docs/BACKLOG.md）。
+    """
+    key = str(raw or "").strip().lower()
+    if not key:
+        return "attachment"
+    if key in EVIDENCE_KINDS:
+        return key
+    return _KIND_ALIASES.get(key, "attachment")

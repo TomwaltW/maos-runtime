@@ -1,157 +1,73 @@
 """理赔域的读写口径 —— 建表、业务引用、条款版本锁定。
 
-**为什么这里自带一层 SQL 访问器**：`maos/core/store.py` 是冻结面（铁律 1），
+**为什么这里有一层 SQL 访问器**：`maos/core/store.py` 是冻结面（铁律 1），
 而 `Store` 抽象基类只有 plan/task/artifact/event_log 那几个具名方法，没有通用 execute。
 理赔域的 12 张业务表（外加 1 张迁移记账表 `claim_schema_version`）是**新增表**，
-只能从 `SqliteStore` 的连接上走。因此本模块提供 `execute()` / `query()` 两个薄壳，
+只能从 `SqliteStore` 的连接上走。因此本域提供 `execute()` / `query()` 两个薄壳，
 理赔域的所有 SQL 都从这里过 —— store.py 一个字不改。
-
-口径与 `maos/domain/refund/objects.py` 逐条同构，但**不 import 它**：那会把两个域
-焊死成一个，而本轨要证的恰恰是「换域只新增文件」。同构而不共用，是有意的重复。
 
 `execute()` **拒绝任何对 `claim_case` 的写入**：那张表只有 `guard.py` 写得动。
 这是把「不留第二条路径」从 grep 自查升级成代码级拦截 —— grep 挡的是提交进仓库的
 旁路，这一条挡的是运行时的旁路。
+
+## 那层薄壳现在住在 `maos/domain/_case_store.py`
+
+上面这些机制本文件不再自己实现一遍，从 `make_case_store(case_table="claim_case", ...)`
+取。原因是实测出来的：本文件与 `maos/domain/ap/objects.py` 的 `_guarded` 逐行 diff
+只有 4 处，全部是 `claim_case` → `ap_case` 这类表名字符串 —— 可参数化的重复，
+不是领域差异。
+
+**这不等于「域与域焊在一起」**：`_case_store` 不属于任何一个域，是几个域共同踩的
+地板；理赔域仍然不 import 退款域，反之亦然。换域照旧只新增文件，
+多调一次 `make_case_store()` 而已。
+
+留在本文件的是真正属于理赔的那些：条款版本锁定（`pinned_terms_version` /
+`terms_at_bind`）、本域的迁移步骤（`_MIGRATIONS` / `_migrate`）与业务引用取值域。
 """
 
 from __future__ import annotations
 
-import contextlib
-import re
-import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .._case_store import _now, make_case_store
+
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
-#: `claim_case` 的写入必须走 guard.create_case / guard.update_biz_status。
-#: 正则与退款域同一套写法：认 insert/update/delete/replace 四种写语句，
-#: 表名两侧允许带引号或方括号（不同后端的引用风格）。
-#: ALTER TABLE 刻意不在拦截面上 —— 「给 claim_case 加一列」是正常迁移，不是旁路写入。
-_CLAIM_CASE_WRITE = re.compile(
-    r"\b(?:insert\s+(?:or\s+\w+\s+)?into|update|delete\s+from|replace\s+into)\s+"
-    r"[\"'`\[]?claim_case[\"'`\]]?\b",
-    re.IGNORECASE,
+#: 本域的存储口径。`schema.sql` 在这里一次读进来：`ensure_schema()` 与
+#: `_MIGRATIONS` 里每一步拿到的必须是**同一份**脚本文本。
+_CASE_STORE = make_case_store(
+    case_table="claim_case",
+    schema_sql=_SCHEMA_PATH.read_text(encoding="utf-8"),
 )
 
+#: 下面这组是骨架的通用件，绑成模块级名字 —— 对外的调用形态
+#: （`objects.execute(store, sql, params)`）与下沉前逐字相同，调用方一行不用改。
+BypassedGuardError = _CASE_STORE.BypassedGuardError
+_conn = _CASE_STORE._conn
+lock_of = _CASE_STORE.lock_of
+_guarded = _CASE_STORE._guarded
+execute = _CASE_STORE.execute
+query = _CASE_STORE.query
+_atomic = _CASE_STORE._atomic
+_has_column = _CASE_STORE._has_column
+applied_schema_version = _CASE_STORE.applied_schema_version
+ensure_schema = _CASE_STORE.ensure_schema
+attach_business_ref = _CASE_STORE.attach_business_ref
+list_business_refs = _CASE_STORE.list_business_refs
+resolve_business_ref = _CASE_STORE.resolve_business_ref
 
-class BypassedGuardError(RuntimeError):
-    """有人试图绕开 `guard.py` 直接写 `claim_case`。"""
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _conn(store: Any) -> sqlite3.Connection:
-    """取底层连接。只认暴露了 `_conn` 的 Store 实现（当前是 `SqliteStore`）。"""
-    conn = getattr(store, "_conn", None)
-    if conn is None:
-        raise TypeError(
-            f"{type(store).__name__} 没有暴露 sqlite 连接，理赔域的新增表无处落库。"
-            " 换后端时在这里加一条分支，不要去改冻结的 store.py。"
-        )
-    return conn
-
-
-def lock_of(store: Any) -> Any:
-    """借 Store 自己的锁。
-
-    `SqliteStore` 的连接是**共享**的（`check_same_thread=False` + 一把 RLock）。
-    理赔域绕过 store.py 直接用这条连接，就必须一并用它那把锁：否则别的线程在
-    `insert_task` 里一次 `commit()`，就把 guard 这边只写了回执、还没改状态的
-    事务提交掉了 —— 「paid 与回执同事务」当场破，而且是偶发的。
-    """
-    lock = getattr(store, "_lock", None)
-    return lock if lock is not None else contextlib.nullcontext()
-
-
-def _guarded(sql: str) -> str:
-    if _CLAIM_CASE_WRITE.search(sql):
-        raise BypassedGuardError(
-            "claim_case 的写入必须走 guard.create_case / guard.update_biz_status，"
-            "不许经 objects.execute 旁路（铁律 8）"
-        )
-    return sql
-
-
-def execute(store: Any, sql: str, params: tuple | list = ()) -> None:
-    """理赔域的写入口径。对 `claim_case` 的写入一律拒绝。"""
-    conn = _conn(store)
-    with lock_of(store):
-        conn.execute(_guarded(sql), tuple(params))
-        conn.commit()
-
-
-def query(store: Any, sql: str, params: tuple | list = ()) -> list[dict]:
-    """理赔域的读取口径。读不设限 —— 守的是写入方，不是读取方。"""
-    with lock_of(store):
-        rows = _conn(store).execute(sql, tuple(params)).fetchall()
-    return [dict(r) for r in rows]
+#: 迁移那组「同生共死」语句用的保存点名，由 `_case_store` 按域前缀现造
+#: （本域是 `claim_schema_migrate`）。多个域的迁移嵌套跑时保存点不能重名。
+_MIGRATE_SAVEPOINT = _CASE_STORE.savepoint
 
 
 # ------------------------------------------------------------------ schema 迁移
-#: 迁移那组「同生共死」语句用的保存点名。带域前缀：退款域那套用的是
-#: `refund_schema_migrate`、知识层用 `kb_schema_migrate`，多个域的迁移嵌套跑时
-#: 保存点不能重名。
-_MIGRATE_SAVEPOINT = "claim_schema_migrate"
-
-
-def _atomic(store: Any, statements: list[tuple[str, tuple]]) -> None:
-    """一组语句同生共死，**DDL 也算在内**。
-
-    迁移非用它不可：像「删表 -> 建表 -> 重灌」这种三步走，断在中间而前两步已落盘的
-    话，表在、列全、**一行数据都没有** —— 下一次跑迁移的探针看到列已存在于是跳过，
-    那张表从此恒空且不报错。
-
-    **光靠 `rollback()` 撤不回 DDL**：Python 的 sqlite3 在传统模式下只为 DML 隐式开
-    事务，`DROP TABLE` 是在自动提交下跑的，一发就落盘。显式发一句 `SAVEPOINT` 才能
-    把 DDL 拉进事务。用 `SAVEPOINT` 而不是 `BEGIN`：外层已经在事务里时 `BEGIN` 会报
-    cannot start a transaction within a transaction。
-
-    **每条语句照样过 `_guarded()`**（铁律 8）。迁移直连底层连接是为了拿事务，
-    不是为了拿豁免权。
-    """
-    for sql, _params in statements:
-        _guarded(sql)
-    conn = _conn(store)
-    with lock_of(store):
-        conn.execute(f"SAVEPOINT {_MIGRATE_SAVEPOINT}")
-        try:
-            for sql, params in statements:
-                conn.execute(sql, tuple(params))
-        except BaseException:
-            conn.execute(f"ROLLBACK TO {_MIGRATE_SAVEPOINT}")
-            conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
-            conn.rollback()
-            raise
-        conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
-        conn.commit()
-
-
-def _has_column(store: Any, table: str, column: str) -> bool:
-    """探「这张表有没有这一列」。用一条 SELECT，**不用 PRAGMA**。
-
-    两条理由，第二条是坑：
-
-    · PRAGMA 是 SQLite 方言，换后端时不保证有（PG 那边没有）。
-    · `PRAGMA table_info` **不列生成列** —— 生成列要 `table_xinfo` 才看得到。
-      拿 table_info 判一个生成列在不在，新库上会答「不在」，于是每次都去 ALTER
-      一次，每次都撞 duplicate column name。
-
-    表名列名都是本模块的字面量，不是外来输入，所以直接拼进 SQL。
-    异常一律当「没这列」：真是连接坏了，紧随其后的 ALTER 会自己响。
-    """
-    try:
-        query(store, f"SELECT {column} FROM {table} LIMIT 1")
-        return True
-    except Exception:                                  # noqa: BLE001 —— 探针不该炸
-        return False
-
-
 #: 迁移步骤表，**按版本号升序**，每项是 `(版本号, 说明, 步骤函数)`，
 #: 步骤函数签名 `step(store, script)`（`script` 是 schema.sql 原文）。
+#:
+#: **留在本域不进骨架**：各域的迁移步骤是各域自己的历史，没有一步是共通的。
+#: 骨架只提供步骤要用的两个原语 `_atomic` / `_has_column`。
 #:
 #: **当前是空的，这是对的**：本域刚落地，一列都还没改过。凭空造一次迁移等于给
 #: 老库跑一段没人验证过的搬运，风险白担（口径同退款域 `_MIGRATIONS`）。
@@ -164,13 +80,6 @@ _MIGRATIONS: tuple[tuple[int, str, Any], ...] = ()
 #: 理赔域 schema 的当前版本。跟着 `_MIGRATIONS` 算，**不手写** —— 手写的那份迟早和
 #: 实际步骤对不上，而对不上的症状是「迁移悄悄不跑了」。
 CLAIM_SCHEMA_VERSION = max((v for v, _label, _step in _MIGRATIONS), default=0)
-
-
-def applied_schema_version(store: Any) -> int:
-    """这库已经升到第几版。没有记账行就是 0。"""
-    rows = query(store, "SELECT MAX(version) AS version FROM claim_schema_version")
-    version = rows[0]["version"] if rows else None
-    return int(version) if version is not None else 0
 
 
 def _migrate(store: Any, script: str) -> None:
@@ -193,81 +102,15 @@ def _migrate(store: Any, script: str) -> None:
                        " VALUES (?, ?)", (version, _now()))
 
 
-# ---------------------------------------------------------------------- 建表
-def ensure_schema(store: Any) -> None:
-    """建表 + 迁移到最新版本。幂等，可连跑。
-
-    **两段，缺一不可**：`schema.sql` 那段全是 `IF NOT EXISTS`，只管「表不在就建」，
-    对已经存在的表一个字都改不动；`_migrate()` 那段才管「表在但形状旧」。
-    """
-    script = _SCHEMA_PATH.read_text(encoding="utf-8")
-    conn = _conn(store)
-    with lock_of(store):
-        conn.executescript(script)
-        conn.commit()
-    _migrate(store, script)
+#: 把本域的迁移入口挂回骨架 —— `ensure_schema()` 建完表之后调的就是它。
+#: **两段，缺一不可**：`schema.sql` 那段全是 `IF NOT EXISTS`，只管「表不在就建」，
+#: 对已经存在的表一个字都改不动；`_migrate()` 那段才管「表在但形状旧」。
+_CASE_STORE.migrate = _migrate
 
 
 # ------------------------------------------------------------ DAG -> 业务对象
-def attach_business_ref(
-    store: Any,
-    *,
-    plan_id: str,
-    task_id: str,
-    tenant_id: str,
-    object_type: str,
-    object_id: str,
-    object_version: int = 0,
-    purpose: str = "",
-) -> dict:
-    """把一个 Task 挂到一个业务对象上 —— **只存引用，不存副本**。
-
-    存副本会立刻产生第二份事实：业务对象改了，Task 里那份不会跟着改，
-    而下游分不清哪份是真的。引用只指路，读的时候一定读到当前那一份。
-    """
-    row = {
-        "plan_id": plan_id, "task_id": task_id, "tenant_id": tenant_id,
-        "object_type": object_type, "object_id": object_id,
-        "object_version": int(object_version), "purpose": purpose,
-        "created_at": _now(),
-    }
-    execute(
-        store,
-        "INSERT OR REPLACE INTO claim_business_ref (plan_id, task_id, tenant_id, object_type,"
-        " object_id, object_version, purpose, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (row["plan_id"], row["task_id"], row["tenant_id"], row["object_type"],
-         row["object_id"], row["object_version"], row["purpose"], row["created_at"]),
-    )
-    return row
-
-
-def list_business_refs(store: Any, *, plan_id: str, task_id: str | None = None) -> list[dict]:
-    if task_id is None:
-        return query(store, "SELECT * FROM claim_business_ref WHERE plan_id=?"
-                            " ORDER BY task_id, object_type, object_id", (plan_id,))
-    return query(store, "SELECT * FROM claim_business_ref WHERE plan_id=? AND task_id=?"
-                        " ORDER BY object_type, object_id", (plan_id, task_id))
-
-
-def resolve_business_ref(store: Any, ref: dict) -> dict | None:
-    """按引用取回被指对象；指不到（对象不存在或版本对不上）返回 None。
-
-    `claim_business_ref` 不带外键 —— 它跨的是「编排层对象」与「业务对象」两个世界，
-    完整性靠这个函数在读的时候查，不靠数据库替我们保证。
-    """
-    table, key = _REF_TARGETS.get(ref["object_type"], (None, None))
-    if table is None:
-        return None
-    sql = f"SELECT * FROM {table} WHERE tenant_id=? AND {key}=?"
-    params: list[Any] = [ref["tenant_id"], ref["object_id"]]
-    if table in _VERSIONED_REF_TABLES:
-        sql += " AND version=?"
-        params.append(ref["object_version"])
-    rows = query(store, sql, params)
-    return rows[0] if rows else None
-
-
-#: object_type -> (表名, 主键列名)
+#: object_type -> (表名, 主键列名)。本域自己的取值域；`resolve_business_ref()`
+#: 在骨架里，取值域挂在本域自己身上。
 _REF_TARGETS: dict[str, tuple[str, str]] = {
     "claim_case":            ("claim_case", "claim_id"),
     "policy_contract":       ("policy_contract", "policy_no"),
@@ -275,6 +118,9 @@ _REF_TARGETS: dict[str, tuple[str, str]] = {
     "claim_payment_request": ("claim_payment_request", "request_id"),
 }
 _VERSIONED_REF_TABLES = {"policy_contract", "policy_terms"}
+
+_CASE_STORE.ref_targets = _REF_TARGETS
+_CASE_STORE.versioned_ref_tables = _VERSIONED_REF_TABLES
 
 
 # ------------------------------------------------------------------ 条款版本

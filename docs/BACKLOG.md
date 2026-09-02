@@ -1639,3 +1639,14 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T80（域存储骨架下沉时看到、本轮不改的三条）
+
+2026-09-02 把四个域同构的存储骨架下沉成 `maos/domain/_case_store.py`、三个陪跑域接过去时记的。
+基线 `b35c618`，跨轨契约见本轮那份 `domain-slim-contracts.md`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | **本文件 `## orchestration-p3` 第 1 条（2026-08-28 那行）已过期** —— 那条写着「v4 手册 P1 第 7 步的 StorePort 抽象从未落地，`maos/store/` 目录不存在，`port.py` / `sqlite_store.py` / `pg_store.py` 三个文件一个都没有」。实测三个文件都在：`maos/store/port.py` 里有 `class StorePort(Protocol)`，`sqlite_store.py` 256 行、`pg_store.py` 438 行 | 那条现在会误导两拨人：一是按它去补 StorePort 的人，会发现要补的东西已经在了；二是 `## task-C` 里 2026-08-28 那条「`objects.py::_conn()` 取 `SqliteStore` 私有属性」的处理时机挂在「StorePort 落地时一并改」上 —— 前提已成立，那条其实**现在就能做**。本轮没做是因为它不是结构性下沉，是换依赖面，属铁律 4 的范围外优化 | **只在本节记这一条更正，不改 `## orchestration-p3` 那条旧记录** —— 旧记录是 2026-08-28 当时的真实判断，改了就看不出演进。下一轮做 `_conn` / `lock_of` 换 StorePort 时，改的是 `_case_store.py` 一处（三个域跟着走），比下沉前要改四处便宜 |
+| 2026-09-02 | P8 | **`maos/domain/refund/objects.py` 仍是自己那份骨架副本，未接 `_case_store`** | 本轮终态是**中间态**：三个陪跑域接了骨架，refund 没接。不是漏了 —— 本轮它归同期 T74–T79 的只读面（跨轨契约 §4），改它两轮合并必冲突，而冲突点在存储地基上，解起来比在 skill 里解贵得多 | **归两轮之后的整合轮**。接入判据：接完之后 `_guarded` 的表名报错文案里仍是 `refund_case`，`test_refund_migration.py` 那组一条不减地绿。那组是四个域里唯一把迁移机制**整套演过一遍**的（`objects._atomic` / `_has_column` / `_SCHEMA_PATH` / `_MIGRATIONS` / `REFUND_SCHEMA_VERSION` 全被它直接点名调用，还自己临时造迁移步骤验记账），所以它同时是骨架的最强回归守卫 —— 接的时候先跑那组再说别的。四个域的 `_MIGRATIONS` 目前都是空的 |
+| 2026-09-02 | P8 | **`maos/tools/ap_codes.py` / `claim_codes.py` / `investigation_codes.py`（合计约 2902 行的一半）判为「不可抽」** | 它们看起来像三份复制粘贴，实际是**真实规范编号表**：ap 那份是 Peppol BIS Billing 3.0 / EN 16931 的 `BR-xx` 系列，另两域同理各挂各的行业规范。抽公共骨架没有意义，删了就没法「拿编号去查规范查得到」—— 而那条可追溯性正是这三份文件唯一的价值 | **不处理，本条只为存档理由**。记在这里是为了免得下一轮又有人去数那 2902 行、再判一次。真要动的话先回答一个问题：抽完之后，评委拿着 `BR-CO-13` 还查不查得到它出自哪份规范 |

@@ -840,10 +840,24 @@ docs(p7): domain portability, authoritative facts, mapping, demo script, README 
 | :-- | :-- | :-- |
 | AS-001 | 无理由退货期 | 租户 A：30 天；租户 B：7 天 |
 | AS-002 | 质保期内质量问题 | 按 `product_snapshot.warranty_months` |
-| AS-003 | 人为损坏免责 | 需 `customer_evidence` 中有图片证据 |
+| AS-003 | 人为损坏免责 | 需 `customer_evidence` 中有图片证据 —— **语料已定义**（`requires_evidence_kinds` / `min_evidence_count` / `evidence_source`），**判据待实现**（见下方注） |
 | AS-004 | 渠道差异 | 经销商渠道需增加"渠道商核销"任务，审批人为区域经理 |
 
 每条规则两个版本（v1 / v2，`effective_from` 不同），供政策版本对照 case 使用。
+
+> **AS-003 那一格是构造要求，不是已实现的能力**（实测口径，截至 `b35c618`）：
+> `requires_evidence_kinds` / `min_evidence_count` / `evidence_source` 三个键在语料里齐备，
+> 但在 `maos/**/*.py` 里**没有任何消费方**（`b35c618` 上 grep 零命中；今天唯一的命中是
+> `maos/tests/test_refund_corpus_rule_no.py` 那条守卫，它断言的是「这几个键**不该**出现在
+> 发错货规则里」，不是在读它们）—— 政策引擎只消费 `refund_ratio` 与 `deduct_fee`。
+> 后果是**同一个案子交一张图和不交，裁定结论逐字节相同，而且不报错**：这是一条静默失效，
+> 不是「功能没做完」。拿这一格当「差异点已成立」讲会当场被问穿。
+> 已记进 `docs/BACKLOG.md` 的 `## task-T78`；**政策判定器落地后本格与本注需复核**。
+>
+> 另有一处口径要连着看：`AS-003` 这个编号**只在租户内有意义**。本表描述的是
+> `scenarios/refund/**` 里租户 `tnt-mfg-a` / `tnt-mfg-b` 的 AS-003（人为损坏免责）；
+> `scenarios/custom/ledger.json` 里租户 `tnt-demo` 的 AS-003 是**发错货全额退**，与举证无关。
+> 对照表见 `scenarios/refund/README.md`，机器判据在 `maos/tests/test_refund_corpus_rule_no.py`。
 
 历史案例 20–30 条，其中约 1/3 标 `outcome='failed'`，覆盖：渠道繁忙、余额不足、交易不存在、重复请求不一致、客户拒收退款。
 

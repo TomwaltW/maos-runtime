@@ -57,7 +57,9 @@ scenarios/refund/
 `finance.settle` 目前只消费其中两个键：`refund_ratio` 与 `deduct_fee`。其余键（`no_reason_days` / `warranty_basis` / `min_evidence_count` / `extra_tasks` / `approver_role` …）会原样进入 `policy.match` 出参的 `matched_rules[].params`，供下游取用。
 
 > **这段是实测口径，截至 `b35c618`**：`min_evidence_count` / `requires_evidence_kinds` / `evidence_source`
-> 三个键在 `maos/**/*.py` 里 grep 零命中 —— 语料定义了举证要求，但**没有任何代码去看它**，
+> 三个键在 `maos/**/*.py` 里**没有任何消费方**（`b35c618` 上 grep 零命中；今天唯一的命中是
+> `maos/tests/test_refund_corpus_rule_no.py` 那条守卫，它断言这几个键**不该**出现在发错货规则里，
+> 不是在读它们）—— 语料定义了举证要求，但**没有任何代码去看它**，
 > 于是同一个案子交不交图，裁定结论逐字节相同且不报错。这是一条**静默失效**，不是「功能没做完」。
 > 已记进 `docs/BACKLOG.md` 的 `## task-T78`；**政策判定器落地后本段需复核**（届时消费的键不止两个）。
 

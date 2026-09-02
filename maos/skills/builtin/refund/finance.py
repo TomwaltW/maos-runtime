@@ -36,16 +36,6 @@ CENT = Decimal("0.01")
 DEFAULT_RATIO = Decimal("1")
 DEFAULT_FEE = Decimal("0")
 
-#: `eligibility.unmet[*].requirement` 的封闭取值域（跨轨契约 §1.2 定义，本轨只读）。
-#: 枚举外的取值一律抛错而不是忽略：忽略会让「政策侧新加了一类条件判据」表现成
-#: 「金额悄悄按老口径算了」—— 而金额算错要到对账时才暴露。
-REQUIREMENT_KINDS = frozenset({
-    "min_evidence_count",
-    "requires_evidence_kinds",
-    "no_reason_days",
-    "warranty_basis",
-})
-
 
 def _dec(value, default: Decimal) -> Decimal:
     """把规则参数收敛成 Decimal。转不动就用缺省，不抛 —— 政策 body 是人维护的。"""
@@ -91,6 +81,18 @@ class FinanceSettleSkill(Skill):
         reuse_note="F-1：产出的 content 必带 finance_entry 键，且与库表同一份数据",
         owner_roles=["refund_finance"],
     )
+
+    #: `eligibility.unmet[*].requirement` 的封闭取值域（跨轨契约 §1.2 定义，本轨只读）。
+    #: 枚举外的取值一律抛错而不是忽略：忽略会让「政策侧新加了一类条件判据」表现成
+    #: 「金额悄悄按老口径算了」—— 而金额算错要到对账时才暴露。
+    #: 写成类属性而不是模块常量，是为了不把本类的定义行推下去 —— `docs/skill-catalog.md`
+    #: 是从代码生成的投影，里面记着这一行的行号，而三份生成物本轮由整合轮统一重跑。
+    REQUIREMENT_KINDS = frozenset({
+        "min_evidence_count",
+        "requires_evidence_kinds",
+        "no_reason_days",
+        "warranty_basis",
+    })
 
     def run(self, payload: dict, ctx: SkillContext) -> dict:
         store = C.ensure_schema(ctx)
@@ -221,10 +223,10 @@ class FinanceSettleSkill(Skill):
                 raise ValueError(
                     f"eligibility.unmet 的元素必须是 dict，实际 {type(item).__name__}")
             requirement = item.get("requirement")
-            if requirement not in REQUIREMENT_KINDS:
+            if requirement not in FinanceSettleSkill.REQUIREMENT_KINDS:
                 raise ValueError(
                     f"eligibility.unmet 出现取值域外的 requirement={requirement!r}；"
-                    f"新增取值要先改跨轨契约再改代码，取值域：{sorted(REQUIREMENT_KINDS)}")
+                    f"新增取值要先改跨轨契约再改代码，取值域：{sorted(FinanceSettleSkill.REQUIREMENT_KINDS)}")
             reasons.setdefault(str(item.get("rule_ref")), []).append(
                 FinanceSettleSkill._reason_of(item))
 

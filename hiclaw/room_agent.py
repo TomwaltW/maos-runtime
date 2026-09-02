@@ -538,7 +538,21 @@ def _stdin_pump(agent: RoomAgent, *, once: bool, greet: bool = True) -> int:
     return EXIT_OK
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *,
+         intent_parser: IntentParser | None = None,
+         dispatcher: Callable[..., DispatchResult] | None = None) -> int:
+    """房间常驻监听的入口。
+
+    ``intent_parser`` / ``dispatcher`` 是**整合期的注入口**：本模块按跨轨契约 §1.3
+    不许 import T66 / T68 的面（``maos/tests/test_room_agent.py`` 有 ast 断言钉着），
+    所以真实实现由 ``hiclaw/room_nl.py`` 从外面塞进来。两者都不给时退回本模块自带的
+    ``_KeywordParser`` / ``_StubDispatcher``。
+
+    🔴 **不给 dispatcher 就是在跑 stub**，而 stub 的权限闸与 T68 的正式口径**有实差**：
+    ``_StubDispatcher`` 在 ``approvers`` 为空时**跳过**权限检查（``if approvers and …``），
+    正式实现则是空名单一律拒绝。配置缺失时放行是最经典的权限漏洞形态，
+    所以真房间请一律走 ``python3 -m hiclaw.room_nl``，别直接跑本模块。
+    """
     parser = argparse.ArgumentParser(
         prog="hiclaw.room_agent",
         description="Matrix 房间常驻监听：一直在听，人说人话也认，但只确认不执行")
@@ -594,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
         channel=channel,
         # channel=None 是刻意的：让 bridge 只判定、只返回文本，发送统一走 RoomAgent._say。
         bridge=RoomApprovalBridge(hq, config, channel=None),
+        parser=intent_parser,
+        dispatcher=dispatcher,
         store=store, cp=cp, config=config,
         # 权威 mxid 优先：MATRIX_USER 可能写成 localpart（maos-bot），而 event.sender
         # 是 @maos-bot:maos.local，拿原文比等于回声过滤形同虚设（should_deliver 的注释）。

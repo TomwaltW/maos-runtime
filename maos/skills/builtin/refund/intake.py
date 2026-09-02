@@ -66,13 +66,13 @@ def _evidence_of(signals: list[dict]) -> list[dict]:
     return out
 
 
-#: 供应链退款的审批单字段。消费者售后进来的是 `case_seed` 那八个字段，
-#: 供应链进来的是一张审批单：供应商、采购单号、审批人、审批金额。
-_APPLICANT_FIELDS = ("supplier_id", "po_no", "approver", "approved_amount", "doc_no")
-
-
 def _applicant_of(payload: dict) -> dict | None:
     """可选的审批单引用。没给就返回 None，对既有行为零影响。
+
+    消费者售后进来的是 `case_seed` 那八个字段，供应链进来的是一张审批单：
+    `{supplier_id, po_no, approver, approved_amount, doc_no}`。这里**不按字段名过滤**
+    ——只校验 `doc_no`，其余原样回填：审批单的字段随渠道而异，挑白名单会把
+    没见过的字段静默丢掉，和证据 kind 那处是同一个错。
 
     **为什么不扩表**：退款域的 14 张表本轮一张不加、一列不改。审批单本质上是
     「外部系统里有一份单子，本案引用它」—— 这正是 `business_ref` 的语义，

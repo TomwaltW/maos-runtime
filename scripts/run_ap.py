@@ -251,6 +251,10 @@ def _refuse_unreviewed(rows: list[dict], fieldnames: list[str]) -> None:
     这一条不是「顺手加的校验」：待复核表与正式申请表的列几乎一样，多的那两列
     （`来源` / `需人工确认`）是**唯一**能把「模型抽出来的」和「人核对过的」分开的东西。
     认不出它们，一张视觉模型看错小数点的发票就会一路走到付款指令。
+
+    # INTEGRATION-POINT: 待复核表由 T72 的 `scripts/review_invoices.py` 产出。
+    # 并轨期两边都照跨轨契约 §1.4 的列定义写，**不 import 对方** —— 列名对齐靠
+    # 契约，不靠代码依赖。整合时把这里的列名换成 T72 那边的常量即可。
     """
     if not _has_column(fieldnames, "needs_review"):
         return

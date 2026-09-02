@@ -1639,3 +1639,17 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T70（供应链付款的表格入口）
+
+2026-09-02 把一份 Excel 导出的付款数据接到应付账款引擎上时撞到的。引擎
+（`maos/flows/scenario_10.py`、`maos/domain/ap/**`）是复用面，本轨一行没改，
+下面五条按铁律 4 **不当场改**。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **`fixtures.seed_three_way` 不接 `ordered_at` / `received_at` / `warehouse`**：它统一拿开票日期当三单的读取时刻、仓库写死 `WH-1` | 底账 `ap-ledger.json` 里这三个字段目前**只留档不下传**。今天无害（匹配判据不读它们），但它让「收货比下单早」这类明显错的底账查不出来，而底账看起来是被完整读进去的 | 归引擎轨。改 `seed_three_way` 的形参属复用面改动，要连场景 10 与 `test_ap_*` 一起过一遍 —— 那正是「唯一构造路径」该有的代价 |
+| 2026-09-02 | P9 | **申请表没有税种码与发票类型码两列**，入口一律按 `S`（标准税率）+ `380`（商业发票）落库 | 零税率行（UNCL5305 的 `Z`/`E`）与贷记单（`384`）走不了这条入口。`ap.match` 的 BR-CO-17 是**分税种**算的，一张混税种的发票现在只能当成单一税种，税额勾稽会给出一条假的拒付理由 | 要演混税种或红字发票时再加列。加列比改判据便宜 —— 引擎那边本来就是按行读税种码的 |
+| 2026-09-02 | P9 | **`scenario_10._tasks` 把 `tenant_id` 与 `po_version` 写死**（前者是场景自己的演示租户，后者恒为 1） | 本轨复用它之后要回头覆盖 `inputs` 里这两个键才能跑自己的底账。覆盖是显式的、有测试钉着（`test_po_version_comes_from_ledger_not_hardcoded_one`），但形状上是在给一个不该写死的常量打补丁 | 归引擎轨：把这两个值提成 `_tasks` 的形参，场景 10 传自己的常量。改动比覆盖小，但它动的是复用面 |
+| 2026-09-02 | P9 | **一张发票只对一份收货单**：底账里同一个 `(po_id, version)` 有两份 GR 时入口直接报错，不挑也不合并 | 分批收货 + 分期开票是正常业务，现在走不了。报错优于挑一份（挑等于替人做决定），但这条路今天是断的 | 等真有分批开票的诉求再做。做法不是让入口挑，是让申请表多一列收货单号 —— 那本来就是发票上印着的东西 |
+| 2026-09-02 | P9 | **本入口没接进 `run.py` 与 `scripts/verify.py`**，场景 10 本身也不在 `DEFAULT_SCENARIOS` 里 | `python3 run.py` 跑不到应付账款域的任何东西，`verify.py` 也不校验这条入口。今天是有意的（同期三轨都新增 flow，谁改 `maos/main.py` 谁冲突） | 整合轮。接的时候要一并想清楚：自定义数据没有标准答案，`verify.py` 校验的只能是「跑得完 + 落库形状对」，不能是金额 |

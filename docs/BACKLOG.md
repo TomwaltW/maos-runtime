@@ -1639,3 +1639,13 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T66（自然语言意图解析层，本轮都不改）
+
+2026-09-02 建 `maos/nlu/` 时发现的三条，都在本轨白名单之外，按铁律 4 只记不改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **跨轨契约 `review/nl-contracts.md` 不在版本库里**，只躺在主仓工作区。四轨都被要求「照抄同一份定义」，但从 worktree 里 `git show` 不出来它 | 今天无害（四轨手里各有一份）。代价在并轨之后：谁都无法回答「当时那份契约到底怎么写的」，字段名一旦有分歧就成了各说各话，而这种冲突**不会有任何红灯** —— 两侧都能各自跑绿 | 整合轨落库。要么入 `docs/`，要么至少提交进 `review/`；答辩要讲「四轨零交集怎么保证」时也要指得到它 |
+| 2026-09-02 | P9 | **关键词词表会有两份**：本轨的 `_KW_APPROVE` 等四张表，与 T67 自带的 `_KeywordParser`（跨轨契约 §1.3 明写 T67 不许 import `maos.nlu`） | 并行期间是对的，整合后就是同一件事的两处实现。分叉的症状很温和：房间里「不同意」判成驳回、而某条旁路仍判成同意，两边测试各自全绿 | 整合时按契约 §5 grep `# INTEGRATION-POINT:`，把 T67 那份换成本轨的 `parse_intent` 偏函数并**删掉**它的词表，不要留成兜底的兜底 |
+| 2026-09-02 | P9 | **降级客户端认不出来，只能靠 `isinstance(model, ScriptedModelClient)` 判**。`ModelClient` 上没有任何「我是降级来的」标记，`ModelResponse.meta` 里也没有 | 本轨的关键词兜底就挂在这个 isinstance 上。哪天 `select_model_client` 的降级目标换成别的类（`HigressModelClient` 今天还是占位），兜底会**静默不触发** —— 无 key 的机器上一句「同意」直接变 unknown，没有任何报错 | 归动 `maos/model/client.py` 的那一轨（本轨只读，未动）：给 `ModelClient` 加一个 `degraded: bool` 类属性，或让降级路径在 `ModelResponse.meta` 里落一个 `degraded=True`。改完把本轨的 isinstance 换掉 |

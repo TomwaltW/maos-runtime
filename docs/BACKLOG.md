@@ -1639,3 +1639,17 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T81（案件守卫骨架下沉，2026-09-02）
+
+本轨把 ap / claim / investigation 三个域同构的案件守卫控制流下沉成
+`maos/domain/_case_guard.py`。**纯结构性改动，行为一步没变**（1584 passed / 39 skipped
+不变，`run.py` 仍 exit=0）。下面是过程中撞到、按铁律 4 **不当场改**的，
+以及本轮终态是**中间态**这件事本身。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | **退款域的 `guard.py` 仍是自己那份骨架副本，未接 `_case_guard`**。不是漏了 —— 本轮它归 T74–T79 只读面（跨轨契约 §4），本轮四轨若去改它，两轮合并时必冲突，而冲突点在守卫这种地基上，解起来比在 skill 里解贵得多 | 现在四个域里三个共用一份控制流、一个自己一份。整合轮如果不知道这件事，会误以为四个域已经统一，于是给骨架加一道闸却只保护了三个域 —— 而退款域是唯一跑通端到端场景的那个域，漏掉它就是漏掉了演示路径 | 两轮之后的整合轮。**接入判据**：接完之后越权写 `settled` 的报错原文里仍然是 `refund_case` 这个表名（而不是「本域的写入口径」这种看不出是哪张表的通用话），且 `test_refund_flow.py` / `test_refund_domain.py` 一条不红 |
+| 2026-09-02 | P8 | **本轨没有 import T80 的 `_case_store`**（跨轨契约 §5：并行轨之间只对形状负责，不对代码负责）。`_case_guard.py` 里的 `_CaseStore` 是按契约 §1.1 的方法名自己写的一份**临时薄封装**，只包了 `query` / `lock_of` / `conn` 三个 | 这是**临时的两层**，不是有意设计。整合轮如果把它当成刻意的抽象层保留下来，以后每加一个存储原语都要在两处各写一遍 | 整合轮，与上一条同批。换掉时注意：`conn()` **不在契约 §1.1 的方法清单里**，但守卫离不开它 —— 「观察与状态更新同事务」这条要求必须拿到裸连接才做得到（`execute()` 是一句一提交）。要么给 §1.1 补这一条，要么给 `CaseStore` 加一个「同事务多写」的原语。本轨不替它定 |
+| 2026-09-02 | P8 | **三个域的审计行 `detail` 里 `domain` 这个键三种写法**：ap 三条审计行都有且排在最前，claim 只有违规行有且排在 `invocation_id` **之后**，investigation 压根没有 | 骨架用 `conflict_detail_domain` / `violation_detail_domain` / `violation_detail_domain_first` / `event_detail_domain` 四个旋钮**照抄这份历史不一致**，不当场统一 —— 统一会改掉审计行的形状，那是行为变更（红线 R1），`scripts/verify.py` 那边按字段读得到。代价是骨架多了四个只为兼容而存在的参数 | 想统一的话要单独一轨：先确认 `scripts/verify.py` 与 evidence 束里没有按位置读 detail 的地方，再一次性改三个域并重跑证据束。不要顺手做 |
+| 2026-09-02 | P8 | **第 ④ 道闸（「这份证据说的是不是这件事」）没进骨架**，由各域给一个 `check_evidence`。ap / claim 共用 `make_receipt_state_gate()`（只看 `observed_state`），investigation 自己一份（还要看报文族 / 退回金额 / 退回原因码） | 判对了，但代价是「加一个权威终态必须同时配判据」这条 fail-closed 姿态现在**有两份实现**，两份各自都有测试钉着（`test_missing_receipt_criterion_is_fail_closed` / `test_unconfigured_authoritative_state_is_fail_closed`），但没有一条测试断言「所有域的 ④ 道都 fail-closed」 | 加第四个域时。届时如果新域的 ④ 又是「只看状态」那一种，说明这两份该合成一份可组合的判据链；如果又是一种新结构，说明现在这个分法是对的 |

@@ -23,7 +23,7 @@ import json
 from maos.domain.refund import guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
-from maos.tools.gateway import GATEWAY_QUERY_PORT
+from maos.tools.gateway import GATEWAY_QUERY_PORT, register_gateway as register_tool_gateway
 from maos.tools.port import invoke_tool
 
 from . import _common as C
@@ -90,7 +90,11 @@ class PaymentObserveSkill(Skill):
                     "先跑 payment.execute")
             request_id = rows[0]["request_id"]
 
-        gateway = C.get_gateway(payload.get("gateway"))
+        # 装配桥接：params 里只放名字，实例由工具侧注册表持有。
+        # 完整理由与「迁 MCP 时这一行搬到 server 侧」的口径见 payment_execute.py
+        # 同名的那一处；`C.get_gateway` 取不到就抛，不兜底成默认网关。
+        gateway_name = str(payload.get("gateway") or C.DEFAULT_GATEWAY)
+        register_tool_gateway(gateway_name, C.get_gateway(gateway_name))
         max_polls = int(payload.get("max_polls") or DEFAULT_MAX_POLLS)
         if max_polls < 1:
             raise ValueError("max_polls 至少为 1 —— 一次都不问就没有观察可言")
@@ -104,7 +108,7 @@ class PaymentObserveSkill(Skill):
         receipt = None
         for _ in range(max_polls):
             receipt = invoke_tool(GATEWAY_QUERY_PORT,
-                                  {"gateway": gateway, "request_id": request_id},
+                                  {"gateway_name": gateway_name, "request_id": request_id},
                                   store=store, extras=tool_extras)
             if receipt.get("is_terminal"):
                 break

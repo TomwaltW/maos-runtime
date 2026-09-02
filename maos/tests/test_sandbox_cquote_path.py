@@ -22,7 +22,7 @@ import subprocess
 
 import pytest
 
-from maos.skills.builtin.code_repo_patch import (
+from maos.tools.paths import (
     PROTECTED_SEGMENTS,
     _path_segments,
     unquote_c_style,

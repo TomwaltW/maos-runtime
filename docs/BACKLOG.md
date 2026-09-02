@@ -1675,3 +1675,34 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-02 | P8 | **`agents/coding.py` / `architecture.py` / `requirement.py` 的非测试引用 grep 结果为 0，但它们不是死代码**（本轨实测：三个模块名与 `*Agent` 类名在 `maos/` `scripts/` `run.py` 里去掉测试后各 0 处命中） | 真实的注册路径是 `maos/agents/__init__.py` 扫包 + `@register` 让它们进 `AGENT_POOL`，Worker 再按 role 字符串动态实例化（`maos/runtime/worker.py:34` 那行 `for role, cls in AGENT_POOL.items()`）。**谁按 grep 结果去删它们，场景 1/2/5 当场炸**，且删之前静态检查一句话都不会说 | 记着别删。下次做「死代码清理」类的活时，`maos/agents/**` 一律不许按 grep 判 —— 判据是 `AGENT_POOL` 的条数（当前 22），不是引用数 |
 | 2026-09-02 | P8 | **`maos/agents/claim/_base.py` 的 `RECEIPT_FIELD` 注释指向一个不存在的测试**：本该在 tests 目录下的 `test_claim_gate_isolation.py` 在 git 历史里从未出现过（实测 `git log` 查该路径 0 条）。名字最接近的真实文件是 `maos/tests/test_claim_isolation.py`，但它守的是 import 边界，不是第七道闸的码表边界 | 那条 🔴 边界（X12 的 CARC 不许拿支付宝码表去查）**当前没有回归测试守着**，而注释宣称有。本轨只做结构性下沉，原样保留了这句话，没有当场改注释也没有补测试 | 补一条真测试，然后把注释指向它。补之前不要只改注释文字 —— 改成指向 `test_claim_isolation.py` 会让这条边界看起来更像有人守，实际仍然没有 |
 | 2026-09-02 | P8 | **各域 `skills/builtin/<域>/_common.py` 第 2 条说的「`SkillInvoker` 生成的 id 进不到 skill 里」与现状不符**：`maos/skills/invoker.py` 已经把它塞进 `SkillContext.extras`（那段注释自己写着「故意覆盖调用方传入的同名键」） | 结论没错（各域「传入则用、传不到则本地生成」的口径仍然成立、仍然必要），但**理由过期**。下一个读到它的人会以为 extras 里的 `invocation_id` 到不了 skill，从而对本轮合并后的 docstring 第 1 条感到矛盾 | 归动 `maos/skills/**` 的那一轮（本轮全禁）。改的是理由那半句，不是口径 |
+## task-T83（受保护路径判定下沉，2026-09-02）
+
+本节记的是**了结**与**没做的边界**，不是新欠账。
+
+### 折账：`## task-B` 第 1 条（依赖方向反了）—— 本轨了结
+
+2026-08-28 记的那条「`PROTECTED_SEGMENTS` / `_path_segments` 住在 skills 层，
+tools 层要用只能延迟 import 绕环」已做完，了结到这个程度：
+
+- 判定**只剩一处**：`maos/tools/paths.py`。`PROTECTED_SEGMENTS`、`unquote_c_style`、
+  `_path_segments` 三个名字全在那里，skills 与 tools 都从那里取。
+- **环已消**：`maos/tools/sandbox.py` 不再 import `maos.skills` 的任何东西，
+  改成文件顶部的模块级 import。原先那两个函数内延迟 import 的壳
+  （`_protected_path_rules` / `_unquote_c_style`）**已删**，不是留着不用。
+- **没留第二个入口**：`code_repo_patch.py` 不转出这些名字，只 import 用。
+  `maos/tests/test_protected_paths_single_source.py` 扫全仓源码，
+  `PROTECTED_SEGMENTS` 的赋值出现第二次就红。
+
+### 本轨**没碰** `scripts/guard_bash.py` —— 那是另一套东西
+
+`scripts/guard_bash.py` 里也有一份「受保护路径」，名字像，但它是 **Bash 侧守卫**：
+挡的是会话自己去改冻结契约面（`contracts/**`、`store.py`、`artifacts.py`、
+`.contracts.lock` 等），判据、清单、触发时机与本轨这套**补丁路径判定**（挡的是
+模型产出的补丁写进 `infra` / `.github` / `secrets` / `tests`）没有一处重叠。
+
+**所以「受保护路径判定已经全仓统一到一处」是错的** —— 统一的只是补丁路径那一套。
+这两套本来就该分开：一个管人/会话，一个管模型产出，合并只会让两边的清单互相污染。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | `maos/tests/test_sandbox_isolation.py:199` / `:233` 的注释仍写「复用 code_repo_patch 的 `PROTECTED_SEGMENTS`」，判定已搬到 `maos/tools/paths.py` | 只是注释，不影响判定；但下一个照注释去 `code_repo_patch` 找定义的人会扑空 | 该文件不在本轨白名单（铁律 4，没当场改）。谁下次动那个文件顺手改掉即可 |

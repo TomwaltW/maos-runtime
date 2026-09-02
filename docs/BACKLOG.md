@@ -1653,3 +1653,17 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-02 | P9 | **还有 4 份含 `policy_rule` 的语料没补租户作用域口径**：`scenarios/custom/refund-case.json`、`scenarios/refund/cases/case_r3a.json` / `case_r3b.json` / `case_r6.json`。其中 r3a / r3b 的 `_note` 已经用自然语言说了「同一条规则编号在两个租户下参数不同」，另两份什么都没说 | 本轨白名单只点了 4 份语料 + 2 份 README（派单 §4「只许动这些」），这 4 份在白名单外，按 CLAUDE.md「本轨白名单以外的文件一律停手问」没动 | 已写进 `maos/tests/test_refund_corpus_rule_no.py` 的 `PENDING` 集合，**不是从判据里删掉而是显式列着** —— 补完一份就挪进 `COVERED`，挪漏了第 1 条测试会红。整合轮顺手补，一份加一行抬头即可 |
 | 2026-09-02 | P9 | **docs 目录下那份 ingress 配置手册（文件名 ingress-setup.md，此处刻意不写成反引号路径 —— 它还不存在，写成路径会让文档守卫报 `E-missing` 阻断）的那处口径本轨够不着**：该文件不在版本库里（`git ls-files docs/` 无此项），只作为未提交的在制品存在于主仓工作区，另有活跃会话正在 ingress 通道上作业 | 派单 §5.4 要求给它的第 188-189 行加一句时点标注。该处**当前描述是准确的**（如实记了三个键零消费方这一缺陷），所以不加标注的代价只是「判定器落地后它会变成过期描述」，不是现在就错 | 归 ingress 那一轨或整合轮：文件进版本库后，照 `docs/EXECUTION.md` 附 B 那条注的写法加一句「截至 `<sha>`；判定器落地后需复核」即可，**别改它的结论** |
 | 2026-09-02 | P9 | **`run.py` 的输出不可能「与某个 sha 逐字节一致」**：`plan_*` / `task_*` / `actor` 都是每次运行现生成的随机 id，耗时也逐次不同。同一棵树连跑两次，裸 `diff` 就不一致 | 派单把「`run.py` 输出与基线逐字节一致」写成硬判据，字面上恒假 —— 照字面执行会把一次正常运行报成回归。本轨改成「规范化随机 id 与耗时后逐行比对」，实测 427 行一致 | 下次写派单时把这条判据改成规范化比对，或给 `run.py` 加一个 `--deterministic-ids` 开关。**判据恒假比没有判据更坏**：它会训练下一个人跳过这一条 |
+## task-T79（调用面：actor 锚点与同名同版本覆盖）
+
+本轨开工时实测到一件与派单前提不符的事，先写在这里，后面几条都建立在它上面：
+**「actor 锚点断链」在基线 `b35c618` 上已经不存在了** —— `1ac85b3` 已经把
+`invocation_id` 塞进 `SkillContext.extras`（`maos/skills/invoker.py:91`），
+skill 侧、`SkillResult`、落库那行三处同值。本轨因此把 §5.1 做成**回归守卫**
+（注释 + 测试），而不是再修一遍已经好了的东西。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | ✅ **已了结：`register_skill` 同名同版本静默覆盖**（本文件 `:1513` 与 `:1560` 记的同一条） | 后 import 的照旧赢（行为一个字没变），但现在会打一条 `WARNING`，串里带 skill 名、版本、被顶掉的类与新类的模块名。选 `warning` 不选 `raise` 的理由照抄 `:1560` 的推荐：skill 是 import 注册的，`_discover_builtin()` 一次 import 整个 builtin 包，`raise` 会让一次误 import 掀掉整个进程启动，而撞名本身并不影响已注册的那份能不能用 | **本轮已做**。实现落在 `maos/skills/registry.py` 末尾的 `_put()`，而不是 `register_skill()` 函数体里 —— 后者会把 `get()` / `versions()` 的行号往下推，而这两个行号被写死在 `docs/skill-catalog.md` 正文里（同本文件 `:1561` 记的那条「行号当标识」的固有代价）。三份生成物本轮归整合轮统一重跑、各轨不碰，故绕开而不是重跑 |
+| 2026-09-02 | P9 | **四个域 `_common.py` 里 `invocation_id_of` 的第二条分支不是死代码** —— 「调用方经 extras 传入，传不到则本地生成」两条分支都还在，合并 invoker 之后走的是**第一条** | 单测直调 skill（不经 `SkillInvoker`）走的正是第二条，删掉它这类测试当场炸在 `guard._require_invocation_id`。已由 `maos/tests/test_skill_invocation_anchor.py` 对四个域各钉一条参数化用例，只读地断言两条分支都在 | **不要清理**。顺带记一笔：四个域 `_common.py` 的模块 docstring 第 2 条、以及 `maos/agents/*/_base.py::extras_of` 的注释，都还写着「invoker 那个 id 到不了 skill 里（invoker.py:69）」—— 这句自 `1ac85b3` 起已不成立，是本轮派单误判的源头。本轨不改（那五个文件分别归 T77 与引擎侧），留给持有它们的轨顺手刷 |
+| 2026-09-02 | P9 | **`contract.py` 里 `SkillResult` 的 actor 溯源承诺现在有测试钉住了**，但「后续 Phase 的权威事实守卫」仍**没有真的用这个 id 对账** | `scripts/verify.py` 第 3 项 authoritative-fact 今天按 `plan_id` / 案子 / skill 名对齐，不是按 `invocation_id` 直接连表。所以「三处同值」目前只被单测守着，证据侧还没有一条判据会在它断掉时变红 —— 第 1 项 hash-integrity 守的是另一件事（同一份证据里 id 不许重复） | 归后续轨。真要接就是在第 3 项里把 `payment_observation.actor_invocation_id` 与 `SkillInvoked.detail.invocation_id` 直接对上，届时本轨这几条单测正好是它的前置保证 |
+| 2026-09-02 | P9 | **派单 §5.1 约束 1（改成 `setdefault`、不覆盖调用方）实测会打红 `scripts/verify.py` 第 1 项**，本轨照实况没做 | 实跑取证：改成「调用方给了就用调用方的」之后 `hash-integrity 87/93`，scenario-6 / scenario-7 / scenario-R5 各出现「invocation_id 与上一条重复」，共 6 处。根因是调用方**允许**把同一个 `extras` dict 复用给相邻两次 invoke（`maos/agents/refund/payment_agent.py` 的 execute → observe 就是这么写的），`setdefault` 会让第二次捡起第一次留下的 id | **已了结**：`invoker.py` 里那段回归守卫注释与 `test_two_invocations_sharing_one_extras_dict_do_not_collide` 一起把它钉住。要留住调用方自己的标识，正确做法是另起键名，不是放宽这里。决策已记 `docs/DECISIONS.md ## task-T79` |

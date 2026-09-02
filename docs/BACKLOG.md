@@ -1639,3 +1639,18 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T79（调用面：actor 锚点与同名同版本覆盖）
+
+本轨开工时实测到一件与派单前提不符的事，先写在这里，后面几条都建立在它上面：
+**「actor 锚点断链」在基线 `b35c618` 上已经不存在了** —— `1ac85b3` 已经把
+`invocation_id` 塞进 `SkillContext.extras`（`maos/skills/invoker.py:91`），
+skill 侧、`SkillResult`、落库那行三处同值。本轨因此把 §5.1 做成**回归守卫**
+（注释 + 测试），而不是再修一遍已经好了的东西。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | ✅ **已了结：`register_skill` 同名同版本静默覆盖**（本文件 `:1513` 与 `:1560` 记的同一条） | 后 import 的照旧赢（行为一个字没变），但现在会打一条 `WARNING`，串里带 skill 名、版本、被顶掉的类与新类的模块名。选 `warning` 不选 `raise` 的理由照抄 `:1560` 的推荐：skill 是 import 注册的，`_discover_builtin()` 一次 import 整个 builtin 包，`raise` 会让一次误 import 掀掉整个进程启动，而撞名本身并不影响已注册的那份能不能用 | **本轮已做**。实现落在 `maos/skills/registry.py` 末尾的 `_put()`，而不是 `register_skill()` 函数体里 —— 后者会把 `get()` / `versions()` 的行号往下推，而这两个行号被写死在 `docs/skill-catalog.md` 正文里（同本文件 `:1561` 记的那条「行号当标识」的固有代价）。三份生成物本轮归整合轮统一重跑、各轨不碰，故绕开而不是重跑 |
+| 2026-09-02 | P9 | **四个域 `_common.py` 里 `invocation_id_of` 的第二条分支不是死代码** —— 「调用方经 extras 传入，传不到则本地生成」两条分支都还在，合并 invoker 之后走的是**第一条** | 单测直调 skill（不经 `SkillInvoker`）走的正是第二条，删掉它这类测试当场炸在 `guard._require_invocation_id`。已由 `maos/tests/test_skill_invocation_anchor.py` 对四个域各钉一条参数化用例，只读地断言两条分支都在 | **不要清理**。顺带记一笔：四个域 `_common.py` 的模块 docstring 第 2 条、以及 `maos/agents/*/_base.py::extras_of` 的注释，都还写着「invoker 那个 id 到不了 skill 里（invoker.py:69）」—— 这句自 `1ac85b3` 起已不成立，是本轮派单误判的源头。本轨不改（那五个文件分别归 T77 与引擎侧），留给持有它们的轨顺手刷 |
+| 2026-09-02 | P9 | **`contract.py` 里 `SkillResult` 的 actor 溯源承诺现在有测试钉住了**，但「后续 Phase 的权威事实守卫」仍**没有真的用这个 id 对账** | `scripts/verify.py` 第 3 项 authoritative-fact 今天按 `plan_id` / 案子 / skill 名对齐，不是按 `invocation_id` 直接连表。所以「三处同值」目前只被单测守着，证据侧还没有一条判据会在它断掉时变红 —— 第 1 项 hash-integrity 守的是另一件事（同一份证据里 id 不许重复） | 归后续轨。真要接就是在第 3 项里把 `payment_observation.actor_invocation_id` 与 `SkillInvoked.detail.invocation_id` 直接对上，届时本轨这几条单测正好是它的前置保证 |
+| 2026-09-02 | P9 | **派单 §5.1 约束 1（改成 `setdefault`、不覆盖调用方）实测会打红 `scripts/verify.py` 第 1 项**，本轨照实况没做 | 实跑取证：改成「调用方给了就用调用方的」之后 `hash-integrity 87/93`，scenario-6 / scenario-7 / scenario-R5 各出现「invocation_id 与上一条重复」，共 6 处。根因是调用方**允许**把同一个 `extras` dict 复用给相邻两次 invoke（`maos/agents/refund/payment_agent.py` 的 execute → observe 就是这么写的），`setdefault` 会让第二次捡起第一次留下的 id | **已了结**：`invoker.py` 里那段回归守卫注释与 `test_two_invocations_sharing_one_extras_dict_do_not_collide` 一起把它钉住。要留住调用方自己的标识，正确做法是另起键名，不是放宽这里。决策已记 `docs/DECISIONS.md ## task-T79` |

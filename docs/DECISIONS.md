@@ -1594,3 +1594,18 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-02 | P8 | `schema_sql` 是原文字符串，而下沉前四份是在 `ensure_schema()` 里才 `_SCHEMA_PATH.read_text()` | **在模块导入时读一次**，`_SCHEMA_PATH` 仍保留为模块级名字 | 契约签名要的是原文不是路径；而且 `ensure_schema()` 与 `_MIGRATIONS` 每一步拿到的必须是**同一份**脚本文本，传路径就得各读各的。代价是 schema.sql 缺失从「调 ensure_schema 时炸」提前到「import 时炸」—— 提前暴露更好，且三个域的 schema.sql 都是随包发布的固定文件 |
 | 2026-09-02 | P8 | `_conn()` 取不到连接时那句 TypeError，下沉前各域各写各的域名（「应付账款域」「理赔域」「差错处理域」），下沉后拿不到域中文名 | 改成点名 `{case_table} 所在域的新增表无处落库` | 契约签名里没有域中文名这个参数，为它加一个又回到第 1 条的问题。文案里留具体表名同样定位得到是哪个域，且与 `_guarded` 那条「必须点名具体表」的硬约束口径一致。无测试断言过这句原文 |
 | 2026-09-02 | P8 | ap 域下沉前**没有** `_has_column`（另三个域有） | 骨架统一提供，ap 跟着多出这一个名字 | 纯新增，没有调用方受影响；它是契约 §1.1 点名要留的两个迁移原语之一，ap 将来加迁移步骤时一样要用。缺一个域就等于把「四份同构」的前提削掉一角 |
+## task-T81（案件守卫骨架下沉，2026-09-02）
+
+跨轨契约 `review/domain-slim-contracts.md` §1.2 给了三条硬约束。第 2 条
+（`_require_invocation_id` 的 fail-closed 姿态不许变）没有取舍余地 —— 四份现有实现
+都是抛，下沉后照抛，`test_missing_invocation_id_raises_instead_of_defaulting` 三个域
+各钉一次。下面记的是**实际做了取舍**的那几条，以及手册没覆盖而自行判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | 硬约束 1（铁律 8 那句「外部系统才是权威」的注释要原样带进骨架）落在哪儿 —— 四份实现里它散在 `update_biz_status` 的 docstring 与第 ③ 道的行内注释两处 | **两处都带**：骨架的模块 docstring 起一节「铁律 8 在这里，不在别处」，`update_biz_status` 的 docstring 开头一句红字，第 ③ 道行内注释保留原话；三个域的 `update_biz_status` 各自再留一句本域的（权威在银行 / 赔付方 / 清算方） | 只留一处的话，下沉之后各域的 `update_biz_status` 变成三行转发，读它的人根本走不到骨架里去 —— 而「这个函数写的是观察不是事实」正是读到这个函数时最该看见的一句。四处重复不是冗余：它是唯一的现场提示，删哪一处都会让下一个人在那个位置把外部状态写死成终态 |
+| 2026-09-02 | P8 | 硬约束 3（域特有守卫留在各域）与第 ④ 道闸的归属：④ 是唯一一道**结构**各域不同的闸 —— ap / claim 只看 `observed_state`，investigation 还要看报文族、退回金额、退回原因码 | **④ 整道不进骨架**，由各域给一个 `check_evidence` 钩子；ap 与 claim 共用骨架里的 `make_receipt_state_gate()`，investigation 自己写一份 `_check_evidence()` | 硬把 investigation 那三样塞进通用闸，等于让 ap / claim 也长出「报文族」这个它们没有的概念，判据表会退化成一堆 `None`。反过来只抽 ap/claim 那份、让 investigation 完全自理，则两个域的「漏配判据 -> fail-closed」会各写一遍 —— 那正是本轨要消灭的重复。折中点落在「④ 是钩子，但通用形状仍由骨架提供一份」。代价已记 `docs/BACKLOG.md` 第 4 条 |
+| 2026-09-02 | P8 | 判据表（`AUTHORITATIVE_STATES` / `AUTHORITATIVE_RECEIPT_STATE` / `BIZ_STATUS_FLOW`）是模块级常量，骨架在 import 时就要拿到它们 | **递 `lambda: AUTHORITATIVE_STATES` 这样的取值函数，不递值本身** | 两条现存测试靠 monkeypatch 这些模块属性来演「漏配判据时 fail-closed」（`test_ap_guard.py::test_missing_receipt_criterion_is_fail_closed`、`test_investigation_guard.py::test_unconfigured_authoritative_state_is_fail_closed`）。在 import 那一刻捕获值，这两条会**照样绿**但测的是一张冻住的表 —— 一条测不到东西的守卫比没有守卫更坏 |
+| 2026-09-02 | P8 | `create_case` 的 INSERT 语句：各域列不同（claim 多 `reported_at`，investigation 多 `cancellation_reason_code`），SQL 字面量留在域里还是骨架现造 | **骨架按 `columns` 有序字典现造**，域只给「列名 -> 值」 | 留在域里的话 `ON CONFLICT DO NOTHING` 这个形状要抄三遍，而它正是幂等语义的载体（换成 `INSERT OR IGNORE` 会吞掉 CHECK 约束失败，换成 `DO UPDATE` 会把推进过的案子静悄悄倒回初始状态）。顺带确认了三条源码扫描守卫仍然绿：它们找的是**字面表名**的写语句，骨架里只有 `{case_table}`，扫不到也不该扫到 |
+| 2026-09-02 | P8 | ap 与 investigation 的业务状态变更事件类型原先是**字面量**（`"ApBizStatusChanged"` / `"InvestigationBizStatusChanged"`），骨架要按参数收 | **各提成模块常量 `BIZ_STATUS_EVENT`**，值一个字都没改；investigation 的 `set_classification()` 里那处字面量一并换成常量 | 骨架收参数之后，域里若还留着一份字面量就是两处各写一份，必漂 —— 而漂的症状是「这个案子的业务状态动过没有」漏查一处。investigation 那处不是「顺手优化」：`set_classification` 与 `update_biz_status` 落的是同一个事件类型，留一个字面量在旁边正是这次下沉要消灭的形状 |
+| 2026-09-02 | P8 | `_CASE_IDENTITY_FIELDS`（比对字段元组）与 `_identity_of`（归一函数）原先是各写一份、必须手工保持一致 | **合并成一份 `_IDENTITY_COERCERS` 有序字典**，`_CASE_IDENTITY_FIELDS = tuple(...)` 由它派生；`create_case` 里递进来那份 `incoming` 也改成过 `_identity_of` 同一套归一 | 两份手工对齐的清单迟早漂，漂的症状是幂等退化成「每次重跑都报冲突」或者反过来「换了金额也判成重放」。合并之后「递进来的那份」与「库里回读的那份」在代码上就是同一套归一函数，那正是幂等成立的前提 |

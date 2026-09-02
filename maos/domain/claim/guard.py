@@ -17,11 +17,26 @@
   - 测试期：`test_claim_authority.py::test_no_bypass_writes_paid` 用 AST 扫全仓
   - 提交前：grep -rn "biz_status.*=.*'paid'" maos/ 自查
 
+## 控制流下沉到 `maos/domain/_case_guard.py`
+
+四道闸的顺序、fail-closed 姿态、两条审计行的字段、幂等回读比对 —— 这些四个域一字
+不差，已经下沉成一份骨架。本模块留下的是**域**：判据表、观察表的 INSERT、异常类、
+以及每道闸对外说的那句人话（见 `_TEXTS`）。
+
+`AUTHORITATIVE_STATES` 这类判据表递给骨架的是**取值的函数**而不是值本身 ——
+它们是模块级常量，测试会 monkeypatch 它们来演「漏配判据时 fail-closed」；
+在 import 那一刻捕获值会让那条测试再也测不到真的判据表。
+
 ## 与退款域那份 guard 的关系
 
 形状逐条同构（权威写入方常量、状态集合、回执判据表、四道闸的顺序），但**不 import
 它、不继承它**。理由与 objects.py 抬头同一条：两个域焊在一起，「换域只新增文件」
 这句话就不成立了。同构而不共用，是本轨要证明的那件事的一部分。
+
+共用一份**骨架**与共用一份**域实现**不是一回事：骨架不知道 claim 是什么，
+它拿到的是表名、判据表、和一组文案；换一个域只要再喂一组参数，不要求两个域彼此认识。
+`AuthoritativeFactViolation` 这三个异常类因此仍然各定义各的 —— `except` 一个不该
+顺带把另一个也接住。
 
 差别只在四个名字上：`settled` -> `paid`、`payment.observe` -> `claim.observe`、
 `refund_case` -> `claim_case`、`payment_observation` -> `claim_payment_observation`。
@@ -30,9 +45,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
+from .. import _case_guard
+from .._case_guard import CaseGuardErrors, CaseGuardTexts, _now
 from . import objects
 
 # ---------------------------------------------------------------- 冻结常量
@@ -92,15 +108,27 @@ BIZ_STATUS_EVENT = "ClaimBizStatusChanged"
 #: 把它列成必填会让唯一一条合法的成功回执永远进不来。
 _OBSERVATION_REQUIRED = ("request_id", "observed_state")
 
-#: 判定「这是不是同一件事的重放」要逐字段比对的业务字段（见 `create_case` 的幂等语义）。
+#: 判定「这是不是同一件事的重放」要逐字段比对的业务字段（见 `create_case` 的幂等语义），
+#: 值是该列的**归一函数** —— sqlite 的 INTEGER / REAL 回来是 int / float，而调用方递
+#: 进来的可能是 str 或 int，不归一就会把「12000 与 12000.0」判成冲突。
 #:
 #: `biz_status` 与 `created_at` **不在里面**：前者是案子建成之后被推进的结果，
 #: 后者是第一次报案的时刻 —— 拿它们比对会让每一次正常重放都判成冲突。
 #: `reported_at` 也不在里面：返工重跑时它会重新取一次当前时刻，比它等于每次重跑必冲突。
 #: `plan_id` 在里面：两个 Plan 同时推进同一个案子的 `biz_status` 没有正确解，
 #: 那种案号复用该在报案这一步就响，不该留到状态机上去打架。
-_CASE_IDENTITY_FIELDS = ("payer_id", "policy_no", "policy_version", "loss_type",
-                         "incident_at", "amount_claimed", "plan_id")
+_IDENTITY_COERCERS: dict[str, Any] = {
+    "payer_id":       str,
+    "policy_no":      str,
+    "policy_version": int,
+    "loss_type":      str,
+    "incident_at":    str,
+    "amount_claimed": float,
+    "plan_id":        str,
+}
+
+#: 与 `_IDENTITY_COERCERS` 同一份，只是取键 —— 两处各写一份必漂，漂了幂等就退化。
+_CASE_IDENTITY_FIELDS = tuple(_IDENTITY_COERCERS)
 
 
 class AuthoritativeFactViolation(RuntimeError):
@@ -125,60 +153,77 @@ class CaseIdentityConflict(ValueError):
     """
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# ---------------------------------------------------------------- 域的那部分
+#: 四道闸对外说的那句人话。句式由骨架定死，这里只填名词 —— 报错文案是排查的第一
+#: 现场，下沉最容易在这里偷偷退化成「本域的写入口径」这种看不出是哪张表的通用话。
+_TEXTS = CaseGuardTexts(
+    authority_holder="赔付方",
+    evidence_seen_phrase="到账回执后",
+    submitted_noun="赔付回执",
+    fact_subject="回执",
+    receipt_noun="回执",
+    missing_why_noun="回执",
+    attach_noun="回执",
+    intake_verb="报案",
+    replay_unit="件事",
+)
 
 
-def _require_invocation_id(invocation_id: str) -> str:
-    """actor 溯源的唯一锚点，空了这条审计链就断了。"""
-    if not invocation_id:
-        raise ValueError("invocation_id 不许为空：它是 claim_case 每一次写入的 actor 锚点")
-    return invocation_id
+def _write_observation(store: Any, conn: Any, *, tenant_id: str, claim_id: str,
+                       observation: dict, invocation_id: str) -> None:
+    """把回执落进 `claim_payment_observation`，用骨架递进来的那条连接。
 
-
-def _identity_of(row: dict) -> dict:
-    """把库里那一行折成与 `create_case` 入参同一个形状，好逐字段比。
-
-    必须过一遍类型转换：sqlite 的 INTEGER / REAL 回来是 int / float，而调用方递
-    进来的可能是 str 或 int —— 不归一就会把「12000 与 12000.0」判成冲突，
-    幂等当场退化成「每次重跑都报冲突」。
+    连接是骨架的事务里那一条 —— 观察与状态更新同生共死。自己另开一条会让
+    「状态推进了但回执没落」变得可表达，而那正是铁律 8 要挡的形状。
     """
-    return {
-        "payer_id":       str(row["payer_id"]),
-        "policy_no":      str(row["policy_no"]),
-        "policy_version": int(row["policy_version"]),
-        "loss_type":      str(row["loss_type"]),
-        "incident_at":    str(row["incident_at"]),
-        "amount_claimed": float(row["amount_claimed"]),
-        "plan_id":        str(row["plan_id"]),
-    }
+    obs = dict(observation)
+    conn.execute(
+        "INSERT INTO claim_payment_observation (tenant_id, claim_id, request_id,"
+        " carc_code, group_code, remark_codes, raw_receipt_json, observed_state,"
+        " observed_at, actor_invocation_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (tenant_id, claim_id, obs["request_id"], obs.get("carc_code", ""),
+         obs.get("group_code", ""), obs.get("remark_codes", "[]"),
+         obs.get("raw_receipt_json", "{}"), obs["observed_state"],
+         obs.get("observed_at") or _now(), invocation_id),
+    )
 
 
-def _log_case_conflict(store: Any, *, plan_id: str, tenant_id: str, claim_id: str,
-                       diff: dict, actor: str, invocation_id: str) -> None:
-    """拒绝一次案号复用也要留证据 —— 理由同模块 docstring：吞掉就没了。"""
-    store.append_event_log({
-        "plan_id": plan_id,
-        "event_type": CASE_CONFLICT_EVENT,
-        "reason": f"claim_id 被复用，业务字段对不上：{sorted(diff)}",
-        "detail": {"tenant_id": tenant_id, "claim_id": claim_id,
-                   "actor": actor, "invocation_id": invocation_id,
-                   "conflicts": {f: {"stored": old, "incoming": new}
-                                 for f, (old, new) in diff.items()}},
-    })
+_GUARD = _case_guard.make_case_guard(
+    case_table="claim_case",
+    case_key="claim_id",
+    objects_mod=objects,
+    identity_fields=_IDENTITY_COERCERS,
+    authoritative_writer=AUTHORITATIVE_WRITER,
+    authoritative_states=lambda: AUTHORITATIVE_STATES,
+    biz_status_flow=lambda: BIZ_STATUS_FLOW,
+    observation_required=_OBSERVATION_REQUIRED,
+    conflict_event=CASE_CONFLICT_EVENT,
+    violation_event=VIOLATION_EVENT,
+    biz_status_event=BIZ_STATUS_EVENT,
+    errors=CaseGuardErrors(violation=AuthoritativeFactViolation,
+                           transition=BizStatusTransitionError,
+                           conflict=CaseIdentityConflict),
+    texts=_TEXTS,
+    check_evidence=_case_guard.make_receipt_state_gate(
+        receipt_state=lambda: AUTHORITATIVE_RECEIPT_STATE,
+        violation_error=AuthoritativeFactViolation,
+        receipt_noun="回执",
+        authority_says="赔付方说钱到账了",
+    ),
+    write_observation=lambda store, conn, *, tenant_id, case_id, observation, invocation_id:
+        _write_observation(store, conn, tenant_id=tenant_id, claim_id=case_id,
+                           observation=observation, invocation_id=invocation_id),
+    #: 本域的违规事件 detail 里 `domain` 排在 `invocation_id` 之后（ap 排在最前）。
+    #: 位置是历史留下的不一致，本轨照抄不统一 —— 统一会改掉审计行的形状。
+    violation_detail_domain="claim",
+    violation_detail_domain_first=False,
+)
 
-
-def _log_violation(store: Any, *, plan_id: str, tenant_id: str, claim_id: str,
-                   attempted: str, actor: str, invocation_id: str, why: str) -> None:
-    store.append_event_log({
-        "plan_id": plan_id,
-        "event_type": VIOLATION_EVENT,
-        "reason": why,
-        "detail": {"tenant_id": tenant_id, "claim_id": claim_id, "attempted": attempted,
-                   "actor": actor, "invocation_id": invocation_id,
-                   "domain": "claim",
-                   "authoritative_writer": AUTHORITATIVE_WRITER},
-    })
+_require_invocation_id = _GUARD._require_invocation_id
+_identity_of = _GUARD._identity_of
+_log_case_conflict = _GUARD._log_case_conflict
+_log_violation = _GUARD._log_violation
+get_case = _GUARD.get_case
 
 
 # ---------------------------------------------------------------- 写入口径
@@ -206,67 +251,43 @@ def create_case(
     **幂等语义**（报案这一步会被返工重跑，而主键是 `(tenant_id, claim_id)`）：
 
       · 案号已在库 + `_CASE_IDENTITY_FIELDS` 逐字段相同 -> 一个字节都不写，返回
-        **既有那一行**（原 `created_at`、原 `biz_status`）。所以这里既不能
-        `INSERT OR REPLACE` 也不能 `ON CONFLICT DO UPDATE`：那两种写法会让一次
-        重跑把已经推进到 adjudicated / payment_requested 的案子**静悄悄**倒回
-        `submitted`，比裸 INSERT 抛异常坏得多。
+        **既有那一行**（原 `created_at`、原 `biz_status`）。
       · 案号已在库 + 任一业务字段不同 -> 落一条 `CASE_CONFLICT_EVENT` 事件并抛
         `CaseIdentityConflict`。**这一档不许静默**：库里的 `amount_claimed` 是
         `claim.settle` 真正拿去算钱的输入，悄悄收下新金额等于绕过核算与审批；
         悄悄丢弃则让调用方拿到一份和自己递进来的 seed 对不上的案件草稿，
         同样一点信号都没有。与第 ④ 道「有回执 != 回执说到账了」同一个 fail-closed 口径。
 
-    用 `ON CONFLICT (tenant_id, claim_id) DO NOTHING` 而不是 `INSERT OR IGNORE`：
-    后者会把 `biz_status` 那条 CHECK 约束的失败一并吞掉，指名冲突目标才只放过
-    主键这一种冲突。判定放在插入**之后**回读比对，而不是插入前先查一次 ——
-    先查后插在 `lock_of()` 退化成 nullcontext 的 Store 上有 TOCTOU 窗口。
+    插入语句的形状（`ON CONFLICT DO NOTHING` 而不是 `INSERT OR IGNORE`、
+    回读比对而不是先查后插）由骨架定，理由见 `_case_guard.create_case`。
     """
-    _require_invocation_id(invocation_id)
-    incoming = {
-        "payer_id":       str(payer_id),
-        "policy_no":      str(policy_no),
-        "policy_version": int(policy_version),
-        "loss_type":      str(loss_type),
-        "incident_at":    str(incident_at),
-        "amount_claimed": float(amount_claimed),
-        "plan_id":        str(plan_id),
-    }
+    # 递进来的这一份与库里回读的那一份过**同一套**归一函数（`_identity_of`）——
+    # 两边各归一各的正是「12000 与 12000.0 判成冲突」那个坑的来源。
+    incoming = _identity_of({
+        "payer_id":       payer_id,
+        "policy_no":      policy_no,
+        "policy_version": policy_version,
+        "loss_type":      loss_type,
+        "incident_at":    incident_at,
+        "amount_claimed": amount_claimed,
+        "plan_id":        plan_id,
+    })
     now = _now()
-    conn = objects._conn(store)
-    with objects.lock_of(store):
-        conn.execute(
-            "INSERT INTO claim_case (tenant_id, claim_id, payer_id, policy_no, policy_version,"
-            " loss_type, incident_at, reported_at, amount_claimed, biz_status, plan_id,"
-            " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT (tenant_id, claim_id) DO NOTHING",
-            (tenant_id, claim_id, incoming["payer_id"], incoming["policy_no"],
-             incoming["policy_version"], incoming["loss_type"], incoming["incident_at"],
-             str(reported_at or now), incoming["amount_claimed"], INITIAL_STATUS,
-             incoming["plan_id"], now),
-        )
-        conn.commit()
-
-    case = get_case(store, tenant_id, claim_id)
-    if case is None:
-        # 既没插进去、又读不到。不静默返回 None：调用方的类型标注说这里必有一行。
-        raise RuntimeError(
-            f"create_case 之后读不到 case：tenant={tenant_id} claim={claim_id}")
-
-    stored = _identity_of(case)
-    diff = {f: (stored[f], incoming[f])
-            for f in _CASE_IDENTITY_FIELDS if stored[f] != incoming[f]}
-    if diff:
-        _log_case_conflict(store, plan_id=incoming["plan_id"], tenant_id=tenant_id,
-                           claim_id=claim_id, diff=diff, actor=actor_skill,
-                           invocation_id=invocation_id)
-        detail = "；".join(f"{f}：库里 {old!r}、这次 {new!r}"
-                          for f, (old, new) in sorted(diff.items()))
-        raise CaseIdentityConflict(
-            f"claim={claim_id}（tenant={tenant_id}）已经存在，业务字段对不上：{detail}。"
-            "报案重跑只在业务字段逐字段相同时幂等；对不上说明这不是同一件事的重放，"
-            "既不许覆盖也不许静默丢弃 —— 换个 claim_id，或先查清这个案号为什么被复用"
-        )
-    return case
+    return _GUARD.create_case(
+        store, tenant_id=tenant_id, case_id=claim_id, incoming=incoming,
+        columns={
+            "payer_id":       incoming["payer_id"],
+            "policy_no":      incoming["policy_no"],
+            "policy_version": incoming["policy_version"],
+            "loss_type":      incoming["loss_type"],
+            "incident_at":    incoming["incident_at"],
+            "reported_at":    str(reported_at or now),
+            "amount_claimed": incoming["amount_claimed"],
+            "biz_status":     INITIAL_STATUS,
+            "plan_id":        incoming["plan_id"],
+            "created_at":     now,
+        },
+        actor_skill=actor_skill, invocation_id=invocation_id)
 
 
 def update_biz_status(
@@ -282,129 +303,18 @@ def update_biz_status(
 ) -> dict:
     """`claim_case.biz_status` 的唯一写入路径。四道闸，顺序不可换。
 
+    写进去的是**观察与推断**，不是权威事实（铁律 8）—— 一笔赔款到没到账，权威在
+    赔付方。所以：
+
     - `new_status` 落在 `AUTHORITATIVE_STATES` 且 `actor_skill != AUTHORITATIVE_WRITER`
       -> 落 `AuthoritativeFactViolation` 事件并抛 `AuthoritativeFactViolation`。
     - 回执只有权威写入方递得进来。
     - 写权威终态必须带 `observation`，与状态更新**同事务**插入
       `claim_payment_observation`。
-    - 回执还得**说的是这件事**（`observed_state == "paid"`）。
+    - 回执还得**说的是这件事**（`observed_state == "paid"`）—— 这一道必须活在守卫里，
+      不能只活在 `claim.observe` 的某个 if 分支里：在那里改动分支顺序，两层都不会响。
     - 迁移不在 `BIZ_STATUS_FLOW` 里 -> 抛 `BizStatusTransitionError`。
     """
-    _require_invocation_id(invocation_id)
-    case = get_case(store, tenant_id, claim_id)
-    plan_id = (case or {}).get("plan_id", "")
-
-    # ① 权威闸放在最前面：case 不存在也照样记一笔越权尝试。
-    #    先查存在性会让「对不存在的 case 越权写 paid」以 LookupError 收场，
-    #    证据就没了 —— 而那恰恰是最该留痕的一种试探。
-    if new_status in AUTHORITATIVE_STATES and actor_skill != AUTHORITATIVE_WRITER:
-        _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, claim_id=claim_id,
-                       attempted=new_status, actor=actor_skill, invocation_id=invocation_id,
-                       why=f"{new_status} 只能由 {AUTHORITATIVE_WRITER} 写入")
-        raise AuthoritativeFactViolation(
-            f"{actor_skill} 试图把 claim={claim_id} 写成 {new_status}；"
-            f"该状态的权威在赔付方，只有 {AUTHORITATIVE_WRITER} 观察到到账回执后才写得进来"
-        )
-
-    # ② 回执只有权威写入方递得进来，否则等于给别人开了个伪造回执的口子。
-    if observation is not None and actor_skill != AUTHORITATIVE_WRITER:
-        _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, claim_id=claim_id,
-                       attempted=new_status, actor=actor_skill, invocation_id=invocation_id,
-                       why=f"回执只能由 {AUTHORITATIVE_WRITER} 提交")
-        raise AuthoritativeFactViolation(
-            f"{actor_skill} 递交了赔付回执；回执是外部权威事实，"
-            f"只有 {AUTHORITATIVE_WRITER} 能落库"
-        )
-
-    if case is None:
-        raise LookupError(f"没有这个 case：tenant={tenant_id} claim={claim_id}")
-
-    cur = case["biz_status"]
-    if new_status not in BIZ_STATUS_FLOW.get(cur, ()):
-        raise BizStatusTransitionError(
-            f"业务状态不许从 {cur} 迁到 {new_status}（claim={claim_id}）；"
-            f"{cur} 的合法去向：{BIZ_STATUS_FLOW.get(cur, ()) or '无（终态）'}"
-        )
-
-    # ③ 权威终态必须有回执。没有回执的 paid 就是把外部状态写死为终态。
-    if new_status in AUTHORITATIVE_STATES:
-        missing = [f for f in _OBSERVATION_REQUIRED if not (observation or {}).get(f)]
-        if missing:
-            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, claim_id=claim_id,
-                           attempted=new_status, actor=actor_skill,
-                           invocation_id=invocation_id,
-                           why=f"回执缺字段 {missing}")
-            raise AuthoritativeFactViolation(
-                f"写 {new_status} 必须同事务附回执，缺字段：{missing}"
-            )
-
-        # ④ 回执还得**说的是这件事**。③ 只保证「有一张回执」，不保证那张回执说到账了 ——
-        #    一条 observed_state='denied'、carc_code='96' 的回执两个字段齐全，
-        #    在 ③ 眼里与到账回执无从分辨。放过它，系统持有的就只是「有一张回执」，
-        #    不是「赔付方说钱到账了」，而后者才是 paid 这个词的全部含义（铁律 8）。
-        #    这条防线必须活在守卫里，不能只活在 claim.observe 的某个 if 分支里 ——
-        #    在那里改动分支顺序，两层都不会响。
-        allowed = AUTHORITATIVE_RECEIPT_STATE.get(new_status)
-        if allowed is None:
-            # 加了权威终态却没给判据。fail-closed：宁可写不进去，也不许默认放行 ——
-            # 默认放行会让这个终态退回到「有回执就算数」，静默且没人会发现。
-            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, claim_id=claim_id,
-                           attempted=new_status, actor=actor_skill,
-                           invocation_id=invocation_id,
-                           why=f"{new_status} 没有在 AUTHORITATIVE_RECEIPT_STATE 里配回执判据")
-            raise AuthoritativeFactViolation(
-                f"{new_status} 在 AUTHORITATIVE_STATES 里，却没有在 "
-                f"AUTHORITATIVE_RECEIPT_STATE 里给出回执判据；两张表必须同增同减"
-            )
-        seen = str((observation or {}).get("observed_state"))
-        if seen not in allowed:
-            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, claim_id=claim_id,
-                           attempted=new_status, actor=actor_skill,
-                           invocation_id=invocation_id,
-                           why=f"回执 observed_state={seen!r}，不在 {new_status} 的判据 "
-                               f"{sorted(allowed)} 里")
-            raise AuthoritativeFactViolation(
-                f"写 {new_status} 的回执说的是 {seen!r}，不是 {sorted(allowed)}；"
-                f"「有一张回执」不等于「赔付方说钱到账了」，外部权威没这么说就不许收口"
-            )
-
-    conn = objects._conn(store)
-    with objects.lock_of(store):
-        try:
-            if observation is not None:
-                obs = dict(observation)
-                conn.execute(
-                    "INSERT INTO claim_payment_observation (tenant_id, claim_id, request_id,"
-                    " carc_code, group_code, remark_codes, raw_receipt_json, observed_state,"
-                    " observed_at, actor_invocation_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (tenant_id, claim_id, obs["request_id"], obs.get("carc_code", ""),
-                     obs.get("group_code", ""), obs.get("remark_codes", "[]"),
-                     obs.get("raw_receipt_json", "{}"), obs["observed_state"],
-                     obs.get("observed_at") or _now(), invocation_id),
-                )
-            conn.execute(
-                "UPDATE claim_case SET biz_status=? WHERE tenant_id=? AND claim_id=?",
-                (new_status, tenant_id, claim_id),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-
-    store.append_event_log({
-        "plan_id": plan_id,
-        "event_type": BIZ_STATUS_EVENT,
-        "from_state": cur, "to_state": new_status, "reason": reason,
-        "detail": {"tenant_id": tenant_id, "claim_id": claim_id, "actor": actor_skill,
-                   "invocation_id": invocation_id,
-                   "observation_attached": observation is not None},
-    })
-    return get_case(store, tenant_id, claim_id)  # type: ignore[return-value]
-
-
-def get_case(store: Any, tenant_id: str, claim_id: str) -> dict | None:
-    """按 (tenant_id, claim_id) 读一个 case；不存在返回 None。"""
-    rows = objects.query(
-        store, "SELECT * FROM claim_case WHERE tenant_id=? AND claim_id=?",
-        (tenant_id, claim_id))
-    return rows[0] if rows else None
+    return _GUARD.update_biz_status(store, tenant_id, claim_id, new_status,
+                                    actor_skill, invocation_id,
+                                    observation=observation, reason=reason)

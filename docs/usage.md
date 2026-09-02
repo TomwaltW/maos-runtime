@@ -153,16 +153,35 @@ evidence/
 
 ## 7. 接真模型（可选）
 
-只影响 Agent 的语义产出，不影响状态机。密钥**只读环境变量，禁止写进任何文件**：
+只影响 Agent 的语义产出，不影响状态机。密钥**只读环境变量，禁止写进任何文件** ——
+仓库里连 `.env` 都不要建；要持久化就写 `~/.zshrc`，或放仓库外的 `~/.maos.env` 再 `source`：
 
 ```bash
-export MAOS_LLM_BASE_URL=...   # OpenAI 兼容接口
+export MAOS_LLM_BASE_URL=https://<网关主机>/v1   # OpenAI 兼容接口，写到 /v1 为止
 export MAOS_LLM_API_KEY=...
 export MAOS_LLM_MODEL=...
+export MAOS_LLM_TIMEOUT=120                     # 可选，缺省 120 秒
 ```
 
-场景 5 与全部测试强制 scripted，配了 key 的机器上也不打真网络 ——
-replan / 补偿 / 审批是控制面行为，其正确性不得依赖模型的智力表现。
+前三个**缺任何一个都会静默降级**回脚本回放，日志里只有一行 WARNING。
+「以为在跑真模型、其实在回放」会让这一跑的成本读数与模型相关结论全部失真，
+所以先自证接上了，再跑场景：
+
+```bash
+python3 -c "from maos.model.client import select_model_client as s; print(type(s()).__name__)"
+# GatewayModelClient = 真接上了；ScriptedModelClient = 还在回放
+```
+
+**只有场景 1 走真网络**：其余场景（含场景 5）与全部测试都显式传 `force_scripted=True`，
+配了 key 的机器上也一行网络不走 —— replan / 补偿 / 审批是控制面行为，
+其正确性不得依赖模型的智力表现，证据束也必须可复现。
+
+两个配错就撞墙的地方，都在 `maos/model/client.py`：
+
+- `BASE_URL` 写到 `/v1` 为止，`/chat/completions` 由代码拼；写全了是 404。
+- 跨 origin 的 3xx **一律拒绝**，报错提示「把 BASE_URL 配成最终地址」。
+  这不是 bug：urllib 跟随重定向时会把 `Authorization` 头原样搬到新主机上，
+  配错一个地址就够把 key 发给别人。同 origin 的路径跳转照常放行。
 
 其余旋钮：
 

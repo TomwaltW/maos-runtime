@@ -40,6 +40,16 @@
     钩子里再碰一次 router 就是自锁死。
 
 所以 ``team=None``（缺省）时这一层的行为与从前逐字一致，一次调用都不会发生。
+
+## 非命令文本：先看是不是在 @ 某一岗
+
+2026-09-03 真房间实测：boss 在 Element 里 @ 了「财务执行岗」问「你是干什么的」，
+回话的是 ``maos-bot``，说的是退款助手的通用话术 —— 因为这一层对非命令文本一律走
+`_chat`，而回话器只有一张嘴。所以 `_text_reply` 先过一道 `parse_mention`：认出
+点名就交给那一岗自己答（`answer()`，跨轨契约 §4），认不出才走闲聊。
+
+这条回帖**仍由主通道发出**（本层只有 `_reply` 这一条出口），靠 `【岗位 · agent_id】`
+名牌区分是谁在说 —— 岗位账号自己发声是发声面的事，不在这一层。
 """
 
 from __future__ import annotations
@@ -87,6 +97,14 @@ CMD_APPROVAL = ("approve", "reject")
 #: 待办的有效期（秒）。过期的待办**不许放行**：预检结论是按当时的政策与日期算的，
 #: 隔一天再批，窗口天数已经变了，而放行时不会重算 —— 那就是拿旧结论退新钱。
 TICKET_TTL = 24 * 3600
+
+#: 点名时称呼与问题之间允许出现的分隔符。Element 的 @提及 pill 落到纯文本里带的是
+#: 「显示名: 」，手打的更随意（全角冒号、逗号、直接空格），所以这几个字符一并认。
+MENTION_SEPS = " \t\r\n：:，,、"
+
+#: 只 @ 了一下、一个字没说时替上的问题。**不许沉默**：房间里 @ 了一个岗位却什么都
+#: 没发生，与「那个岗位根本不在」分不出来，而后者是要去查部署的。
+SELF_INTRO_Q = "你是干什么的？请用一两句话做个自我介绍。"
 
 USAGE = """MAOS 退款助手 · 可用命令
   /refund <订单号> <诉求类型> [金额] [申请日期]
@@ -148,6 +166,11 @@ class Ticket:
     #: 建这个待办时那次 `preflight` 的返回。留下来只为让圆桌钩子在 `_reply` 之后
     #: 还拿得到它 —— 预检结论是**当时**算的，放行时不重算，钩子更不该自己再算一遍。
     checked: dict = field(default_factory=dict)
+    #: 五岗合议出来的收口卡（`maos/roundtable/verdict.py` 的 `Verdict`，跨轨契约 §2）。
+    #: 缺省 `None`，由 `_fire` 在 `on_preflight` 返回之后填一次。没接圆桌、或圆桌
+    #: 还没装合议引擎时它一直是 None，`/pending` 那一行随之整条不出现 ——
+    #: 不打「建议：None」，也不在这一层自己编一句（那就是第二套裁定口径）。
+    verdict: Any = None
 
     def expired(self, ttl: int = TICKET_TTL, now: float | None = None) -> bool:
         return (time.time() if now is None else now) - self.created_at > ttl
@@ -259,8 +282,9 @@ class IngressRouter:
             # 纯图片没有命令。**必须回一句** —— 群里发了张照片却什么都不发生，
             # 发的人只能得出「机器人没在听」这个结论，然后要么重发要么放弃，
             # 而证据其实已经存下来了。回执同时告诉他下一步该打什么。
-            # 带字的非命令消息只在装了回话器时才回（缺省不装，闲聊照旧一声不吭）。
-            chat_note = self._chat(msg) if (msg.text or "").strip() else ""
+            # 带字的非命令消息交给 `_text_reply`：@ 了某一岗就由那一岗答，否则走闲聊
+            # （缺省没装回话器，闲聊照旧一声不吭）。
+            chat_note = self._text_reply(msg) if (msg.text or "").strip() else ""
             out = self._reply(msg, "\n\n".join(p for p in (evidence_note, chat_note) if p))
             self._fire()
             return out
@@ -309,10 +333,11 @@ class IngressRouter:
             try:
                 if kind == "preflight":
                     ticket = event[1]
-                    self.team.on_preflight(
+                    reports = self.team.on_preflight(
                         payload=ticket.payload, checked=ticket.checked,
                         ledger=self.ledger(), evidence=list(ticket.evidence),
                         requested_by=ticket.requested_by)
+                    self._attach_verdict(ticket, reports)
                 elif kind == "sheet":
                     self.team.on_sheet(rows=event[1], ledger=self.ledger(),
                                        requested_by=event[2])
@@ -322,6 +347,27 @@ class IngressRouter:
             except Exception as exc:                    # noqa: BLE001
                 log.warning("圆桌 %s 钩子失败（%s: %s），回帖不受影响",
                             kind, type(exc).__name__, exc)
+
+    def _attach_verdict(self, ticket: Ticket, reports: Any) -> None:
+        """把五岗合议出来的收口卡挂到待办上，供 `/pending` 报一句「建议：…」。
+
+        **取不到入口就保持 None**：合议引擎（`decide()`，跨轨契约 §2）是另一轨的件，
+        这一层只消费。取不到时 `/pending` 少一行，而不是少一条待办。
+
+        算收口卡单独兜一层异常、日志与钩子失败那句分开：`on_preflight` 走完了、
+        只是收口卡没算出来，与「五岗根本没发言」是两件事，混成一句会指错方向。
+        """
+        decide = getattr(self.team, "decide", None)
+        if decide is None:
+            decide = _decide_fn()
+        if decide is None or not reports:
+            return
+        try:
+            ticket.verdict = decide(
+                reports, case_id=str(ticket.checked.get("case_id") or ""))
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("合议收口卡没算出来（%s: %s），待办不带建议",
+                        type(exc).__name__, exc)
 
     def handle_team(self, msg: InboundMessage) -> str:
         """``/team`` —— 报一遍圆桌有哪几岗、各自什么职责、挂着哪些 skill。
@@ -469,6 +515,61 @@ class IngressRouter:
         except Exception as exc:                        # noqa: BLE001
             log.warning("闲聊回话失败（%s: %s），本条不回", type(exc).__name__, exc)
             return ""
+
+    def _text_reply(self, msg: InboundMessage) -> str:
+        """一条非命令文本的回话：先认点名，认不出才走闲聊。
+
+        **这一步必须在 `Command.parse` 之后**：``/refund ORD-2026-0001 质量问题``
+        的参数里完全可能出现「财务执行岗」四个字，先判点名就会把一条命令变成一次
+        岗位问答，而群里看到的是「命令没生效」，没有任何报错。
+
+        解析本身也兜一层：点名认错了最多是少答一句，把 `handle` 带崩就是整条消息
+        变成「处理失败：…」。
+        """
+        try:
+            hit = parse_mention(msg.text)
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("点名解析失败（%s: %s），本条按闲聊处理", type(exc).__name__, exc)
+            hit = None
+        if hit is None:
+            return self._chat(msg)
+        return self._mention(msg, *hit)
+
+    def _mention(self, msg: InboundMessage, agent_id: str, question: str) -> str:
+        """@ 了某一岗 -> 让那一岗自己答一句，带名牌回帖。
+
+        名牌形态（``【岗位 · agent_id】 话``）与房间发声面代言时的 plain 一致：
+        这条回帖仍由主通道发出，不带名牌的话，房间里看到的还是 ``maos-bot`` 用
+        退款助手的口气答话 —— 而那正是这一层要消灭的观感。
+
+        三条退化路径 —— 没接圆桌、圆桌没有 `answer`、`answer` 抛了或回了空话 ——
+        **一律退回闲聊并说明白是谁在代答**。房间里的沉默与「机器人挂了」分不出来。
+        """
+        title = _titles().get(agent_id, agent_id)
+        answer = getattr(self.team, "answer", None) if self.team is not None else None
+        if answer is None:
+            why = "本进程没接圆桌" if self.team is None else "本进程的圆桌没装载岗位问答"
+            return self._mention_fallback(
+                msg, f"（{why}，{title}暂时开不了口，下面由退款助手代答）")
+        try:
+            said = str(answer(agent_id, question or SELF_INTRO_Q,
+                              facts=self._chat_facts(msg)) or "").strip()
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("岗位 %s 问答失败（%s: %s），退回闲聊",
+                        agent_id, type(exc).__name__, exc)
+            return self._mention_fallback(
+                msg, f"（{title}这次没答上来：{type(exc).__name__}，下面由退款助手代答）")
+        if not said:
+            # 空回答单独判：它不抛异常，照发就是在房间里发一条只有名牌的空消息。
+            log.warning("岗位 %s 的问答回了空话，退回闲聊", agent_id)
+            return self._mention_fallback(
+                msg, f"（{title}这次没答上来，下面由退款助手代答）")
+        return f"【{title} · {agent_id}】 {said}"
+
+    def _mention_fallback(self, msg: InboundMessage, head: str) -> str:
+        """点名答不上来时的回音。闲聊回话器也没装就给命令面 —— **空回帖不是选项**。"""
+        tail = self._chat(msg) or "发 /team 看圆桌五岗与各自职责，发 /help 看全部命令"
+        return f"{head}\n{tail}"
 
     def _chat_facts(self, msg: InboundMessage) -> str:
         """拼给回话器的【事实】：命令面、底账订单、本会话的待办 / 证据 / 上一张表。
@@ -653,6 +754,10 @@ class IngressRouter:
         else:
             lines.append(f"不予退款，无需执行。如仍要走一次：/approve {c['case_id']}")
         lines.append("（本条为只读预检，尚未动任何资金）")
+        if self.team is not None:
+            # 只预告、不写结论：此刻一岗都还没发言（钩子在 `_reply` 之后才 fire），
+            # 在这里写一句「建议批复」就是凭空捏一个裁定（红线 R1/R2）。
+            lines.append("五岗正在合议，稍后给出批复建议")
         return "\n".join(lines)
 
     # -- 执行 ---------------------------------------------------------------
@@ -762,9 +867,17 @@ class IngressRouter:
 
         live = [t for t in self._tickets.values() if not t.expired(self.ticket_ttl)]
         if live:
-            blocks.append("待放行（/approve <case_id>）：\n" + "\n".join(
-                f"  · {t.case_id}  {t.summary}  由 {t.requested_by} 提交"
-                for t in live))
+            # 与下面那个 `rows` 分开命名：这里是排好的**文本行**，那里是待审批
+            # 任务的**记录**，重名的代价是读的人以为两处是同一份东西。
+            waiting: list[str] = []
+            for t in live:
+                waiting.append(f"  · {t.case_id}  {t.summary}  由 {t.requested_by} 提交")
+                head = _headline_of(t.verdict)
+                if head:
+                    # 合议出来了才多这一行。它是**建议**，不是处置 —— 放行仍要
+                    # 审批人自己发 /approve，收口卡改不了这一点（红线 R4）。
+                    waiting.append(f"    建议：{head}")
+            blocks.append("待放行（/approve <case_id>）：\n" + "\n".join(waiting))
 
         if self.approval_queue is not None:
             rows: list[dict] = []
@@ -824,6 +937,91 @@ def render_roster(roster: list[dict]) -> str:
             lines.append(f"  · {skill.get('name')}@{skill.get('version')} "
                          f"— {skill.get('purpose')}")
     return "\n".join(lines)
+
+
+def _titles() -> dict[str, str]:
+    """五岗显示名。**惰性 import 且只此一份**（`maos/roundtable/team.py::TITLES`）。
+
+    在这里另抄一份的症状是：圆桌改了岗位名，房间里 @ 新名字点不动，而 `/team`
+    打出来的又是新名字 —— 两边都不报错。惰性是因为 `maos/ingress/` 在没接圆桌的
+    进程里也要能起，不该在模块级把圆桌那一串依赖拉起来。
+    """
+    from maos.roundtable.team import TITLES
+
+    return TITLES
+
+
+def _mxid_localpart(agent_id: str) -> str:
+    """岗位账号的 localpart：``refund-intake`` -> ``maos-intake``。
+
+    与 `deploy/synapse/add_agents.sh` 建号时写死的那五个账号名同一份口径。那边是
+    shell、没法 import 这里，所以两边一起改（同 `room_voices.env_keys_of` 的取舍）。
+    推导而不是再抄一份清单：`TITLES` 增减一岗，这里自动跟着走。
+    """
+    return "maos-" + agent_id.split("-", 1)[-1]
+
+
+def parse_mention(text: str) -> tuple[str, str] | None:
+    """一条非命令消息是不是在 @ 某个岗位。命中给 ``(agent_id, 去掉称呼的问题)``。
+
+    认三种形态，**都只在句首**：
+
+      · ``财务执行岗: 你是干什么的``       Element 的 @提及 pill 落到纯文本里的样子
+      · ``@财务执行岗 你是干什么的``        手打的 @
+      · ``@maos-finance:maos.local 在吗``  手打的 mxid（能认就认，认不了走闲聊）
+
+    ⚠️ 第一种是**主路**。房间回调 ``on_message(sender, body)`` 只给纯文本 body、
+    拿不到 ``formatted_body``（`hiclaw/matrix_bus.py`），Element 里那个 pill 到这一层
+    就只剩一串显示名 —— 按 mxid 匹配的那条路，真房间里根本走不到。
+
+    只在句首匹配也是刻意的：「我问一下财务执行岗的意见」是在跟**人**说话，把它判成
+    点名，房间里就会冒出一个没人叫过的岗位来答话，而发话的人不知道自己招了谁。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    # 手打的 @ 允许跟一个空格（``@ 财务执行岗``）；pill 那种没有 @，原样进。
+    body = raw[1:].lstrip() if raw.startswith("@") else raw
+    for agent_id, title in _titles().items():
+        if body.startswith(title):
+            rest = body[len(title):]
+            if rest and rest[0] not in MENTION_SEPS:
+                # 「财务执行岗位调整」不是点名 —— 显示名只是它的前缀。
+                continue
+            return agent_id, rest.lstrip(MENTION_SEPS).strip()
+        local = _mxid_localpart(agent_id)
+        if body.startswith(local) and body[len(local):len(local) + 1] == ":":
+            # 只比 localpart，**不比 homeserver**：这台机器上是 maos.local，换一套
+            # 部署就是别的域名。在这里猜一个域名去比，猜错的症状是点名静默失效。
+            parts = body[len(local) + 1:].split(None, 1)
+            return agent_id, (parts[1].strip() if len(parts) > 1 else "")
+    return None
+
+
+def _decide_fn():
+    """取合议引擎的 `decide()`（跨轨契约 §2）。**取不到返回 None**，不是错误。
+
+    合议引擎是另一轨的件，本层只消费；它没并进来时，待办就是不带建议的待办。
+    在这里抛，会让一条本来跑得好好的 `/refund` 在回帖之后炸出一行 WARNING。
+    """
+    try:
+        from maos import roundtable
+    except Exception as exc:                            # noqa: BLE001
+        log.debug("取不到圆桌包（%s: %s），待办不带建议", type(exc).__name__, exc)
+        return None
+    fn = getattr(roundtable, "decide", None)
+    return fn if callable(fn) else None
+
+
+def _headline_of(verdict: Any) -> str:
+    """收口卡的那一句话。**没有就返回空串**。
+
+    打一行「建议：None」比不打更糟（群里会以为程序出错了），而在这里自己编一句
+    就成了第二套裁定口径 —— 收口卡里每一个字都该来自 `decide()`（红线 R1）。
+    """
+    if verdict is None:
+        return ""
+    return str(getattr(verdict, "headline", "") or "").strip()
 
 
 def _sheet_rows(parsed, payloads: dict[int, dict], verdicts: dict[int, dict],

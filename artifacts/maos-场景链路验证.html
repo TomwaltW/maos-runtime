@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAOS 完整场景链路验证材料</title>
+<style>
+:root{
+  --ink:#101828; --ink2:#344054; --ink3:#667085; --ink4:#98a2b3;
+  --line:#e4e7ec; --line2:#d0d5dd; --rule:#101828;
+  --bg:#ffffff; --soft:#f9fafb; --soft2:#f2f4f7;
+  --brand:#1849a9; --brand-soft:#eff4ff; --brand-line:#b2ccff;
+  --ok:#027a48; --ok-soft:#ecfdf3; --ok-line:#a6f4c5;
+  --warn:#b54708; --warn-soft:#fffaeb; --warn-line:#fedf89;
+  --bad:#b42318; --bad-soft:#fef3f2; --bad-line:#fecdca;
+  --term-bg:#0c111d; --term-fg:#d0d5dd;
+  --mono:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:"PingFang SC","Hiragino Sans GB","Source Han Sans SC","Noto Sans CJK SC",-apple-system,sans-serif;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{background:var(--soft2);font-family:var(--sans);color:var(--ink);
+  -webkit-font-smoothing:antialiased;font-size:10pt;line-height:1.5;}
+
+.doc{display:flex;flex-direction:column;align-items:center;gap:10mm;padding:10mm 0 16mm;}
+.sheet{position:relative;width:210mm;height:297mm;background:var(--bg);overflow:hidden;
+  display:flex;flex-direction:column;padding:14mm 15mm 12mm;
+  box-shadow:0 1px 3px rgba(16,24,40,.10),0 8px 24px rgba(16,24,40,.06);}
+
+/* ---- 页眉 / 页脚 ---- */
+.hd{flex:0 0 auto;display:flex;align-items:baseline;gap:8px;
+  border-bottom:1.6pt solid var(--rule);padding-bottom:5px;margin-bottom:9px;}
+.hd .sec{font-family:var(--mono);font-size:8.5pt;font-weight:700;color:#fff;background:var(--rule);
+  padding:2px 6px;border-radius:2px;align-self:center;letter-spacing:.02em;flex:0 0 auto;}
+.hd h2{margin:0;font-size:15pt;font-weight:700;letter-spacing:-.01em;flex:1 1 auto;}
+.hd .tag{flex:0 0 auto;align-self:center;font-size:8pt;font-weight:600;color:#fff;
+  padding:2.5px 8px;border-radius:10px;white-space:nowrap;}
+.tag.sw{background:#5925dc;} .tag.rf{background:#0b6bcb;} .tag.ex{background:#475467;}
+.tag.pl{background:#fff;color:var(--ink3);border:1px solid var(--line2);}
+.ft{position:absolute;left:15mm;right:15mm;bottom:6mm;display:flex;justify-content:space-between;
+  align-items:center;font-size:7.2pt;color:var(--ink4);font-family:var(--mono);
+  border-top:.6pt solid var(--line);padding-top:3px;}
+.bd{flex:1 1 auto;min-height:0;overflow:hidden;}
+
+/* ---- 通用块 ---- */
+.claim{font-size:10.5pt;font-weight:600;line-height:1.45;border-left:3pt solid var(--brand);
+  padding:1px 0 1px 10px;margin:0 0 9px;}
+h3{margin:11px 0 5px;font-size:10.5pt;font-weight:700;letter-spacing:.01em;}
+h3:first-child{margin-top:0;}
+h3 .n{font-family:var(--mono);color:var(--brand);margin-right:5px;font-size:9.5pt;}
+p{margin:0 0 6px;}
+.lead{font-size:9.6pt;color:var(--ink2);margin:0 0 8px;}
+.mono{font-family:var(--mono);}
+.small{font-size:8.4pt;} .tiny{font-size:7.6pt;}
+.dim{color:var(--ink3);}
+b,strong{font-weight:700;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
+
+/* ---- 表 ---- */
+table{width:100%;border-collapse:collapse;font-size:8.4pt;}
+th{text-align:left;font-weight:700;color:var(--ink2);background:var(--soft);
+  border-top:.8pt solid var(--ink);border-bottom:.8pt solid var(--line2);padding:3.5px 5px;
+  font-size:8pt;letter-spacing:.02em;white-space:nowrap;}
+td{padding:3.2px 5px;border-bottom:.6pt solid var(--line);vertical-align:top;}
+tr:last-child td{border-bottom:.8pt solid var(--ink);}
+td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;}
+td.m{font-family:var(--mono);font-size:7.8pt;}
+table.tight td,table.tight th{padding:2.4px 4px;}
+
+/* ---- 状态徽章 ---- */
+.st{display:inline-block;font-family:var(--mono);font-size:7.4pt;font-weight:700;
+  padding:1px 5px;border-radius:2px;line-height:1.45;white-space:nowrap;}
+.st.done{background:var(--ok-soft);color:var(--ok);border:.6pt solid var(--ok-line);}
+.st.fail{background:var(--bad-soft);color:var(--bad);border:.6pt solid var(--bad-line);}
+.st.hold{background:var(--warn-soft);color:var(--warn);border:.6pt solid var(--warn-line);}
+.st.neu{background:var(--soft2);color:var(--ink2);border:.6pt solid var(--line2);}
+.st.info{background:var(--brand-soft);color:var(--brand);border:.6pt solid var(--brand-line);}
+
+/* ---- 指标条 ---- */
+.kpis{display:grid;gap:6px;}
+.kpi{border:.8pt solid var(--line2);border-radius:3px;padding:5px 7px;background:var(--soft);}
+.kpi .v{font-family:var(--mono);font-size:13pt;font-weight:700;line-height:1.1;letter-spacing:-.02em;}
+.kpi .k{font-size:7.4pt;color:var(--ink3);margin-top:1px;letter-spacing:.02em;}
+.kpi.accent{background:var(--brand-soft);border-color:var(--brand-line);}
+.kpi.accent .v{color:var(--brand);}
+.kpi.good{background:var(--ok-soft);border-color:var(--ok-line);} .kpi.good .v{color:var(--ok);}
+.kpi.bad{background:var(--bad-soft);border-color:var(--bad-line);} .kpi.bad .v{color:var(--bad);}
+
+/* ---- 终端 ---- */
+pre.term{background:var(--term-bg);color:var(--term-fg);font-family:var(--mono);
+  font-size:7.4pt;line-height:1.5;padding:8px 10px;border-radius:3px;margin:0 0 8px;
+  white-space:pre-wrap;word-break:break-all;overflow:hidden;}
+pre.term .g{color:#75e0a7;} pre.term .r{color:#fda29b;} pre.term .y{color:#fec84b;}
+pre.term .b{color:#84caff;} pre.term .d{color:#667085;} pre.term .w{color:#fff;font-weight:700;}
+pre.plain{background:var(--soft);border:.8pt solid var(--line2);border-left:2.5pt solid var(--line2);
+  font-family:var(--mono);font-size:7.6pt;line-height:1.5;padding:7px 9px;margin:0 0 8px;
+  white-space:pre-wrap;word-break:break-word;border-radius:2px;}
+
+/* ---- 注记框 ---- */
+.note{border:.8pt solid var(--line2);border-left:3pt solid var(--ink3);background:var(--soft);
+  padding:6px 9px;font-size:8.6pt;border-radius:2px;margin:0 0 8px;}
+.note.warn{border-color:var(--warn-line);border-left-color:var(--warn);background:var(--warn-soft);}
+.note.ok{border-color:var(--ok-line);border-left-color:var(--ok);background:var(--ok-soft);}
+.note.bad{border-color:var(--bad-line);border-left-color:var(--bad);background:var(--bad-soft);}
+.note.info{border-color:var(--brand-line);border-left-color:var(--brand);background:var(--brand-soft);}
+.note .t{font-weight:700;display:block;margin-bottom:2px;font-size:8.8pt;}
+
+/* ---- 迁移轨迹 ---- */
+.trace{display:grid;grid-template-columns:1fr 1fr;gap:0 12px;font-family:var(--mono);font-size:7.1pt;
+  line-height:1.62;}
+.trace.one{grid-template-columns:1fr;}
+.trace .row{display:flex;gap:4px;white-space:nowrap;overflow:hidden;}
+.trace .tk{color:var(--ink3);width:24mm;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto;}
+.trace .fr{color:var(--ink2);width:13mm;flex:0 0 auto;}
+.trace .ar{color:var(--ink4);flex:0 0 auto;}
+.trace .to{font-weight:700;width:13mm;flex:0 0 auto;}
+.trace .rs{color:var(--brand);flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;}
+.trace .to.done{color:var(--ok);} .trace .to.fail{color:var(--bad);}
+.trace .to.hold{color:var(--warn);} .trace .to.rewk{color:var(--warn);}
+
+/* ---- 链路条 ---- */
+.chain{display:flex;align-items:stretch;gap:0;margin:0 0 8px;font-size:7.8pt;}
+.chain .node{flex:1 1 0;border:.8pt solid var(--line2);background:var(--soft);padding:4px 6px;
+  border-radius:2px;margin-right:9px;position:relative;}
+.chain .node:last-child{margin-right:0;}
+.chain .node:after{content:"\25B8";position:absolute;right:-8px;top:50%;transform:translateY(-50%);
+  color:var(--ink4);font-size:9pt;}
+.chain .node:last-child:after{content:"";}
+.chain .node .t{font-weight:700;font-size:8.2pt;display:block;}
+.chain .node .s{color:var(--ink3);font-size:7.2pt;font-family:var(--mono);}
+.chain .node.ext{background:var(--brand-soft);border-color:var(--brand-line);}
+.chain .node.gate{background:var(--warn-soft);border-color:var(--warn-line);}
+
+/* ---- 封面 ---- */
+.cover{justify-content:space-between;padding:22mm 18mm 14mm;}
+.cover .eyebrow{font-family:var(--mono);font-size:9pt;letter-spacing:.14em;color:var(--brand);
+  font-weight:700;margin-bottom:5mm;}
+.cover h1{margin:0 0 4mm;font-size:31pt;line-height:1.16;font-weight:700;letter-spacing:-.02em;}
+.cover .sub{font-size:12.5pt;color:var(--ink2);line-height:1.55;max-width:150mm;}
+.cover .rule{height:1.6pt;background:var(--rule);margin:7mm 0 6mm;}
+.cover .stmt{font-size:11pt;line-height:1.62;color:var(--ink);max-width:158mm;}
+.cover .stmt b{color:var(--brand);}
+.coverkpi{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:7mm 0 0;}
+.meta{border-top:.8pt solid var(--line2);padding-top:5mm;display:grid;
+  grid-template-columns:auto 1fr;gap:2px 14px;font-family:var(--mono);font-size:8pt;color:var(--ink2);}
+.meta .k{color:var(--ink4);}
+
+/* ---- 目录 ---- */
+.toc{font-size:9.2pt;}
+.toc .it{display:flex;align-items:baseline;gap:6px;padding:3.4px 0;border-bottom:.6pt dotted var(--line2);}
+.toc .it .n{font-family:var(--mono);font-weight:700;color:var(--brand);width:13mm;flex:0 0 auto;font-size:8.4pt;}
+.toc .it .t{flex:1 1 auto;}
+.toc .it .d{color:var(--ink3);font-size:8pt;flex:0 0 auto;max-width:82mm;text-align:right;}
+.toc .it .p{font-family:var(--mono);color:var(--ink3);width:9mm;text-align:right;flex:0 0 auto;font-size:8.4pt;}
+
+@media print{
+  body{background:#fff;}
+  .doc{gap:0;padding:0;}
+  .sheet{box-shadow:none;page-break-after:always;break-after:page;margin:0;}
+  .sheet:last-child{page-break-after:auto;break-after:auto;}
+}
+@page{size:210mm 297mm;margin:0;}
+
+</style>
+</head>
+<body>
+<div class="doc">
+<section class="sheet cover"><div>
+<div class="eyebrow">MAOS · 复赛验证材料</div>
+<h1>完整场景链路<br>验证材料</h1>
+<div class="sub">八条端到端链路，从一句诉求走到业务终态，每一步都落在同一套事件契约与状态机上。<br>全部证据可由第三方在本机一条命令重放核验。</div>
+<div class="rule"></div>
+<div class="stmt">这份材料要回答的只有一个问题：<b>凭什么相信这些链路真的跑过？</b><br>答案不是截图，是 <b>163 条状态迁移</b>、<b>314 条事件</b>、<b>418 个 span</b> 的原始记录，加上一个把它们逐项重放的核验器 —— 它当前的输出是 <b>RESULT: 8/8 PASS</b>。</div>
+<div class="coverkpi">
+<div class="kpi accent"><div class="v">8</div><div class="k">端到端链路</div></div>
+<div class="kpi good"><div class="v">8/8</div><div class="k">核验项 PASS</div></div>
+<div class="kpi "><div class="v">67</div><div class="k">Skill 真实调用</div></div>
+<div class="kpi "><div class="v">1935</div><div class="k">存量测试通过</div></div>
+</div>
+</div>
+<div class="meta">
+<div class="k">代码基线</div><div>bcd5d467f63b310dafeff4de38a351e9ca0a7d70（goai-restructure）</div>
+<div class="k">证据基线</div><div>cfe438475f751bb1a7bfe034daf7b2381314888d</div>
+<div class="k">核验结论</div><div>RESULT: 8/8 PASS ｜ exit=0</div>
+<div class="k">测试结论</div><div>1935 passed, 41 skipped in 52.17s</div>
+<div class="k">生成时间</div><div>2026-09-03T16:11:54+08:00</div>
+<div class="k">复现命令</div><div>python3 scripts/make_evidence.py  &amp;&amp;  python3 scripts/verify.py</div>
+<div class="k">证据目录</div><div>evidence/scenario-1..7 · evidence/scenario-R5 · evidence/room</div>
+</div></section>
+<section class="sheet">
+<div class="hd"><span class="sec">§0</span><h2>这份材料证明什么</h2><span class="tag pl">读法</span></div>
+<div class="bd"><div class="claim">先说清楚这份材料证明什么、不证明什么 —— 边界不划清，后面每一个数字都可以被读成别的意思。</div>
+<div class="grid2">
+<div><div class="note ok"><span class="t">✓ 这份材料证明</span><b>①</b> 八条链路各自真的从头跑到了终态，中间每一次状态变化都在库里有行；<br><b>②</b> 每个 Skill / ToolPort 调用都留了 <span class="mono">input_digest</span> 与 <span class="mono">output_hash</span>，与事件日志逐条对得上；<br><b>③</b> 判「业务成功」的依据是外部权威判据（沙箱 pytest 报告 / 支付网关回执），不是 Agent 自己说完成了；<br><b>④</b> 这些结论可以被外人独立重放 —— 核验器八项逐项 PASS，任一项失败都说得出失败意味着什么。</div></div>
+<div><div class="note warn"><span class="t">✕ 这份材料不证明</span><b>①</b> 不证明业务数据是真实客户数据 —— 政策与历史案例是按行业惯例构造的合成数据，支付网关的错误码与时序取自公开规范；<br><b>②</b> 不证明模型效果 —— 缺省路径用 <span class="mono">ScriptedModelClient</span>，token 数是估算，只能读作调用规模；<br><b>③</b> 不证明退款真的到账 —— 权威在支付网关，MAOS 只持有观察与推断；<br><b>④</b> 不证明性能 —— 八条链路合计 5947 ms 是确定性复现的耗时，不是压测结论。</div></div>
+</div>
+<h3><span class="n">§0.2</span>八条链路各自在证明什么</h3>
+<table class="tight"><thead><tr><th style="width:9mm">场景</th><th style="width:44mm">链路</th><th>这一条单独拿出来证明的那件事</th></tr></thead><tbody>
+<tr><td class="m"><b>1</b></td><td>正常闭环</td><td class="small">基准线成立：一条无异常的链路在这套契约上能从头走到尾，且每步留痕</td></tr>
+<tr><td class="m"><b>2</b></td><td>返工闭环</td><td class="small">失败会被闸挡住，并且带着结构化 findings 回到执行侧 —— 返工是有输入的</td></tr>
+<tr><td class="m"><b>3</b></td><td>高风险人工审批</td><td class="small">「闸过了」不等于「可以放行」，风险档位能独立把任务钉在人工停点上</td></tr>
+<tr><td class="m"><b>4</b></td><td>幂等验证</td><td class="small">重复投递不会造出第二次状态迁移 —— 幂等是数得出来的，不是声称的</td></tr>
+<tr><td class="m"><b>5</b></td><td>治理路径（重规划）闭环</td><td class="small">计划本身可以被推翻重排，且重排走 Plan 级迁移、不抹掉前一轮记录</td></tr>
+<tr><td class="m"><b>6</b></td><td>制造企业售后退款 · 顺利路径</td><td class="small">同一套内核换到退款域零改动，外部权威判据从 pytest 换成网关回执</td></tr>
+<tr><td class="m"><b>7</b></td><td>制造企业售后退款 · 失败路径</td><td class="small">业务没成功时系统如实记录：不猜终态、不写 settled、留补偿与人工工单</td></tr>
+<tr><td class="m"><b>R5</b></td><td>RAG 有无对照实验</td><td class="small">检索不是装饰 —— 关掉它，同一份脚本会漏排任务并被闸判死</td></tr>
+</tbody></table>
+<h3><span class="n">§0.3</span>怎么读这份材料</h3><div class="toc">
+<div class="it"><span class="n">§1</span><span class="t">验证方法</span><span class="d">两条命令 · 核验器八项判据分别在防什么</span><span class="p">3</span></div>
+<div class="it"><span class="n">§2</span><span class="t">核验实跑输出</span><span class="d">本次运行的原始输出全文，未经编辑</span><span class="p">4</span></div>
+<div class="it"><span class="n">§3</span><span class="t">八条链路总表</span><span class="d">一张表看完 span / 事件 / 调用 / 终态</span><span class="p">5</span></div>
+<div class="it"><span class="n">§4</span><span class="t">公共骨架</span><span class="d">8 个状态 · 16 条合法迁移 · 七道闸</span><span class="p">6</span></div>
+<div class="it"><span class="n">§5.1–5.8</span><span class="t">逐条链路验证</span><span class="d">任务 DAG → 调用序列 → 迁移轨迹 → 判据 → 终态</span><span class="p">7–16</span></div>
+<div class="it"><span class="n">§6</span><span class="t">Skill 调用面</span><span class="d">13 个 Skill × 版本 × 真实调用次数 × 九要素</span><span class="p">17</span></div>
+<div class="it"><span class="n">§7</span><span class="t">ToolPort 与哈希完整性</span><span class="d">4 个 ToolPort · 93 组摘要逐条比对</span><span class="p">18</span></div>
+<div class="it"><span class="n">§8</span><span class="t">权威事实边界</span><span class="d">场景 6 与 7 的对照：成功与失败凭什么分开</span><span class="p">19</span></div>
+<div class="it"><span class="n">§9</span><span class="t">RAG 有无对照</span><span class="d">同一份计划脚本，只切一个开关</span><span class="p">20</span></div>
+<div class="it"><span class="n">§10</span><span class="t">人机协同实证</span><span class="d">真 Matrix 房间四种结局</span><span class="p">21</span></div>
+<div class="it"><span class="n">§11</span><span class="t">复现清单</span><span class="d">第三方从零复现的完整步骤与文件清册</span><span class="p">22</span></div>
+</div>
+<div class="note info" style="margin-top:8px"><span class="t">一条贯穿全文的判准</span>本文所有计数都从 <span class="mono">evidence/</span> 下的 SQLite 库与 JSON 直接读出，由生成脚本写入，全文没有手打的数字。证据文件首行一律是 <span class="mono">« generated at &lt;ISO8601&gt; from &lt;git sha&gt; »</span>。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>2 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§1</span><h2>验证方法</h2><span class="tag pl">方法</span></div>
+<div class="bd"><div class="claim">检索不准顶多说效果一般；<b>无法核验就是零分</b>。所以每一项判据都必须能被外人独立跑一遍，且失败时说得出失败意味着什么。</div>
+<h3><span class="n">§1.1</span>两条命令，缺一不可</h3>
+<pre class="plain">$ python3 scripts/make_evidence.py   <span style="color:#667085"># ① 跑 7 个场景 + RAG 对照，产 evidence/scenario-1..7 与 -R5</span>
+$ python3 scripts/verify.py          <span style="color:#667085"># ② 八项证据逐项重放校验 → RESULT: 8/8 PASS</span></pre>
+<div class="note"><b>为什么不能只跑第 ② 条：</b><span class="mono">*.db</span> 不入 git（被 <span class="mono">.gitignore</span> 挡着），核验器要的是库、不是快照。直接跑 ② 会报「缺数据库」并<b>退出 2</b> —— 这是设计行为，不是坏了。全新克隆实测 clone + 两条命令共约 7 秒。</div>
+<h3><span class="n">§1.2</span>八项判据分别在防什么</h3>
+<table class="tight"><thead><tr><th style="width:5mm">#</th><th style="width:33mm">判据</th><th>校验什么</th><th style="width:44mm">这一项失败意味着</th></tr></thead><tbody>
+<tr><td class="num">1</td><td class="m"><b>hash-integrity</b></td><td>每个 skill / tool 调用的 input_digest、output_hash 与 event_log 一致</td><td class="dim">证据被篡改，或事后手写</td></tr>
+<tr><td class="num">2</td><td class="m"><b>business-ref</b></td><td>每条 business_ref 指向的对象在库中存在且 version 匹配</td><td class="dim">引用悬空 —— 业务锚点是假的</td></tr>
+<tr><td class="num">3</td><td class="m"><b>authoritative-fact</b></td><td>每个 settled 都有对应 payment_observation，且 actor_invocation_id 属于 payment.observe</td><td class="dim">权威事实边界被绕过</td></tr>
+<tr><td class="num">4</td><td class="m"><b>trace-tree</b></td><td>trace.json 的 span 树无孤儿、无环，且与库重放逐字节一致</td><td class="dim">事件链不完整</td></tr>
+<tr><td class="num">5</td><td class="m"><b>kb-hit</b></td><td>每个 KbRetrieved 的 doc_id 在 kb_doc 中存在</td><td class="dim">RAG 命中是编的</td></tr>
+<tr><td class="num">6</td><td class="m"><b>business-outcome</b></td><td>每个 Plan 终态都有 business_outcome；DONE 必须有外部判据，且那条判据能在库里回查得到</td><td class="dim">「Agent 都完成了」被当成业务成功</td></tr>
+<tr><td class="num">7</td><td class="m"><b>history-case</b></td><td>本库晋升的 history_case 都能追溯到 outcome=success 的真实 case</td><td class="dim">知识层被污染</td></tr>
+<tr><td class="num">8</td><td class="m"><b>cost-attribution</b></td><td>每条 model_usage 都挂得到 plan 的 trace_id、task_id 回查得到，estimated 标记与 model 列相符</td><td class="dim">成本归因是假的，或估算被印成了真实计费</td></tr>
+</tbody></table>
+<h3><span class="n">§1.3</span>三种结论与退出码</h3>
+<table class="tight"><thead><tr><th style="width:20mm">结论</th><th style="width:24mm">进不进分子</th><th>什么时候出现</th><th style="width:22mm">退出码</th></tr></thead><tbody>
+<tr><td><span class="st done">[PASS]</span></td><td class="small">进</td><td class="small">该项有可判对象，且全部通过</td><td class="m tiny">0（全 PASS 时）</td></tr>
+<tr><td><span class="st fail">[FAIL]</span></td><td class="small">进（记为不通过）</td><td class="small">有对象且判不过 —— 逐条点名，不给汇总糊过去</td><td class="m tiny">非 0</td></tr>
+<tr><td><span class="st hold">[SKIP]</span></td><td class="small"><b>不进</b></td><td class="small">上游能力没落地，或该项分母为 0（空转）</td><td class="m tiny">不单独影响</td></tr>
+</tbody></table>
+<div class="grid2" style="margin-top:8px">
+<div><div class="note bad"><span class="t">不许静默跳过</span>一个 <span class="mono">7/7</span> 里藏着两个没跑的，比老老实实写 <span class="mono">5/5 PASS + 2 SKIP</span> 更坏 —— 后者看得出没跑。</div></div>
+<div><div class="note bad"><span class="t">空转也算没跑</span><span class="mono">0/0 PASS</span> 与「真跑了且全过」在屏幕上长得一模一样。这是核验器能犯的最坏的错，所以专门做了 <span class="mono">_idle_skip</span> 挡它。</div></div>
+</div>
+<div class="note info"><span class="t">依赖方向</span>核验器不 import <span class="mono">maos/domain/**</span> 的业务逻辑，只按「表在不在」决定某一项跑还是 SKIP —— 换一个业务域，这八项一行都不用改。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>3 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§2</span><h2>核验实跑输出</h2><span class="tag pl">实跑</span></div>
+<div class="bd"><div class="claim">下面是本次运行的原始输出全文，未经编辑。带 <span class="mono">info</span> / <span class="mono">warn</span> 的行是核验器主动说出口的保留意见 —— 它们不影响 PASS，但故意留在屏幕上。</div>
+<pre class="term">$ python3 scripts/verify.py
+<span class="g">[PASS]</span> hash-integrity       93/93
+<span class="g">[PASS]</span> business-ref         35/35
+<span class="g">[PASS]</span> authoritative-fact   3/3
+<span class="d">         · info: scenario-7 case=case-s7-0001: 有回执且案子收口在 biz_status=compensated（非 settled 终态） —— 预期行为：settled 是权威终态，收口在别处的案子本来就不该有 settled 观察</span>
+<span class="y">         · warn: scenario-7 case=case-s7-0002: 有回执但案子停在中间态 biz_status=gateway_accepted —— 观察到了但没收口（既没到 settled，也没落到 [&#x27;compensated&#x27;, &#x27;rejected&#x27;] 任何一个终态）</span>
+<span class="g">[PASS]</span> trace-tree           29/29
+<span class="d">         · info: scenario-1: 2 份产物走旁路入库（未经 on_task_result），来源已由 ArtifactSeeded 事件点名：maos.agents.reviewer.review_after_gate；maos.flows.common.patch_verifier。这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode</span>
+<span class="d">         · info: scenario-2: 3 份产物走旁路入库（未经 on_task_result），来源已由 ArtifactSeeded 事件点名：maos.agents.reviewer.review_after_gate；maos.flows.common.patch_verifier。这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode</span>
+<span class="d">         · info: scenario-3: 1 份产物走旁路入库（未经 on_task_result），来源已由 ArtifactSeeded 事件点名：maos.agents.testing.seed_scripted_report。这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode</span>
+<span class="d">         · info: scenario-5: 2 份产物走旁路入库（未经 on_task_result），来源已由 ArtifactSeeded 事件点名：maos.agents.testing.seed_scripted_report。这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode</span>
+<span class="d">         · info: scenario-6: 1 份产物走旁路入库（未经 on_task_result），来源已由 ArtifactSeeded 事件点名：maos.agents.reviewer.review_after_gate。这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode</span>
+<span class="d">         · info: scenario-7: 1 份产物走旁路入库（未经 on_task_result），来源已由 ArtifactSeeded 事件点名：maos.agents.reviewer.review_after_gate。这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode</span>
+<span class="g">[PASS]</span> kb-hit               7/7
+<span class="g">[PASS]</span> business-outcome     10/10
+<span class="g">[PASS]</span> history-case         1/1
+<span class="g">[PASS]</span> cost-attribution     57/57
+
+<span class="w">RESULT: 8/8 PASS</span>
+证据来源：scenario-1, scenario-2, scenario-3, scenario-4, scenario-5, scenario-6, scenario-7, scenario-R5
+<span class="b">verify exit=0</span></pre>
+<div class="grid2">
+<div><div class="note ok"><span class="t">读这两行保留意见</span><span class="mono">scenario-7 case-s7-0001</span> 有网关回执但收口在 <span class="mono">compensated</span> —— 判 <b>info</b>：settled 是权威终态，收口在别处的案子本来就不该有 settled 观察。<br><span class="mono">case-s7-0002</span> 停在 <span class="mono">gateway_accepted</span> —— 判 <b>warn</b>：观察到了但没收口。这是如实记录，不是缺陷被藏起来。</div></div>
+<div><div class="note"><span class="t">「旁路入库」那六行</span>有产物未经 <span class="mono">on_task_result</span> 入库，来源已由 <span class="mono">ArtifactSeeded</span> 事件逐个点名。核验器把话说死：<b>这说的是入库路径，不是内容真伪</b> —— 判真伪看 <span class="mono">sandbox.mode</span>。</div></div>
+</div>
+<h3><span class="n">§2.2</span>同一基线上的存量测试</h3>
+<pre class="term">$ python3 -m pytest maos/tests -q
+<span class="d">........................................ [100%]</span>
+<span class="w">1935 passed, 41 skipped in 52.17s</span></pre>
+<div class="note info">证据核验与单元测试是两条独立的绳子：前者验「跑过的这一次留下的记录站不站得住」，后者验「代码在各种输入下的行为对不对」。两条都绿才算数，任一条红都不许提交。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>4 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§3</span><h2>八条链路总表</h2><span class="tag pl">总表</span></div>
+<div class="bd"><div class="claim">八条链路一张表。<b>每一格都从 <span class="mono">evidence/&lt;场景&gt;/maos.db</span> 与 <span class="mono">trace.json</span> 直接读出</b>，没有一个数字是手打的。</div>
+<table class="tight"><thead><tr><th style="width:8mm">场景</th><th>链路</th><th style="width:17mm">域</th><th class="num">Plan</th><th class="num">任务</th><th class="num">迁移</th><th class="num">Span</th><th class="num">事件</th><th class="num">Skill</th><th class="num">Tool</th><th class="num">产物</th><th class="num">耗时</th><th style="width:19mm">Plan 终态</th></tr></thead><tbody>
+<tr><td class="m"><b>1</b></td><td>正常闭环</td><td class="dim small">软件交付域</td><td class="num">1</td><td class="num">4</td><td class="num">16</td><td class="num">37</td><td class="num">26</td><td class="num">4</td><td class="num">2</td><td class="num">6</td><td class="num">1447ms</td><td><span class="st done">DONE</span></td></tr>
+<tr><td class="m"><b>2</b></td><td>返工闭环</td><td class="dim small">软件交付域</td><td class="num">1</td><td class="num">4</td><td class="num">21</td><td class="num">48</td><td class="num">35</td><td class="num">6</td><td class="num">3</td><td class="num">8</td><td class="num">1937ms</td><td><span class="st done">DONE</span></td></tr>
+<tr><td class="m"><b>3</b></td><td>高风险人工审批</td><td class="dim small">软件交付域</td><td class="num">1</td><td class="num">1</td><td class="num">5</td><td class="num">17</td><td class="num">12</td><td class="num">2</td><td class="num">1</td><td class="num">3</td><td class="num">423ms</td><td><span class="st done">DONE</span></td></tr>
+<tr><td class="m"><b>4</b></td><td>幂等验证</td><td class="dim small">软件交付域</td><td class="num">1</td><td class="num">1</td><td class="num">3</td><td class="num">10</td><td class="num">7</td><td class="num">2</td><td class="num">1</td><td class="num">1</td><td class="num">408ms</td><td><span class="st neu">RUNNING</span></td></tr>
+<tr><td class="m"><b>5</b></td><td>治理路径（重规划）闭环</td><td class="dim small">软件交付域</td><td class="num">1</td><td class="num">1</td><td class="num">9</td><td class="num">32</td><td class="num">26</td><td class="num">8</td><td class="num">2</td><td class="num">4</td><td class="num">560ms</td><td><span class="st done">DONE</span></td></tr>
+<tr><td class="m"><b>6</b></td><td>制造企业售后退款 · 顺利路径</td><td class="dim small">退款域</td><td class="num">1</td><td class="num">5</td><td class="num">21</td><td class="num">54</td><td class="num">41</td><td class="num">9</td><td class="num">3</td><td class="num">7</td><td class="num">360ms</td><td><span class="st done">DONE</span></td></tr>
+<tr><td class="m"><b>7</b></td><td>制造企业售后退款 · 失败路径</td><td class="dim small">退款域</td><td class="num">2</td><td class="num">8</td><td class="num">41</td><td class="num">103</td><td class="num">80</td><td class="num">17</td><td class="num">8</td><td class="num">13</td><td class="num">392ms</td><td><span class="st fail">FAILED</span> <span class="st fail">FAILED</span></td></tr>
+<tr><td class="m"><b>R5</b></td><td>RAG 有无对照实验</td><td class="dim small">退款域 · 对照</td><td class="num">3</td><td class="num">14</td><td class="num">47</td><td class="num">117</td><td class="num">87</td><td class="num">19</td><td class="num">6</td><td class="num">13</td><td class="num">420ms</td><td><span class="st done">DONE</span> <span class="st fail">FAILED</span> <span class="st done">DONE</span></td></tr>
+<tr style="background:#f9fafb"><td class="m"><b>合计</b></td><td colspan="2" class="dim small">八条链路 · 两个业务域 · 同一套内核</td><td class="num"><b>11</b></td><td class="num"><b>38</b></td><td class="num"><b>163</b></td><td class="num"><b>418</b></td><td class="num"><b>314</b></td><td class="num"><b>67</b></td><td class="num"><b>26</b></td><td class="num"><b>55</b></td><td class="num"><b>5947ms</b></td><td class="dim small">7 DONE / 3 FAILED</td></tr>
+</tbody></table>
+<h3><span class="n">§3.2</span>3 个 FAILED 不是缺陷，是这份材料的重点</h3>
+<div class="grid2">
+<div><div class="note bad"><span class="t">失败的 Plan 各自在证明什么</span><span class="mono">场景 7</span> 两个 Plan 都 FAILED —— 网关问不出终态，主管驳回；<br><span class="mono">R5 · without_kb</span> FAILED —— 关掉检索后计划漏排财务核算，第六道闸判 blocker；<br>一条只演成功路径的系统，等于没演。</div></div>
+<div><div class="note ok"><span class="t">7 个 DONE 的判据不是「都完成了」</span>每个 DONE 的 <span class="mono">business_outcome.basis</span> 都是 <span class="mono">external_evidence</span>，且那条判据在库里回查得到：软件域是沙箱 pytest 报告，退款域是 <span class="mono">payment_observation</span> 里的 <span class="mono">observed_state=settled</span>。</div></div>
+</div>
+<h3><span class="n">§3.3</span>八条链路合计产出的事件（按类型）</h3>
+<table class="tight"><thead><tr><th style="width:44mm">事件类型</th><th class="num">条数</th><th>它证明链路上发生了什么</th></tr></thead><tbody>
+<tr><td class="m"><b>StateTransition</b></td><td class="num"><b>163</b></td><td class="small dim">任务状态变了一次 —— 带 from_state / to_state / reason，是链路的骨架</td></tr>
+<tr><td class="m"><b>SkillInvoked</b></td><td class="num"><b>67</b></td><td class="small dim">一次 Skill 调用，带版本、invocation_id 与输入输出摘要</td></tr>
+<tr><td class="m"><b>ToolInvoked</b></td><td class="num"><b>26</b></td><td class="small dim">一次 ToolPort 调用，带 params_digest —— 摸外部世界的唯一出口</td></tr>
+<tr><td class="m"><b>PlanTransition</b></td><td class="num"><b>25</b></td><td class="small dim">Plan 级状态变了一次（含 replan 回到 PENDING）</td></tr>
+<tr><td class="m"><b>RefundBizStatusChanged</b></td><td class="num"><b>17</b></td><td class="small dim">业务对象自己的状态变了 —— 不是 Task 状态（铁律 9）</td></tr>
+<tr><td class="m"><b>ArtifactSeeded</b></td><td class="num"><b>10</b></td><td class="small dim">产物走旁路入库，来源被事件点名 —— 不许有无名产物</td></tr>
+<tr><td class="m"><b>Replanned</b></td><td class="num"><b>2</b></td><td class="small dim">计划被推翻重排了一次</td></tr>
+<tr><td class="m"><b>KbRetrieved</b></td><td class="num"><b>2</b></td><td class="small dim">一次知识检索，候选文档与打分全留</td></tr>
+<tr><td class="m"><b>CompensationAttached</b></td><td class="num"><b>1</b></td><td class="small dim">任务挂上了补偿路径（第五道闸的判据）</td></tr>
+<tr><td class="m"><b>CompensationExecuted</b></td><td class="num"><b>1</b></td><td class="small dim">域内补偿真的执行了</td></tr>
+</tbody></table>
+<div class="tiny dim" style="margin-top:3px">合计 314 条，10 种类型。事件类型集合冻结在 <span class="mono">maos/contracts/events.py</span>，受三重机制强制（deny 规则 · PreToolUse 守卫 hook · 指纹校验测试）。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>5 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§4</span><h2>公共骨架：状态机与七道闸</h2><span class="tag pl">骨架</span></div>
+<div class="bd"><div class="claim">八条链路走的是同一副骨架：<b>8 个任务状态、16 条合法迁移、七道闸</b>。迁移表在 <span class="mono">contracts/states.py</span> 里冻结 —— 表里没有的迁移，控制面直接抛 <span class="mono">IllegalTransition</span>。</div>
+<h3><span class="n">§4.1</span>任务状态机（8 态 / 16 迁移）</h3>
+<div class="grid2"><div>
+<table class="tight"><thead><tr><th>从</th><th>到</th><th>reason</th><th class="num">走到</th></tr></thead><tbody>
+<tr><td class="m dim">PEND</td><td class="m"><b class="">DISP</b></td><td class="m" style="color:#1849a9">dispatch</td><td class="num small"><b>38</b></td></tr>
+<tr><td class="m dim">DISP</td><td class="m"><b class="">RUN</b></td><td class="m" style="color:#1849a9">claim</td><td class="num small"><b>38</b></td></tr>
+<tr><td class="m dim">DISP</td><td class="m"><b class="">PEND</b></td><td class="m" style="color:#1849a9">claim_timeout</td><td class="num small"><span class="dim">—</span></td></tr>
+<tr><td class="m dim">RUN</td><td class="m"><b class="">AWAIT</b></td><td class="m" style="color:#1849a9">submit_result</td><td class="num small"><b>38</b></td></tr>
+<tr><td class="m dim">RUN</td><td class="m"><b class="hold">BLOCK</b></td><td class="m" style="color:#1849a9">worker_blocked</td><td class="num small"><span class="dim">—</span></td></tr>
+<tr><td class="m dim">RUN</td><td class="m"><b class="">PEND</b></td><td class="m" style="color:#1849a9">retry</td><td class="num small"><span class="dim">—</span></td></tr>
+<tr><td class="m dim">RUN</td><td class="m"><b class="fail">FAIL</b></td><td class="m" style="color:#1849a9">retry_exhausted</td><td class="num small"><span class="dim">—</span></td></tr>
+<tr><td class="m dim">AWAIT</td><td class="m"><b class="done">DONE</b></td><td class="m" style="color:#1849a9">gate_pass</td><td class="num small"><b>25</b></td></tr>
+</tbody></table>
+<table class="tight"><thead><tr><th>从</th><th>到</th><th>reason</th><th class="num">走到</th></tr></thead><tbody>
+<tr><td class="m dim">AWAIT</td><td class="m"><b class="rewk">REWK</b></td><td class="m" style="color:#1849a9">gate_rework</td><td class="num small"><b>3</b></td></tr>
+<tr><td class="m dim">AWAIT</td><td class="m"><b class="hold">BLOCK</b></td><td class="m" style="color:#1849a9">gate_needs_human</td><td class="num small"><b>9</b></td></tr>
+<tr><td class="m dim">AWAIT</td><td class="m"><b class="fail">FAIL</b></td><td class="m" style="color:#1849a9">gate_reject_final</td><td class="num small"><span class="dim">—</span></td></tr>
+<tr><td class="m dim">REWK</td><td class="m"><b class="">PEND</b></td><td class="m" style="color:#1849a9">requeue</td><td class="num small"><b>3</b></td></tr>
+<tr><td class="m dim">REWK</td><td class="m"><b class="fail">FAIL</b></td><td class="m" style="color:#1849a9">rework_exhausted</td><td class="num small"><span class="dim">—</span></td></tr>
+<tr><td class="m dim">BLOCK</td><td class="m"><b class="">PEND</b></td><td class="m" style="color:#1849a9">human_resume</td><td class="num small"><span class="dim">—</span></td></tr>
+<tr><td class="m dim">BLOCK</td><td class="m"><b class="done">DONE</b></td><td class="m" style="color:#1849a9">human_approve</td><td class="num small"><b>6</b></td></tr>
+<tr><td class="m dim">BLOCK</td><td class="m"><b class="fail">FAIL</b></td><td class="m" style="color:#1849a9">human_reject</td><td class="num small"><b>3</b></td></tr>
+</tbody></table>
+</div></div>
+<div class="note" style="margin-top:7px"><b>合计 163 次状态迁移，覆盖 9 / 16 条合法迁移。</b>没走到的那几条（<span class="mono">claim_timeout</span>、<span class="mono">retry</span>、<span class="mono">rework_exhausted</span> 等）是超时与耗尽路径，确定性复现的链路里本来就不该出现 —— 它们由单元测试覆盖，不靠场景演。</div>
+<h3><span class="n">§4.2</span>七道闸（按顺序跑，任何一道不过就出 rework）</h3>
+<table class="tight"><thead><tr><th style="width:5mm">#</th><th style="width:24mm">闸</th><th>判据</th><th style="width:20mm">作用域</th></tr></thead><tbody>
+<tr><td class="num">1</td><td class="m"><b>schema</b></td><td>产物结构合规</td><td class="dim small">所有任务</td></tr>
+<tr><td class="num">2</td><td class="m"><b>acceptance</b></td><td>代码类看沙箱测试报告，非代码类看 self_check；<b>没有报告 = blocker，无降级</b></td><td class="dim small">所有任务</td></tr>
+<tr><td class="num">3</td><td class="m"><b>security</b></td><td>敏感面变更的安全判据</td><td class="dim small">所有任务</td></tr>
+<tr><td class="num">4</td><td class="m"><b>evidence</b></td><td>结论必须挂得上证据</td><td class="dim small">所有任务</td></tr>
+<tr><td class="num">5</td><td class="m"><b>compensation</b></td><td>有副作用就必须有补偿路径</td><td class="dim small">所有任务</td></tr>
+<tr><td class="num">6</td><td class="m"><b>finance</b></td><td>退款金额超阈值 → 必须有财务核算凭据；<b>plan 级</b>判据还管「漏排财务复核」</td><td class="dim small">退款域</td></tr>
+<tr><td class="num">7</td><td class="m"><b>gateway</b></td><td>认网关回执，按官方码表判四象限处置，产出 replan 换渠道的输入</td><td class="dim small">退款域</td></tr>
+</tbody></table>
+<div class="grid2" style="margin-top:8px">
+<div><div class="note info"><span class="t">闸是规则驱动，不是模型驱动</span>七道闸没有一道调模型。判据写死在 <span class="mono">maos/runtime/gate.py</span> 里，同一份输入永远得到同一个结论 —— 一个会飘的闸挡不住任何东西。</div></div>
+<div><div class="note warn"><span class="t">闸的结论是三态，不是两态</span><span class="mono">pass</span> / <span class="mono">noted</span> / <span class="mono">fail</span>。<span class="mono">noted</span> 是「这道闸有话说但没拦」—— 压成 pass 就把它藏起来了。</div></div>
+</div>
+<div class="note"><span class="t">幂等键的口径（场景 7 的关键）</span>退款的幂等键由 <span class="mono">(tenant, case)</span> 定 —— <b>换渠道不换键</b>。所以 40005 触发换渠道重发时不会造出第二笔；而 <span class="mono">outcome=unknown</span> 那一格对重规划一票否决，因为「能不能再发一次」和「这一笔到底执行了没有」是两个正交的维度。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>6 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 1</span><h2>正常闭环</h2><span class="tag sw">软件交付域</span></div>
+<div class="bd"><div class="claim">需求 → 架构 → 编码 → 沙箱回归，四个任务一次过闸，Plan 收在 DONE。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">37</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">26</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">16</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">4</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">2</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">6</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">1447ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan</span>修复 demo/app 的 token 校验缺失 <span class="st done">DONE</span> <span class="dim small mono" style="font-weight:400">plan_fb2978440926 · trace_135a1ed9cf76</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">requirement</td><td>归一化目标并给出验收标准</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">architecture</td><td>产出架构契约</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">coding</td><td>修复 demo/app 的 token 校验缺失</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">testing</td><td>沙箱回归验证</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">4</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">2</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">26</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">1064ms</span></span></div>
+<div class="note ok"><span class="t">业务终态 succeeded · basis = external_evidence</span>沙箱测试报告 <span class="mono">art_8a09155a9789</span>（passed=5，来源 artifact_seeded）<br>沙箱测试报告 <span class="mono">art_a997ade7e503</span>（passed=5，来源 task_result）</div>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 6 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">req.normalize</span><span class="fr" style="width:11mm;text-align:right">29ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">02 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">03 T</span><span class="rs" style="color:#101828;font-weight:600">git-mcp</span><span class="fr" style="width:11mm;text-align:right">134ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">04 S</span><span class="rs" style="color:#101828;font-weight:600">code.repo-patch</span><span class="fr" style="width:11mm;text-align:right">135ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">05 T</span><span class="rs" style="color:#101828;font-weight:600">sandbox.pytest_run</span><span class="fr" style="width:11mm;text-align:right">334ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">06 S</span><span class="rs" style="color:#101828;font-weight:600">test.verify</span><span class="fr" style="width:11mm;text-align:right">335ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div>
+<h3><span class="n">产物</span>产物（6 份，每份都挂在具体任务上）</h3>
+<table class="tight"><thead><tr><th style="width:36mm">task_id</th><th>kind</th><th class="num" style="width:16mm">version</th><th style="width:38mm">artifact_id</th></tr></thead><tbody>
+<tr><td class="m">s1-req</td><td class="m">requirement</td><td class="num">1</td><td class="m tiny dim">art_a7bdbc7581da</td></tr>
+<tr><td class="m">s1-arch</td><td class="m">architecture_contract</td><td class="num">1</td><td class="m tiny dim">art_7f1869269272</td></tr>
+<tr><td class="m">s1-code</td><td class="m">patch_set</td><td class="num">1</td><td class="m tiny dim">art_2377e13eb2ac</td></tr>
+<tr><td class="m">s1-code</td><td class="m">test_report</td><td class="num">1</td><td class="m tiny dim">art_8a09155a9789</td></tr>
+<tr><td class="m">s1-test</td><td class="m">test_report</td><td class="num">1</td><td class="m tiny dim">art_a997ade7e503</td></tr>
+<tr><td class="m">s1-test</td><td class="m">review_note</td><td class="num">1</td><td class="m tiny dim">art_aa1dc0af249c</td></tr>
+</tbody></table>
+<h3><span class="n">事件</span>本条链路的事件类型分布（26 条 / 5 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>16</b></span> <span class="st neu">SkillInvoked <b>4</b></span> <span class="st neu">PlanTransition <b>2</b></span> <span class="st neu">ToolInvoked <b>2</b></span> <span class="st neu">ArtifactSeeded <b>2</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 16 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(2,1fr);font-size:7.1pt">
+<div class="row"><span class="tk" style="width:24mm">s1-req</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-req</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-req</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-req</span><span class="fr" style="width:13mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:13mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-arch</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-arch</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-arch</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-arch</span><span class="fr" style="width:13mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:13mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-code</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-code</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-code</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-code</span><span class="fr" style="width:13mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:13mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-test</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-test</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-test</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:24mm">s1-test</span><span class="fr" style="width:13mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:13mm">DONE</span><span class="rs">gate_pass</span></div>
+</div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>这是基准线：没有返工、没有停点、没有补偿的那条路长什么样。后面七条都是在它身上加异常。</div><div class="tiny dim">外部权威判据：<b>沙箱 pytest 测试报告</b> ｜ 证据目录 <span class="mono">evidence/scenario-1/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>7 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 2</span><h2>返工闭环</h2><span class="tag sw">软件交付域</span></div>
+<div class="bd"><div class="claim">第 1 轮用例真的挂了，Gate 判 rework 并回结构化 findings，第 2 轮修好过闸。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">48</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">35</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">21</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">6</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">3</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">8</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">1937ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan</span>修复 demo/app 的会话过期判定 <span class="st done">DONE</span> <span class="dim small mono" style="font-weight:400">plan_bf8fe96ca5d4 · trace_a4c8f08478ba</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">requirement</td><td>归一化目标并给出验收标准</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">architecture</td><td>产出架构契约（第一轮不完整）</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">coding</td><td>修复 demo/app 的会话过期判定</td><td><span class="st done">DONE</span></td><td class="num" style="color:#b54708;font-weight:700">2</td><td class="num">L</td></tr>
+<tr><td class="m dim">testing</td><td>沙箱回归验证</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span style="color:#b54708;font-weight:700">返工 <span class="mono">1</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">6</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">3</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">35</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">1587ms</span></span></div>
+<div class="note ok"><span class="t">业务终态 succeeded · basis = external_evidence</span>沙箱测试报告 <span class="mono">art_75202122c865</span>（passed=5，来源 task_result）<br>沙箱测试报告 <span class="mono">art_4b6a901886c1</span>（passed=5，来源 artifact_seeded）</div>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 9 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">req.normalize</span><span class="fr" style="width:11mm;text-align:right">17ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">02 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">03 T</span><span class="rs" style="color:#101828;font-weight:600">git-mcp</span><span class="fr" style="width:11mm;text-align:right">135ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">04 S</span><span class="rs" style="color:#101828;font-weight:600">code.repo-patch</span><span class="fr" style="width:11mm;text-align:right">137ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">05 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">06 T</span><span class="rs" style="color:#101828;font-weight:600">git-mcp</span><span class="fr" style="width:11mm;text-align:right">132ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">07 S</span><span class="rs" style="color:#101828;font-weight:600">code.repo-patch</span><span class="fr" style="width:11mm;text-align:right">134ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">08 T</span><span class="rs" style="color:#101828;font-weight:600">sandbox.pytest_run</span><span class="fr" style="width:11mm;text-align:right">323ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">09 S</span><span class="rs" style="color:#101828;font-weight:600">test.verify</span><span class="fr" style="width:11mm;text-align:right">324ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div>
+<h3><span class="n">产物</span>产物 —— 注意 s2-code 的 version 1 与 2 并存（返工留痕）</h3>
+<table class="tight"><thead><tr><th style="width:36mm">task_id</th><th>kind</th><th class="num" style="width:16mm">version</th><th style="width:38mm">artifact_id</th></tr></thead><tbody>
+<tr><td class="m">s2-req</td><td class="m">requirement</td><td class="num">1</td><td class="m tiny dim">art_f056aba14f2c</td></tr>
+<tr><td class="m">s2-arch</td><td class="m">architecture_contract</td><td class="num">1</td><td class="m tiny dim">art_c7382215dc32</td></tr>
+<tr><td class="m">s2-code</td><td class="m">patch_set</td><td class="num">1</td><td class="m tiny dim">art_0a6ee6395f90</td></tr>
+<tr><td class="m">s2-code</td><td class="m">test_report</td><td class="num">1</td><td class="m tiny dim">art_3b803bd17760</td></tr>
+<tr style="background:#fffaeb"><td class="m">s2-code</td><td class="m">patch_set</td><td class="num">2</td><td class="m tiny dim">art_4ce4d2e7483f</td></tr>
+<tr style="background:#fffaeb"><td class="m">s2-code</td><td class="m">test_report</td><td class="num">2</td><td class="m tiny dim">art_4b6a901886c1</td></tr>
+<tr><td class="m">s2-test</td><td class="m">test_report</td><td class="num">1</td><td class="m tiny dim">art_75202122c865</td></tr>
+<tr><td class="m">s2-test</td><td class="m">review_note</td><td class="num">1</td><td class="m tiny dim">art_8ba482d27b94</td></tr>
+</tbody></table>
+<h3><span class="n">事件</span>本条链路的事件类型分布（35 条 / 5 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>21</b></span> <span class="st neu">SkillInvoked <b>6</b></span> <span class="st neu">ToolInvoked <b>3</b></span> <span class="st neu">ArtifactSeeded <b>3</b></span> <span class="st neu">PlanTransition <b>2</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 21 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr);font-size:6.5pt">
+<div class="row"><span class="tk" style="width:16mm">s2-req</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-req</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-req</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-req</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-arch</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-arch</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-arch</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-arch</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to rewk" style="width:11.5mm">REWK</span><span class="rs">gate_rework</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">REWK</span><span class="ar">→</span><span class="to " style="width:11.5mm">PEND</span><span class="rs">requeue</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-code</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-test</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-test</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-test</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">s2-test</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+</div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>返工不是重跑一遍，是带着 findings 重跑。编码任务 attempt 从 1 变 2，两轮产物各留一份、版本号不同 —— 第一轮那份不许删。</div><div class="tiny dim">外部权威判据：<b>沙箱 pytest 测试报告</b> ｜ 证据目录 <span class="mono">evidence/scenario-2/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>8 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 3</span><h2>高风险人工审批</h2><span class="tag sw">软件交付域</span></div>
+<div class="bd"><div class="claim">七道闸全过，任务照样停在 BLOCKED —— 要不要人拍板由风险档位决定，不由闸的结论决定。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">17</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">12</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">5</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">2</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">1</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">3</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">423ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan</span>高风险变更需人工放行 <span class="st done">DONE</span> <span class="dim small mono" style="font-weight:400">plan_f4a140c48f5e · trace_2fb8069495e8</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">coding</td><td>变更生产环境配置</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span style="color:#b54708;font-weight:700">补偿 <span class="mono">1</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">2</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">1</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">12</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">156ms</span></span></div>
+<div class="note ok"><span class="t">业务终态 succeeded · basis = external_evidence</span>沙箱测试报告 <span class="mono">art_d7ddd3533cb8</span>（passed=1，来源 artifact_seeded）</div>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 3 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">16ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">02 T</span><span class="rs" style="color:#101828;font-weight:600">git-mcp</span><span class="fr" style="width:11mm;text-align:right">124ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">03 S</span><span class="rs" style="color:#101828;font-weight:600">code.repo-patch</span><span class="fr" style="width:11mm;text-align:right">126ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div>
+<h3><span class="n">实录</span>run.log 实录（真实终端输出）</h3><pre class="plain">待人工审批: [&#x27;变更生产环境配置&#x27;]
+INFO  maos.cp      [task_25f1efb0b583] 已附着补偿引用 -&gt; attempt=1
+INFO  maos.cp      [task_25f1efb0b583] RUNNING -&gt; AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task_25f1efb0b583] Gate {&#x27;schema&#x27;: &#x27;pass&#x27;, &#x27;acceptance&#x27;: &#x27;pass&#x27;, &#x27;security&#x27;: &#x27;pass&#x27;, &#x27;evidence&#x27;: &#x27;pass&#x27;, &#x27;compensation&#x27;: &#x27;pass&#x27;, &#x27;finance&#x27;: &#x27;pass&#x27;, &#x27;gateway&#x27;: &#x27;pass&#x27;} -&gt; pass
+INFO  maos.cp      [task_25f1efb0b583] AWAITING_REVIEW -&gt; BLOCKED (gate_needs_human)
+INFO  maos.cp      [task_25f1efb0b583] BLOCKED -&gt; DONE (human_approve)</pre><h3><span class="n">产物</span>产物（3 份）</h3>
+<table class="tight"><thead><tr><th style="width:36mm">task_id</th><th>kind</th><th class="num" style="width:16mm">version</th><th style="width:38mm">artifact_id</th></tr></thead><tbody>
+<tr><td class="m">task_25f1efb0b583</td><td class="m">test_report</td><td class="num">1</td><td class="m tiny dim">art_d7ddd3533cb8</td></tr>
+<tr><td class="m">task_25f1efb0b583</td><td class="m">patch_set</td><td class="num">1</td><td class="m tiny dim">art_0e661dde63de</td></tr>
+<tr><td class="m">task_25f1efb0b583</td><td class="m">compensation</td><td class="num">0</td><td class="m tiny dim">art_731b826e32c8</td></tr>
+</tbody></table>
+<h3><span class="n">事件</span>本条链路的事件类型分布（12 条 / 6 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>5</b></span> <span class="st neu">PlanTransition <b>2</b></span> <span class="st neu">SkillInvoked <b>2</b></span> <span class="st neu">ArtifactSeeded <b>1</b></span> <span class="st neu">ToolInvoked <b>1</b></span> <span class="st neu">CompensationAttached <b>1</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 5 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(2,1fr);font-size:7.1pt">
+<div class="row"><span class="tk" style="width:24mm">task_25f1efb0b583</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">task_25f1efb0b583</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">task_25f1efb0b583</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:24mm">task_25f1efb0b583</span><span class="fr" style="width:13mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:13mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:24mm">task_25f1efb0b583</span><span class="fr" style="width:13mm">BLOCK</span><span class="ar">→</span><span class="to done" style="width:13mm">DONE</span><span class="rs">human_approve</span></div>
+</div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>闸 pass 与放行是两件事。这条链路把它们拆开：gate_needs_human 之后必须有 human_approve 才继续。</div><div class="tiny dim">外部权威判据：<b>人工审批记录</b> ｜ 证据目录 <span class="mono">evidence/scenario-3/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>9 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 4</span><h2>幂等验证</h2><span class="tag sw">软件交付域</span></div>
+<div class="bd"><div class="claim">同一条 TaskResult 重复投递 2 次，第 2 次被短路，新增日志条数 = 0。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">10</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">7</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">3</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">2</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">1</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">1</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">408ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan</span>幂等验证 <span class="st neu">RUNNING</span> <span class="dim small mono" style="font-weight:400">plan_6d53a27ad6f8 · trace_5df5da5b1884</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">coding</td><td>幂等测试任务</td><td><span class="st neu">AWAITING_REVIEW</span></td><td class="num">1</td><td class="num">L</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">2</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">1</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">7</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">5ms</span></span></div>
+<div class="note bad"><span class="t">业务终态 failed · basis = plan_not_terminal</span>external_evidence <b>0 条</b> —— 没有外部判据就不许判成功，MAOS 在这里什么都不写。</div>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 3 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">15ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">02 T</span><span class="rs" style="color:#101828;font-weight:600">git-mcp</span><span class="fr" style="width:11mm;text-align:right">124ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">03 S</span><span class="rs" style="color:#101828;font-weight:600">code.repo-patch</span><span class="fr" style="width:11mm;text-align:right">126ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div>
+<h3><span class="n">实录</span>run.log 实录 —— 幂等的判据在第一行</h3><pre class="plain">====================================================================
+重复投递 2 次 TaskResult，新增日志条数 = 0（期望 0）
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: [&#x27;ap_control&#x27;, &#x27;ap_intake&#x27;, &#x27;ap_match&#x27;, &#x27;ap_treasury&#x27;, &#x27;architecture&#x27;, &#x27;claim_adjudicator&#x27;, &#x27;claim_intake&#x27;, &#x27;claim_payment&#x27;, &#x27;claim_settlement&#x27;, &#x27;coding&#x27;, &#x27;investigation_cancel&#x27;, &#x27;investigation_classify&#x27;, &#x27;investigation_intake&#x27;, &#x27;investigation_observe&#x27;, &#x27;refund_channel&#x27;, &#x27;refund_finance&#x27;, &#x27;refund_intake&#x27;, &#x27;refund_payment&#x27;, &#x27;refund_policy&#x27;, &#x27;requirement&#x27;, &#x27;reviewer&#x27;, &#x27;testing&#x27;]
+INFO  maos.cp      创建计划 plan_6d53a27ad6f8，共 1 个任务
+INFO  maos.cp      [task_87f58ccee86a] PENDING -&gt; DISPATCHED (dispatch)
+INFO  maos.cp      [task_87f58ccee86a] DISPATCHED -&gt; RUNNING (claim)
+INFO  maos.cp      [task_87f58ccee86a] RUNNING -&gt; AWAITING_REVIEW (submit_result)
+INFO  maos.cp      [task_87f58ccee86a] 重复 TaskResult，短路
+INFO  maos.cp      [task_87f58ccee86a] 重复 TaskResult，短路</pre><h3><span class="n">产物</span>产物（1 份 —— 重复投递没有造出第二份）</h3>
+<table class="tight"><thead><tr><th style="width:36mm">task_id</th><th>kind</th><th class="num" style="width:16mm">version</th><th style="width:38mm">artifact_id</th></tr></thead><tbody>
+<tr><td class="m">task_87f58ccee86a</td><td class="m">patch_set</td><td class="num">1</td><td class="m tiny dim">art_20566c716841</td></tr>
+</tbody></table>
+<h3><span class="n">事件</span>本条链路的事件类型分布（7 条 / 4 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>3</b></span> <span class="st neu">SkillInvoked <b>2</b></span> <span class="st neu">PlanTransition <b>1</b></span> <span class="st neu">ToolInvoked <b>1</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 3 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(2,1fr);font-size:7.1pt">
+<div class="row"><span class="tk" style="width:24mm">task_87f58ccee86a</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">task_87f58ccee86a</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">task_87f58ccee86a</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+</div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>幂等的判据不是「结果一样」，是「一条状态迁移都不许多出来」。库里数得出来，所以这条判据是机器判的。</div><div class="tiny dim">外部权威判据：<b>事件日志计数（期望 0）</b> ｜ 证据目录 <span class="mono">evidence/scenario-4/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>10 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 5</span><h2>治理路径（重规划）闭环</h2><span class="tag sw">软件交付域</span></div>
+<div class="bd"><div class="claim">多源信号聚合 8 条 findings → 3 个 issue（合并重复 5 条），选定方案后重规划闭环。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">32</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">26</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">9</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">8</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">2</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">4</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">560ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan</span>修复：支付回调未校验签名 <span class="st done">DONE</span> <span class="dim small mono" style="font-weight:400">plan_7f0cb575c558 · trace_cb414a36b855</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">coding</td><td>支付回调接入（方案乙）</td><td><span class="st done">DONE</span></td><td class="num" style="color:#b54708;font-weight:700">2</td><td class="num">L</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span style="color:#b54708;font-weight:700">返工 <span class="mono">1</span></span> &nbsp;·&nbsp; <span style="color:#b54708;font-weight:700">重规划 <span class="mono">1</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">8</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">2</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">26</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">273ms</span></span></div>
+<div class="note ok"><span class="t">业务终态 succeeded · basis = external_evidence</span>沙箱测试报告 <span class="mono">art_b0e788ee9452</span>（passed=2，来源 artifact_seeded）<br>沙箱测试报告 <span class="mono">art_01f8c5e0f495</span>（passed=2，来源 artifact_seeded）</div>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 10 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">issue.aggregate</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">02 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">03 T</span><span class="rs" style="color:#101828;font-weight:600">git-mcp</span><span class="fr" style="width:11mm;text-align:right">121ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">04 S</span><span class="rs" style="color:#101828;font-weight:600">code.repo-patch</span><span class="fr" style="width:11mm;text-align:right">123ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">05 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">06 T</span><span class="rs" style="color:#101828;font-weight:600">git-mcp</span><span class="fr" style="width:11mm;text-align:right">126ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">07 S</span><span class="rs" style="color:#101828;font-weight:600">code.repo-patch</span><span class="fr" style="width:11mm;text-align:right">128ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">08 S</span><span class="rs" style="color:#101828;font-weight:600">kb.sink</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">09 S</span><span class="rs" style="color:#101828;font-weight:600">kb.sink</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">10 S</span><span class="rs" style="color:#101828;font-weight:600">kb.sink</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div>
+<h3><span class="n">实录</span>run.log 实录（真实终端输出）</h3><pre class="plain">多源信号聚合：聚合 8 条 findings -&gt; 3 个 issue（合并重复 5 条）；blocker 1 / major 2 / minor 0</pre><h3><span class="n">产物</span>产物（4 份）</h3>
+<table class="tight"><thead><tr><th style="width:36mm">task_id</th><th>kind</th><th class="num" style="width:16mm">version</th><th style="width:38mm">artifact_id</th></tr></thead><tbody>
+<tr><td class="m">task-s5-payment-001</td><td class="m">test_report</td><td class="num">1</td><td class="m tiny dim">art_b0e788ee9452</td></tr>
+<tr><td class="m">task-s5-payment-001</td><td class="m">patch_set</td><td class="num">1</td><td class="m tiny dim">art_9081e3a335a3</td></tr>
+<tr style="background:#fffaeb"><td class="m">task-s5-payment-001</td><td class="m">test_report</td><td class="num">2</td><td class="m tiny dim">art_01f8c5e0f495</td></tr>
+<tr style="background:#fffaeb"><td class="m">task-s5-payment-001</td><td class="m">patch_set</td><td class="num">2</td><td class="m tiny dim">art_f9b5802e0392</td></tr>
+</tbody></table>
+<h3><span class="n">事件</span>本条链路的事件类型分布（26 条 / 6 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>9</b></span> <span class="st neu">SkillInvoked <b>8</b></span> <span class="st neu">PlanTransition <b>4</b></span> <span class="st neu">ArtifactSeeded <b>2</b></span> <span class="st neu">ToolInvoked <b>2</b></span> <span class="st neu">Replanned <b>1</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 9 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(2,1fr);font-size:7.1pt">
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">AWAIT</span><span class="ar">→</span><span class="to rewk" style="width:13mm">REWK</span><span class="rs">gate_rework</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">REWK</span><span class="ar">→</span><span class="to " style="width:13mm">PEND</span><span class="rs">requeue</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">PEND</span><span class="ar">→</span><span class="to " style="width:13mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">DISP</span><span class="ar">→</span><span class="to " style="width:13mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">RUN</span><span class="ar">→</span><span class="to " style="width:13mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:24mm">task-s5-payment-001</span><span class="fr" style="width:13mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:13mm">DONE</span><span class="rs">gate_pass</span></div>
+</div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>重规划走的是 Plan 级迁移 RUNNING → PENDING [replan]，不是把任务重置一遍 —— 前一轮的记录原样留着。</div><div class="tiny dim">外部权威判据：<b>沙箱 pytest 测试报告</b> ｜ 证据目录 <span class="mono">evidence/scenario-5/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>11 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 6</span><h2>制造企业售后退款 · 顺利路径</h2><span class="tag rf">退款域</span></div>
+<div class="bd"><div class="claim">多源诉求聚合 → 按下单锁定的政策版本裁定 → 财务核算（第六道闸）→ 主管放行 → 付款 → 轮询问出 settled。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">54</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">41</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">21</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">9</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">3</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">7</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">360ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan</span>处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款 <span class="st done">DONE</span> <span class="dim small mono" style="font-weight:400">plan_d51ccffe89c6 · trace_c689609a0446</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">refund_intake</td><td>受理多源退款诉求并聚合证据</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_policy</td><td>按下单锁定的政策版本裁定退款资格</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_finance</td><td>核算退款金额并写财务分录</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_payment</td><td>发起退款并观察网关终态</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_intake</td><td>通知客户退款结果</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">9</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">3</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">41</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">53ms</span></span></div>
+<div class="note ok"><span class="t">业务终态 succeeded · basis = external_evidence</span>网关观察 <span class="mono">gw_2278853ea4614ecc</span> code=10000 → <b>settled</b></div>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 12 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">02 S</span><span class="rs" style="color:#101828;font-weight:600">issue.aggregate</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">03 S</span><span class="rs" style="color:#101828;font-weight:600">refund.intake</span><span class="fr" style="width:11mm;text-align:right">2ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">04 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">05 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">06 S</span><span class="rs" style="color:#101828;font-weight:600">finance.settle</span><span class="fr" style="width:11mm;text-align:right">3ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">07 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.refund</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">08 S</span><span class="rs" style="color:#101828;font-weight:600">payment.execute</span><span class="fr" style="width:11mm;text-align:right">3ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">09 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">10 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">11 S</span><span class="rs" style="color:#101828;font-weight:600">payment.observe</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">12 S</span><span class="rs" style="color:#101828;font-weight:600">notify.customer</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div>
+<h3><span class="n">实录</span>run.log 实录（真实终端输出）</h3><pre class="plain">待主管审批: 核算退款金额并写财务分录
+语义审查: 金额按订单锁定的政策 v1 核算，依据 AS-01@v1；退款尚未发起，可放行</pre><h3><span class="n">产物</span>产物（7 份，按 kind × version 折叠）</h3><div style="line-height:2"><span class="st neu">refund_case_draft v1 <b>1</b></span> <span class="st neu">refund_finance_settlement v1 <b>1</b></span> <span class="st neu">refund_notification v1 <b>1</b></span> <span class="st neu">refund_payment_receipt v1 <b>1</b></span> <span class="st neu">refund_payment_request v1 <b>1</b></span> <span class="st neu">refund_policy_decision v1 <b>1</b></span> <span class="st neu">review_note v1 <b>1</b></span></div>
+<h3><span class="n">事件</span>本条链路的事件类型分布（41 条 / 7 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>21</b></span> <span class="st neu">SkillInvoked <b>9</b></span> <span class="st neu">RefundBizStatusChanged <b>4</b></span> <span class="st neu">ToolInvoked <b>3</b></span> <span class="st neu">PlanTransition <b>2</b></span> <span class="st neu">KbRetrieved <b>1</b></span> <span class="st neu">ArtifactSeeded <b>1</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 21 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr);font-size:6.5pt">
+<div class="row"><span class="tk" style="width:16mm">task-s6-intake</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-intake</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-intake</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-intake</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-policy</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-policy</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-policy</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-policy</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-finance</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-finance</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-finance</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-finance</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-finance</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">human_approve</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s6-payment</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+</div>
+<div class="tiny dim" style="margin-top:3px">其余 7 条见 <span class="mono">evidence/scenario-6/run.log</span> 与 <span class="mono">maos.db · event_log</span>。</div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>与场景 1–5 是同一个 Manager、同一套 contracts/ 与 core/，换域只换了 Skill / ToolPort / 业务对象。</div><div class="tiny dim">外部权威判据：<b>支付网关回执 gateway_code=10000 / observed_state=settled</b> ｜ 证据目录 <span class="mono">evidence/scenario-6/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>12 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 7</span><h2>制造企业售后退款 · 失败路径</h2><span class="tag rf">退款域 · 计划与调用</span></div>
+<div class="bd"><div class="claim">网关先回 40005（换渠道重发），备用渠道回 ACQ.SYSTEM_ERROR，轮询三次仍非终态 → 主管驳回 → 域内补偿。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">103</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">80</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">41</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">17</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">8</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">13</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">392ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan 1/2</span>处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常 <span class="st fail">FAILED</span> <span class="dim small mono" style="font-weight:400">plan_6b954ee47d7f · trace_a636c8729599</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">refund_intake</td><td>受理多源退款诉求并聚合证据</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_policy</td><td>按下单锁定的政策版本裁定退款资格</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_finance</td><td>核算退款金额并写财务分录</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_payment</td><td>发起退款并观察网关终态（改派备用渠道）</td><td><span class="st fail">FAILED</span></td><td class="num" style="color:#b54708;font-weight:700">2</td><td class="num">M</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span style="color:#b54708;font-weight:700">返工 <span class="mono">1</span></span> &nbsp;·&nbsp; <span style="color:#b54708;font-weight:700">重规划 <span class="mono">1</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">10</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">6</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">49</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">56ms</span></span></div>
+<div class="note bad"><span class="t">业务终态 failed · basis = plan_failed</span>external_evidence <b>0 条</b> —— 没有外部判据就不许判成功，MAOS 在这里什么都不写。</div>
+<h3><span class="n">Plan 2/2</span>处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在 <span class="st fail">FAILED</span> <span class="dim small mono" style="font-weight:400">plan_443cbbf8c95f · trace_16ff12ff231d</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">refund_intake</td><td>受理第二笔退款诉求</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_policy</td><td>按下单锁定的政策版本裁定退款资格</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_finance</td><td>核算第二笔退款金额并写财务分录</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_payment</td><td>发起第二笔退款并观察网关终态</td><td><span class="st fail">FAILED</span></td><td class="num">1</td><td class="num">M</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">7</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">2</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">31</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">40ms</span></span></div>
+<div class="note bad"><span class="t">业务终态 failed · basis = plan_failed</span>external_evidence <b>0 条</b> —— 没有外部判据就不许判成功，MAOS 在这里什么都不写。</div>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 25 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">issue.aggregate</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">02 S</span><span class="rs" style="color:#101828;font-weight:600">refund.intake</span><span class="fr" style="width:11mm;text-align:right">3ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">03 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">04 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">05 S</span><span class="rs" style="color:#101828;font-weight:600">finance.settle</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">06 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.refund</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">07 S</span><span class="rs" style="color:#101828;font-weight:600">payment.execute</span><span class="fr" style="width:11mm;text-align:right">3ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">08 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">09 S</span><span class="rs" style="color:#101828;font-weight:600">payment.observe</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">10 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.refund</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">11 S</span><span class="rs" style="color:#101828;font-weight:600">payment.execute</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">12 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">13 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">14 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">15 S</span><span class="rs" style="color:#101828;font-weight:600">payment.observe</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">16 S</span><span class="rs" style="color:#101828;font-weight:600">refund.compensate</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">17 S</span><span class="rs" style="color:#101828;font-weight:600">issue.aggregate</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">18 S</span><span class="rs" style="color:#101828;font-weight:600">refund.intake</span><span class="fr" style="width:11mm;text-align:right">2ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">19 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">20 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">21 S</span><span class="rs" style="color:#101828;font-weight:600">finance.settle</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">22 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.refund</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">23 S</span><span class="rs" style="color:#101828;font-weight:600">payment.execute</span><span class="fr" style="width:11mm;text-align:right">3ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">24 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">25 S</span><span class="rs" style="color:#101828;font-weight:600">payment.observe</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>13 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 7</span><h2>制造企业售后退款 · 失败路径</h2><span class="tag rf">退款域 · 实录与轨迹</span></div>
+<div class="bd"><h3><span class="n">实录</span>run.log 实录（真实终端输出）</h3><pre class="plain">[1] 待主管审批: 核算退款金额并写财务分录
+    语义审查: 金额按订单锁定的政策 v1 核算，依据 AS-01@v1；退款尚未发起，可放行
+[2] 第七道闸认出网关回执: code=40005 retriable=True outcome=failed -&gt; disposition=replan_channel
+    网关回执 40005（调用频次超限）：retriable=True / outcome=failed —— 网关在入口就拒了，这一笔业务确定没执行，可以换渠道重发。官方处置：降低请求并发量
+    → 触发 replan 重规划：付款任务换渠道 s7-primary -&gt; s7-backup；幂等键由 (tenant, case) 定，换渠道不换键，不会造出第二笔
+[3] 备用渠道付款回执: observed_state=unknown（问了 3 次仍非终态）
+    网关判据: code=ACQ.SYSTEM_ERROR retriable=True outcome=unknown
+    官方处置: 保持参数不变重试或查询执行结果
+    出处    : https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-refund.html#业务错误码
+    重规划   : 已换渠道 1 次（replan 上限 MAOS_MAX_REPLAN 默认 2）；这一格 outcome=unknown 对 replan 一票否决，**不再换第三个渠道** —— 重发可能真退出第二笔，正确出口是人工
+[4] 待主管处置: 发起退款并观察网关终态（改派备用渠道） —— 回执非终态，不能当成功放行
+[5] 域内补偿: 作废 1 笔请求，最后观察到的下落 = unobserved（**不是 failed** —— 网关自己都没给出结论）
+    人工工单: MT-case-s7-0001 -&gt; 沈思锴</pre>
+<h3><span class="n">事件</span>本条链路的事件类型分布（80 条 / 8 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>41</b></span> <span class="st neu">SkillInvoked <b>17</b></span> <span class="st neu">ToolInvoked <b>8</b></span> <span class="st neu">PlanTransition <b>6</b></span> <span class="st neu">RefundBizStatusChanged <b>5</b></span> <span class="st neu">ArtifactSeeded <b>1</b></span> <span class="st neu">Replanned <b>1</b></span> <span class="st neu">CompensationExecuted <b>1</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 41 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr);font-size:6.5pt">
+<div class="row"><span class="tk" style="width:16mm">task-s7-intake</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-intake</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-intake</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-intake</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-policy</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-policy</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-policy</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-policy</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-finance</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-finance</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-finance</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-finance</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-finance</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">human_approve</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to rewk" style="width:11.5mm">REWK</span><span class="rs">gate_rework</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">REWK</span><span class="ar">→</span><span class="to " style="width:11.5mm">PEND</span><span class="rs">requeue</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7-payment</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to fail" style="width:11.5mm">FAIL</span><span class="rs">human_reject</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-intake</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-intake</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-intake</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-intake</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-policy</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-policy</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-policy</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-policy</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-finance</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-finance</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-finance</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-finance</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-finance</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">human_approve</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-payment</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-payment</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-payment</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-payment</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-s7b-payment</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to fail" style="width:11.5mm">FAIL</span><span class="rs">human_reject</span></div>
+</div>
+<h3><span class="n">产物</span>产物（13 份，按 kind × version 折叠）</h3><div style="line-height:2"><span class="st neu">refund_case_draft v1 <b>2</b></span> <span class="st neu">refund_finance_settlement v1 <b>2</b></span> <span class="st neu">refund_payment_receipt v1 <b>2</b></span> <span class="st neu">refund_payment_receipt v2 <b>1</b></span> <span class="st neu">refund_payment_request v1 <b>2</b></span> <span class="st neu">refund_payment_request v2 <b>1</b></span> <span class="st neu">refund_policy_decision v1 <b>2</b></span> <span class="st neu">review_note v1 <b>1</b></span></div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>四个 Agent 全部回复「完成」，而这一单没有成功 —— settled 观察 0 条，业务状态收在 compensated，全程没进 settled。</div><div class="tiny dim">外部权威判据：<b>支付网关回执 outcome=unknown（问不出终态）</b> ｜ 证据目录 <span class="mono">evidence/scenario-7/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>14 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 R5</span><h2>RAG 有无对照实验</h2><span class="tag ex">退款域 · 对照 · 三段计划</span></div>
+<div class="bd"><div class="claim">同一份计划脚本逐字节相同，只切 MAOS_KB_ENABLED=0/1，看检索到底改变了什么。</div>
+<div class="kpis" style="grid-template-columns:repeat(7,1fr);margin-bottom:9px">
+<div class="kpi accent"><div class="v">117</div><div class="k">span</div></div>
+<div class="kpi "><div class="v">87</div><div class="k">事件</div></div>
+<div class="kpi "><div class="v">47</div><div class="k">状态迁移</div></div>
+<div class="kpi "><div class="v">19</div><div class="k">Skill 调用</div></div>
+<div class="kpi "><div class="v">6</div><div class="k">Tool 调用</div></div>
+<div class="kpi "><div class="v">13</div><div class="k">产物</div></div>
+<div class="kpi "><div class="v">420ms</div><div class="k">端到端耗时</div></div>
+</div>
+<h3><span class="n">Plan 1/3</span>处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款 <span class="st done">DONE</span> <span class="dim small mono" style="font-weight:400">plan_de19c8751168 · trace_8394445c6d28</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">refund_intake</td><td>受理多源退款诉求并聚合证据</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_policy</td><td>按下单锁定的政策版本裁定退款资格</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_finance</td><td>核算退款金额并写财务分录</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_payment</td><td>发起退款并观察网关终态</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_intake</td><td>通知客户退款结果</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">8</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">3</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">38</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">50ms</span></span></div>
+<div class="note ok"><span class="t">业务终态 succeeded · basis = external_evidence</span>网关观察 <span class="mono">gw_ac72ebafbd104eec</span> code=10000 → <b>settled</b></div>
+<h3><span class="n">Plan 2/3</span>处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款 <span class="st fail">FAILED</span> <span class="dim small mono" style="font-weight:400">plan_e28678ae0fd6 · trace_1a248a40e93b</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">refund_intake</td><td>受理多源退款诉求并聚合证据</td><td><span class="st fail">FAILED</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_policy</td><td>按下单锁定的政策版本裁定退款资格</td><td><span class="st neu">PENDING</span></td><td class="num">0</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_payment</td><td>发起退款并观察网关终态</td><td><span class="st neu">PENDING</span></td><td class="num">0</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_intake</td><td>通知客户退款结果</td><td><span class="st neu">PENDING</span></td><td class="num">0</td><td class="num">L</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">2</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">0</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">9</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">20ms</span></span></div>
+<div class="note bad"><span class="t">业务终态 failed · basis = plan_failed</span>external_evidence <b>0 条</b> —— 没有外部判据就不许判成功，MAOS 在这里什么都不写。</div>
+<h3><span class="n">Plan 3/3</span>处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款 <span class="st done">DONE</span> <span class="dim small mono" style="font-weight:400">plan_ae58baeb09f9 · trace_2bdd6a4948cd</span></h3>
+<table class="tight"><thead><tr><th style="width:32mm">角色</th><th>任务</th><th style="width:19mm">终态</th><th class="num" style="width:14mm">attempt</th><th class="num" style="width:11mm">risk</th></tr></thead><tbody>
+<tr><td class="m dim">refund_intake</td><td>受理多源退款诉求并聚合证据</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_policy</td><td>按下单锁定的政策版本裁定退款资格</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+<tr><td class="m dim">refund_finance</td><td>核算退款金额并写财务分录</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_payment</td><td>发起退款并观察网关终态</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">M</td></tr>
+<tr><td class="m dim">refund_intake</td><td>通知客户退款结果</td><td><span class="st done">DONE</span></td><td class="num">1</td><td class="num">L</td></tr>
+</tbody></table>
+<div class="small dim" style="margin:-3px 0 7px"><span>返工 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>重规划 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>补偿 <span class="mono">0</span></span> &nbsp;·&nbsp; <span>Skill <span class="mono">9</span></span> &nbsp;·&nbsp; <span>Tool <span class="mono">3</span></span> &nbsp;·&nbsp; <span>事件 <span class="mono">40</span></span> &nbsp;·&nbsp; <span>Plan 耗时 <span class="mono">55ms</span></span></div>
+<div class="note ok"><span class="t">业务终态 succeeded · basis = external_evidence</span>网关观察 <span class="mono">gw_694236a74b544a8f</span> code=10000 → <b>settled</b></div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>15 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§5 · 场景 R5</span><h2>RAG 有无对照实验</h2><span class="tag ex">退款域 · 对照 · 调用与轨迹</span></div>
+<div class="bd"><h3><span class="n">实录</span>run.log 实录（真实终端输出）</h3><pre class="plain">[1/3] 准备段：跑一条完整成功的退款 case，收口后按晋升规则沉淀知识
+  Plan DONE，业务状态 settled，客户 ack 1 条
+  晋升：kb-r5-history-0001 kind=history_case outcome=success source_case_id=case-r5-hist
+[2/3] without_kb：MAOS_KB_ENABLED=0，计划漏排财务核算
+  4 个任务，KbRetrieved 0 条，第六道闸 blocker，Plan FAILED，业务状态 submitted
+  第六道闸：计划缺陷 blocker（漏排财务核算，付款前拿不到金额凭据）
+  第三出口：受理多源退款诉求并聚合证据 -&gt; BLOCKED（await=human_decision，机器返工修不好，转人工）
+  主管裁决：驳回 -&gt; 计划收敛到 FAILED，付款一次都没派发
+[3/3] with_kb：MAOS_KB_ENABLED=1，同一份计划脚本
+  5 个任务，KbRetrieved 1 条，第六道闸 pass，Plan DONE，业务状态 settled
+  人工审批停点：[&#x27;核算退款金额并写财务分录&#x27;]
+差异：delta_tasks=[&#x27;refund_finance.refund_finance&#x27;]，触发文档=[(&#x27;kb-r5-history-0001&#x27;, 0.719031), (&#x27;kb-policy-tnt-mfg-a-AS-002-v1&#x27;, 0.410541), (&#x27;kb-policy-tnt-mfg-a-AS-004-v1&#x27;, 0.15), (&#x27;kb-policy-tnt-mfg-a-AS-001-v1&#x27;, 0.1)]
+检索漏斗：库存 17 条 -&gt; 同租户 9 条 -&gt; 七维预过滤后 5 条（with_kb 段实测候选集 5 条）</pre>
+<h3><span class="n">调用</span>调用序列（按 event_log 的 seq 排，共 25 步）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr)">
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">01 S</span><span class="rs" style="color:#101828;font-weight:600">issue.aggregate</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">02 S</span><span class="rs" style="color:#101828;font-weight:600">refund.intake</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">03 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">04 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">05 S</span><span class="rs" style="color:#101828;font-weight:600">finance.settle</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">06 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.refund</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">07 S</span><span class="rs" style="color:#101828;font-weight:600">payment.execute</span><span class="fr" style="width:11mm;text-align:right">4ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">08 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">09 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">10 S</span><span class="rs" style="color:#101828;font-weight:600">payment.observe</span><span class="fr" style="width:11mm;text-align:right">2ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">11 S</span><span class="rs" style="color:#101828;font-weight:600">notify.customer</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">12 S</span><span class="rs" style="color:#101828;font-weight:600">issue.aggregate</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">13 S</span><span class="rs" style="color:#101828;font-weight:600">refund.intake</span><span class="fr" style="width:11mm;text-align:right">6ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">14 S</span><span class="rs" style="color:#101828;font-weight:600">kb.retrieve</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">15 S</span><span class="rs" style="color:#101828;font-weight:600">issue.aggregate</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">16 S</span><span class="rs" style="color:#101828;font-weight:600">refund.intake</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">17 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">18 S</span><span class="rs" style="color:#101828;font-weight:600">policy.match</span><span class="fr" style="width:11mm;text-align:right">1ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">19 S</span><span class="rs" style="color:#101828;font-weight:600">finance.settle</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">20 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.refund</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">21 S</span><span class="rs" style="color:#101828;font-weight:600">payment.execute</span><span class="fr" style="width:11mm;text-align:right">6ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">22 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#b54708">23 T</span><span class="rs" style="color:#101828;font-weight:600">gateway.query</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">24 S</span><span class="rs" style="color:#101828;font-weight:600">payment.observe</span><span class="fr" style="width:11mm;text-align:right">2ms</span></div>
+<div class="row"><span class="tk" style="width:9mm;color:#1849a9">25 S</span><span class="rs" style="color:#101828;font-weight:600">notify.customer</span><span class="fr" style="width:11mm;text-align:right">0ms</span></div>
+</div>
+<div class="tiny dim" style="margin-top:2px"><span class="mono" style="color:#1849a9">S</span> = SkillInvoked（带版本 · invocation_id · input_digest · output_hash）　<span class="mono" style="color:#b54708">T</span> = ToolInvoked（带 params_digest）</div>
+<h3><span class="n">事件</span>本条链路的事件类型分布（87 条 / 6 种）</h3><div style="line-height:2"><span class="st neu">StateTransition <b>47</b></span> <span class="st neu">SkillInvoked <b>19</b></span> <span class="st neu">RefundBizStatusChanged <b>8</b></span> <span class="st neu">PlanTransition <b>6</b></span> <span class="st neu">ToolInvoked <b>6</b></span> <span class="st neu">KbRetrieved <b>1</b></span></div>
+<h3><span class="n">轨迹</span>状态迁移（库内原始记录，共 47 条）</h3>
+<div class="trace" style="grid-template-columns:repeat(3,1fr);font-size:6.5pt">
+<div class="row"><span class="tk" style="width:16mm">task-hist-intake</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-intake</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-intake</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-intake</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-policy</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-policy</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-policy</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-policy</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-finance</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-finance</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-finance</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-finance</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-finance</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">human_approve</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-payment</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-payment</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-payment</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask-hist-payment</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-notify</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-notify</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-notify</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-hist-notify</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-nokb-intake</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-nokb-intake</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-nokb-intake</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-nokb-intake</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-nokb-intake</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to fail" style="width:11.5mm">FAIL</span><span class="rs">human_reject</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-intake</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-intake</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-intake</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-intake</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-policy</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-policy</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-policy</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-policy</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask_6866ba33ebac</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask_6866ba33ebac</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask_6866ba33ebac</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask_6866ba33ebac</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to hold" style="width:11.5mm">BLOCK</span><span class="rs">gate_needs_human</span></div>
+<div class="row"><span class="tk" style="width:16mm">ask_6866ba33ebac</span><span class="fr" style="width:11.5mm">BLOCK</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">human_approve</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-payment</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-payment</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-payment</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-payment</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-notify</span><span class="fr" style="width:11.5mm">PEND</span><span class="ar">→</span><span class="to " style="width:11.5mm">DISP</span><span class="rs">dispatch</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-notify</span><span class="fr" style="width:11.5mm">DISP</span><span class="ar">→</span><span class="to " style="width:11.5mm">RUN</span><span class="rs">claim</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-notify</span><span class="fr" style="width:11.5mm">RUN</span><span class="ar">→</span><span class="to " style="width:11.5mm">AWAIT</span><span class="rs">submit_result</span></div>
+<div class="row"><span class="tk" style="width:16mm">task-kb-notify</span><span class="fr" style="width:11.5mm">AWAIT</span><span class="ar">→</span><span class="to done" style="width:11.5mm">DONE</span><span class="rs">gate_pass</span></div>
+</div>
+<div class="note info" style="margin-top:7px"><span class="t">看点</span>关 KB 那段漏排了财务核算，第六道闸判 blocker、Plan FAILED；开 KB 那段多出 refund_finance 一个任务，收在 settled。</div><div class="tiny dim">外部权威判据：<b>支付网关回执 + 两段 DAG 差异</b> ｜ 证据目录 <span class="mono">evidence/scenario-R5/</span>（result.json · trace.json · run.log · business-objects.json · kb-hits.json · maos.db · dag-diff.json）</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>16 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§6</span><h2>Skill 调用面</h2><span class="tag pl">调用面</span></div>
+<div class="bd"><div class="claim">注册表里 <b>13 个 Skill</b>，八条链路上真实调用 <b>67 次</b>。每一次都在 <span class="mono">event_log</span> 里留 <span class="mono">SkillInvoked</span>，带版本、<span class="mono">invocation_id</span>、<span class="mono">input_digest</span>、<span class="mono">output_hash</span>、<span class="mono">duration_ms</span>。</div>
+<table class="tight"><thead><tr><th style="width:36mm">Skill</th><th class="num">版本</th><th class="num">调用</th><th class="num">ok</th><th class="num">用时中位</th><th style="width:26mm">出现在链路</th><th>这个 Skill 干什么</th></tr></thead><tbody>
+<tr><td class="m"><b>policy.match</b></td><td class="num dim">1.0.0</td><td class="num"><b>10</b></td><td class="num">10</td><td class="num dim">0ms</td><td class="m tiny dim">6, 7, R5</td><td class="small">按下单当时锁定的政策版本裁定资格，回规则编号</td></tr>
+<tr><td class="m"><b>kb.retrieve</b></td><td class="num dim">1.1.0</td><td class="num"><b>9</b></td><td class="num">9</td><td class="num dim">0ms</td><td class="m tiny dim">1, 2, 3, 4, 5, 6, R5</td><td class="small">七维预过滤 + 多通道打分的知识检索</td></tr>
+<tr><td class="m"><b>code.repo-patch</b></td><td class="num dim">1.0.0</td><td class="num"><b>7</b></td><td class="num">7</td><td class="num dim">128ms</td><td class="m tiny dim">1, 2, 3, 4, 5</td><td class="small">在仓库上产出补丁集</td></tr>
+<tr><td class="m"><b>issue.aggregate</b></td><td class="num dim">1.0.0</td><td class="num"><b>7</b></td><td class="num">7</td><td class="num dim">0ms</td><td class="m tiny dim">5, 6, 7, R5</td><td class="small">多源信号去重聚合成 issue</td></tr>
+<tr><td class="m"><b>refund.intake</b></td><td class="num dim">1.0.0</td><td class="num"><b>6</b></td><td class="num">6</td><td class="num dim">2ms</td><td class="m tiny dim">6, 7, R5</td><td class="small">多源退款诉求聚合（复用 issue.aggregate）</td></tr>
+<tr><td class="m"><b>payment.execute</b></td><td class="num dim">1.0.0</td><td class="num"><b>6</b></td><td class="num">6</td><td class="num dim">3ms</td><td class="m tiny dim">6, 7, R5</td><td class="small">向支付网关发起退款</td></tr>
+<tr><td class="m"><b>payment.observe</b></td><td class="num dim">1.0.0</td><td class="num"><b>6</b></td><td class="num">6</td><td class="num dim">1ms</td><td class="m tiny dim">6, 7, R5</td><td class="small">轮询网关问终态 —— 唯一有权写 settled 的调用面</td></tr>
+<tr><td class="m"><b>finance.settle</b></td><td class="num dim">1.0.0</td><td class="num"><b>5</b></td><td class="num">5</td><td class="num dim">0ms</td><td class="m tiny dim">6, 7, R5</td><td class="small">核算退款金额并写财务分录</td></tr>
+<tr><td class="m"><b>kb.sink</b></td><td class="num dim">1.0.0</td><td class="num"><b>3</b></td><td class="num">3</td><td class="num dim">0ms</td><td class="m tiny dim">5</td><td class="small">把收口成功的 case 按晋升规则沉淀成知识</td></tr>
+<tr><td class="m"><b>notify.customer</b></td><td class="num dim">1.0.0</td><td class="num"><b>3</b></td><td class="num">3</td><td class="num dim">0ms</td><td class="m tiny dim">6, R5</td><td class="small">通知客户，ack 未确认标 needs_followup 但不阻塞</td></tr>
+<tr><td class="m"><b>req.normalize</b></td><td class="num dim">1.0.0</td><td class="num"><b>2</b></td><td class="num">2</td><td class="num dim">29ms</td><td class="m tiny dim">1, 2</td><td class="small">把目标归一化并给出验收标准</td></tr>
+<tr><td class="m"><b>test.verify</b></td><td class="num dim">1.0.0</td><td class="num"><b>2</b></td><td class="num">2</td><td class="num dim">335ms</td><td class="m tiny dim">1, 2</td><td class="small">沙箱回归验证</td></tr>
+<tr><td class="m"><b>refund.compensate</b></td><td class="num dim">1.0.0</td><td class="num"><b>1</b></td><td class="num">1</td><td class="num dim">1ms</td><td class="m tiny dim">7</td><td class="small">域内补偿：作废请求、留最后观察、开人工工单</td></tr>
+</tbody></table>
+<h3><span class="n">§6.2</span>每个 Skill 必须声明的九要素</h3>
+<table class="tight"><thead><tr><th style="width:44mm">要素</th><th>说的是什么</th><th style="width:56mm">缺了会怎样</th></tr></thead><tbody>
+<tr><td class="m"><b>① purpose</b></td><td class="small">用途 —— 一句话说清它负责哪一段</td><td class="small dim">调用方按语感猜用途，同一件事出现两个实现</td></tr>
+<tr><td class="m"><b>② input_schema</b></td><td class="small">输入字段与类型</td><td class="small dim">输入摘要没法算，哈希完整性这一项失去意义</td></tr>
+<tr><td class="m"><b>③ output_schema</b></td><td class="small">输出字段与类型</td><td class="small dim">下游拿不准该读哪个字段，靠 try/except 兜</td></tr>
+<tr><td class="m"><b>④ preconditions</b></td><td class="small">前置条件 —— 少哪个字段就不该调</td><td class="small dim">半截输入被送进去，失败在更深的地方才炸</td></tr>
+<tr><td class="m"><b>⑤ depends_tools</b></td><td class="small">依赖哪些 ToolPort</td><td class="small dim">看不出这个 Skill 会不会摸外部世界</td></tr>
+<tr><td class="m"><b>⑥ failure_policy / max_retries</b></td><td class="small">失败了重试还是上报，重试几次</td><td class="small dim">失败姿态不统一，自旋与静默吞掉都可能</td></tr>
+<tr><td class="m"><b>⑦ security_boundary</b></td><td class="small">明确不碰什么 —— 例如补偿类一律写不出 settled</td><td class="small dim">权威事实边界靠自觉，不靠约束</td></tr>
+<tr><td class="m"><b>⑧ reuse_note</b></td><td class="small">换域时这个 Skill 该怎么复用</td><td class="small dim">换域时照抄一份，两份实现从此各自演化</td></tr>
+<tr><td class="m"><b>⑨ owner_roles</b></td><td class="small">归属角色 —— 白名单外调用一律 PermissionDenied</td><td class="small dim">谁都能调，拒绝也不留痕</td></tr>
+</tbody></table>
+<div class="grid2" style="margin-top:8px">
+<div><div class="note ok"><span class="t">67 / 67 次调用 status=ok</span>失败的调用不会被删掉 —— 它们照样进 <span class="mono">event_log</span>，只是 <span class="mono">status</span> 不是 ok。</div></div>
+<div><div class="note info"><span class="t">跨域复用的证据</span><span class="mono">issue.aggregate</span> 被调用 7 次，横跨软件交付域与退款域，<b>同一个版本号、同一份实现</b>；<span class="mono">kb.retrieve</span> 同理，9 次。能复用的连 Skill 都不用换。</div></div>
+</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>17 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§7</span><h2>ToolPort 与哈希完整性</h2><span class="tag pl">证据面</span></div>
+<div class="bd"><div class="claim">Skill 通过 <b>ToolPort</b> 摸外部世界。四个 ToolPort 合计调用 <b>26 次</b> —— 每一次都留 <span class="mono">params_digest</span>，与 <span class="mono">event_log</span> 逐条比对。</div>
+<table class="tight"><thead><tr><th style="width:36mm">ToolPort</th><th class="num">调用</th><th class="num">用时中位</th><th>干什么</th><th style="width:42mm">谁是权威</th></tr></thead><tbody>
+<tr><td class="m"><b>gateway.query</b></td><td class="num"><b>11</b></td><td class="num dim">0ms</td><td class="small">查支付网关的交易终态（轮询）</td><td class="small dim">支付网关（外部）</td></tr>
+<tr><td class="m"><b>git-mcp</b></td><td class="num"><b>7</b></td><td class="num dim">126ms</td><td class="small">仓库读写（MCP）</td><td class="small dim">仓库本身</td></tr>
+<tr><td class="m"><b>gateway.refund</b></td><td class="num"><b>6</b></td><td class="num dim">0ms</td><td class="small">向支付网关发起退款</td><td class="small dim">支付网关（外部）</td></tr>
+<tr><td class="m"><b>sandbox.pytest_run</b></td><td class="num"><b>2</b></td><td class="num dim">334ms</td><td class="small">在隔离沙箱里真跑 pytest</td><td class="small dim">沙箱执行结果（外部判据）</td></tr>
+</tbody></table>
+<h3><span class="n">§7.2</span>哈希完整性：93 组摘要逐条比对</h3>
+<pre class="term">$ python3 scripts/verify.py
+<span class="g">[PASS]</span> hash-integrity       <span class="w">93/93</span>
+<span class="d">      每个 skill / tool 调用的 input_digest / output_hash 与 event_log 一致</span>
+<span class="d">      失败 = 证据被篡改，或事后手写</span></pre>
+<div class="note"><b>93 = 67 次 Skill 调用 + 26 次 Tool 调用。</b>摘要在调用发生的那一刻由被调用方写入，事后改任何一份产物的内容，重算出来的哈希就对不上 —— 这是「证据必须真实」这条铁律唯一可机器强制的部分。</div>
+<h3><span class="n">§7.3</span>span 树：418 个 span，按 kind 分</h3>
+<table class="tight"><thead><tr><th style="width:30mm">kind</th><th class="num">个数</th><th>这一层记的是什么</th></tr></thead><tbody>
+<tr><td class="m"><b>event</b></td><td class="num"><b>314</b></td><td class="small dim">一条落库事件</td></tr>
+<tr><td class="m"><b>artifact</b></td><td class="num"><b>55</b></td><td class="small dim"></td></tr>
+<tr><td class="m"><b>task</b></td><td class="num"><b>38</b></td><td class="small dim">一个任务从派发到终态，挂在 plan 下</td></tr>
+<tr><td class="m"><b>plan</b></td><td class="num"><b>11</b></td><td class="small dim">一个计划的完整生命周期，是 span 树的根</td></tr>
+</tbody></table>
+<div class="grid3" style="margin-top:8px">
+<div class="kpi "><div class="v">22</div><div class="k">模型调用（全部 estimated）</div></div>
+<div class="kpi "><div class="v">7,893</div><div class="k">token 合计（估算口径）</div></div>
+<div class="kpi good"><div class="v">0</div><div class="k">归属不上的调用</div></div>
+</div>
+<div class="note warn" style="margin-top:8px"><span class="t">这三个数字不能读成金额</span>缺省路径用 <span class="mono">ScriptedModelClient</span>，token 数是 <span class="mono">len(user)//4</span>（见 <span class="mono">maos/model/client.py</span>），<b>非任何计费口径</b>。核验器第 8 项校验的正是「<span class="mono">estimated</span> 标记与 <span class="mono">model</span> 列相符」—— 把估算印成真实计费，是这套观测面能犯的最坏的错。失败的模型调用单列且<b>一个 token 数都不给</b>：不知道就是不知道。本次 <span class="mono">failed_model_calls = 0</span>。</div>
+<h3><span class="n">§7.4</span>trace 摘要里那四个「必须是 0」的字段</h3>
+<table class="tight"><thead><tr><th style="width:52mm">字段</th><th class="num">八条链路合计</th><th>不是 0 意味着什么</th></tr></thead><tbody>
+<tr><td class="m"><b>unsourced_artifacts</b></td><td class="num"><span class="st done">0</span></td><td class="small dim">有产物入了库却说不出是谁放的 —— 无名证据</td></tr>
+<tr><td class="m"><b>stray_event_count</b></td><td class="num"><span class="st done">0</span></td><td class="small dim">有事件挂不到任何 plan / task 上 —— 事件链有断点</td></tr>
+<tr><td class="m"><b>degraded_sandbox_reports</b></td><td class="num"><span class="st done">0</span></td><td class="small dim">沙箱降级跑出来的报告被当成了真跑的报告</td></tr>
+<tr><td class="m"><b>unrecorded_sandbox_reports</b></td><td class="num"><span class="st done">0</span></td><td class="small dim">沙箱跑过但报告没落库 —— 判据不可回查</td></tr>
+<tr><td class="m"><b>unattributed_model_calls</b></td><td class="num"><span class="st done">0</span></td><td class="small dim">有模型调用归不到任何计划上 —— 成本归因有黑洞</td></tr>
+<tr><td class="m"><b>tree_errors</b></td><td class="num"><span class="st done">0</span></td><td class="small dim">span 树有孤儿或成环 —— 这条链路的因果关系讲不通</td></tr>
+</tbody></table>
+<div class="tiny dim" style="margin-top:3px">这六个字段全是 0，而<span class="mono">seeded_artifacts = 10</span> 不是 0 —— 旁路入库的产物确实存在，但每一份都被 <span class="mono">ArtifactSeeded</span> 点了名。「有旁路」和「有无名产物」是两件事，这份摘要把它们分开记。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>18 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§8</span><h2>权威事实边界：场景 6 vs 7</h2><span class="tag rf">对照</span></div>
+<div class="bd"><div class="claim">「所有 Agent 都回复完成」<b>不等于</b>业务成功。场景 6 与场景 7 是同一条链路、同一批 Agent、同一套闸 —— 差别只在网关回了什么。</div>
+<table><thead><tr><th style="width:40mm">对照项</th><th style="width:50mm">场景 6 · 顺利路径</th><th>场景 7 · 失败路径</th></tr></thead><tbody>
+<tr><td><b>Agent 自述</b></td><td>四个任务全部回复「完成」</td><td>四个任务<b>同样</b>全部回复「完成」</td></tr>
+<tr><td><b>Plan 终态</b></td><td><span class="st done">DONE</span></td><td><span class="st fail">FAILED</span>（主管驳回）</td></tr>
+<tr><td><b>业务状态</b></td><td><span class="mono">settled</span></td><td><span class="mono">compensated</span>（全程没有经过 settled）</td></tr>
+<tr><td><b>网关回执</b></td><td><span class="mono">code=10000</span> → <span class="mono">observed_state=settled</span></td><td><span class="mono">40005</span> 换渠道 → <span class="mono">ACQ.SYSTEM_ERROR</span> → <span class="mono">outcome=unknown</span>（问了 3 次仍非终态）</td></tr>
+<tr><td><b>settled 观察</b></td><td>1 条，带 <span class="mono">actor_invocation_id</span></td><td><b>0 条</b> —— 没问出终态就一条都不该有</td></tr>
+<tr><td><b>business_outcome</b></td><td>succeeded · basis=<span class="mono">external_evidence</span></td><td>failed · basis=<span class="mono">plan_failed</span> · external_evidence <b>0 条</b></td></tr>
+<tr><td><b>补偿记录</b></td><td>无</td><td>2 行：<span class="mono">refund_request_revoked</span> · <span class="mono">manual_ticket</span></td></tr>
+<tr><td><b>重规划</b></td><td>0 次</td><td>1 次（40005 触发换渠道；<span class="mono">ACQ.SYSTEM_ERROR</span> 一票否决，<b>没有自旋</b>）</td></tr>
+</tbody></table>
+<h3><span class="n">§8.2</span>第七道闸的四象限：retriable 与 outcome 是正交的两维</h3>
+<table class="tight"><thead><tr><th style="width:20mm">retriable</th><th style="width:20mm">outcome</th><th style="width:32mm">disposition</th><th style="width:16mm">严重度</th><th>为什么这么判</th></tr></thead><tbody>
+<tr><td class="m">True</td><td class="m">failed</td><td class="m"><span class="st hold">replan_channel</span></td><td class="m tiny">blocker</td><td class="small dim">网关在入口就拒了，这一笔业务确定没执行 —— 可以换渠道重发</td></tr>
+<tr><td class="m">True</td><td class="m">unknown</td><td class="m"><span class="st info">query_first</span></td><td class="m tiny">info</td><td class="small dim">能再发一次，但那一笔的下落网关自己说不清；直接重发可能造成第二笔</td></tr>
+<tr><td class="m">False</td><td class="m">failed</td><td class="m"><span class="st fail">human_terminal</span></td><td class="m tiny">blocker</td><td class="small dim">终态失败，原样重发没有意义，需转人工或改单</td></tr>
+<tr><td class="m">False</td><td class="m">unknown</td><td class="m"><span class="st fail">query_or_human</span></td><td class="m tiny">blocker</td><td class="small dim">最危险的一档：既不能原样重发、下落也不明，必须先查或转人工</td></tr>
+</tbody></table>
+<div class="tiny dim" style="margin-top:3px"><b>severity 与 disposition 必须留在同一张表里。</b>拆开按 outcome 单独算一遍，两套判据看的维度就不同，必然在某一格分叉 —— 而分叉点恰好落在官方称「最危险」的 <span class="mono">query_or_human</span>，症状是一笔下落不明的退款被静默放行：不是红灯，是没有灯。</div>
+<div class="grid2" style="margin-top:8px">
+<div><div class="note bad"><span class="t">unknown 不是 failed</span>域内补偿写的是「最后观察到的下落 = <span class="mono">unobserved</span>」，<b>不是 failed</b> —— 网关自己都没给出结论，MAOS 凭什么替它下。</div></div>
+<div><div class="note info"><span class="t">谁有权写 settled</span>核验器第 3 项钉死：每个 <span class="mono">settled</span> 都必须有对应的 <span class="mono">payment_observation</span>，且那条观察的 <span class="mono">actor_invocation_id</span> 必须属于 <span class="mono">payment.observe</span>。别的调用面写 settled，这一项直接 FAIL。</div></div>
+</div>
+<h3><span class="n">§8.3</span>那两行补偿记录的原文（库内 compensation_record）</h3>
+<table class="tight"><thead><tr><th style="width:44mm">kind</th><th style="width:30mm">last_observed_state</th><th>detail 里写了什么</th></tr></thead><tbody>
+<tr><td class="m"><b>refund_request_revoked</b></td><td><span class="st hold">unobserved</span></td><td class="small">MAOS 侧不再推进本请求；外部资金下落以 last_observed_state 为准，需人工到支付渠道对账后确认<br><span class="tiny dim">幂等键 <span class="mono">rfd-tnt-mfg-001-case-s7-0001</span></span></td></tr>
+<tr><td class="m"><b>manual_ticket</b></td><td><span class="st hold">unobserved</span></td><td class="small">渠道异常，转人工<br><span class="tiny dim">接单人已指派</span></td></tr>
+</tbody></table>
+<div class="note"><span class="t">铁律 8</span>MAOS 不持有权威事实，只持有观察与推断。订单、支付、库存的权威状态永远归属外部系统。<b>任何把外部状态直接写死为终态的代码都是 bug。</b>这条不是文档里的一句话 —— 它是核验器第 3 项、第 6 项两道机器守卫。上面那行 <span class="mono">meaning</span> 是这条铁律写进数据里的样子：作废的是<b>本地意图</b>，不是「确认未付」。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>19 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§9</span><h2>RAG 有无对照（R5）</h2><span class="tag ex">对照实验</span></div>
+<div class="bd"><div class="claim">R5 · RAG 有无对照。<b>两段的计划脚本逐字节相同</b>，唯一的变量是 <span class="mono">MAOS_KB_ENABLED=0 / 1</span> —— 所以差异只可能来自检索。</div>
+<div class="grid2">
+<div><div class="note bad"><span class="t">without_kb · MAOS_KB_ENABLED=0</span><b>4</b> 个任务，<span class="mono">KbRetrieved</span> <b>0</b> 条<br>第六道闸：<b>blocker</b>（漏排财务核算，付款前拿不到金额凭据）<br>Plan <span class="st fail">FAILED</span> · 业务状态 <span class="mono">submitted</span></div></div>
+<div><div class="note ok"><span class="t">with_kb · MAOS_KB_ENABLED=1</span><b>5</b> 个任务，<span class="mono">KbRetrieved</span> <b>1</b> 条<br>第六道闸：<b>pass</b><br>Plan <span class="st done">DONE</span> · 业务状态 <span class="mono">settled</span></div></div>
+</div>
+<h3><span class="n">§9.2</span>两段的任务清单，差的就是那一个</h3>
+<table class="tight"><thead><tr><th style="width:9mm">#</th><th>without_kb（4 个任务）</th><th>with_kb（5 个任务）</th></tr></thead><tbody>
+<tr><td class="num">1</td><td class="small">受理多源退款诉求并聚合证据</td><td class="small">受理多源退款诉求并聚合证据</td></tr>
+<tr><td class="num">2</td><td class="small">按下单锁定的政策版本裁定退款资格</td><td class="small">按下单锁定的政策版本裁定退款资格</td></tr>
+<tr><td class="num">3</td><td class="small">发起退款并观察网关终态</td><td class="small style="background:#ecfdf3;font-weight:700"">核算退款金额并写财务分录</td></tr>
+<tr><td class="num">4</td><td class="small">通知客户退款结果</td><td class="small style="background:#ecfdf3;font-weight:700"">发起退款并观察网关终态</td></tr>
+<tr><td class="num">5</td><td class="small dim">—</td><td class="small style="background:#ecfdf3;font-weight:700"">通知客户退款结果</td></tr>
+</tbody></table>
+<div class="note info" style="margin-top:6px"><span class="mono">delta_tasks = ['refund_finance.refund_finance']</span> —— 开了检索之后，计划里多出<b>财务核算</b>这一个任务。少了它，第六道闸在 plan 级就判 blocker：<b>闸连可判的对象都没有</b>，因为漏排财务复核意味着没有任何任务带着申报金额。</div>
+<h3><span class="n">§9.3</span>触发那次重排的文档（真实打分）</h3>
+<table class="tight"><thead><tr><th style="width:50mm">doc_id</th><th>标题</th><th style="width:20mm">kind</th><th class="num">总分</th><th class="num">rule_no</th><th class="num">fts</th><th class="num">vector</th></tr></thead><tbody>
+<tr><td class="m tiny">kb-r5-history-0001</td><td class="small">轴承锈蚀全额退款：财务核算不可省</td><td class="m tiny dim">history_case</td><td class="num"><b>0.719</b></td><td class="num dim">1.00</td><td class="num dim">1.00</td><td class="num dim">0.845</td></tr>
+<tr><td class="m tiny">kb-policy-tnt-mfg-a-AS-002-v1</td><td class="small">质保期内质量问题全额退</td><td class="m tiny dim">policy</td><td class="num"><b>0.411</b></td><td class="num dim">1.00</td><td class="num dim">0.25</td><td class="num dim">0.053</td></tr>
+<tr><td class="m tiny">kb-policy-tnt-mfg-a-AS-004-v1</td><td class="small">经销渠道差异（增渠道商核销，区域经理审批）</td><td class="m tiny dim">policy</td><td class="num"><b>0.150</b></td><td class="num dim">0.00</td><td class="num dim">0.75</td><td class="num dim">0.000</td></tr>
+</tbody></table>
+<div class="grid2" style="margin-top:8px">
+<div><div class="note"><span class="t">检索漏斗（实测）</span>库存 <b>17</b> 条 → 同租户 <b>9</b> 条 → 七维预过滤后 <b>5</b> 条。按 kind 分：history_case 1 条 / policy 16 条。语料根 <span class="mono">scenarios/refund</span>。</div></div>
+<div><div class="note ok"><span class="t">排第一的那条知识是自己长出来的</span><span class="mono">kb-r5-history-0001</span> 由本库一条真实收口成功的 case 晋升而来：<span class="mono">case_id=case-r5-hist</span> · <span class="mono">biz_status=settled</span> · 客户 ack 1 条。核验器第 7 项校验的正是这条追溯链。</div></div>
+</div>
+<h3><span class="n">§9.4</span>关掉检索之后，系统是怎么收场的</h3>
+<table class="tight"><thead><tr><th style="width:44mm">观测点</th><th style="width:44mm">without_kb</th><th>with_kb</th></tr></thead><tbody>
+<tr><td><b>第六道闸结论</b></td><td class="m small" style="background:#fef3f2">blocker</td><td class="m small">pass</td></tr>
+<tr><td><b>Gate 总结论</b></td><td class="m small" style="background:#fef3f2">blocker</td><td class="m small">pass</td></tr>
+<tr><td><b>KbRetrieved 事件</b></td><td class="m small" style="background:#fef3f2">0</td><td class="m small">1</td></tr>
+<tr><td><b>财务分录</b></td><td class="m small" style="background:#fef3f2">0</td><td class="m small">1</td></tr>
+<tr><td><b>失败任务</b></td><td class="m small">—</td><td class="m small">—</td></tr>
+<tr><td><b>业务状态</b></td><td class="m small" style="background:#fef3f2">submitted</td><td class="m small">settled</td></tr>
+</tbody></table>
+<div class="note bad" style="margin-top:6px"><span class="t">第三出口：机器返工修不好的，转人工</span><span class="mono">受理多源退款诉求并聚合证据</span> → <span class="st hold">BLOCKED</span>（<span class="mono">await=human_decision</span>），主管裁决<b>驳回</b>，计划收敛到 FAILED —— <b>付款任务一次都没派发</b>。闸既没把一笔缺金额凭据的退款放出去，也没在原地自旋返工。</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>20 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§10</span><h2>人机协同实证：真房间四种结局</h2><span class="tag rf">房间</span></div>
+<div class="bd"><div class="claim">上面八条链路证明的是「机器这一侧站得住」。这一页证明<b>人在链路里的那个停点是真的</b> —— 五岗圆桌在真 Matrix 房间里演四种结局，不是四条 if 分支。</div>
+<h3><span class="n">§10.1</span>四种结局各演一单（5 单实跑）</h3>
+<table class="tight"><thead><tr><th class="num" style="width:9mm">行</th><th style="width:30mm">订单</th><th style="width:24mm">裁定</th><th class="num" style="width:19mm">预演金额</th><th style="width:26mm">该谁拍板</th><th class="num" style="width:14mm">阻断项</th><th>收口话术</th></tr></thead><tbody>
+<tr><td class="num">2</td><td class="m tiny">ORD-2026-0004</td><td><span class="st done">批准</span> <span class="tiny dim mono">approve</span></td><td class="num">9600.00</td><td class="m tiny">supervisor</td><td class="num">0</td><td class="small">建议批复 · 核准预演 9600.00 · 请 supervisor 拍板</td></tr>
+<tr><td class="num">3</td><td class="m tiny">ORD-2026-0005</td><td><span class="st hold">补件后再议</span> <span class="tiny dim mono">need_more</span></td><td class="num">1980.00</td><td class="m tiny">supervisor</td><td class="num">4</td><td class="small">需补件后再议 · 证据：缺少 image 类证据</td></tr>
+<tr><td class="num">4</td><td class="m tiny">ORD-2026-0006</td><td><span class="st hold">升级审批</span> <span class="tiny dim mono">escalate</span></td><td class="num">88000.00</td><td class="m tiny">finance_manager</td><td class="num">5</td><td class="small">建议升级审批 · 风险 high · 请 finance_manager 复核</td></tr>
+<tr><td class="num">5</td><td class="m tiny">ORD-2026-0006</td><td><span class="st hold">升级审批</span> <span class="tiny dim mono">escalate</span></td><td class="num">88000.00</td><td class="m tiny">finance_manager</td><td class="num">4</td><td class="small">建议升级审批 · 风险 high · 请 finance_manager 复核</td></tr>
+<tr><td class="num">6</td><td class="m tiny">ORD-2026-0005</td><td><span class="st fail">驳回</span> <span class="tiny dim mono">reject</span></td><td class="num">—</td><td class="m tiny">supervisor</td><td class="num">2</td><td class="small">不建议批复 · AS-001@v1 窗口 30 天，第 58 天申请，58 &gt; 30</td></tr>
+</tbody></table>
+<div class="tiny dim" style="margin-top:3px">四种结局全覆盖：批准 / 补件后再议 / 升级审批 / 驳回。同一个订单 <span class="mono">ORD-2026-0006</span> 连着两行都判 escalate —— 重复退款的信号是从底账里查出来的，不是写死的。</div>
+<h3><span class="n">§10.2</span>阻断项来自五个岗位各自的核验，不是一句话结论</h3>
+<pre class="plain">ORD-2026-0006 · 建议升级审批 · 风险 high · 请 finance_manager 复核
+  · 风险：订单 ORD-2026-0006 在退款底账里已有处理中或已退成的记录，属重复退款申请
+  · 风险：订单 ORD-2026-0006 已有一笔退款到账（settled），本次是对同一单的二次退款
+  · 风险：同一客户近 30 天内已有 3 笔退款记录，频率偏高
+  · 风险：申报金额 92000.00 高于订单实付 88000.00（比值 1.05），核算会按实付封顶
+  · 风险：同一客户名下有 3 笔订单快照，存在批量退款的可能</pre>
+<div class="tiny dim" style="margin-top:-4px">五岗：申请受理岗 · 规则审核岗 · 证据核验岗 · 风险反欺诈岗 · 财务执行岗。每岗的结论都带[事实卡]，说得出依据的字段与出处。</div>
+<h3><span class="n">§10.3</span>真房间侧的实跑证据</h3>
+<table class="tight"><thead><tr><th style="width:30mm">用例</th><th style="width:54mm">入口</th><th style="width:40mm">终态</th><th>房间消息</th></tr></thead><tbody>
+<tr><td><b>R1 顺利路径</b></td><td class="m tiny">hiclaw.room_demo --case approve</td><td class="m tiny">task=DONE  plan=DONE，exit=0</td><td class="small dim">23 条</td></tr>
+<tr><td><b>R2 失败路径</b></td><td class="m tiny">hiclaw.room_demo --case reject</td><td class="m tiny">task=FAILED  plan=FAILED，exit=0</td><td class="small dim">18 条</td></tr>
+<tr><td><b>越权用例</b></td><td class="m tiny">含在 R1 那一轮里</td><td class="m tiny">两次「无审批权限」，闲聊零回复</td><td class="small dim">见截图 05</td></tr>
+</tbody></table>
+<div class="grid2" style="margin-top:8px">
+<div><div class="note ok"><span class="t">房间证据的载体是截图</span><span class="mono">evidence/room/</span> 下 5 张实拍：审批卡片、状态迁移、<span class="mono">/approve</span> 的效果、<span class="mono">/reject</span> 后的补偿、名单外账号被拒。<b>采集人手写，不是脚本产物</b> —— 这一条在该目录 README 里明说，并已记进 <span class="mono">docs/DECISIONS.md</span>。同目录的 <span class="mono">transcript.md</span> 是例外：它是从房间消息历史整份拉下来的脚本产物。</div></div>
+<div><div class="note info"><span class="t">脱敏口径</span>homeserver、room_id 一律 <span class="mono">&lt;redacted&gt;</span> 不入库。任何需要真实密钥的配置只读环境变量 —— 密钥不许出现在 <span class="mono">evidence/</span> 的任何输出里，凡是可能回显 env 或 URL 的命令，输出前必须过脱敏。</div></div>
+</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>21 / 22</span></div>
+</section>
+<section class="sheet">
+<div class="hd"><span class="sec">§11</span><h2>复现清单与文件清册</h2><span class="tag pl">复现</span></div>
+<div class="bd"><div class="claim">这一页是给核验者的。<b>从零开始，两条命令，约 7 秒</b>，你会拿到与本材料里每一个数字一致的结果。</div>
+<h3><span class="n">§11.1</span>复现步骤</h3>
+<pre class="term"><span class="d"># ① 取到本材料的代码基线</span>
+$ git clone &lt;repo&gt; &amp;&amp; cd MAOS &amp;&amp; git checkout <span class="b">bcd5d46</span>
+
+<span class="d"># ② 产证据（跑 7 个场景 + RAG 对照，写 evidence/scenario-1..7 与 -R5）</span>
+$ python3 scripts/make_evidence.py
+
+<span class="d"># ③ 逐项重放核验</span>
+$ python3 scripts/verify.py
+<span class="g">RESULT: 8/8 PASS</span>
+
+<span class="d"># ④ 存量测试（与 ③ 是两条独立的绳子）</span>
+$ python3 -m pytest maos/tests -q
+<span class="w">1935 passed, 41 skipped in 52.17s</span>
+
+<span class="d"># ⑤ 看任意一条链路的完整过程（Scripted 模式，无需任何 key）</span>
+$ python3 run.py --scenario 7</pre>
+<div class="note warn"><b>③ 不能单独跑。</b><span class="mono">*.db</span> 不入 git，核验器要的是库不是快照 —— 跳过 ② 直接跑 ③ 会报「缺数据库」并退出 2。这是设计行为。</div>
+<h3><span class="n">§11.2</span>每条链路留下的文件</h3>
+<table class="tight"><thead><tr><th style="width:42mm">文件</th><th>是什么</th><th style="width:44mm">对应核验项</th></tr></thead><tbody>
+<tr><td class="m"><b>result.json</b></td><td class="small">Plan / 任务 / 终态 / metrics / business_outcome 的导出</td><td class="small dim">第 6 项 business-outcome</td></tr>
+<tr><td class="m"><b>trace.json</b></td><td class="small">span 树 + 成本视图 + 摘要（schema maos.trace/v1）</td><td class="small dim">第 4 项 trace-tree · 第 8 项 cost-attribution</td></tr>
+<tr><td class="m"><b>run.log</b></td><td class="small">跑那一次的终端原始输出，含完整状态迁移轨迹</td><td class="small dim">人读；与库互为佐证</td></tr>
+<tr><td class="m"><b>business-objects.json</b></td><td class="small">每条 business_ref 指向的业务对象快照</td><td class="small dim">第 2 项 business-ref</td></tr>
+<tr><td class="m"><b>kb-hits.json</b></td><td class="small">每次 KbRetrieved 的候选文档与多通道打分</td><td class="small dim">第 5 项 kb-hit</td></tr>
+<tr><td class="m"><b>maos.db</b></td><td class="small">那一次运行的完整 SQLite 库（不入 git，由 ② 生成）</td><td class="small dim">第 1 / 3 / 7 项的原始依据</td></tr>
+<tr><td class="m"><b>dag-diff.json</b></td><td class="small">仅 R5：两段 DAG 的差异与检索漏斗</td><td class="small dim">第 5 / 7 项</td></tr>
+</tbody></table>
+<h3><span class="n">§11.3</span>本材料的可核验性声明</h3>
+<div class="grid2">
+<div><div class="note ok"><span class="t">数字的出处</span>全文 <b>没有手打的计数</b>。每一个 span 数、事件数、调用次数、状态迁移条数，都由生成脚本从 <span class="mono">evidence/*/maos.db</span> 与同目录 JSON 直接读出。证据重跑后数字会跟着变 —— 这正是要的行为。</div></div>
+<div><div class="note"><span class="t">合成数据的边界</span>政策与历史案例是按行业惯例构造的合成数据；支付网关的错误码与时序取自公开规范。<b>合成的是业务数据，不是运行记录</b> —— 运行记录是真跑出来的。</div></div>
+</div>
+<div class="meta" style="margin-top:10px;border-top-width:1.2pt">
+<div class="k">代码基线</div><div>bcd5d467f63b310dafeff4de38a351e9ca0a7d70</div>
+<div class="k">证据基线</div><div>cfe438475f751bb1a7bfe034daf7b2381314888d</div>
+<div class="k">核验</div><div>RESULT: 8/8 PASS ｜ exit=0</div>
+<div class="k">测试</div><div>1935 passed, 41 skipped in 52.17s</div>
+<div class="k">链路合计</div><div>8 条链路 · 11 Plan · 38 任务 · 163 迁移 · 418 span · 314 事件</div>
+<div class="k">调用合计</div><div>67 次 Skill（13 个）· 26 次 ToolPort（4 个）· 55 份产物 · 35 条业务对象引用</div>
+<div class="k">生成于</div><div>2026-09-03T16:11:54+08:00</div>
+</div></div>
+<div class="ft"><span>MAOS 完整场景链路验证材料 · bcd5d46 · RESULT 8/8 PASS</span><span>22 / 22</span></div>
+</section>
+</div>
+</body>
+</html>

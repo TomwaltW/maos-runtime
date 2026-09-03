@@ -4,9 +4,9 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-扫到 **23 个** 带 Identity 的 Agent 类，其中 **22 个**注册进 `AGENT_POOL`（可被 Worker 按 role 派单），**1 个**未注册（由流程层直接构造）。
+扫到 **24 个** 带 Identity 的 Agent 类，其中 **23 个**注册进 `AGENT_POOL`（可被 Worker 按 role 派单），**1 个**未注册（由流程层直接构造）。
 
-分域：软件交付域 6 个；ap 4 个；claim 4 个；investigation 4 个；制造售后退款域 5 个。
+分域：软件交付域 6 个；ap 4 个；claim 4 个；investigation 4 个；制造售后退款域 6 个。
 
 **字段顺序即冻结契约附录 A 的声明顺序**，由 `dataclasses.fields(AgentIdentity)` 取（maos/agents/base.py:59）：`agent_id`、`role`、`duty`、`allowed_skills`、`allowed_tools`、`write_scope`、`max_risk`、`model_tier`、`max_self_repair`。本文件不另抄一份顺序。
 
@@ -39,6 +39,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `refund_intake` | `refund-intake` | 制造售后退款域 | 是 | `maos/agents/refund/intake_agent.py:26` |
 | `refund_payment` | `refund-payment` | 制造售后退款域 | 是 | `maos/agents/refund/payment_agent.py:58` |
 | `refund_policy` | `refund-policy` | 制造售后退款域 | 是 | `maos/agents/refund/policy_agent.py:22` |
+| `refund_risk` | `refund-risk` | 制造售后退款域 | 是 | `maos/agents/refund/risk_agent.py:40` |
 
 > **未注册的 1 个（`manager`）不是漏网**：`AGENT_POOL` 的语义是「Worker 收到 TaskAssignment 后按 role 找得到的执行者」（maos/runtime/worker.py:28 一行构造全池）。Manager 是规划者不是执行者，由流程层直接构造并调 `plan()`，不接派单 —— 所以它有 Identity（白名单同样被 `SkillInvoker` 强制），但不进池。手册写「十角色」指的是包含它在内的角色总数。
 
@@ -338,7 +339,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `model_tier` | 模型档位 | light |
 | `max_self_repair` | 自修复上限 | 0 |
 
-## 制造售后退款域（5 个）
+## 制造售后退款域（6 个）
 
 ### refund_channel — RefundChannelAgent
 
@@ -414,6 +415,22 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `role` | 角色名（派单按它路由） | refund_policy |
 | `duty` | 职责边界 | 按订单快照锁定的政策版本检索适用规则并裁定退款资格 |
 | `allowed_skills` | 可调 Skill 白名单 | `policy.match` |
+| `allowed_tools` | 可调工具白名单 | （空） |
+| `write_scope` | 可写资源 | `artifact` |
+| `max_risk` | 最高授权风险级 | L |
+| `model_tier` | 模型档位 | light |
+| `max_self_repair` | 自修复上限 | 0 |
+
+### refund_risk — RefundRiskAgent
+
+声明位置：`maos/agents/refund/risk_agent.py:40`
+
+| 字段 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `agent_id` | 实例 id | refund-risk |
+| `role` | 角色名（派单按它路由） | refund_risk |
+| `duty` | 职责边界 | 按底账筛查重复退款、退款频率与金额异常，给出风险分档与逐条理由；只提示不裁定 —— 是否放行由规则审核岗与审批人决定，本岗不改状态也不动钱 |
+| `allowed_skills` | 可调 Skill 白名单 | `refund.risk_screen` |
 | `allowed_tools` | 可调工具白名单 | （空） |
 | `write_scope` | 可写资源 | `artifact` |
 | `max_risk` | 最高授权风险级 | L |

@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-注册表里共 **30 个 skill / 30 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
+注册表里共 **31 个 skill / 31 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
 
 失败策略取值域冻结为 `retry`、`fallback`、`escalate`（maos/skills/contract.py:16）。
 
@@ -42,6 +42,7 @@
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:62` |
 | `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:65` |
 | `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:59` |
+| `refund.risk_screen` | `1.0.0` | 制造售后退款域 | `refund_risk` | escalate | （空） | `maos/skills/builtin/refund/risk_screen.py:46` |
 | `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:51` |
 | `test.verify` | `1.0.0` | 软件交付域 | `testing` | escalate | `sandbox` | `maos/skills/builtin/test_verify.py:30` |
 
@@ -523,6 +524,23 @@
 | `reuse_note` | ⑧ 复用说明 | 任何业务域要把多源诉求收成一个案子都可照此复用 issue.aggregate，不另写去重 |
 | `owner_roles` | ⑨ 归属角色 | `refund_intake` |
 
+### refund.risk_screen @ 1.0.0
+
+实现：`RefundRiskScreenSkill` @ `maos/skills/builtin/refund/risk_screen.py:46`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 按底账筛查重复退款、退款频率与金额异常，出风险分档、分数与逐条人话理由 |
+| `input_schema` | ② 输入 | `case_seed`: dict（同 refund.intake 的 case_seed：tenant_id, case_id, order_id, order_version, sku, reason_code, amount_claimed, …）<br>`order`: dict（order_snapshot 那一行：amount_paid, paid_at, channel_id；payload_json 里可有 customer_id）<br>`customer_orders`: list[dict]（同 customer_id 的全部 order_snapshot 行，含本单，可空）<br>`refund_history`: list[dict{case_id,order_id,customer_id,amount,status,decided_at}]（底账 refund_history，可空）<br>`requested_at`: str（ISO8601；naive 视为 UTC，解不出即抛）<br>`customer_id`: str（可选：顶层给了优先用，否则从 order.payload_json 解） |
+| `output_schema` | ③ 输出 | `level`: "low" \| "medium" \| "high"（按 LEVEL_MEDIUM / LEVEL_HIGH 两个类属性分档）<br>`score`: int（0–100，权重和封顶 100）<br>`reasons`: list[str]（人话，每条一个信号；不含时间戳、不含随机）<br>`signals`: dict{duplicate_refund: bool, already_refunded: bool, frequency_30d: int, amount_ratio: float, multi_order_same_account: int, amount_over_paid: bool}<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `case_seed` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读入参，不写库、不调模型、不读文件、不碰附件字节；只产出观察与推断（level / score / reasons），不改任何业务状态、不做放行裁定 |
+| `reuse_note` | ⑧ 复用说明 | 任何「按历史行为给一个可解释分档」的场景都可照此写：权重与阈值全在类属性上，调判据不改代码；理由逐条对应一个信号，可直接摆给人看 |
+| `owner_roles` | ⑨ 归属角色 | `refund_risk` |
+
 ### req.normalize @ 1.0.0
 
 实现：`ReqNormalizeSkill` @ `maos/skills/builtin/req_normalize.py:51`
@@ -566,4 +584,4 @@
 - **回滚**：旧版本从不被覆盖，`get(name, "1.0.0")` 永远拿得到当年那一个。在册版本用 `versions(name)` 列（maos/skills/registry.py:84）。升级期间在跑的旧 Plan 因此行为可复现 —— 这是保留历史版本的**唯一**理由。
 - **质量评估**：每次调用落一条 `SkillInvoked`，`detail` 带 `status` / `duration_ms` / `input_digest` / `output_hash` / `usage`；按 `skill + version` 聚合 event_log 即可得到成功率与耗时分布，无需另建埋点。证据侧由 `scripts/verify.py` 第 1 项做哈希一致性重放。
 
-当前在册的 30 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。
+当前在册的 31 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。

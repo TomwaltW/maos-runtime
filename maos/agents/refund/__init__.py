@@ -25,6 +25,7 @@ from .finance_agent import RefundFinanceAgent  # noqa: F401 —— import 即注
 from .intake_agent import RefundIntakeAgent  # noqa: F401
 from .payment_agent import RefundPaymentAgent  # noqa: F401
 from .policy_agent import RefundPolicyAgent  # noqa: F401
+from .risk_agent import RefundRiskAgent  # noqa: F401
 
 #: 本域四个角色的 role 名。场景的 DAG 与测试按它派单，不在各处抄字面量。
 ROLE_INTAKE = RefundIntakeAgent.identity.role

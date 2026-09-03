@@ -22,6 +22,7 @@ from . import notify  # noqa: F401 —— notify.customer
 from . import payment_execute  # noqa: F401 —— payment.execute
 from . import payment_observe  # noqa: F401 —— payment.observe
 from . import policy  # noqa: F401 —— policy.match
+from . import risk_screen  # noqa: F401 —— refund.risk_screen
 
 #: 本域 skill 的名字清单，测试与场景按它做存在性断言，不在各处抄字面量。
 REFUND_SKILLS = (
@@ -32,4 +33,5 @@ REFUND_SKILLS = (
     "payment.observe",
     "notify.customer",
     "refund.compensate",
+    "refund.risk_screen",
 )

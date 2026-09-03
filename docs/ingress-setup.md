@@ -32,6 +32,7 @@ MAOS_APPROVERS=ou_demo python3 scripts/run_ingress.py \
 | `/reject <case_id> [原因]` | 同上 | 不动。撤掉待办 |
 | `/approve <task_id>` | 同上 | 转 `RoomApprovalBridge`，任务级审批 |
 | `/pending` | 内部渠道 | 不动。列待办与等人审批的任务 |
+| `/team` | 所有人 | 不动。报一遍圆桌有哪几岗、各自用哪个账号说话、装了哪些 skill（见 §4.8） |
 | `/help` | 所有人 | 不动 |
 
 两步走是刻意的：一条群消息不该直接触发一次付款 —— 发命令的人可能打错订单号、

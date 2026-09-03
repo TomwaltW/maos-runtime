@@ -28,6 +28,18 @@
 
 预检复用 `contrast` 里那批**同样的**函数（``policy_view`` / ``evaluate_eligibility``），
 不另算一套：否则会出现「预检说批 6800、真跑退了 5390」，而两条路都不报错。
+
+## 圆桌（``team=``）是旁路，不是处置的一环
+
+装上一个 `TeamObserver`（`maos/roundtable/`）之后，预检 / 申请表 / 放行这三件事
+各会额外触发一次「让五个岗位在群里各说一句」。它对本层是**只读观察者**：
+
+  · 钩子一律在 `_reply` **之后**触发 —— 回帖是处置的结论，不能等五次模型调用；
+  · 每个钩子各自 ``try/except``，抛了只记 WARNING，**回帖一个字不变**；
+  · 触发在 `self._lock` **之外** —— `handle_execute` 的 runner 在锁内跑，
+    钩子里再碰一次 router 就是自锁死。
+
+所以 ``team=None``（缺省）时这一层的行为与从前逐字一致，一次调用都不会发生。
 """
 
 from __future__ import annotations
@@ -39,7 +51,7 @@ import math
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -65,6 +77,9 @@ ALLOW_APPROVAL = frozenset({CHANNEL_FEISHU, CHANNEL_WECOM, CHANNEL_MATRIX})
 CMD_REFUND = "refund"
 CMD_HELP = "help"
 CMD_PENDING = "pending"
+#: 报一遍圆桌岗位。**不在 `ALLOW_APPROVAL` 那道闸后面**：它是只读的自我介绍，
+#: 不碰钱、不碰待办，外部客户问「你们这边谁在看我这单」也该答得上来。
+CMD_TEAM = "team"
 #: 审批命令词与 `hiclaw/matrix_bus.py` 的 `_COMMANDS` 同一份口径 —— 那边已经跑绿，
 #: 这里只负责把消息**转过去**，不重新实现判定。
 CMD_APPROVAL = ("approve", "reject")
@@ -82,6 +97,7 @@ USAGE = """MAOS 退款助手 · 可用命令
   /approve <case_id>         放行待办，真正执行处置
   /reject  <case_id> [原因]  撤掉待办
   /pending                   列出待办与等人审批的任务
+  /team                      圆桌有哪几岗、各岗挂着什么 skill（只读，不调模型）
   /help                      本说明"""
 
 
@@ -129,6 +145,9 @@ class Ticket:
     #: 建这个待办时认领的证据。留在这里只为了让 `/pending` 说得出「这一单挂了几张图」——
     #: 真正进案子的那份在 ``payload["customer_evidence"]`` 里，两处同源、不各算一遍。
     evidence: tuple[StoredAttachment, ...] = ()
+    #: 建这个待办时那次 `preflight` 的返回。留下来只为让圆桌钩子在 `_reply` 之后
+    #: 还拿得到它 —— 预检结论是**当时**算的，放行时不重算，钩子更不该自己再算一遍。
+    checked: dict = field(default_factory=dict)
 
     def expired(self, ttl: int = TICKET_TTL, now: float | None = None) -> bool:
         return (time.time() if now is None else now) - self.created_at > ttl
@@ -166,7 +185,8 @@ class IngressRouter:
                  ticket_ttl: int = TICKET_TTL,
                  attachment_store: AttachmentStore | None = None,
                  attachment_buffer: AttachmentBuffer | None = None,
-                 chat: Any = None) -> None:
+                 chat: Any = None,
+                 team: Any = None) -> None:
         self.adapters = adapters
         self.store = store
         self.ledger_path = Path(ledger_path)
@@ -182,9 +202,16 @@ class IngressRouter:
         #: 非命令文本的回话器（`maos.ingress.chat.ChatResponder`）。**缺省不装**：
         #: 飞书 / 企微群里人来人往，对每句闲聊都回话是骚扰；专门的审批房间才装。
         self.chat = chat
+        #: 圆桌观察者（`maos.roundtable.team.RefundRoundtable`）。**缺省不装**，
+        #: 装上之后预检 / 申请表 / 放行各多一次旁路发言，见模块抬头。
+        self.team = team
         #: 每个会话最近一张申请表的一行摘要，喂给回话器当【事实】。
         self._last_sheet: dict[tuple[str, str], str] = {}
         self._lock = threading.Lock()
+        #: 本次 `handle` 调用登记下来、等回帖发完再触发的圆桌事件。**按线程存**：
+        #: `IngressServer` 的工作线程与 Matrix 的回调线程都会调 `handle`，
+        #: 共用一个列表的话，A 的回帖会把 B 登记的事件一起 fire 掉。
+        self._events = threading.local()
 
     # -- 审批人 -------------------------------------------------------------
     def is_approver(self, sender: str) -> bool:
@@ -216,6 +243,9 @@ class IngressRouter:
         任何异常都不许抛给 webhook 循环：一条打错的命令不该让整个进程掉线，
         更不该让平台因为收不到 200 而无限重推。
         """
+        # 上一次调用要是没走到 fire（直接调 `handle_execute` 之类），残留的事件不许
+        # 跟着这一条消息发出去 —— 那会让房间里凭空多出一轮对着旧案子的发言。
+        self._pending().clear()
         if not self._claim(msg):
             log.info("重复投递，已忽略：%s", msg.dedup_key)
             return ""
@@ -231,7 +261,9 @@ class IngressRouter:
             # 而证据其实已经存下来了。回执同时告诉他下一步该打什么。
             # 带字的非命令消息只在装了回话器时才回（缺省不装，闲聊照旧一声不吭）。
             chat_note = self._chat(msg) if (msg.text or "").strip() else ""
-            return self._reply(msg, "\n\n".join(p for p in (evidence_note, chat_note) if p))
+            out = self._reply(msg, "\n\n".join(p for p in (evidence_note, chat_note) if p))
+            self._fire()
+            return out
         try:
             reply = self._dispatch(msg, cmd)
         except CommandError as exc:
@@ -241,7 +273,67 @@ class IngressRouter:
             reply = f"处理失败：{type(exc).__name__}: {exc}"
         if evidence_note:
             reply = f"{evidence_note}\n\n{reply}" if reply else evidence_note
-        return self._reply(msg, reply)
+        out = self._reply(msg, reply)
+        self._fire()
+        return out
+
+    # -- 圆桌 ---------------------------------------------------------------
+    def _pending(self) -> list:
+        """本线程这次调用登记下来的事件。没装圆桌时它永远是空的。"""
+        box = getattr(self._events, "box", None)
+        if box is None:
+            box = self._events.box = []
+        return box
+
+    def _record(self, event: tuple) -> None:
+        """登记一件「刚才发生了什么」，等 `handle` 把回帖发完再触发。
+
+        **不当场调**：`handle_refund` / `handle_execute` 里拿得到 payload 的那一刻，
+        回帖还没发出去；在那里调钩子等于让群里先看五个岗位发言、再看预检结论。
+        """
+        if self.team is not None:
+            self._pending().append(event)
+
+    def _fire(self) -> None:
+        """把这次调用登记的事件依次交给圆桌。**每个各自兜异常，回帖已经发过了。**
+
+        钩子抛出来的任何东西都只记 WARNING：圆桌是旁路观察者，它炸了不该让
+        「这一单批了没有」这个结论跟着不见（红线 R4）。
+        """
+        events = self._pending()
+        if not events:
+            return
+        fired, events[:] = list(events), []
+        for event in fired:
+            kind = event[0]
+            try:
+                if kind == "preflight":
+                    ticket = event[1]
+                    self.team.on_preflight(
+                        payload=ticket.payload, checked=ticket.checked,
+                        ledger=self.ledger(), evidence=list(ticket.evidence),
+                        requested_by=ticket.requested_by)
+                elif kind == "sheet":
+                    self.team.on_sheet(rows=event[1], ledger=self.ledger(),
+                                       requested_by=event[2])
+                elif kind == "execute":
+                    self.team.on_execute(payload=event[1], result=event[2],
+                                         operator=event[3])
+            except Exception as exc:                    # noqa: BLE001
+                log.warning("圆桌 %s 钩子失败（%s: %s），回帖不受影响",
+                            kind, type(exc).__name__, exc)
+
+    def handle_team(self, msg: InboundMessage) -> str:
+        """``/team`` —— 报一遍圆桌有哪几岗、各自什么职责、挂着哪些 skill。
+
+        **不判渠道、不判名单、不调模型**。三条都是刻意的：这是只读的自我介绍，
+        它不碰钱也不碰待办，与 `/approve` 那道渠道闸不是一件事；而名单本来就是
+        代码里的常量与 skill 注册表，让模型复述一遍只会多一次编造的机会（铁律 8）。
+        """
+        del msg                                         # 谁问都一样，与会话无关
+        if self.team is None:
+            return "本进程没接圆桌（单机器人模式），命令面与申请表照常可用"
+        return render_roster(self.team.roster())
 
     # -- 附件 ---------------------------------------------------------------
     def _ingest_attachments(self, msg: InboundMessage) -> str:
@@ -328,6 +420,9 @@ class IngressRouter:
 
         verdicts: dict[int, dict] = {}
         errors: dict[int, str] = {}
+        #: 按行号另存一份 payload，只给圆桌钩子用 —— 回帖不需要它，而钩子在
+        #: `_reply` 之后才跑，那时这个循环的局部变量已经没了。
+        payloads: dict[int, dict] = {}
         for row in parsed.valid:
             try:
                 payload = rr.build_case(self.ledger(), row.req)
@@ -340,8 +435,9 @@ class IngressRouter:
                 case_id=checked["case_id"], payload=payload,
                 summary=f"{row.order_id}（{row.reason_raw or row.req['reason']}）",
                 channel=msg.channel, chat_id=msg.chat_id, requested_by=msg.sender,
-                created_at=time.time(),
+                created_at=time.time(), checked=checked,
             )
+            payloads[row.line] = payload
             with self._lock:
                 old = self._tickets.get(ticket.case_id)
                 self._tickets[ticket.case_id] = ticket
@@ -355,6 +451,11 @@ class IngressRouter:
                 row.warnings.append(note)
             verdicts[row.line] = checked
 
+        if self.team is not None:
+            # 整张表**一次**登记：50 行 × 5 岗 = 250 条会把房间刷爆，所以行全给出去，
+            # 由圆桌自己汇总说一次（契约 §1.4）。
+            self._record(("sheet", _sheet_rows(parsed, payloads, verdicts, errors),
+                          msg.sender))
         self._last_sheet[(msg.channel, msg.chat_id)] = _sheet.summary(parsed, verdicts, errors)
         return _sheet.render(parsed, verdicts, errors, decision_cn=rr.DECISION_CN)
 
@@ -400,6 +501,18 @@ class IngressRouter:
         lines.append(f"本会话上一张申请表：{last}" if last else "本会话还没收到过申请表")
         lines.append(f"说话的人：{msg.sender}"
                      f"（{'在' if self.is_approver(msg.sender) else '不在'}审批人名单内）")
+
+        # 与 `/team` 用**同一份** `render_roster`：两处各排一遍的话，模型嘴里的岗位
+        # 和 `/team` 打出来的岗位会慢慢长歪，而两边都不报错。
+        if self.team is not None:
+            try:
+                roster = render_roster(self.team.roster())
+            except Exception as exc:                    # noqa: BLE001
+                log.warning("取圆桌名单失败（%s: %s），本条事实不含岗位表",
+                            type(exc).__name__, exc)
+            else:
+                if roster:
+                    lines += ["", "圆桌岗位与技能：", roster]
         return "\n".join(lines)
 
     def _render_evidence(self, msg: InboundMessage, stored: list[StoredAttachment],
@@ -431,6 +544,8 @@ class IngressRouter:
             return self.handle_refund(msg, cmd.args)
         if cmd.verb == CMD_PENDING:
             return self.handle_pending(msg)
+        if cmd.verb == CMD_TEAM:
+            return self.handle_team(msg)
         if cmd.verb == CMD_HELP:
             return USAGE
         return ""                                       # 不是我们的命令词，不接管
@@ -503,12 +618,13 @@ class IngressRouter:
             case_id=checked["case_id"], payload=payload,
             summary=f"{order_id}（{reason_raw}）", channel=msg.channel,
             chat_id=msg.chat_id, requested_by=msg.sender, created_at=time.time(),
-            evidence=tuple(claimed),
+            evidence=tuple(claimed), checked=checked,
         )
         with self._lock:
             # 同一单重发 /refund 直接覆盖：待办是「当前想退这一单」的意思，
             # 留着两条只会让 /approve 不知道该批哪一条。
             self._tickets[ticket.case_id] = ticket
+        self._record(("preflight", ticket))             # 锁外登记，`handle` 末尾才 fire
         return self._render_preflight(checked, ticket)
 
     def _render_preflight(self, c: dict, ticket: Ticket) -> str:
@@ -561,6 +677,9 @@ class IngressRouter:
         # 在发起付款时报「网关未注册」—— 而它自己的输入毫无问题。
         with self._lock:
             result = run(ticket.payload, approve=True, verbose=False)
+        # 锁**释放之后**才登记。钩子里的圆桌会再碰一次 router（取底账、报待办），
+        # 在锁内触发就是自己等自己 —— 而症状是房间彻底不动，没有任何报错。
+        self._record(("execute", ticket.payload, result, msg.sender))
         head = f"已放行 {ticket.case_id}（操作人 {msg.sender}）\n"
         return head + self._render(result, title=ticket.summary)
 
@@ -684,6 +803,47 @@ class IngressRouter:
             log.error("回帖失败（%s -> %s）：%s\n原文：%s",
                       msg.channel, msg.chat_id, exc, text)
         return text
+
+
+def render_roster(roster: list[dict]) -> str:
+    """把 `TeamObserver.roster()` 排成群里能一眼读完的岗位表。
+
+    模块级函数而不是方法：`/team` 与闲聊喂给模型的【事实】必须是**同一份**名单。
+    没接通独立账号的岗位说明白是「代言」—— 房间里五个名牌全挂在 ``maos-bot`` 头上
+    时，人有权知道那不是五个账号在说话（红线 R5：只报 mxid，绝不报 token）。
+    """
+    lines: list[str] = []
+    for seat in roster:
+        who = seat.get("user_id") if seat.get("own_identity") else ""
+        lines.append(f"{seat.get('title')}（{seat.get('agent_id')}）· "
+                     f"{who or '由 maos-bot 代言'}")
+        duty = seat.get("duty")
+        if duty:
+            lines.append(f"  职责：{duty}")
+        for skill in seat.get("skills") or []:
+            lines.append(f"  · {skill.get('name')}@{skill.get('version')} "
+                         f"— {skill.get('purpose')}")
+    return "\n".join(lines)
+
+
+def _sheet_rows(parsed, payloads: dict[int, dict], verdicts: dict[int, dict],
+                errors: dict[int, str]) -> list[dict]:
+    """一张申请表给圆桌的那份行清单（契约 §1.4 的八个键）。
+
+    **合法行与坏行一起给**：圆桌要说的是「这张表整体什么情况」，而「有两行订单
+    根本不存在」正是最该被说出来的那半边。坏行的 ``payload`` / ``checked`` / ``error``
+    三者都是 None —— 它压根没走到预检。
+    """
+    return [{
+        "line": row.line,
+        "order_id": row.order_id,
+        "reason_raw": row.reason_raw,
+        "payload": payloads.get(row.line),
+        "checked": verdicts.get(row.line),
+        "error": errors.get(row.line),
+        "problems": list(row.problems),
+        "warnings": list(row.warnings),
+    } for row in parsed.rows]
 
 
 def _default_runner(payload: dict, **kw) -> dict:

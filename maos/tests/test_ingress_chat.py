@@ -192,3 +192,36 @@ def test_chat_facts_omit_the_roster_without_a_team():
 
     facts = model.calls[-1]["user"]
     assert "圆桌岗位与技能" not in facts and "refund-intake" not in facts
+
+
+# --------------------------------------------------------------------------
+# @岗位点名与闲聊的分界（T92）
+# --------------------------------------------------------------------------
+def test_a_mentioned_seat_answers_instead_of_the_chat_responder():
+    """点名命中：回话器一个字都不插 —— 让退款助手替岗位答话，正是 2026-09-03
+    真房间里那个现象本身。"""
+    from maos.tests.test_ingress_router import AnsweringTeam
+
+    ad = FakeAdapter()
+    model = _EchoModel()
+    r = IngressRouter({ad.name: ad}, store=_store(), runner=Runs(),
+                      chat=ChatResponder(model), team=AnsweringTeam())
+    out = r.handle(_msg("财务执行岗: 你是干什么的"))
+
+    assert out.startswith("【财务执行岗 · refund-finance】 ")
+    assert model.calls == []
+
+
+def test_a_title_in_mid_sentence_still_goes_to_the_chat_responder():
+    """句中提到岗位名的是闲聊，照旧由回话器接 —— 点名只认句首。"""
+    from maos.tests.test_ingress_router import AnsweringTeam
+
+    ad = FakeAdapter()
+    model = _EchoModel("这得看财务执行岗，发 /team 看名册")
+    team = AnsweringTeam()
+    r = IngressRouter({ad.name: ad}, store=_store(), runner=Runs(),
+                      chat=ChatResponder(model), team=team)
+    out = r.handle(_msg("我问一下财务执行岗的意见"))
+
+    assert out == "这得看财务执行岗，发 /team 看名册"
+    assert team.asked == [] and len(model.calls) == 1

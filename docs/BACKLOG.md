@@ -1705,3 +1705,10 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-03 | P9 | `docs/DECISIONS.md` 里 2026-09-03 那批 ingress 在制品的决策行（申请表入口、闲聊回话器、`room_ingress` 常驻、nio 回调死锁）挂在 `## merge-integrate-p8-t47-t53（主干并入整合轮，2026-09-01）` 这个标题下 —— 标题的日期与轮次都对不上那批内容，它们是主仓在制品，不是那次整合的产物 | 按标题找 ingress 那批决策会找不到；后来人读到 09-01 的标题下有 09-03 的行，会以为记账时间线乱了 | 下次动 `docs/DECISIONS.md` 结构时另起一节安置；本轮属铁律 4 范围外，不当场改 |
 | 2026-09-03 | P9 | 两个新 artifact kind（`refund_evidence_report`、`refund_risk_report`）按契约 §1.1 各写在自己的 Agent 文件里，没有进 `maos/agents/refund/_base.py::ALL_REFUND_KINDS` —— T85 / T86 两轨各自记过一条，整合后它们仍然散着 | `ALL_REFUND_KINDS` 不再是本域 kind 的全集，按它做遍历的地方会漏掉两个新 kind（目前没有这样的消费方，所以还没有症状） | 下一次动退款域 Agent 时收拢进 `_base.py`；收拢时两轨的 DECISIONS 各有一行说明为什么当初分开放 |
 | 2026-09-03 | P9 | 演示表 `scenarios/custom/refund-requests-team.csv` 里 `ORD-2026-0006` 占两行（剧情③大额 + 剧情④重复退款），走老链路 `scripts/run_requests.py` 会把同一单批准两次、合计金额把 88000 算两遍 | 单看老链路的汇总行会以为演示数据造错了；实际是有意让「同一单被重复申请」这件事在没有风控岗时看起来完全正常，有了风控岗才亮信号 —— 但这层意图只写在 T89 的 DECISIONS 里，汇总输出本身不解释 | 真房间演示时口头点明；若将来要在 `run_requests` 的汇总里提示重复订单号，那是另一轨的事（`run_requests.py` 本轮只读面） |
+## task-T92
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-03 | P9 | `USAGE`（`/help` 的输出）与 `/team` 的回帖里都没有「@<岗位名> <问题>」这条用法 | 点名问答做出来了但不可发现：房间里的人不会知道可以直接 @ 某一岗，只会继续对着 `maos-bot` 说话 —— 而那正是这一轨要消灭的观感。`USAGE` 同时会进 `_chat_facts`，模型也因此答不出这条用法 | 派单 §3 没列这一条，本轨没自行扩大（铁律 4）。归整合轮与 `docs/ingress-setup.md` 的命令面总表一起补（那张表里 `/team` 也还缺一行，T88 已记） |
+| 2026-09-03 | P9 | `_chat_facts` 喂给闲聊模型的待办清单不带合议建议，`/pending` 带 —— 同一份待办两处口径 | 人问「这几单什么情况」（走闲聊）与打 `/pending` 会得到详略不同的两个答案，而两边都不报错。收口卡落地后差距会更明显 | 等 T90 的 `decide()` 并进来、真房间实跑过一次收口卡之后再收：届时确认 `headline` 的措辞进模型提示词不会诱发复述失真（红线 R1），再把这一行加进 `_chat_facts` |
+| 2026-09-03 | P9 | 点名只认纯文本里的**句首显示名**与手打 mxid，认不了 Element 真正的 @提及结构 —— `on_message(sender, body)` 只给纯文本 body，`formatted_body` 里那个 `matrix.to` 链接到不了这一层（`hiclaw/matrix_bus.py` 回调签名是共同只读面） | 显示名改名（Synapse 上改 displayname）之后，房间里 @ 出来的 pill 文本就与 `TITLES` 对不上，点名静默失效，回帖退回闲聊 —— 没有任何报错，只是「@ 了没反应」 | 要根治得先动 `matrix_bus` 的回调签名（把 `formatted_body` 一并交上来），那是跨轨共同只读面，得先有人拍板。归房间接线面下一轮；在那之前，运维侧的约束是「岗位账号的 displayname 必须与 `TITLES` 一致」 |

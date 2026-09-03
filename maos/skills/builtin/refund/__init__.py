@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from . import compensate  # noqa: F401 —— refund.compensate（W-6：失败路径的域内补偿）
+from . import evidence_check  # noqa: F401 —— refund.evidence_check
 from . import finance  # noqa: F401 —— import 即注册（finance.settle）
 from . import intake  # noqa: F401 —— refund.intake
 from . import notify  # noqa: F401 —— notify.customer
@@ -32,4 +33,5 @@ REFUND_SKILLS = (
     "payment.observe",
     "notify.customer",
     "refund.compensate",
+    "refund.evidence_check",
 )

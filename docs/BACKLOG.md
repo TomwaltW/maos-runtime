@@ -1646,3 +1646,11 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-03 | P8 | `router._render_evidence` 用 `size // 1024` 报体积，小于 1 KB 的附件显示「0 KB」 | 演示用的测试图都很小，回帖里一排 0 KB 看起来像没收到内容 | 改成 `<1 KB` 或按字节报。一行文案，归附件面 |
 | 2026-09-03 | P8 | `_NioChannel.listen` 的回调只给 `(sender, body)` / `(sender, Attachment)`，不带 Matrix 的 `event_id`；`hiclaw/room_ingress.py` 只能用进程内计数器当 `msg_id`，幂等键在进程重启后不成立 | 今天无害（幂等表本来就在 `:memory:`），但将来把幂等落库时，房间消息是唯一一个没有平台原生 id 的渠道 | 给 `listen` 的回调加一个 keyword-only 的 `event_id`（或让 Attachment.msg_ref 带上），保持现存 `lambda sender, body` 调用方不变 |
 | 2026-09-03 | P8 | 申请表回帖在 Matrix 侧已按 20 K 字符拆条，但飞书 / 企微 adapter 没有拆：企微 `message/send` 文本上限 2 KB（平台截断），飞书更大但也有界 | 一张 50 行的表在企微群里会被截在半句上，且平台不报错 | 给 `FeishuAdapter.send` / `WeComAdapter.send` 各加按平台上限拆条，口径同 `hiclaw/room_ingress.py::split_message`；归 IM 渠道面 |
+
+## task-T89
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-03 | P9 | **2026-09-02 那条「同号不同规则」还在，且本轮又押了三张订单上去**：`scenarios/custom/ledger.json` 的 `AS-003` 是「发错货全额退」（`wrong_item`），`scenarios/refund/policy/policy_rules.json` 的 `AS-003` 是「人为损坏免责（需图片举证）」（`artificial_damage`） | 新加的 `ORD-2026-0004/0005/0006` 也都命中演示底账那三条 AS-，房间演示里规则审核岗会念出 `AS-003@v1`。拿规则号当口径讲的地方（答辩、runbook §10、PPT）一旦跨语料引用就会对错人，而两边都不报错 | 沿用 2026-09-02 那条的建议：给两套语料的规则号加租户前缀，或在两份语料抬头各写一句「本文件的 AS-00x 只在本租户内有意义」。语料面，本轮仍不动 |
+| 2026-09-03 | P9 | **「证据齐」剧情在 CSV 那条路上只演得出一半**：随案证据喂不进去（理由见 `docs/DECISIONS.md ## task-T89` 第三行），只能演「质检报告与诉求对得上」 | 只跑 `python3 scripts/room_team_smoke.py` 的人看不到 `verdict="complete"`，要进房间拖一张图才凑齐。README 与 runbook 都写明了这一点，但它仍是一条「文档补代码」的补丁 | 两条路：① 给 `build_case` 一个可选的按 `case_id` 过滤的证据来源（要动 `scripts/run_requests.py`，本轮只读面）；② 给冒烟脚本加 `--evidence <目录>`，把本地文件当随案证据喂进圆桌的 `evidence` 入参。②更小，归圆桌面下一轮 |
+| 2026-09-03 | P9 | **`scripts/room_team_smoke.py` 的装载成功路径本轨一次都没实跑过**：T87 的 `maos/roundtable/` 并入前，它只走得到「圆桌引擎未装载 → exit 3」那条退化分支 | 装载后的排版、`TEAM_ORDER` 排序、`check_said` 自检、`--json` 形状，全部只有单元级假件在测，没有端到端实跑过。`RefundRoundtable(model, voices, ledger_loader=...)` 的调法一旦与 T87 实现对不上，会以 `TypeError` 落在 exit 1 上 | 整合轮并完 T87 的第一件事：跑一次 `python3 scripts/room_team_smoke.py` 与 `--json`，把输出贴进整合回执；对不上就在整合轮当场改这一个文件 |

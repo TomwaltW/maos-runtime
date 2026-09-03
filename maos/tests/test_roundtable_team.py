@@ -258,6 +258,162 @@ def test_hooks_do_not_raise_when_stage_facts_blow_up(
 
 
 # --------------------------------------------------------------------------
+# 发言节奏 pace（契约 §3）
+# --------------------------------------------------------------------------
+def test_pace_defaults_to_none_and_costs_nothing(case: tuple[dict, dict, dict]) -> None:
+    """缺省一次都不调。`maos/tests` 与冒烟脚本零等待 —— 一秒都不许变慢。
+
+    显式传 `None` 与压根不传等价：两条路都不许在主路上多出一次调用。
+    """
+    plain = RefundRoundtable(ScriptedModelClient({}), _Voices())
+    explicit = RefundRoundtable(ScriptedModelClient({}), _Voices(), pace=None)
+
+    assert plain._pace is None and explicit._pace is None
+    for rt in (plain, explicit):
+        assert len(_preflight(rt, case)) == len(TEAM_ORDER)
+
+
+def test_pace_is_called_once_per_stage_with_index_and_total(
+        case: tuple[dict, dict, dict]) -> None:
+    ticks: list[tuple[int, int]] = []
+    rt = RefundRoundtable(ScriptedModelClient({}), _Voices(),
+                          pace=lambda i, total: ticks.append((i, total)))
+
+    _preflight(rt, case)
+
+    assert ticks == [(i, 5) for i in range(1, 6)]
+
+
+def test_pace_fires_after_the_speech_reached_the_room(
+        case: tuple[dict, dict, dict]) -> None:
+    """「每一岗的发言**进房间之后**」—— 反过来的症状是房间里先停一拍再出现那句话，
+    而人看到的是一个卡住的机器人，不是一个在思考的同事。"""
+    voices = _Voices()
+    seen: list[int] = []
+    rt = RefundRoundtable(ScriptedModelClient({}), voices,
+                          pace=lambda i, _total: seen.append(len(voices.said)))
+
+    _preflight(rt, case)
+
+    assert seen == [1, 2, 3, 4, 5], "第 i 次停顿时，房间里应该已经有 i 句话"
+
+
+def test_pace_failure_does_not_stop_the_round(case: tuple[dict, dict, dict]) -> None:
+    """`pace` 是观感不是主路：抛了只记 WARNING，五岗照说。"""
+    def _boom(index: int, total: int) -> None:
+        raise RuntimeError("注入方的定时器炸了")
+
+    voices = _Voices()
+    reports = _preflight(RefundRoundtable(ScriptedModelClient({}), voices, pace=_boom), case)
+
+    assert [r.agent_id for r in reports] == list(TEAM_ORDER)
+    assert [a for a, _ in voices.said] == list(TEAM_ORDER)
+
+
+def test_pace_on_execute_counts_only_the_speaking_stage(
+        case: tuple[dict, dict, dict]) -> None:
+    """放行后只有财务岗发言，所以 total 是 1 而不是 5 —— 注入方按它算进度条。"""
+    from maos.tests.test_ingress_router import RESULT_SETTLED
+
+    payload, _checked, _ledger = case
+    ticks: list[tuple[int, int]] = []
+    RefundRoundtable(ScriptedModelClient({}), _Voices(),
+                     pace=lambda i, total: ticks.append((i, total))).on_execute(
+        payload=payload, result=RESULT_SETTLED, operator="@boss:maos.local")
+
+    assert ticks == [(1, 1)]
+
+
+# --------------------------------------------------------------------------
+# @岗位点名问答（契约 §4）
+# --------------------------------------------------------------------------
+def test_answer_without_model_returns_the_stage_duty() -> None:
+    """没模型不返回空串：房间里的空消息比不回更难查。"""
+    rt = RefundRoundtable(ScriptedModelClient({}), _Voices())
+
+    for agent_id in TEAM_ORDER:
+        text = rt.answer(agent_id, "你是干什么的")
+        duty = rt._speakers[agent_id].identity.duty
+        assert text.strip() and duty in text
+        assert TITLES[agent_id] in text
+
+
+def test_answer_on_an_unknown_agent_id_raises_keyerror() -> None:
+    """怎么跟提问的人说，由调用方决定 —— 在这里编一句「查无此人」，
+    router 就没法把它和真的回答区分开。"""
+    rt = RefundRoundtable(ScriptedModelClient({}), _Voices())
+
+    with pytest.raises(KeyError):
+        rt.answer("refund-nobody", "你是谁")
+
+
+def test_answer_uses_the_stage_own_identity_and_carries_the_question() -> None:
+    model = _EchoModel()
+    rt = RefundRoundtable(model, _Voices())
+
+    out = rt.answer("refund-finance", "你是干什么的", facts="核算预演 6800.00")
+
+    assert len(model.calls) == 1
+    call = model.calls[0]
+    assert TITLES["refund-finance"] in call["system"], "借的是这一岗自己的 identity"
+    assert rt._speakers["refund-finance"].identity.duty in call["system"]
+    assert "你是干什么的" in call["user"]
+    assert "核算预演 6800.00" in call["user"]
+    assert out.strip()
+
+
+def test_answer_falls_back_to_duty_when_the_model_breaks() -> None:
+    rt = RefundRoundtable(_BrokenModel(), _Voices())
+    out = rt.answer("refund-risk", "这一单风险高不高")
+
+    assert rt._speakers["refund-risk"].identity.duty in out
+
+
+def test_answer_falls_back_to_duty_on_an_empty_model_reply() -> None:
+    """空回答不抛异常，照发就是在房间里 @ 完某一岗之后出现一条空消息。"""
+    rt = RefundRoundtable(_MuteModel(), _Voices())
+    out = rt.answer("refund-evidence", "缺哪几份材料")
+
+    assert rt._speakers["refund-evidence"].identity.duty in out
+
+
+# --------------------------------------------------------------------------
+# 合议收口（契约 §2 的调用侧）
+# --------------------------------------------------------------------------
+def test_verdict_of_reads_case_id_from_checked(case: tuple[dict, dict, dict]) -> None:
+    _payload, checked, _ledger = case
+    rt = RefundRoundtable(ScriptedModelClient({}), _Voices())
+    reports = _preflight(rt, case)
+
+    verdict = rt.verdict_of(reports, checked)
+
+    assert verdict.case_id == checked["case_id"]
+    assert verdict.recommend in ("approve", "reject", "need_more", "escalate")
+    assert sorted(verdict.seats) == sorted(TEAM_ORDER)
+
+
+def test_verdict_of_survives_a_missing_checked() -> None:
+    """收口卡取不到 case_id 就给空串，不抛 —— 房间是旁路。"""
+    rt = RefundRoundtable(ScriptedModelClient({}), _Voices())
+
+    assert rt.verdict_of([], None).case_id == ""
+    assert rt.verdict_of([]).recommend == "need_more"
+
+
+def test_on_preflight_return_shape_is_unchanged(case: tuple[dict, dict, dict]) -> None:
+    """收口卡是**另取一次**，不塞进 reports。
+
+    `on_preflight` 的返回形状写在跨轨契约里、有三个消费方：往里加第六个元素，
+    所有按 `TEAM_ORDER` 遍历的地方都会多出一个不存在的岗位。
+    """
+    reports = _preflight(RefundRoundtable(ScriptedModelClient({}), _Voices()), case)
+
+    assert len(reports) == len(TEAM_ORDER)
+    assert all(isinstance(r, StageReport) for r in reports)
+    assert [r.agent_id for r in reports] == list(TEAM_ORDER)
+
+
+# --------------------------------------------------------------------------
 # 名册
 # --------------------------------------------------------------------------
 def test_roster_lists_five_stages_and_marks_unloaded_skills(
@@ -308,8 +464,20 @@ def test_roundtable_package_does_not_import_hiclaw() -> None:
     它能在没有任何服务在跑的情况下被测。
     """
     sources = sorted(ROUNDTABLE_DIR.glob("*.py"))
-    assert len(sources) == 4, f"意料之外的文件：{[p.name for p in sources]}"
+    assert len(sources) == 5, f"意料之外的文件：{[p.name for p in sources]}"
     for path in sources:
         text = path.read_text(encoding="utf-8")
         for banned in ("hiclaw", "ap_room", "matrix_bus", "import nio"):
+            assert banned not in text, f"{path.name} 里出现了 {banned}"
+
+
+def test_roundtable_package_never_sleeps() -> None:
+    """节奏由注入方决定（契约 §3）：本包不许 import `time`、不许自己 sleep。
+
+    自己 sleep 的代价不是慢一点 —— 是 `maos/tests` 与冒烟脚本跟着变慢，
+    而它们跑得快正是这个包能被反复跑的原因。
+    """
+    for path in sorted(ROUNDTABLE_DIR.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for banned in ("import time", "sleep("):
             assert banned not in text, f"{path.name} 里出现了 {banned}"

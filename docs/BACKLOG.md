@@ -1705,3 +1705,11 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-03 | P9 | `docs/DECISIONS.md` 里 2026-09-03 那批 ingress 在制品的决策行（申请表入口、闲聊回话器、`room_ingress` 常驻、nio 回调死锁）挂在 `## merge-integrate-p8-t47-t53（主干并入整合轮，2026-09-01）` 这个标题下 —— 标题的日期与轮次都对不上那批内容，它们是主仓在制品，不是那次整合的产物 | 按标题找 ingress 那批决策会找不到；后来人读到 09-01 的标题下有 09-03 的行，会以为记账时间线乱了 | 下次动 `docs/DECISIONS.md` 结构时另起一节安置；本轮属铁律 4 范围外，不当场改 |
 | 2026-09-03 | P9 | 两个新 artifact kind（`refund_evidence_report`、`refund_risk_report`）按契约 §1.1 各写在自己的 Agent 文件里，没有进 `maos/agents/refund/_base.py::ALL_REFUND_KINDS` —— T85 / T86 两轨各自记过一条，整合后它们仍然散着 | `ALL_REFUND_KINDS` 不再是本域 kind 的全集，按它做遍历的地方会漏掉两个新 kind（目前没有这样的消费方，所以还没有症状） | 下一次动退款域 Agent 时收拢进 `_base.py`；收拢时两轨的 DECISIONS 各有一行说明为什么当初分开放 |
 | 2026-09-03 | P9 | 演示表 `scenarios/custom/refund-requests-team.csv` 里 `ORD-2026-0006` 占两行（剧情③大额 + 剧情④重复退款），走老链路 `scripts/run_requests.py` 会把同一单批准两次、合计金额把 88000 算两遍 | 单看老链路的汇总行会以为演示数据造错了；实际是有意让「同一单被重复申请」这件事在没有风控岗时看起来完全正常，有了风控岗才亮信号 —— 但这层意图只写在 T89 的 DECISIONS 里，汇总输出本身不解释 | 真房间演示时口头点明；若将来要在 `run_requests` 的汇总里提示重复订单号，那是另一轨的事（`run_requests.py` 本轮只读面） |
+
+## task-T91（房间收口面，2026-09-03）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-03 | P9 | 契约 §2.3「模型把 `Verdict` 说成人话」本轨**没做**：收口卡是纯渲染，逐字复述 `decide()` 给的 `headline` / `reasons` / `blockers` | 房间里那张卡读起来是结构化的，不是人话。四种 recommend 的措辞完全由 §2.2 的逐字模板决定，演示时观感偏「系统输出」而非「主席发言」 | 派单 §2 的四件事没列它，测试要求里也没有，故不当场做。要做的话须先解决 R8：本轨测试里一次都不许无参调 `select_model_client()` / `ChatResponder()`，模型必须显式注入。归真房间实跑（T93）之后按观感定 |
+| 2026-09-03 | P9 | `mention()` 只按契约 §5.1 的逐字判据（`@` 开头 + 含 `:`）判合法，`@a<b&c:x.org` 这种含非法字符的 mxid 仍会拼出 `matrix.to` 链接 | 转义后不会破 HTML（`&lt;` / `&amp;`），但在 Element 里是一个点不开的蓝字 —— 正是契约那句话想避开的形态。真房间里 mxid 由 Synapse 发，出现非法字符的概率极低 | 判据要不要加严（比如按 Matrix 的 localpart 字符集校验）是契约方（`review/verdict-contracts.md` §5.1）的事，不是本轨能自己拍板的。下次动那份契约时一并定 |
+| 2026-09-03 | P9 | 预告与收口卡都走主通道 `channel.send`，与圆桌钩子在**同一个 executor 线程**上 | `MAOS_TEAM_PACE_MS` 设大了会把那个线程占得更久（五岗 = 五次 sleep）。缺省 0 时行为与本轮之前逐字一致，所以今天没有症状 | 派单已写明「把钩子挪到第二个 executor 本轮谁都不做」，BACKLOG 原有那条记的是同一件事。挪线程时把 `pace` 的总耗时（`5 × MAOS_TEAM_PACE_MS`）一起纳入考量 |

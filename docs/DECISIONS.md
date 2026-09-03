@@ -1630,3 +1630,15 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-03 | P9 | `multi_order_same_account` 在客户标识解不出时该报几 | 解得出报 `len(customer_orders)`（照契约字面），解不出报 `1`（视为只有本单） | 契约把它定义成「`customer_orders` 条数」，解不出客户标识时调用方根本没法给出这个列表，报 0 会读成「这个客户一单都没有」，比报「只看得见本单」更误导 |
 | 2026-09-03 | P9 | `amount_ratio` 要不要 round | 不 round，直接给 `amount_claimed / amount_paid` 的原始结果；只在 `reasons` 的人话里按 `:.2f` 排版 | 浮点除法本身是确定性的，round 只是把信息抹掉一点、并不会让确定性更强。而阈值判定（`amount_over_paid`）走的是原始比较，出参与判据用同一个数才对得上账 |
 | 2026-09-03 | P9 | 新 artifact kind 放哪 | `KIND_RISK_REPORT = "refund_risk_report"` 写在 `maos/agents/refund/risk_agent.py` 自己文件里，**不进** `_base.ALL_REFUND_KINDS`（契约 §1.1） | `_base.py` 是本域既有 Agent 共享的文件，本轮另一轨也在新增自己的 kind，两轨同改一处必冲突。Gate 对非代码类产物只按 `summary` / `self_check` 判、不查 kind 白名单，所以分开放是安全的；整合轮再收拢 |
+## task-T87（退款圆桌引擎 —— 平台无关的 Speaker / 五岗事实 / 三个钩子）
+
+新建 `maos/roundtable/{__init__,speaker,stages,team}.py` 与两个测试文件；除本文件与 `docs/BACKLOG.md`，
+既有文件一个字未改。下面五条是跨轨契约 `review/room-team-contracts.md` 没有逐字规定、由本轨判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-03 | P9 | 证据核验岗要带 `params` 的规则（`no_reason_days` / `refund_ratio` 之类），而 `router.preflight()` 返回的 `matched_rules` 只有 `AS-001@v1` 这样的 ref 串，参数全丢了 | 在圆桌自己的 `:memory:` 库上 `fixtures.seed_case` + `contrast.policy_view` **重算一遍**，用完即弃；**不改** `preflight` 的返回形状 | 重算走的是与 `preflight` 逐字相同的那两个函数，不是第二套口径 —— 分叉的症状会是「预检说命中 3 条、证据岗说命中 2 条」，而两边各自都自洽。改 `preflight` 的返回则要动 `maos/ingress/router.py`：那是 T88 的文件，且跨轨契约 §1.4 明写「不要求 T88 改」。代价（同一单灌两遍库）记进 `docs/BACKLOG.md` |
+| 2026-09-03 | P9 | 财务执行岗放行前要给一个金额。可以自己按 `refund_ratio` 算，也可以真跑一遍三个 skill | 走**与 DAG 逐字相同**的 `refund.intake` → `policy.match` → `finance.settle`，只把库换成 `:memory:` 副本；且 `checked["decision"] == "reject"` 时**不预演** | 另写一套算法的症状是「群里预演说 6800、真跑退了 5390」，两条路各自都不报错。reject 不预演是实测逼出来的：同一张单子（`ORD-2026-0001` + `no_reason_return`，第 63 天 > 30 天窗口）走这三步照样算出 `amount_approved="6800.00"`，因为 `policy.match` 是「AS- 前缀命中即 approve」，窗口判定在 `contrast.evaluate_eligibility` 里、不在这三步中；而 `custom_case.run_payload` 真跑退的是 `"0.00"`。不看 `checked` 就预演，房间里会报一个真跑永远拿不到的金额。`test_roundtable_stages.py` 两条测试分别钉住「预演金额 == 真跑金额」与「reject 不预演」 |
+| 2026-09-03 | P9 | 没有真模型时圆桌该怎么办。`hiclaw/ap_room.py` 的既有姿态是 `EXIT_NO_MODEL = 5` 直接退出 | **不 EXIT、不抛、不发 `{}`**，原样发规则代码算出来的事实卡，`spoken_by_model=False` 并记 WARNING；`ScriptedModelClient` 视作没模型 | 与那份刻意不同，因为身份不同：AP 那条是命令行入口，跑之前就该把模型配好，配不上给一个退出码是对的；圆桌是常驻房间的旁路观察，房间里的人起了一单就该有回音。沉默和一行 `{}` 在群里与「机器人挂了」无法分辨（口径同 `maos/ingress/chat.py` 模块抬头）。`ScriptedModelClient` 未命中脚本正是返回字面量 `{}`，所以它必须归到「没模型」那一侧，不能只判 `None` |
+| 2026-09-03 | P9 | 事实卡要把 `quality_defect` / `approve` / `settled` 说成中文，而这三张映射表已经在 `scripts/run_requests.py` 里 | 经 `maos/ingress/router.py::_load_run_requests()` 取 `REASONS` / `DECISION_CN` / `STATUS_CN`，**不另抄一份** | 另抄的症状是「CSV 里写『坏了』能跑、房间里圆桌说不出这个词」，且两边都不报错。那份映射被 `test_request_sheet.py` 钉着，是全仓唯一口径；`_load_run_requests()` 自带 `sys.modules` 缓存，重复取不重复加载 |
+| 2026-09-03 | P9 | 三个钩子的签名里有 `requested_by` / `operator`（发起人与放行人的 mxid），要不要写进事实卡 | **不进 facts，只进日志**（`log.info`）；`facts_*` 函数压根不收这两个参数 | 发起人是谁不影响任何一条裁定，写进事实卡只会给 R1 的数字白名单添一串与本单无关的字符（mxid 里的数字会被当成「事实卡里的数字」参与比对），而模型复述时把它念出来又毫无价值。R5 也更干净：`roster()` 与事实卡里一律没有账号信息，只有日志里有 |

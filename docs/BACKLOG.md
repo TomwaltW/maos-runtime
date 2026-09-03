@@ -860,7 +860,6 @@ T 轮真房间取证（基线 `27c9e18`）。照 `docs/matrix-room-runbook.md` �
 | 2026-08-29 | P4 | **`transcript.md` 的生成器没有落进仓库**。它是从 client-server API 拉房间历史直接落盘的脚本，本轮跑在 scratchpad 里；`scripts/` 不在本轨可改面内 | 下一个人想重新生成逐字副本，得照 `transcript.md` 抬头那条 API 命令自己重写一遍脚本。出处命令是写全了的，但「照着重写」比「跑一个脚本」更容易走样 | 归 `scripts/` 持有轨：把它收成 `scripts/gen_room_transcript.py`，保留内置的脱敏自检（扫到 token 真值就拒绝落盘） |
 | 2026-08-29 | P7 | **`evidence/INDEX.json` 的 `aux_bundles` 对 `evidence/room` 记的是 `file_count: 2`，实际已是 7**（5 张 PNG + 2 份 md）。本轨跑 `make_evidence.py` 时它被正确重算过（且给 PNG 标了 `secret_scan: "无法核验（图像，密钥是像素不是字节）"`，口径很好），但 `INDEX.json` 不在本轨可改面内，按派单 §6 判据「`git status` 只应出现 §4 表里的文件」**已还原** | 索引与目录实际内容对不上，直到下一次有人跑 `make_evidence.py`。自愈成本为零（整合轮必跑），但在那之前照 `INDEX.json` 清点房间证据会少数 5 张图 | 整合轮重跑 `make_evidence.py` 时自动消失，**不需要专门处理**。记在这里只是为了让下一个人看到 `file_count: 2` 时不去查「图是不是没提交」 |
 
-
 ### 已处理（2026-08-31，基线 `926aa7b`）
 
 上表第 1 条（空括号虚警）与第 6 条（退出时 asyncio 报错）**已修**，连同 runbook 抬头
@@ -935,7 +934,6 @@ T5 轨把 `docs/ppt-outline.md` 渲染成 `artifacts/` 下的演示稿（HTML �
 `CONTRIBUTING.md`、`SECURITY.md`、`.github/**`（新建）、
 `docs/submission-checklist.md` 的两处可勾项，外加两份账本。
 **一行 `maos/**` 源码都没改。** 下面都是白名单外发现的，按铁律 4 记账不当场改。基线 `4cfef38`。
-
 
 > ✅ **2026-08-30 注记（整合轮 13 回填）**：本节里「仓库默认分支是 `main`」那一条**已转绿** ——
 > 默认分支已改成 `goai-restructure`，`git ls-remote --symref origin HEAD` 可自证。
@@ -1042,7 +1040,6 @@ T7–T14 八轨并入 + 活数字回填 + 证据束全量重跑。基线 `4cfef3
 | 2026-08-30 | P7 | **`a9d0d93` 的标题写着 `merge:`，但它不是 merge 提交**：修 t10 归属错位时那次 `git commit --amend` 没有生效（原因未查清，同一批里 t9 的 `8450d97` 与 t11 的 `a5b33ea` 都 amend 成功了），于是变成挂在真 merge `4c6fc17` 之上的单父普通提交，标题却原样保留 | `git log --oneline` 上会看到**两条一模一样的 `merge: t10-pgstore-polardb`**，读历史的人会以为 t10 被并了两次。机器判据：`git log -1 --format=%p a9d0d93` 只有一个父，`4c6fc17` 才是两个父 | **不修，记账即可**。修它要 rebase，而 `evidence/` 42 份出处头钉死 `3d504b1`（整合轮 11 活数字回填提交），重写历史会让这些 sha 全部指向不存在的提交 —— A-2 那条「出处头必须是干净且真实存在的 sha」当场失效。代价对比：一个误导的标题 vs 整束证据的可追溯性。下一轮若要清理，只能在**证据束重跑之前**做 |
 | 2026-08-30 | P7 | **`review/DISPATCH-TEMPLATE.md` 的改动被卷进了 `a9d0d93`**：它本该是一个独立的编排侧提交（给 §1 补「环境变量自检判据 = 非空**且不含 `<` 占位符**」，堵 T14 踩的那个假通过信号），却因为并轨期间它一直躺在主干工作区未提交，在 merge 状态下 `git commit` 带上了整个索引 | 内容完好、判据实测过四种情形（未设 / 占位符原文 / 真串 / 只替换一半），只是从提交历史上看不出这条改动的存在 —— 按标题找它会找不到 | **不单独修**（同上，要 rebase）。下次并轨前先把主干工作区清空：并轨期间主干**不该有**任何未提交改动，否则它会随机粘到某个 merge 提交上 |
 
-
 ## task-T15
 
 本轨（工厂放行 PG 后端）只持有 `maos/store/__init__.py`、`maos/tests/test_store_port.py`
@@ -1103,7 +1100,6 @@ T7–T14 八轨并入 + 活数字回填 + 证据束全量重跑。基线 `4cfef3
 
 裸 clone 可用性（默认分支卡点 + README 活数字）。基线 `f15e5dd`。
 三条都是**单轨做不了、必须人类动手**的，且前两条都卡在提交之前。
-
 
 > ✅ **2026-08-30 注记（整合轮 13 回填）**：本节里「仓库默认分支是 `main`」那一条**已转绿** ——
 > 默认分支已改成 `goai-restructure`，`git ls-remote --symref origin HEAD` 可自证。
@@ -1706,7 +1702,6 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-03 | P9 | 两个新 artifact kind（`refund_evidence_report`、`refund_risk_report`）按契约 §1.1 各写在自己的 Agent 文件里，没有进 `maos/agents/refund/_base.py::ALL_REFUND_KINDS` —— T85 / T86 两轨各自记过一条，整合后它们仍然散着 | `ALL_REFUND_KINDS` 不再是本域 kind 的全集，按它做遍历的地方会漏掉两个新 kind（目前没有这样的消费方，所以还没有症状） | 下一次动退款域 Agent 时收拢进 `_base.py`；收拢时两轨的 DECISIONS 各有一行说明为什么当初分开放 |
 | 2026-09-03 | P9 | 演示表 `scenarios/custom/refund-requests-team.csv` 里 `ORD-2026-0006` 占两行（剧情③大额 + 剧情④重复退款），走老链路 `scripts/run_requests.py` 会把同一单批准两次、合计金额把 88000 算两遍 | 单看老链路的汇总行会以为演示数据造错了；实际是有意让「同一单被重复申请」这件事在没有风控岗时看起来完全正常，有了风控岗才亮信号 —— 但这层意图只写在 T89 的 DECISIONS 里，汇总输出本身不解释 | 真房间演示时口头点明；若将来要在 `run_requests` 的汇总里提示重复订单号，那是另一轨的事（`run_requests.py` 本轮只读面） |
 
-
 ## task-T90（圆桌合议收口引擎，2026-09-03）
 
 | 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
@@ -1714,3 +1709,11 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-03 | P9 | `verdict.py` 的 `_NEUTRAL` 禁止词改写是**兜底**，不是根治：真正该做的是让 skill 出参本身不宣布终态（`refund.risk_screen` 的 reasons 里目前就有「已有一笔退款到账（settled）」这类措辞，只是恰好不含那五个连续词） | 现在的分工是「skill 可以说观察到的外部状态，收口卡负责改写」。哪天有人直接把 `risk.reasons` 贴进房间（不经 `decide()`），铁律 8 就漏了一个口子，且不会有任何测试红 | 下一次动退款域 skill 的出参文案时，把「外部状态一律写成观察句式」收进 skill 侧；那时 `_NEUTRAL` 可降级为纯守卫（命中即 log.error 而不改写） |
 | 2026-09-03 | P9 | `on_sheet()` 返回的 reports 喂不进 `decide()`：`facts_sheet_*` 的 data 键（`rows`/`approve`/`reject` 计数）与逐单五岗的键完全不同，`decide()` 会一路走到第 6 行兜底给 `need_more` | 一张表没有收口卡。现在的形态是 `/refund` 拖 CSV 之后房间里五岗各汇总一句，然后没有主席发言 —— 与逐单那条路不一致，但不报错 | 本轮不做（契约 §0.2 只把收口卡定在 `on_preflight` 上）。要做的话是另一张卡（「这批 N 单里 M 单可批、K 单缺件」），形状要先进跨轨契约，归下一轮圆桌面 |
 | 2026-09-03 | P9 | 现有演示语料让 `decide()` **演不出 `approve` 与 `escalate`**：五单的证据核验全是 `missing`（成因见 `docs/BACKLOG.md ## task-T89` 第二条：CSV 那条路喂不进随案证据），真值表第 3 行先于第 4、5 行命中，实测四单 `need_more` + 一单 `reject` | 真值表六行里有四行在演示中走不到，只有单元测试覆盖。答辩现场若只跑冒烟脚本，看不到「建议批复」与「建议升级审批」这两张卡 | 归 T93（演示与证据轨）：按 T89 那条建议的方案②给冒烟脚本加 `--evidence <目录>`，或在演示表里补一单证据齐全的。**不许**为了让演示好看去调真值表顺序或放宽第 3 行 |
+
+## task-T91（房间收口面，2026-09-03）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-03 | P9 | 契约 §2.3「模型把 `Verdict` 说成人话」本轨**没做**：收口卡是纯渲染，逐字复述 `decide()` 给的 `headline` / `reasons` / `blockers` | 房间里那张卡读起来是结构化的，不是人话。四种 recommend 的措辞完全由 §2.2 的逐字模板决定，演示时观感偏「系统输出」而非「主席发言」 | 派单 §2 的四件事没列它，测试要求里也没有，故不当场做。要做的话须先解决 R8：本轨测试里一次都不许无参调 `select_model_client()` / `ChatResponder()`，模型必须显式注入。归真房间实跑（T93）之后按观感定 |
+| 2026-09-03 | P9 | `mention()` 只按契约 §5.1 的逐字判据（`@` 开头 + 含 `:`）判合法，`@a<b&c:x.org` 这种含非法字符的 mxid 仍会拼出 `matrix.to` 链接 | 转义后不会破 HTML（`&lt;` / `&amp;`），但在 Element 里是一个点不开的蓝字 —— 正是契约那句话想避开的形态。真房间里 mxid 由 Synapse 发，出现非法字符的概率极低 | 判据要不要加严（比如按 Matrix 的 localpart 字符集校验）是契约方（`review/verdict-contracts.md` §5.1）的事，不是本轨能自己拍板的。下次动那份契约时一并定 |
+| 2026-09-03 | P9 | 预告与收口卡都走主通道 `channel.send`，与圆桌钩子在**同一个 executor 线程**上 | `MAOS_TEAM_PACE_MS` 设大了会把那个线程占得更久（五岗 = 五次 sleep）。缺省 0 时行为与本轮之前逐字一致，所以今天没有症状 | 派单已写明「把钩子挪到第二个 executor 本轮谁都不做」，BACKLOG 原有那条记的是同一件事。挪线程时把 `pace` 的总耗时（`5 × MAOS_TEAM_PACE_MS`）一起纳入考量 |

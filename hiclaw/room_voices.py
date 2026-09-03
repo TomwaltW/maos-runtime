@@ -82,6 +82,99 @@ def _redact(text: str, secrets: frozenset[str]) -> str:
     return text
 
 
+# --------------------------------------------------------------------------
+# 房间侧渲染 —— @点名与主席收口卡（T91，跨轨契约 §5）
+# --------------------------------------------------------------------------
+# 两个纯函数，一条通道都不碰：谁来发、发不发得出去是调用方的事（`room_ingress`）。
+# 放在本模块是因为**转义**是本模块的职责 —— `mention` 要往 href 里塞一个 mxid、
+# 卡片要把五岗的措辞塞进 `<blockquote>`，两处都是「外部字符串进 HTML」的入口，
+# 而本模块抬头点名的坑正是这一个。
+#
+# 本模块仍**不 import `maos.roundtable`**：`Verdict` 只按字段读（`getattr` 带缺省），
+# 读到不存在的字段按空兜住、不抛。合议引擎没并进来时房间照样起得来。
+
+#: Matrix 的 permalink 前缀。Element 见到 `<a href>` 指向它就渲染成一个 pill。
+MATRIX_TO = "https://matrix.to/#/"
+
+
+def mention(user_id: str, display: str = "") -> tuple[str, str]:
+    """@ 一个人：``(plain, html)``（契约 §5.1）。
+
+    ``user_id`` 必须以 ``@`` 开头且含 ``:``，否则**退化成纯文本、不拼 URL** ——
+    拼错的 `matrix.to` 链接在 Element 里是一个点不开的蓝字，比纯文本更像 bug，
+    而它不报错。``display`` 缺省显示 mxid 原文：显示名拿不到时报 mxid 也强过
+    凭空造一个名字（房间里读的人靠这一串对是谁）。
+
+    ``display`` 与 ``user_id`` 都过 `html.escape` —— 不是可选项。``user_id``
+    进的是 href **属性**，所以引号也必须转（`escape` 缺省就转）。两头都空返回
+    ``("", "")``，由调用方决定这一行还发不发。
+    """
+    uid = (user_id or "").strip()
+    text = (display or "").strip() or uid
+    if not text:
+        return "", ""
+    if not uid.startswith("@") or ":" not in uid:
+        return text, html.escape(text)
+    return text, f'<a href="{MATRIX_TO}{html.escape(uid)}">{html.escape(text)}</a>'
+
+
+def _card_text(value: Any) -> str:
+    """卡片里的一格文本：``None`` 与非字符串都兜住，两头空白去掉。"""
+    return "" if value is None else str(value).strip()
+
+
+def render_verdict_card(verdict: Any, *, mention_user_id: str = "",
+                        mention_display: str = "") -> tuple[str, str]:
+    """主席收口卡的两份形态 ``(plain, html)``（契约 §5.2）。
+
+    ``verdict`` 是 `maos.roundtable.verdict.Verdict`，这里**只读字段、不 import**：
+    合议引擎是可选件，本函数对它的依赖必须止于「有这几个名字」。
+
+    @ 的是**起单人**（房间里那个真 mxid）。审批人是一个 **role**
+    （`supervisor` / `finance_manager`），不是 mxid —— 去猜它对应哪个账号就是在
+    伪造点名，所以只写成一句「审批角色 supervisor」。起单人 mxid 拿不到就只发
+    卡片、不 @，**不兜一个假 mxid 进 `matrix.to`**。
+
+    正文每一段都过 `html.escape`（`mention()` 返回的那半截 html 除外，它自己
+    已经转义过了）—— 五岗的措辞里带一个 ``<`` 就能把 `formatted_body` 破掉，
+    而 Synapse 不报错，房间里看到的是半张卡。
+    """
+    esc = html.escape
+    headline = _card_text(getattr(verdict, "headline", "")) or "合议结论缺失"
+    reasons = [t for t in (_card_text(x) for x in
+                           (getattr(verdict, "reasons", None) or [])) if t]
+    blockers = [t for t in (_card_text(x) for x in
+                            (getattr(verdict, "blockers", None) or [])) if t]
+    next_command = _card_text(getattr(verdict, "next_command", ""))
+    approver_role = _card_text(getattr(verdict, "approver_role", ""))
+    who_plain, who_html = mention(mention_user_id, mention_display)
+
+    plain = [headline]
+    body = [f"<p><strong>{esc(headline)}</strong></p>"]
+    for label, items in (("依据", reasons), ("拦路条", blockers)):
+        if not items:                                   # 空的整段省掉，不留一个空标题
+            continue
+        plain.append(f"  {label}：")
+        plain.extend(f"    {t}" for t in items)
+        body.append(f"<p>{label}：<br/>"
+                    + "<br/>".join(f"· {esc(t)}" for t in items) + "</p>")
+    if next_command:
+        plain.append(f"  下一步：{next_command}")
+        body.append(f"<p>下一步：<code>{esc(next_command)}</code></p>")
+
+    # 尾行：@ 起单人 + 审批角色。两样都没有就整行省掉 —— 一句光秃秃的「请过目」
+    # 对房间里的人没有任何指向。
+    ask = f"请拍板（审批角色 {approver_role}）" if approver_role else "请过目"
+    if who_plain:
+        plain.append(f"  {who_plain} {ask}")
+        body.append(f"<p>{who_html} {esc(ask)}</p>")
+    elif approver_role:
+        plain.append(f"  {ask}")
+        body.append(f"<p>{esc(ask)}</p>")
+
+    return "\n".join(plain), "<blockquote>" + "".join(body) + "</blockquote>"
+
+
 class Voice(Protocol):
     """一个岗位的嘴（跨轨契约 §1.3）。
 

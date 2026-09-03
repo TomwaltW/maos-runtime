@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import sys
 import types
+from dataclasses import dataclass, field
 
 import pytest
 
 import hiclaw.room_voices as room_voices
-from hiclaw.room_voices import (REDACTED, RoomVoices, env_keys_of, open_voices)
+from hiclaw.room_voices import (MATRIX_TO, REDACTED, RoomVoices, env_keys_of,
+                                 mention, open_voices,
+                                 render_verdict_card)
 
 #: 只在本文件里出现的哨兵。别换成 "secret" 之类的常见词 —— 那种词可能因为别的原因
 #: 出现在输出里，断言就失去了指向性。
@@ -406,3 +409,162 @@ def test_open_voices_returns_the_contract_shape():
     for member in ("agent_id", "title", "user_id", "own_identity", "say"):
         assert hasattr(voice, member), f"Voice 少了 {member}"
     voices.close()
+
+
+# --------------------------------------------------------------------------
+# @点名与主席收口卡（T91，跨轨契约 §5）
+# --------------------------------------------------------------------------
+# 这一段守的是三件在演示当天最容易出事、且出事时不报错的东西：
+#
+# 1. **拼错的 pill 不如纯文本。** `matrix.to` 链接只有在 mxid 合法时才拼；不合法
+#    还硬拼，Element 里就是一个点不开的蓝字 —— 看着像功能坏了，而日志里干干净净。
+# 2. **卡片是外部字符串进 HTML 的入口。** 五岗的措辞（模型写的）与 mxid（房间里
+#    别人给的）都要过 `html.escape`。漏一处，Synapse 照收不报错，房间里是半张卡。
+# 3. **`Verdict` 是别人（T90）的形状。** 这里只按字段读、按缺省兜 —— 合议引擎
+#    没并进来、或者哪天少给一个字段，房间不许因此抛。
+
+
+@dataclass(frozen=True)
+class _FakeVerdict:
+    """`maos.roundtable.verdict.Verdict` 的同形假件（契约 §2 的九个字段）。
+
+    **刻意不 import 真的那个**：`decide()` 在本轨基线里还不存在，而生产代码对它的
+    依赖本来就止于「有这几个名字」。真件并进来之后这个假件仍然有效 —— 它守的是
+    「渲染只读字段」这条边界，不是某一版真件的实现。
+    """
+
+    case_id: str = ""
+    recommend: str = ""
+    headline: str = ""
+    reasons: list = field(default_factory=list)
+    blockers: list = field(default_factory=list)
+    approver_role: str = ""
+    amount_preview: str = ""
+    next_command: str = ""
+    seats: dict = field(default_factory=dict)
+
+
+def test_mention_renders_a_matrix_to_pill():
+    plain, markup = mention(BOT_MXID, "maos-bot")
+    assert plain == "maos-bot"
+    assert markup == f'<a href="{MATRIX_TO}{BOT_MXID}">maos-bot</a>'
+
+    # 不给显示名就报 mxid 原文：拿不到显示名时报这一串，强过凭空造一个名字
+    plain, markup = mention(BOT_MXID)
+    assert plain == BOT_MXID and f'>{BOT_MXID}</a>' in markup
+
+
+@pytest.mark.parametrize("bad", ["boss", "boss:maos.local", "@boss", "", "   "])
+def test_mention_degrades_to_plain_text_for_a_malformed_user_id(bad):
+    """不以 `@` 开头、或不含 `:` -> **不拼 URL**（契约 §5.1）。
+
+    拼错的 `matrix.to` 在 Element 里是一个点不开的蓝字，比纯文本更像 bug，
+    而两边都不报错 —— 所以这条断的是 `MATRIX_TO` 一个字都不许出现。
+    """
+    plain, markup = mention(bad)
+    assert MATRIX_TO not in markup and "<a " not in markup
+    assert plain == bad.strip()
+
+    # 显示名给了、mxid 还是烂的：显示名照出，链接照样不拼
+    plain, markup = mention(bad, "老板")
+    assert plain == "老板" and markup == "老板" and MATRIX_TO not in markup
+
+
+def test_mention_escapes_html_in_both_display_and_user_id():
+    """`display` 与 `user_id` 都过 `html.escape` —— href 是**属性**，引号也得转。"""
+    plain, markup = mention("@a<b&c:x.org", 'x"y<z')
+    assert plain == 'x"y<z'                              # plain 那半截不转义
+    assert "&lt;" in markup and "&amp;" in markup and "&quot;" in markup
+    assert "<b" not in markup.replace("&lt;b", "")       # 原样的 `<b` 一个都没有
+
+
+@pytest.mark.parametrize("verdict,head,wants", [
+    (_FakeVerdict(case_id="RC-1", recommend="approve",
+                  headline="建议批复 · 核准预演 9600.00 · 请 supervisor 拍板",
+                  reasons=["规则审核岗：命中 AS-001@v1 等 3 条，按基线裁定批准"],
+                  approver_role="supervisor", amount_preview="9600.00",
+                  next_command="/approve RC-1"),
+     "建议批复 · 核准预演 9600.00 · 请 supervisor 拍板",
+     ["  依据：", "    规则审核岗：命中 AS-001@v1 等 3 条，按基线裁定批准",
+      "  下一步：/approve RC-1"]),
+    (_FakeVerdict(case_id="RC-2", recommend="reject",
+                  headline="不建议批复 · 超出 7 天无理由退货期",
+                  reasons=["规则审核岗：命中 AS-014@v1，按基线裁定拒绝"],
+                  approver_role="supervisor", next_command="/reject RC-2 <理由>"),
+     "不建议批复 · 超出 7 天无理由退货期", ["  下一步：/reject RC-2 <理由>"]),
+    (_FakeVerdict(case_id="RC-3", recommend="need_more",
+                  headline="需补件后再议 · 证据：缺少 image 类证据",
+                  reasons=["证据核验岗：verdict=missing，缺 image 一份"],
+                  blockers=["证据：缺少 image 类证据"], approver_role="supervisor",
+                  next_command="补齐材料后重发 /refund ORD-3 质量问题"),
+     "需补件后再议 · 证据：缺少 image 类证据",
+     ["  拦路条：", "    证据：缺少 image 类证据"]),
+    (_FakeVerdict(case_id="RC-4", recommend="escalate",
+                  headline="建议升级审批 · 风险 high · 请 finance_manager 复核",
+                  reasons=["风险反欺诈岗：level=high，score=82"],
+                  blockers=["风险：30 天内第 4 次退款申请"],
+                  approver_role="finance_manager", amount_preview="48000.00",
+                  next_command="/approve RC-4"),
+     "建议升级审批 · 风险 high · 请 finance_manager 复核",
+     ["  拦路条：", "    风险：30 天内第 4 次退款申请",
+      "  @boss:maos.local 请拍板（审批角色 finance_manager）"]),
+])
+def test_verdict_card_layout_for_each_recommend(verdict, head, wants):
+    """四种 recommend 各一张卡。**首行逐字是 `headline`** —— 房间里的人只读第一行。
+
+    `headline` 的措辞由 `decide()` 定（契约 §2.2 的逐字模板），这里不重排、不改写：
+    卡片重写一遍结论，就是给房间里造第二份口径。
+    """
+    plain, markup = render_verdict_card(verdict, mention_user_id="@boss:maos.local")
+    lines = plain.split("\n")
+    assert lines[0] == head
+    for want in wants:
+        assert want in lines, f"{want!r} 不在卡片里：{lines}"
+    # 拦路条与 recommend 无关，命中即列（契约 §2.1）—— 没有就整段省掉，不留空标题
+    assert ("  拦路条：" in lines) is bool(verdict.blockers)
+    assert markup.startswith("<blockquote>") and markup.endswith("</blockquote>")
+
+
+def test_verdict_card_escapes_every_line_but_keeps_the_mention_pill():
+    """正文每一段过 `html.escape`，`mention()` 那半截除外（它自己已经转过）。"""
+    verdict = _FakeVerdict(headline="建议批复 · <b>9600</b> & 请拍板",
+                           reasons=["规则审核岗：a <i>b</i> & c"],
+                           blockers=["证据：<script>alert(1)</script>"],
+                           approver_role="supervisor", next_command="/approve A&B")
+    plain, markup = render_verdict_card(verdict, mention_user_id=BOT_MXID,
+                                        mention_display="maos-bot")
+    assert "<b>9600</b>" in plain                        # 纯文本那份原样，不转义
+    for bad in ("<b>", "<i>", "<script>"):
+        assert bad not in markup
+    assert "&lt;script&gt;" in markup and "/approve A&amp;B" in markup
+    assert f'<a href="{MATRIX_TO}{BOT_MXID}">maos-bot</a>' in markup   # pill 没被二次转义
+
+
+def test_verdict_card_without_a_sender_mxid_sends_no_mention():
+    """起单人 mxid 拿不到就**只发卡片、不 @** —— 不兜一个假 mxid 进 `matrix.to`。
+
+    审批人是一个 role（`supervisor`），不是 mxid：去猜它对应哪个账号就是伪造点名，
+    所以那一行只写「审批角色 supervisor」。
+    """
+    verdict = _FakeVerdict(headline="建议批复", approver_role="supervisor",
+                           next_command="/approve RC-9")
+    plain, markup = render_verdict_card(verdict, mention_user_id="")
+    assert MATRIX_TO not in markup and "@" not in plain
+    assert plain.endswith("  请拍板（审批角色 supervisor）")
+
+
+def test_verdict_card_tolerates_a_verdict_missing_every_field():
+    """读到不存在的字段按缺省兜住、**不抛**（契约 §1 末条的同一条道理）。
+
+    合议引擎哪天少给一个字段，症状该是「卡片少一行」，不该是「`/refund` 没回帖」。
+    """
+    plain, markup = render_verdict_card(object())
+    assert plain == "合议结论缺失"
+    assert markup == "<blockquote><p><strong>合议结论缺失</strong></p></blockquote>"
+
+    # None / 非字符串也兜住：`reasons` 里混进一个 None 不该把整张卡带走
+    messy = _FakeVerdict(headline="", reasons=["规则审核岗：批准", None, "  ", 42],
+                         next_command=None, approver_role=None)
+    plain, _ = render_verdict_card(messy)
+    assert plain.split("\n") == ["合议结论缺失", "  依据：",
+                                  "    规则审核岗：批准", "    42"]

@@ -1646,3 +1646,15 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-03 | P8 | `router._render_evidence` 用 `size // 1024` 报体积，小于 1 KB 的附件显示「0 KB」 | 演示用的测试图都很小，回帖里一排 0 KB 看起来像没收到内容 | 改成 `<1 KB` 或按字节报。一行文案，归附件面 |
 | 2026-09-03 | P8 | `_NioChannel.listen` 的回调只给 `(sender, body)` / `(sender, Attachment)`，不带 Matrix 的 `event_id`；`hiclaw/room_ingress.py` 只能用进程内计数器当 `msg_id`，幂等键在进程重启后不成立 | 今天无害（幂等表本来就在 `:memory:`），但将来把幂等落库时，房间消息是唯一一个没有平台原生 id 的渠道 | 给 `listen` 的回调加一个 keyword-only 的 `event_id`（或让 Attachment.msg_ref 带上），保持现存 `lambda sender, body` 调用方不变 |
 | 2026-09-03 | P8 | 申请表回帖在 Matrix 侧已按 20 K 字符拆条，但飞书 / 企微 adapter 没有拆：企微 `message/send` 文本上限 2 KB（平台截断），飞书更大但也有界 | 一张 50 行的表在企微群里会被截在半句上，且平台不报错 | 给 `FeishuAdapter.send` / `WeComAdapter.send` 各加按平台上限拆条，口径同 `hiclaw/room_ingress.py::split_message`；归 IM 渠道面 |
+
+## task-T87（退款圆桌引擎 —— 平台无关的 Speaker / 五岗事实 / 三个钩子）
+
+本轨白名单只有 `maos/roundtable/**` 与两个新测试文件，下面几条都是过程中撞见、**没当场改**的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-03 | P9 | **圆桌发言的 token 没有成本行**：`roundtable/speaker.py::Speaker.speak` 直接调 `model.complete(...)`，不经 `BaseAgent.ask`，因此不落 `model_usage`、也不登记 call_site | 五岗 × 每单一次真模型调用完全不进成本账。`scripts/verify.py` 的成本项与 `docs/` 里任何「本次运行花了多少」的读数，都会**少算**圆桌这一块，而且不报错 —— 读起来像是没花钱。同一取舍已经在 `hiclaw/ap_room.py::Speaker` 与 `maos/ingress/chat.py::ChatResponder` 上各有一份，本轨是第三处 | 三处一起收：给 `model_usage` 加一种不挂 plan/task 的归属（例如 `source="roundtable"`），或让 `BaseAgent.ask` 支持无 plan 调用。别只改一处 —— 只改一处会让三条路的成本口径分叉，而分叉不报错 |
+| 2026-09-03 | P9 | **`roundtable/team.py::FALLBACK_IDENTITIES` 是过渡件**：`refund_evidence` / `refund_risk` 两个岗位的最小 `AgentIdentity` 写死在这里，因为它们的真 Agent 在 T85 / T86 上新建、本轨基线里 `AGENT_POOL` 没有 | 两轨并进来之后 `identity_of()` 会自动改用真身份（池子优先），这两条即成死代码。留着不报错，但房间里的自我介绍来自哪份声明变得要读两个文件才知道 | T85 / T86 并进主干、`AGENT_POOL` 里有 `refund_evidence` / `refund_risk` 之后，删掉 `FALLBACK_IDENTITIES` 与 `identity_of` 里的退路，同时删掉 `test_roundtable_team.py` 对它的断言。整合轮收，别在本轮动 |
+| 2026-09-03 | P9 | **`hiclaw/ap_room.py` 与本模块有一份重复的圆桌实现**：`SPEECH_LIMIT` / `SYSTEM_TMPL` / `Speaker` / `render_speech` / `run_roundtable.say` 五处与 `maos/roundtable/` 同形 | 改了一边不改另一边就分叉。今天分叉是**刻意**的（AP 域四岗、没模型即 EXIT；退款域五岗、没模型退事实卡），但「刻意的差异」和「忘了同步」在代码上长得一模一样 | 整合轮之后另开一个小 commit：让 `ap_room.py` 的 `Speaker` 改用 `maos/roundtable/speaker.py`（`title` / `room` / 退化姿态都已参数化，AP 那边只要保留自己的 `EXIT_NO_MODEL` 分支即可），`TITLES` 各留各的。`hiclaw/ap_room.py` 是本轮六轨的共同只读面，**本轮一个字都不许动** |
+| 2026-09-03 | P9 | **同一次 `/refund` 会灌两遍 `:memory:` 库**：`router.preflight()` 内部 `seed_case` 一次算出 `checked`，证据岗为了拿带 `params` 的规则又 `seed_case` + `contrast.policy_view` 一次（`roundtable/stages.py::_rules_of`），财务岗预演再灌第三次 | 实测三次合计仍是毫秒级（`run_payload` 整跑才 17 ms），演示规模无感。但它是「同一份事实算了三遍」，将来底账变大或改成真库时，这里是第一个变慢的地方 | 要收就往「`preflight` 返回里带上 `view["rules"]`」的方向收，让三处共用一次灌库。那要改 `maos/ingress/router.py` 的返回形状（T88 的文件、且跨轨契约 §1.4 明写不要求 T88 改），所以本轮走重算。归圆桌整合后的一次性重构 |
+| 2026-09-03 | P9 | **`stages.facts_*` 返回的 `data` 没有形状守卫**：各岗键只写在 docstring 与跨轨契约里，`StageReport.data` 是裸 `dict` | T88 的 `/pending` 要读哪个键全靠约定；哪天某一岗改了键名，读的那头拿到 `None`，房间里显示空白而不报错 | 等 T88 真的读起 `data` 之后，按实际读到的键补一条形状断言（或给五岗各一个 `TypedDict`）。现在补是凭空猜消费方 |

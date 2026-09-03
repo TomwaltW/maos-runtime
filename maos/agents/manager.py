@@ -11,7 +11,7 @@ import json
 import logging
 
 from maos import kb
-from maos.agents.base import AgentIdentity, BaseAgent, TaskContext, AgentOutput
+from maos.agents.base import _ATTRIBUTION, AgentIdentity, BaseAgent, TaskContext, AgentOutput
 from maos.contracts.events import new_id
 from maos.kb import guardrails, retriever
 from maos.model.client import Tier
@@ -46,14 +46,17 @@ class ManagerAgent(BaseAgent):
         """规划前先检索历史知识，命中的结果作为「建议任务」并进 DAG。
 
         `context` 是**可选**的结构化检索上下文（tenant_id / biz_type / channel_id /
-        sku / rule_no / …）。不传就退化成纯规划，prompt 与 1.0 逐字节一致 ——
-        场景 1-6 的 `mgr.plan(GOAL)` 一行不用改，输出也一个字节不变。
+        sku / rule_no / …，外加只用来定归属、进不了检索查询的 plan_id / trace_id）。
+        不传就退化成纯规划，prompt 与 1.0 逐字节一致，规划这一次的用量照旧落空
+        trace_id 并由 `obs/trace.py::unattributed_usage` 逐条点名 —— 归属是**如实
+        记录**，缺了就说缺了，不拿缺省值糊过去。
 
         检索到的东西**只能增加任务**，且不许替代订单事实、不许跳过人工审批：
         三条护栏在 `kb/guardrails.py` 里写成断言，违反抛 GuardrailViolation。
         """
-        docs = self._kb_prefetch(goal, context or {})
-        raw = self.ask(SYSTEM, self._user_message(goal, docs))
+        ctx = context or {}
+        docs = self._kb_prefetch(goal, ctx)
+        raw = self._ask_attributed(SYSTEM, self._user_message(goal, docs), ctx)
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -71,14 +74,46 @@ class ManagerAgent(BaseAgent):
             t.setdefault("risk_level", "L")
         return tasks
 
+    def _ask_attributed(self, system: str, user: str, context: dict) -> str:
+        """带归属调模型 —— 规划期这一次 `ask()` 唯一能拿到 Run id 的地方。
+
+        `BaseAgent.ask()` 的归属取自 `_ATTRIBUTION`，而那个 ContextVar 只由
+        `__init_subclass__` 包在子类的 `run(ctx)` 上（`agents/base.py`）。`plan()`
+        不是 `run()`：它跑在 `create_plan` **之前**，压根没有 `TaskContext` 可包，
+        所以规划这一次调用的用量恒落空 trace_id。调用方**早就**先生成好 id 放进
+        `context` 了（`flows/scenario_6.py`、`flows/contrast.py` 都这么传，两处的
+        用量却仍归属不上）—— 缺的一直只是把它接到 `_ATTRIBUTION` 上这一步。
+
+        `ask()` 与 `plan()` 的签名都一个字节不动：归属走 ContextVar，不走参数。
+        这是 `docs/DECISIONS.md ## task-T29` 定下的口径，本方法只是把同一条线
+        从 `run()` 延到 `plan()`。
+
+        `context` 里没有 id 就**不动**当前绑定：既让不传 context 的调用方逐字节
+        等价，也不会拿空串把外层已绑好的归属抹掉。宁可落空串由
+        `unattributed_usage` 点名，也不编一个 trace_id —— 口径同
+        `core/store.py::record_model_usage` 里那段「不许编 trace_id」。
+        """
+        ids = {k: str(context.get(k) or "") for k in ("trace_id", "plan_id")}
+        if not any(ids.values()):
+            return self.ask(system, user)
+        token = _ATTRIBUTION.set({**ids, "task_id": None})
+        try:
+            return self.ask(system, user)
+        finally:
+            _ATTRIBUTION.reset(token)
+
     # -- 检索前置（Phase 5）------------------------------------------------
     def _kb_prefetch(self, goal: str, context: dict) -> list[dict]:
         """规划前检索。没 store / 没 tenant_id / KB 关掉 -> 空清单，不抛。
 
         走 `kb.retrieve`（白名单已含），由它落 SkillInvoked 与 KbRetrieved 两条事件。
-        这次检索发生在 `create_plan` **之前**，所以事件的 plan_id 是空串 ——
-        与 `flows/scenario_5.py` 里 create_plan 前的 issue.aggregate 同一情形，
-        trace 把它们列进 stray_events 单独点名，不假装它们属于某棵树。
+        这次检索发生在 `create_plan` **之前**：调用方若在规划前先生成好 plan_id
+        并放进 `context`（`ControlPlane.create_plan` 收得下预生成的 id），两条事件
+        就挂在它们真正属于的那棵树上；不给就仍落空串，由 trace 列进 stray_events
+        单独点名，不假装它们属于某棵树。
+
+        `plan_id` / `trace_id` 不是检索维度 —— `_KB_QUERY_FIELDS` 不收它们，
+        它们只用来给事件定归属，进不了检索查询。
         """
         store = getattr(self.skills, "store", None)
         if store is None or not context.get("tenant_id") or not kb.kb_enabled():
@@ -88,7 +123,8 @@ class ManagerAgent(BaseAgent):
         payload["keyword"] = context.get("keyword") or goal
         try:
             res = self.skills.invoke(SKILL_KB, payload, extras={
-                "plan_id": "", "trace_id": str(context.get("trace_id") or ""),
+                "plan_id": str(context.get("plan_id") or ""),
+                "trace_id": str(context.get("trace_id") or ""),
                 "tier": self.identity.model_tier,
             })
         except Exception as exc:                       # noqa: BLE001 —— 检索不阻塞规划
@@ -122,7 +158,8 @@ class ManagerAgent(BaseAgent):
     @staticmethod
     def _user_message(goal: str, docs: list[dict]) -> str:
         """无命中时逐字节等于 1.0 的 prompt —— 「用户请求」这个前缀是
-        ScriptedModelClient 的分派关键字，动了它场景 1-6 全部改判。"""
+        ScriptedModelClient 的分派关键字，动了它，走 ManagerAgent 规划的
+        场景（1 / 2 / 5 / 6 / 7）全部改判。"""
         base = f"用户请求：{goal}"
         if not docs:
             return base

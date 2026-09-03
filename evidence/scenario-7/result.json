@@ -1,15 +1,15 @@
-# generated at 2026-08-28T10:49:06.234863+00:00 from fa57c97def5a20f1b171bfc412a5d6a3e2f82b0b
+# generated at 2026-09-02T01:07:30.182784+00:00 from cfe438475f751bb1a7bfe034daf7b2381314888d
 {
   "scenario": 7,
   "exit_code": 0,
-  "wall_ms": 298,
-  "plan_count": 1,
+  "wall_ms": 392,
+  "plan_count": 2,
   "plans": [
     {
-      "plan_id": "plan_a72a3e5382d7",
+      "plan_id": "plan_6b954ee47d7f",
       "goal": "处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常",
       "state": "FAILED",
-      "trace_id": "trace_4c185eda9291",
+      "trace_id": "trace_a636c8729599",
       "tasks": [
         {
           "task_id": "task-s7-intake",
@@ -41,7 +41,79 @@
         {
           "task_id": "task-s7-payment",
           "role": "refund_payment",
-          "title": "发起退款并观察网关终态",
+          "title": "发起退款并观察网关终态（改派备用渠道）",
+          "state": "FAILED",
+          "attempt": 2,
+          "risk_level": "M",
+          "effect_risk": "H"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 56,
+        "event_count": 49,
+        "event_types": {
+          "PlanTransition": 4,
+          "StateTransition": 23,
+          "SkillInvoked": 10,
+          "ArtifactSeeded": 1,
+          "RefundBizStatusChanged": 3,
+          "ToolInvoked": 6,
+          "Replanned": 1,
+          "CompensationExecuted": 1
+        },
+        "rework_count": 1,
+        "replan_count": 1,
+        "compensation_count": 0,
+        "skill_invocations": 10,
+        "tool_invocations": 6
+      },
+      "business_outcome": {
+        "status": "failed",
+        "basis": "plan_failed",
+        "plan_state": "FAILED",
+        "external_evidence": [],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    },
+    {
+      "plan_id": "plan_443cbbf8c95f",
+      "goal": "处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在",
+      "state": "FAILED",
+      "trace_id": "trace_16ff12ff231d",
+      "tasks": [
+        {
+          "task_id": "task-s7b-intake",
+          "role": "refund_intake",
+          "title": "受理第二笔退款诉求",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s7b-policy",
+          "role": "refund_policy",
+          "title": "按下单锁定的政策版本裁定退款资格",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s7b-finance",
+          "role": "refund_finance",
+          "title": "核算第二笔退款金额并写财务分录",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s7b-payment",
+          "role": "refund_payment",
+          "title": "发起第二笔退款并观察网关终态",
           "state": "FAILED",
           "attempt": 1,
           "risk_level": "M",
@@ -49,21 +121,20 @@
         }
       ],
       "metrics": {
-        "duration_ms": 46,
-        "event_count": 36,
+        "duration_ms": 40,
+        "event_count": 31,
         "event_types": {
           "PlanTransition": 2,
           "StateTransition": 18,
-          "SkillInvoked": 8,
-          "RefundBizStatusChanged": 3,
-          "ToolInvoked": 4,
-          "CompensationExecuted": 1
+          "SkillInvoked": 7,
+          "RefundBizStatusChanged": 2,
+          "ToolInvoked": 2
         },
         "rework_count": 0,
         "replan_count": 0,
         "compensation_count": 0,
-        "skill_invocations": 8,
-        "tool_invocations": 4
+        "skill_invocations": 7,
+        "tool_invocations": 2
       },
       "business_outcome": {
         "status": "failed",
@@ -77,8 +148,8 @@
     }
   ],
   "totals": {
-    "event_count": 36,
-    "rework_count": 0,
-    "replan_count": 0
+    "event_count": 80,
+    "rework_count": 1,
+    "replan_count": 1
   }
 }

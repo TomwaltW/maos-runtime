@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 """证据束生成器 —— 一键跑全部场景，把每一场的真实产出落成 ``evidence/scenario-<N>/``。
 
-    python3 scripts/make_evidence.py                    # 全部场景
-    python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景
+    python3 scripts/make_evidence.py                    # 全部场景 + scenario-R5
+    python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景（不含 R5）
+    python3 scripts/make_evidence.py --contrast         # 只产 contrast-R3/R4/R6
+
+``--contrast`` 是**另一条路**，不是第 9、10、11 束：缺省证据束恒为 8 束
+（``scenario-1..7`` + ``scenario-R5``）是跨轨冻结口径，``scripts/demo_preflight.sh``
+与复赛材料都写死了 8。所以三组对照 **①** 不进 ``maos.main.ALL_SCENARIOS``、
+**②** 目录名不叫 ``scenario-*``（``verify.py`` 按这个前缀挑核验对象，对照束由
+``scan_aux_bundles`` 登记在册即可）、**③** 带 ``--contrast`` 时**只**产对照束，
+不碰任何 ``scenario-*`` 目录、也不重写 ``INDEX.json``（那份索引由缺省全量跑重建，
+届时对照束会作为 aux 登记进去）。缺省行为因此一个字节不变。
+
+``scenario-R5``（RAG 有无对照）不在 ``maos.main.ALL_SCENARIOS`` 里，由
+``maos.kb.experiment`` 单独产，却是唯一带 ``kb_doc`` 的一束 —— ``verify.py``
+第 5、7 两项全靠它。缺省把它一并产出，是为了让「复现全量证据」只剩两条命令：
+本脚本 + ``verify.py``。见 ``build_r5``。
 
 三条不许破的规矩（铁律 3 / 铁律 6）：
 
@@ -58,13 +72,45 @@ class EvidenceError(RuntimeError):
 # ---------------------------------------------------------------------------
 # 出处与脱敏
 # ---------------------------------------------------------------------------
+#: 钉住的出处 sha 存在**环境变量**里，而不是模块全局变量里。
+#: 不得不这样：``python3 scripts/make_evidence.py`` 让本文件成为 ``__main__``，
+#: 而 ``maos/kb/experiment.py`` 走的是 ``from scripts.make_evidence import git_sha`` ——
+#: 那是**另一个模块实例**，两份各有各的全局变量，钉在模块里对 R5 一侧根本不可见。
+#: 环境变量是进程级的，两个实例看到的是同一个值。
+_PIN_ENV = "MAOS_EVIDENCE_PINNED_SHA"
+
+
+def pin_sha() -> str:
+    """在**动任何文件之前**取一次 sha 钉住，之后本进程内所有取值都返回它。返回钉住的值。
+
+    非钉不可的理由：``evidence/`` 是**入库**的（``.gitignore`` 只排掉 ``*.db``），
+    所以本脚本写完 ``scenario-1..7``，工作区自己就脏了。而 ``scenario-R5`` 由
+    ``maos.kb.experiment.write_evidence`` 产，那边自算一次 sha —— 于是同一次生成里，
+    前七束记干净 sha，R5 记 ``<sha>-dirty``：八份证据自称出自两个版本，
+    而它们明明出自同一次运行。读者每一轮都要被解释一次这个后缀不算数。
+
+    钉住而不是「先全算后全写」：``-dirty`` 要指示的是「跑这批证据的代码与 HEAD 不一致」，
+    那是**开跑那一刻**的事实，不是落盘落到一半时的事实。落盘顺序不该改变出处。
+    """
+    pinned = os.environ.get(_PIN_ENV)
+    if not pinned:
+        pinned = git_sha()
+        os.environ[_PIN_ENV] = pinned
+    return pinned
+
+
 def git_sha() -> str:
     """当前提交 sha；**被跟踪文件**有改动时带 ``-dirty``。取不到就抛，不给「unknown」兜底。
 
     脏判定刻意用 ``--untracked-files=no``：``evidence/`` 本身就是这个脚本正在生成的
     未跟踪产物，把它算进「脏」会让每一次生成都自称 dirty，于是这个标记恒为真、
     再也指示不了任何东西 —— 而它要指示的是「跑这批证据的代码与 HEAD 不一致」。
+
+    ``pin_sha()`` 钉过之后一律返回钉住的值：同一次生成里落盘有先后，出处不该跟着变。
     """
+    pinned = os.environ.get(_PIN_ENV)
+    if pinned:
+        return pinned
     try:
         sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
                              capture_output=True, text=True).stdout.strip()
@@ -102,17 +148,45 @@ def redact(text: str, secrets: dict[str, str]) -> str:
     return text
 
 
+#: 这些格式里，密钥可能以**像素**形式存在（截图），字节扫描从原理上就抓不到。
+#: 位图把文字压成图像数据，``Bearer <token>`` 在文件里根本不以该字节序列存在 ——
+#: 扫字节扫不到，换成扫文本一样扫不到，扫得再狠也扫不到。所以对这些格式
+#: 唯一诚实的回答是「无法核验」，不是「没查到」。PDF 同理（文字常在压缩流里）。
+#: ``.svg`` 刻意不在此列：它是文本，哨兵串扫得到。
+_UNVERIFIABLE_EXT = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".ico", ".pdf"})
+
+
+def is_unverifiable(filename: str) -> bool:
+    """这个文件名的扩展名是否属于「字节扫描核验不了」那一类。"""
+    return os.path.splitext(filename)[1].lower() in _UNVERIFIABLE_EXT
+
+
 def scan_for_secrets(directory: str, secrets: dict[str, str]) -> list[str]:
     """拿哨兵串把目录逐字节反查一遍，返回命中描述（空 = 干净）。
 
     按字节查而不是按行读文本：证据里可能有二进制（sqlite 库文件就在同一目录），
     按文本读会因为解码失败而**跳过**那个文件，于是漏查得悄无声息。
+
+    **字节扫描堵不住截图**（见 ``_UNVERIFIABLE_EXT``）：位图里的密钥是像素不是字节。
+    所以遇到图像/版式格式一律记一条「无法核验」当命中处理 —— 由调用方销毁目录并失败。
+    宁可拒收，也不要让一份「扫过了、干净」的报告盖住一个扫不到的洞：
+    静默通过比不扫更坏，它给了假的安全感。
+
+    只在**有哨兵串**时才这么判：``secrets`` 为空说明环境里根本没有要防的密钥，
+    没有「核验」这回事，也就谈不上「无法核验」—— 否则没配密钥的机器天天报警，
+    真出事那次反而没人看。
     """
     hits: list[str] = []
     needles = {name: value.encode("utf-8") for name, value in secrets.items()}
     for base, _dirs, files in os.walk(directory):
         for fn in files:
             path = os.path.join(base, fn)
+            if needles and is_unverifiable(fn):
+                hits.append(
+                    f"{os.path.relpath(path, directory)}: 图像/版式格式，密钥若以像素形式"
+                    f"存在于其中，任何字节扫描都查不到 —— 无法核验，拒收")
+                continue
             try:
                 with open(path, "rb") as fh:
                     blob = fh.read()
@@ -169,6 +243,57 @@ def run_child(scenario: int, db_path: str) -> int:
     from maos.main import main as maos_main
 
     return maos_main(["--scenario", str(scenario)])
+
+
+#: 子进程把对照的观测与判据先落成这份**无出处首行**的原始 JSON，父进程读走后删掉，
+#: 再由 ``write_json`` 带着出处首行写进最终目录 —— 证据文件的首行规矩只有一个执行点。
+CONTRAST_RAW = "_contrast-raw.json"
+
+
+def run_child_contrast(group: str, db_path: str) -> int:
+    """在**本进程**里把一组对照跑进 ``db_path``。只由 ``--_contrast`` 入口调用。
+
+    注入手法与 ``run_child`` 同一套，理由也一样：``flows/common.py::build()`` 用的是
+    ``:memory:``，进程一退库就没了。**一组里的两个 case 共用同一个库文件** ——
+    对照的两侧躺在同一份证据里才比得了，分成两个库反而要读者自己去对。
+
+    R6 的「按最新版判」那条错误路径**不落这个库**：它由 ``contrast`` 在一个一次性的
+    内存库里算，只读政策、不建 case、不跑 DAG。错误路径是用来演示陷阱的，
+    把它的 plan 写进证据束等于在证据里留下一条本不该发生的执行。
+    """
+    import maos.flows.common as common
+    from maos.core.store import SqliteStore
+
+    common.SqliteStore = functools.partial(SqliteStore, db_path)
+    from maos.flows import contrast
+
+    rows = contrast.run_group(group)
+    doc = {
+        "group": group,
+        "dimension": rows[0]["expected"]["dimension"],
+        "cases": [{"file": r["file"], "expected": r["expected"],
+                   "observed": r["observed"], "mismatch": r["mismatch"]} for r in rows],
+        "variable": contrast._variable_of(rows),
+        "note": contrast._note_of(rows),
+    }
+    mismatch = [f"{r['file']}: {m}" for r in rows for m in r["mismatch"]]
+    if group == "R6":
+        wrong, wrong_bad = contrast._r6_wrong_path()
+        doc["wrong_if_latest_observed"] = wrong
+        mismatch += wrong_bad
+    doc["mismatch"] = mismatch
+
+    with open(os.path.join(os.path.dirname(db_path), CONTRAST_RAW), "w",
+              encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=2)
+
+    if mismatch:
+        # 判据不符就让子进程非零退出：父进程按「上游命令失败即报错退出」处理，
+        # 不留下半份看起来跑通了的证据束（铁律 3）。
+        print("对照结果与 case json 的 _expected 不符：\n  " + "\n  ".join(mismatch),
+              file=sys.stderr)
+        return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +612,12 @@ def build_scenario(n: int, out_root: str, *, sha: str, secrets: dict[str, str],
         shutil.rmtree(tmp, ignore_errors=True)
         raise
 
+    return _bundle_info(n, final, bundle)
+
+
+def _bundle_info(scenario, final: str, bundle: dict) -> dict:
     return {
-        "scenario": n,
+        "scenario": scenario,
         "dir": os.path.relpath(final, ROOT),
         "span_count": bundle["summary"]["span_count"],
         "event_count": bundle["summary"]["event_count"],
@@ -498,9 +627,181 @@ def build_scenario(n: int, out_root: str, *, sha: str, secrets: dict[str, str],
     }
 
 
+def build_contrast(group: str, out_root: str, *, sha: str, secrets: dict[str, str],
+                   timeout: int) -> dict:
+    """跑一组对照并攒出 ``evidence/contrast-<组>/``。任何一步失败都不留下半份目录。
+
+    与 ``build_scenario`` 同一套「先在临时目录攒齐、脱敏反查过关、才 ``os.replace``
+    挪到位」的规矩，产物也走同一个 ``write_bundle`` —— 格式对齐现有证据束不是靠
+    照着抄一遍，是靠调同一个函数。对照束比场景束多一份 ``contrast.json``：
+    逐 case 的 `_expected` 与实际观测并排放，附不符项清单（空 = 全对）。
+    """
+    final = os.path.join(out_root, f"contrast-{group}")
+    tmp = os.path.join(out_root, f".tmp-contrast-{group}.{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+
+    try:
+        db_path = os.path.join(tmp, "maos.db")
+        started = time.perf_counter()
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--_contrast", group,
+             "--_db", db_path],
+            cwd=ROOT, capture_output=True, text=True, timeout=timeout,
+        )
+        wall_ms = int((time.perf_counter() - started) * 1000)
+        log = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode != 0:
+            raise EvidenceError(
+                f"对照组 {group} 退出码 {proc.returncode}，不生成任何产物。子进程输出尾部：\n"
+                + redact(log[-2000:], secrets))
+        if not os.path.exists(db_path):
+            raise EvidenceError(
+                f"对照组 {group} 退出码为 0 却没有落库（{db_path} 不存在）："
+                f"SqliteStore 注入点可能已失效，不生成任何产物")
+
+        raw_path = os.path.join(tmp, CONTRAST_RAW)
+        with open(raw_path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        os.remove(raw_path)      # 无出处首行的中间文件不许进最终目录
+
+        bundle = write_bundle(db_path, tmp, scenario=f"contrast-{group}",
+                              exit_code=proc.returncode, wall_ms=wall_ms, log=log,
+                              sha=sha, secrets=secrets)
+        write_json(os.path.join(tmp, "contrast.json"), doc, sha=sha, secrets=secrets)
+
+        leaks = scan_for_secrets(tmp, secrets)
+        if leaks:
+            raise EvidenceError(
+                f"对照组 {group} 的产物里查到敏感值明文，目录已销毁：\n  "
+                + "\n  ".join(leaks))
+
+        shutil.rmtree(final, ignore_errors=True)
+        os.replace(tmp, final)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+    return _bundle_info(f"contrast-{group}", final, bundle)
+
+
+def scan_aux_bundles(out_root: str) -> list[dict]:
+    """登记 ``evidence/`` 下**不叫 scenario-\\* 的那些目录**，按目录名排序。
+
+    ``evidence/room/`` 就是一例：房间侧的人机交互证据由别的流程落盘，从前 INDEX 里
+    一个字都没有 —— 一份自称是索引的东西，漏登记了一整个目录。
+
+    索引 ≠ 核验器：``verify.py`` 按 ``scenario-`` 前缀挑核验对象，这些目录本来就不该
+    被它当证据束扫（它们没有 ``maos.db``，也没有 trace）。这里只负责**登记在册**，
+    让「evidence/ 里有什么」这个问题有一个地方能一次答全。
+
+    每个文件顺带记两件读者关心的事：出处首行有没有（``sourced``），
+    以及它是不是字节扫描核验不了的图像（``secret_scan`` 见 ``scan_for_secrets``）。
+    """
+    aux: list[dict] = []
+    for name in sorted(os.listdir(out_root)):
+        path = os.path.join(out_root, name)
+        if not os.path.isdir(path) or name.startswith("scenario-") or name.startswith("."):
+            continue
+        files = []
+        for fn in sorted(os.listdir(path)):
+            fp = os.path.join(path, fn)
+            if not os.path.isfile(fp):
+                continue
+            unverifiable = is_unverifiable(fn)
+            sourced = None
+            if not unverifiable:
+                try:
+                    with open(fp, encoding="utf-8") as fh:
+                        sourced = fh.readline().startswith(HEADER_PREFIX)
+                except (OSError, UnicodeDecodeError):
+                    sourced = None
+            files.append({
+                "name": fn,
+                "bytes": os.path.getsize(fp),
+                "sourced": sourced,
+                "secret_scan": "无法核验（图像，密钥是像素不是字节）" if unverifiable else "可扫",
+            })
+        aux.append({
+            "name": name,
+            "dir": os.path.relpath(path, ROOT),
+            "file_count": len(files),
+            "files": files,
+        })
+    return aux
+
+
+def _flag_suffix(info: dict) -> str:
+    flags = []
+    if info["unsourced_artifacts"]:
+        flags.append(f"无来源产物 {info['unsourced_artifacts']}")
+    if info["stray_events"]:
+        flags.append(f"游离事件 {info['stray_events']}")
+    if info["tree_errors"]:
+        flags.append(f"span 树错误 {len(info['tree_errors'])}")
+    return f"  ⚠ {'，'.join(flags)}" if flags else ""
+
+
+def build_r5(out_root: str, *, secrets: dict[str, str]) -> dict:
+    """把 ``scenario-R5`` 也产出来 —— 它不在 ``ALL_SCENARIOS`` 里，得单独叫一次。
+
+    为什么非并进来不可：R5 是唯一带 ``kb_doc`` 的一束，``verify.py`` 第 5、7 项
+    全靠它。而「跑 make_evidence.py，再跑 verify.py」这条最直觉的路径，从前会稳定
+    地撞上 ``缺数据库: scenario-R5/maos.db``，提示却还是「先跑 make_evidence.py」——
+    照做的人原地打转（BACKLOG ## task-W5 第 2 条 / ## task-X3 第 4 条）。
+
+    ``out_root`` **必须**透传：``write_evidence(None)`` 缺省写进仓库 ``evidence/``，
+    ``--out`` 指到仓库外却偷偷改仓库，是最难发现的一种污染。有测试守着这一条。
+
+    这里不像场景 1-7 那样起子进程 —— 起子进程是因为 ``flows/common.py::build()``
+    用 ``:memory:`` 库，进程一退就没了；而 ``write_evidence`` 自己就落文件库，
+    且 KB 开关走上下文管理器进出成对复原，没有要隔离的进程级状态。
+    """
+    from maos.kb import experiment as kb_experiment
+
+    try:
+        final = kb_experiment.write_evidence(out_root)
+    except EvidenceError:
+        raise
+    except Exception as exc:
+        # 带上下文重抛：R5 失败与场景失败要落在同一个出口（不留半份产物、退出码 2）。
+        raise EvidenceError(f"scenario-R5 生成失败：{redact(str(exc), secrets)}") from exc
+    return _bundle_info("R5", final, load_evidence_json(os.path.join(final, "trace.json")))
+
+
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
+def main_contrast(args) -> int:
+    """``--contrast`` 那一支：只产 ``contrast-R3/R4/R6``。
+
+    **不碰 ``scenario-*``，也不重写 ``INDEX.json``**。索引由缺省全量跑重建，
+    届时对照束会作为 ``aux_bundles`` 登记进去（它们不叫 ``scenario-*``，
+    ``verify.py`` 本来就不把它们当证据束扫）。在这里顺手重写索引会把上一次
+    全量跑的 ``produced`` 清单抹成三条，那份索引就开始说谎了。
+    """
+    from maos.flows.contrast import GROUPS
+
+    sha = pin_sha()
+    secrets = secret_values()
+    os.makedirs(args.out, exist_ok=True)
+    groups = [g for g, _dim, _title in GROUPS]
+    print(f"对照证据束生成 · sha={sha} · 组={groups} · 输出={args.out}")
+    if secrets:
+        print(f"脱敏哨兵：{sorted(secrets)}（值不打印）")
+
+    produced = []
+    for group in groups:
+        info = build_contrast(group, args.out, sha=sha, secrets=secrets,
+                              timeout=args.timeout)
+        produced.append(info)
+        print(f"  [OK] {info['dir']}  spans={info['span_count']} "
+              f"events={info['event_count']}{_flag_suffix(info)}")
+    print(f"\n完成：{len(produced)} 组对照落盘。scenario-* 与 INDEX.json 未被触碰；"
+          f"缺省证据束仍是 8 束。")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="make_evidence", description="生成 evidence/scenario-<N>/ 证据束")
@@ -511,7 +812,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=600, help="单场景超时秒数")
     parser.add_argument("--strict-scenarios", action="store_true",
                         help="ALL_SCENARIOS 里声明了但模块还没有的场景，视为错误而不是跳过")
+    parser.add_argument("--r5", dest="r5", action="store_true", default=None,
+                        help="强制一并产出 scenario-R5（缺省：全量跑时产，指定 --scenarios 时不产）")
+    parser.add_argument("--no-r5", dest="r5", action="store_false",
+                        help="不产 scenario-R5；verify.py 的第 5、7 项会因此判 SKIP")
+    parser.add_argument("--contrast", action="store_true",
+                        help="只产三组对照束 contrast-R3/R4/R6；不碰 scenario-* 也不重写 INDEX.json")
     parser.add_argument("--_child", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--_contrast", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_db", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -520,17 +828,32 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("--_child 必须配 --_db")
         return run_child(args._child, args._db)
 
+    if args._contrast is not None:
+        if not args._db:
+            raise SystemExit("--_contrast 必须配 --_db")
+        return run_child_contrast(args._contrast, args._db)
+
+    # 对照束走一条**完全独立**的路径：缺省那一支（下面整段）一个字节不变，
+    # 缺省仍然恒为 8 束。两条路唯一共用的是 build_contrast 里的 write_bundle。
+    if args.contrast:
+        return main_contrast(args)
+
     from maos.main import ALL_SCENARIOS
 
     if args.scenarios:
         wanted = [int(x) for x in args.scenarios.split(",") if x.strip()]
     else:
         wanted = list(ALL_SCENARIOS)
+    # 指定了 --scenarios 就是奔着某几场去的，别拖上 R5；全量跑则缺省带上。
+    want_r5 = args.r5 if args.r5 is not None else not args.scenarios
 
-    sha = git_sha()
+    # 钉在动任何文件**之前**：往下每写一个证据文件，工作区就更脏一分，
+    # 而这一批证据的出处只有一个 —— 开跑那一刻的 HEAD。R5 由别的模块自算 sha，
+    # 也靠这次钉住跟前七束对齐（见 pin_sha）。
+    sha = pin_sha()
     secrets = secret_values()
     os.makedirs(args.out, exist_ok=True)
-    print(f"证据束生成 · sha={sha} · 场景={wanted} · 输出={args.out}")
+    print(f"证据束生成 · sha={sha} · 场景={wanted}{' + R5' if want_r5 else ''} · 输出={args.out}")
     if secrets:
         print(f"脱敏哨兵：{sorted(secrets)}（值不打印）")
 
@@ -545,25 +868,33 @@ def main(argv: list[str] | None = None) -> int:
             continue
         info = build_scenario(n, args.out, sha=sha, secrets=secrets, timeout=args.timeout)
         produced.append(info)
-        flags = []
-        if info["unsourced_artifacts"]:
-            flags.append(f"无来源产物 {info['unsourced_artifacts']}")
-        if info["stray_events"]:
-            flags.append(f"游离事件 {info['stray_events']}")
-        if info["tree_errors"]:
-            flags.append(f"span 树错误 {len(info['tree_errors'])}")
-        suffix = f"  ⚠ {'，'.join(flags)}" if flags else ""
         print(f"  [OK] {info['dir']}  spans={info['span_count']} "
-              f"events={info['event_count']}{suffix}")
+              f"events={info['event_count']}{_flag_suffix(info)}")
 
+    if want_r5:
+        info = build_r5(args.out, secrets=secrets)
+        produced.append(info)
+        print(f"  [OK] {info['dir']}  spans={info['span_count']} "
+              f"events={info['event_count']}{_flag_suffix(info)}")
+
+    aux = scan_aux_bundles(args.out)
     write_json(os.path.join(args.out, "INDEX.json"), {
         "git_sha": sha,
-        "requested": wanted,
+        "requested": [*wanted, "R5"] if want_r5 else wanted,
         "produced": produced,
         "missing_scenarios": missing,
+        "aux_bundles": aux,
         "note": ("missing_scenarios 是 ALL_SCENARIOS 声明了但流程模块尚未落地的场景，"
-                 "它们不生成目录、也不写占位数据。"),
+                 "它们不生成目录、也不写占位数据。"
+                 "R5 不在 ALL_SCENARIOS 里（由 maos.kb.experiment 产），"
+                 "缺省一并产出，--no-r5 可关掉。"
+                 "aux_bundles 是 evidence/ 下不叫 scenario-* 的目录（如 room/）："
+                 "它们不由本脚本产、verify.py 也不把它们当证据束扫，"
+                 "但索引要登记在册 —— 漏登记一整个目录的索引不叫索引。"),
     }, sha=sha, secrets=secrets)
+
+    for bundle in aux:
+        print(f"  [AUX] {bundle['dir']}  文件 {bundle['file_count']}（不由本脚本产，仅登记）")
 
     if missing:
         print(f"\n注意：{missing} 已在 ALL_SCENARIOS 中声明但模块未落地，本次未生成其目录。")

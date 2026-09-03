@@ -1,17 +1,22 @@
-# generated at 2026-08-28T10:49:06.231674+00:00 from fa57c97def5a20f1b171bfc412a5d6a3e2f82b0b
+# generated at 2026-09-02T01:07:30.177254+00:00 from cfe438475f751bb1a7bfe034daf7b2381314888d
 场景 7：制造企业售后退款（失败路径），无 key 确定性复现
 
 [1] 待主管审批: 核算退款金额并写财务分录
     语义审查: 金额按订单锁定的政策 v1 核算，依据 AS-01@v1；退款尚未发起，可放行
 
-[2] 付款回执: observed_state=unknown（问了 3 次仍非终态）
+[2] 第七道闸认出网关回执: code=40005 retriable=True outcome=failed -> disposition=replan_channel
+    网关回执 40005（调用频次超限）：retriable=True / outcome=failed —— 网关在入口就拒了，这一笔业务确定没执行，可以换渠道重发。官方处置：降低请求并发量
+    → 触发 replan 重规划：付款任务换渠道 s7-primary -> s7-backup；幂等键由 (tenant, case) 定，换渠道不换键，不会造出第二笔
+
+[3] 备用渠道付款回执: observed_state=unknown（问了 3 次仍非终态）
     网关判据: code=ACQ.SYSTEM_ERROR retriable=True outcome=unknown
     官方处置: 保持参数不变重试或查询执行结果
     出处    : https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-refund.html#业务错误码
+    重规划   : 已换渠道 1 次（replan 上限 MAOS_MAX_REPLAN 默认 2）；这一格 outcome=unknown 对 replan 一票否决，**不再换第三个渠道** —— 重发可能真退出第二笔，正确出口是人工
 
-[3] 待主管处置: 发起退款并观察网关终态 —— 回执非终态，不能当成功放行
+[4] 待主管处置: 发起退款并观察网关终态（改派备用渠道） —— 回执非终态，不能当成功放行
 
-[4] 域内补偿: 作废 1 笔请求，最后观察到的下落 = unobserved（**不是 failed** —— 网关自己都没给出结论）
+[5] 域内补偿: 作废 1 笔请求，最后观察到的下落 = unobserved（**不是 failed** —— 网关自己都没给出结论）
     人工工单: MT-case-s7-0001 -> 沈思锴
 
 ====================================================================
@@ -21,7 +26,7 @@ Plan: FAILED  |  处理客户对轴承订单的退款诉求：政策与金额均
   · 受理多源退款诉求并聚合证据                        DONE             attempt=1 risk=L
   · 按下单锁定的政策版本裁定退款资格                     DONE             attempt=1 risk=L
   · 核算退款金额并写财务分录                         DONE             attempt=1 risk=M
-  · 发起退款并观察网关终态                          FAILED           attempt=1 risk=M
+  · 发起退款并观察网关终态（改派备用渠道）                  FAILED           attempt=2 risk=M
   状态迁移轨迹:
     task-s7-intake  PENDING          -> DISPATCHED       [dispatch]
     task-s7-intake  DISPATCHED       -> RUNNING          [claim]
@@ -39,6 +44,11 @@ Plan: FAILED  |  处理客户对轴承订单的退款诉求：政策与金额均
     task-s7-payment  PENDING          -> DISPATCHED       [dispatch]
     task-s7-payment  DISPATCHED       -> RUNNING          [claim]
     task-s7-payment  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7-payment  AWAITING_REVIEW  -> REWORK           [gate_rework]
+    task-s7-payment  REWORK           -> PENDING          [requeue]
+    task-s7-payment  PENDING          -> DISPATCHED       [dispatch]
+    task-s7-payment  DISPATCHED       -> RUNNING          [claim]
+    task-s7-payment  RUNNING          -> AWAITING_REVIEW  [submit_result]
     task-s7-payment  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
     task-s7-payment  BLOCKED          -> FAILED           [human_reject]
 
@@ -47,28 +57,107 @@ Plan: FAILED  |  处理客户对轴承订单的退款诉求：政策与金额均
   补偿记录  : 2 行 ['manual_ticket', 'refund_request_revoked']
   补偿事件  : 1 条 CompensationExecuted
   Plan 终态 : FAILED（主管驳回，业务确实没成功）
-INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['architecture', 'coding', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'requirement', 'reviewer', 'testing']
-INFO  maos.cp      创建计划 plan_a72a3e5382d7，共 4 个任务
+  换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）
+
+--------------------------------------------------------------------
+第二笔退款：网关判定「交易不存在」—— 一次干净的转人工
+--------------------------------------------------------------------
+
+[6] 待主管审批: 核算第二笔退款金额并写财务分录（既有的 effect_risk=H 入口，未改动）
+
+[7] 第七道闸认出网关回执: code=ACQ.TRADE_NOT_EXIST retriable=False outcome=failed
+    官方处置: 检查交易号或商户订单号是否正确
+    出处    : https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-refund.html#业务错误码
+    → 终态失败，机器返工修不好：原样重发一次，交易还是不存在。控制面第三出口把它路由到人
+
+[8] BLOCKED  reason=gateway_needs_human  await=human_decision  attempt=1
+    无谓返工 0 次 —— 改造前这里是 2 次，屏幕上会出现三条一模一样的失败日志
+    证据: [{'gate': 'gateway', 'id': 'ACQ.TRADE_NOT_EXIST', 'code': 'ACQ.TRADE_NOT_EXIST', 'severity': 'blocker', 'disposition': 'human_terminal'}]
+    人工队列捞到: ['task-s7b-payment'] —— BLOCKED 而没人捞得到就是静默挂起，比 FAILED 更糟
+
+[9] 主管处置: 网关判定该交易不存在，交易号有误，本单作废改单重来 —— 人决定改单，MAOS 不替他决定
+
+====================================================================
+场景 7 第二段：终态失败码一次干净转人工
+====================================================================
+Plan: FAILED  |  处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在
+  · 受理第二笔退款诉求                            DONE             attempt=1 risk=L
+  · 按下单锁定的政策版本裁定退款资格                     DONE             attempt=1 risk=L
+  · 核算第二笔退款金额并写财务分录                      DONE             attempt=1 risk=M
+  · 发起第二笔退款并观察网关终态                       FAILED           attempt=1 risk=M
+  状态迁移轨迹:
+    task-s7b-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s7b-policy  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-policy  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-policy  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-policy  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s7b-finance  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-finance  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-finance  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-finance  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s7b-finance  BLOCKED          -> DONE             [human_approve]
+    task-s7b-payment  PENDING          -> DISPATCHED       [dispatch]
+    task-s7b-payment  DISPATCHED       -> RUNNING          [claim]
+    task-s7b-payment  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s7b-payment  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s7b-payment  BLOCKED          -> FAILED           [human_reject]
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_6b954ee47d7f，共 4 个任务
 INFO  maos.cp      [task-s7-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7-intake] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s7-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s7-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s7-intake] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [task-s7-policy] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7-policy] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7-policy] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s7-policy] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s7-policy] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s7-policy] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [task-s7-finance] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7-finance] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7-finance] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s7-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s7-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s7-finance] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s7-finance] BLOCKED -> DONE (human_approve)
 INFO  maos.cp      [task-s7-payment] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7-payment] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7-payment] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [task-s7-payment] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [task-s7-payment] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'fail'} -> rework
+INFO  maos.cp      [task-s7-payment] 网关回执可重发且业务确定未执行，触发重规划换渠道
+INFO  maos.cp      [task-s7-payment] AWAITING_REVIEW -> REWORK (gate_rework)
+INFO  maos.cp      [task-s7-payment] REWORK -> PENDING (requeue)
+INFO  maos.cp      [task-s7-payment] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7-payment] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7-payment] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7-payment] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'noted'} -> pass
 INFO  maos.cp      [task-s7-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s7-payment] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s7-payment] BLOCKED -> FAILED (human_reject)
+INFO  maos.cp      创建计划 plan_443cbbf8c95f，共 4 个任务
+INFO  maos.cp      [task-s7b-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s7b-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s7b-policy] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-policy] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-policy] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-policy] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s7b-policy] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s7b-finance] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-finance] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-finance] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s7b-finance] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s7b-finance] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s7b-payment] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s7b-payment] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s7b-payment] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s7b-payment] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'fail'} -> rework
+WARNING maos.cp      [task-s7b-payment] gateway_needs_human —— 机器返工修不好，一次转人工，不再重发
+INFO  maos.cp      [task-s7b-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s7b-payment] 无补偿引用，跳过回滚
+INFO  maos.cp      [task-s7b-payment] BLOCKED -> FAILED (human_reject)

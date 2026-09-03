@@ -413,6 +413,112 @@ def test_pipeline_with_a_sentinel_key_in_env_leaks_nothing(tmp_path, db, monkeyp
     assert "***REDACTED:MAOS_LLM_API_KEY***" in log
 
 
+# ---------------------------------------------------------------------------
+# 5b. 截图：字节扫描核验不了，必须有声地拒收（H-7 §5.1）
+# ---------------------------------------------------------------------------
+# BACKLOG ## task-C4 把这个洞记成「scan_for_secrets 只扫文本，扫不到 PNG」——
+# 归因不成立：它本来就按字节读（上面那条 binary 测试守着）。真实原因是
+# **截图里的 token 是像素不是字节**：PNG 把文字压成图像数据，`Bearer <token>`
+# 在文件里根本不以该字节序列存在。扫字节扫不到，扫文本一样扫不到，扫得再狠也扫不到。
+# 所以判据不能是「扫得更狠」，只能是把静默通过变成显式拒收。
+def test_image_in_a_bundle_is_reported_as_unverifiable_not_silently_passed(tmp_path):
+    """放一个假 PNG 进去：必须报「无法核验」，而不是默默判干净。
+
+    断言刻意分两层：先证**不是**因为哨兵串出现在文件里才命中（这个 PNG 里
+    一个字节的哨兵都没有），再证报出来的话说的是「无法核验」而不是「命中」——
+    假装扫过了比不扫更危险，它给的是假的安全感。
+    """
+    png = tmp_path / "room-screenshot.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)   # 无哨兵串，纯像素状字节
+    assert SENTINEL.encode() not in png.read_bytes()
+
+    hits = make_evidence.scan_for_secrets(str(tmp_path), {"MATRIX_TOKEN": SENTINEL})
+
+    assert len(hits) == 1
+    assert "room-screenshot.png" in hits[0]
+    assert "无法核验" in hits[0]
+    assert "命中" not in hits[0]
+
+
+def test_unverifiable_check_covers_bitmaps_and_pdf_but_not_svg():
+    """取值域的边界：位图与 PDF 核验不了；SVG 是文本，哨兵串扫得到，不该混进来。"""
+    for name in ("a.png", "a.JPG", "a.jpeg", "a.gif", "a.webp", "a.pdf", "a.TIF"):
+        assert make_evidence.is_unverifiable(name), name
+    for name in ("a.svg", "a.json", "a.log", "a.db", "a.md", "noext"):
+        assert not make_evidence.is_unverifiable(name), name
+
+
+def test_no_secrets_in_env_means_no_unverifiable_noise(tmp_path):
+    """环境里没有要防的密钥，就没有「核验」这回事，也谈不上「无法核验」。
+
+    没有这一条，没配密钥的机器每跑一次都报一屏警告 —— 于是真出事那次没人看。
+    """
+    (tmp_path / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert make_evidence.scan_for_secrets(str(tmp_path), {}) == []
+
+
+# ---------------------------------------------------------------------------
+# 5c. 出处 sha 全束一致（H-7 §5.3）
+# ---------------------------------------------------------------------------
+def test_pin_sha_survives_a_second_module_instance(tmp_path, monkeypatch):
+    """钉住的 sha 必须跨**模块实例**可见 —— 这正是 R5 从前恒带 `-dirty` 的原因。
+
+    `python3 scripts/make_evidence.py` 让脚本成为 `__main__`，而
+    `maos/kb/experiment.py` 走 `from scripts.make_evidence import git_sha`，
+    那是另一个模块对象、另一份模块全局变量。所以钉在模块全局里对 R5 一侧不可见；
+    只有进程级的环境变量两边都看得到。这条测试就是在断言那个选择。
+    """
+    monkeypatch.delenv(make_evidence._PIN_ENV, raising=False)
+    monkeypatch.setattr(make_evidence, "git_sha", lambda: "cafebabe")
+    pinned = make_evidence.pin_sha()
+    assert pinned == "cafebabe"
+
+    # 第二个实例：同一个源文件再加载一遍，模拟 experiment.py 那侧的 import
+    second = _load_script("make_evidence")
+    assert second is not make_evidence
+    assert second.git_sha() == "cafebabe", "另一个模块实例没看到钉住的 sha"
+
+
+def test_pin_sha_is_taken_once_and_does_not_drift(monkeypatch):
+    """钉过之后工作区再脏，出处也不跟着变：落盘顺序不该改变证据的出处。"""
+    monkeypatch.delenv(make_evidence._PIN_ENV, raising=False)
+    calls = []
+
+    def drifting():
+        calls.append(1)
+        return f"sha-{len(calls)}"
+
+    monkeypatch.setattr(make_evidence, "git_sha", drifting)
+    assert make_evidence.pin_sha() == "sha-1"
+    assert make_evidence.pin_sha() == "sha-1"
+    assert len(calls) == 1, "sha 被重复求值，八束会各记各的出处"
+
+
+# ---------------------------------------------------------------------------
+# 5d. INDEX 要登记 evidence/ 下的非 scenario 目录（H-7 §5.2）
+# ---------------------------------------------------------------------------
+def test_index_registers_non_scenario_dirs_like_room(tmp_path):
+    """`evidence/room/` 从前在 INDEX 里一个字都没有 —— 漏登记一整个目录的索引不叫索引。
+
+    同时守住边界：`scenario-*` 归 produced 那半边，临时目录不登记。
+    """
+    (tmp_path / "scenario-1").mkdir()
+    (tmp_path / ".tmp-scenario-9.123").mkdir()
+    room = tmp_path / "room"
+    room.mkdir()
+    (room / "README.md").write_text(
+        make_evidence.header_line("abc") + "\n正文\n", encoding="utf-8")
+    (room / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    aux = make_evidence.scan_aux_bundles(str(tmp_path))
+
+    assert [b["name"] for b in aux] == ["room"], "只该登记非 scenario、非临时的目录"
+    files = {f["name"]: f for f in aux[0]["files"]}
+    assert files["README.md"]["sourced"] is True
+    assert files["shot.png"]["secret_scan"].startswith("无法核验")
+    assert files["README.md"]["secret_scan"] == "可扫"
+
+
 # ===========================================================================
 # 6. verify.py：七项各自的正负例
 # ===========================================================================

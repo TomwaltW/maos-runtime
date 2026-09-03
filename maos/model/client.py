@@ -72,11 +72,26 @@ class ScriptedModelClient(ModelClient):
 
 
 class HigressModelClient(ModelClient):
-    """占位。Track B 接网关时实现：走 Higress 统一入口，tier 作为路由 header。"""
+    """占位。Track B 接网关时实现：走 Higress 统一入口，tier 作为路由 header。
+
+    key 的两道防线与 :class:`GatewayModelClient` 对齐：私有属性 + 不含 key 的
+    ``__repr__``。**改前并没有现行泄漏** —— 默认的 ``object.__repr__`` 只打类名和
+    内存地址，属性一个都不打；泄漏面是公开属性 ``api_key`` 本身（``vars()`` /
+    ``__dict__`` / 任何遍历属性的序列化都会把值带出来），以及「谁给这个类加一个
+    ``@dataclass`` 或 ``__repr__``，key 当场进 repr」。
+
+    所以这两行买的是**不变量**，不是止血：下划线声明它不是公开 API，显式
+    ``__repr__`` 把「repr 里有什么」钉死，不随将来的改动漂移。同文件那三道
+    （``_scrub()`` / ``from None`` / :class:`_SameOriginRedirectHandler`）等
+    ``complete()`` 真正出网时才轮得到，这个类现在一进来就抛。
+    """
 
     def __init__(self, base_url: str, api_key: str) -> None:
         self.base_url = base_url
-        self.api_key = api_key
+        self._api_key = api_key
+
+    def __repr__(self) -> str:
+        return f"HigressModelClient(base_url={self.base_url!r})"
 
     def complete(self, *, system: str, user: str, tier: str) -> ModelResponse:
         raise NotImplementedError("Track B：接入 Higress 时实现")
@@ -102,6 +117,61 @@ def _safe_int(value: object, default: int = 0) -> int:
     except (TypeError, ValueError):
         log.warning("模型网关 usage 字段不是整数：%r，按 %d 计（成本统计会偏低）", value, default)
         return default
+
+
+#: Anthropic 口径里三个都属于**输入侧**、且互不重叠的字段。
+#: 缓存读比普通输入便宜，但它们是三笔独立的量，不是同一笔的三种说法 ——
+#: 所以 tokens_in 取三者之和，而不是只取 ``input_tokens``。
+_ANTHROPIC_INPUT_FIELDS = (
+    "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+)
+
+
+def _usage_tokens(usage: dict) -> tuple[int, int, dict]:
+    """从一份 ``usage`` 里读出 (tokens_in, tokens_out, 明细)，认两家口径。
+
+    原来只读 ``prompt_tokens`` / ``completion_tokens`` 这一家。网关后面挂
+    Anthropic 系模型时，回的是 ``input_tokens`` / ``output_tokens``，另有
+    ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` 两笔单列的
+    输入侧用量 —— 这三个字段在旧读法下**被整段丢掉**，落库就是 0，
+    而 ``estimated=0`` 还说着「这是网关回的真实计费」。**一次真调用被记成
+    零成本**，比没有成本视图更糟：它看起来是有数的。
+
+    两家不混算：
+    - OpenAI 口径的 ``prompt_tokens`` **已经包含**命中缓存的部分
+      （``prompt_tokens_details.cached_tokens`` 是它的子集），再加一次就是重复计数；
+    - Anthropic 口径的三个输入字段互不重叠，所以求和。
+
+    第三个返回值是明细，进 ``ModelResponse.meta``：库里那两列存不下分项
+    （表结构是冻结面，不能加列），但排查「这次为什么这么贵」时要看得到。
+    """
+    if not isinstance(usage, dict) or not usage:
+        return 0, 0, {"dialect": "none"}
+
+    if "prompt_tokens" in usage or "completion_tokens" in usage:
+        detail = {"dialect": "openai"}
+        cached = ((usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+                  if isinstance(usage.get("prompt_tokens_details"), dict) else None)
+        if cached is not None:
+            detail["cached_tokens"] = _safe_int(cached)
+        return (_safe_int(usage.get("prompt_tokens")),
+                _safe_int(usage.get("completion_tokens")), detail)
+
+    if any(f in usage for f in _ANTHROPIC_INPUT_FIELDS) or "output_tokens" in usage:
+        detail = {"dialect": "anthropic"}
+        tokens_in = 0
+        for field_name in _ANTHROPIC_INPUT_FIELDS:
+            value = _safe_int(usage.get(field_name))
+            detail[field_name] = value
+            tokens_in += value
+        return tokens_in, _safe_int(usage.get("output_tokens")), detail
+
+    # 认不出的口径：不猜、不编，如实记成 0 并留声。落库那行的 estimated 仍由
+    # 客户端类型决定（core/store.py::usage_is_estimated），本函数不碰它 ——
+    # 但 cost_view 会因为「真客户端却 0 token」而显出异常，那正是该被看见的。
+    log.warning("模型网关 usage 字段名不认识：%s；本次 token 记为 0（成本统计会偏低）",
+                sorted(usage)[:8])
+    return 0, 0, {"dialect": "unknown", "keys": sorted(usage)[:8]}
 
 
 def _origin(url: str) -> str:
@@ -218,12 +288,14 @@ class GatewayModelClient(ModelClient):
             raise RuntimeError("模型网关响应不符合 OpenAI 兼容协议：缺 choices[0].message.content") from None
 
         usage = data.get("usage") or {}
+        tokens_in, tokens_out, usage_detail = _usage_tokens(usage)
         return ModelResponse(
             text=text or "",
-            tokens_in=_safe_int(usage.get("prompt_tokens")),
-            tokens_out=_safe_int(usage.get("completion_tokens")),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             model=str(data.get("model") or self.model),
-            meta={"tier": tier, "finish_reason": choice.get("finish_reason", "")},
+            meta={"tier": tier, "finish_reason": choice.get("finish_reason", ""),
+                  "usage_detail": usage_detail},
         )
 
 
@@ -276,8 +348,16 @@ def select_model_client(script: dict[str, str] | None = None, *,
     }
     missing = [name for name, value in env.items() if not value]
     if missing:
-        log.info("未配置 %s，降级为确定性 ScriptedModelClient（不发起任何网络请求）",
-                 "/".join(missing))
+        # WARNING 而不是 INFO，且正文必须写明**后果** —— 这条降级本身是对的，
+        # 坏的是它安静。「以为在跑真模型、其实在跑假模型」不会有任何显眼提示，
+        # 而它恰好让这一跑的一整类结论失真：现场 key 配错，「真模型跑通了」
+        # 就成了假结论。只说「降级了」，读日志的人还要自己推后果；写明后果，
+        # 他一眼知道接下来哪些结论不能信。
+        # 铁律 6：这里只打**变量名**（missing 是名字列表），env 一个值都不许带进来。
+        log.warning("未配置 %s，降级为确定性 ScriptedModelClient —— 本次运行不发起任何"
+                    "网络请求，所有「模型」输出都是脚本回放：成本读数（token/费用）、"
+                    "延迟、以及任何与模型行为相关的结论，这一跑一律不成立",
+                    "/".join(missing))
         return ScriptedModelClient(script)
 
     log.info("启用真模型：base_url=%s model=%s", env[ENV_BASE_URL], env[ENV_MODEL])

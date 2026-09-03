@@ -201,11 +201,57 @@ def suggested_tasks_from_docs(docs: list[dict], baseline: list[dict]) -> list[di
     return out
 
 
+#: 往 inputs 深处找共享参数时的最深层数。设上限而不是无限下潜：inputs 是外部喂进来
+#: 的 JSON，知识层不能假设上游收敛过形状（同 `runtime.gate.FINANCE_SCAN_MAX_DEPTH`
+#: 的理由，数值也照它取 —— 两处扫的是同一片 inputs 树，深度分叉会出现「闸看得见的
+#: 金额，规划期却取不到」，而那正是下面这段要修的症状本身）。
+SHARED_SCAN_MAX_DEPTH = 4
+
+
+def _nested_hits(node: Any, keys: frozenset[str], depth: int = 0):
+    """在一份 inputs 里按**字段名**深搜这几个键，逐个 yield `(键, 值)`。
+
+    **按字段名下潜，不按路径**（与 `runtime.gate._claimed_amounts` 同一把尺）。
+    写死 `case_seed.amount_claimed` 这种嵌套路径，换个域、换个种子键名，这段当场
+    变成死代码而且没有任何症状 —— 按字段名扫的话，顶层与嵌套只是同一个字段的两个
+    位置，不是两套口径。
+
+    命中的键**不再往下潜**：`amount_claimed` 的值本身是个 dict 时，那是「金额解析
+    不出」这一档（闸按 `_over_finance_threshold` 收严成触发），不是「里面还藏着一个
+    金额」。潜下去等于把一份自证不了的脏数据洗成一个干净数字，与闸的口径正好相反。
+    """
+    if depth > SHARED_SCAN_MAX_DEPTH:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in keys:
+                yield key, value
+            else:
+                yield from _nested_hits(value, keys, depth + 1)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _nested_hits(value, keys, depth + 1)
+
+
 def _shared_inputs(baseline: list[dict]) -> dict:
     """从既有任务里取当前 case 的共享参数（租户 / case / 业务域 / 申报金额）。
 
     `amount_claimed` 取自当前计划已有的任务，不是从历史文档抄的 —— 它是
     第六道财务复核闸的触发量，抄错一位数就是把闸绕过去。
+
+    **顶层取不到就往载荷里找**（BACKLOG `## task-D2` 第 3 条）。只扫顶层时，上面那句
+    话在最要紧的那个场景里是假的：漏排财务核算的计划里，当前 case 的申报金额只剩
+    受理那一步的 `case_seed` 里那一份（这个形状**不许为了迁就判据去改**，见
+    `kb.experiment._tasks`）。取不到之后并不是「建议任务没有金额」——
+    `suggested_tasks_from_docs` 先抄历史 step 的 inputs、再用这里的结果覆盖，而
+    `amount_claimed` 不在 `ORDER_FACT_FIELDS` 里（申报金额是客户诉求，不是订单事实），
+    于是历史那一单的钱数原样留在了建议任务上，第六道闸按**别人的金额**判这一单。
+    R5 两段用同一个 `AMOUNT` 常量，两个数碰巧相等，症状被完全掩盖。
+
+    **两轮，顶层优先**。顶层是任务自己声明的参数，比任何载荷内部的同名键更权威；
+    先扫完全部任务的顶层，行为与只扫顶层的旧版逐字节相同，第二轮只补第一轮一个都
+    没取到的那些键。这条顺序也是误取的主要闸门：多源信号里混进别的 case 的同名键
+    时，只要有任何一个任务在顶层声明过它，深搜就压根不会被叫到。
     """
     keys = ("tenant_id", "case_id", "biz_type", "channel_id", "amount_claimed")
     shared: dict[str, Any] = {}
@@ -216,6 +262,17 @@ def _shared_inputs(baseline: list[dict]) -> dict:
         for key in keys:
             if key in inputs and key not in shared:
                 shared[key] = inputs[key]
+
+    missing = frozenset(k for k in keys if k not in shared)
+    if not missing:
+        return shared
+    for task in baseline:
+        inputs = task.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            continue
+        for key, value in _nested_hits(inputs, missing):
+            if key not in shared:
+                shared[key] = value
     return shared
 
 

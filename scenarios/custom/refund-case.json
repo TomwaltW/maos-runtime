@@ -1,0 +1,122 @@
+{
+  "_note": "自定义退款 case 的样例输入。复制一份改成你自己的数据，然后跑：python3 scripts/run_case.py <你的.json>。顶层键即表名，列名逐字对齐 maos/domain/refund/schema.sql —— 多一列少一列都会当场抛（不会静默按缺省值跑绿）。想看不同结论：把 case.reason_code 改成 no_reason_return 并把 requested_at 推到付款后 30 天以上，就会被 AS-001@v1 的窗口判成 reject；把 AS-002@v1 的 refund_ratio 改成 0.8、deduct_fee 改成 50，核准金额就从 6800.00 变成 5390.00。",
+  "_provenance": "本文件是按行业惯例构造的合成数据，不得作为真实企业数据引用。网关错误码取自支付宝开放平台 alipay.trade.refund 官方错误码表（出处见 maos/tools/gateway_codes.py 的 SOURCES 常量）。",
+
+  "requested_at": "2026-07-10T09:00:00+00:00",
+  "gateway": {
+    "settle_after": 2,
+    "fail_with": null
+  },
+
+  "tenant": [
+    {
+      "tenant_id": "tnt-demo",
+      "name": "示例精密制造",
+      "region": "cn-hangzhou"
+    }
+  ],
+
+  "channel": [
+    {
+      "tenant_id": "tnt-demo",
+      "channel_id": "ch-online",
+      "kind": "marketplace",
+      "name": "官方自营旗舰店"
+    }
+  ],
+
+  "product_snapshot": [
+    {
+      "tenant_id": "tnt-demo",
+      "sku": "SKU-BRG-6204",
+      "version": 1,
+      "name": "深沟球轴承 6204",
+      "category": "bearing",
+      "warranty_months": 12,
+      "payload_json": "{}"
+    }
+  ],
+
+  "order_snapshot": [
+    {
+      "tenant_id": "tnt-demo",
+      "order_id": "ORD-DEMO-001",
+      "version": 1,
+      "sku": "SKU-BRG-6204",
+      "amount_paid": 6800.0,
+      "paid_at": "2026-07-01T10:00:00+00:00",
+      "channel_id": "ch-online",
+      "policy_version_at_order": 1,
+      "payload_json": "{}",
+      "read_at": "2026-09-01T00:00:00+00:00"
+    }
+  ],
+
+  "policy_rule": [
+    {
+      "tenant_id": "tnt-demo",
+      "rule_no": "AS-001",
+      "version": 1,
+      "title": "无理由退货期（30 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 30, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "rule_no": "AS-001",
+      "version": 2,
+      "title": "无理由退货期（收紧至 7 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 7, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "rule_no": "AS-002",
+      "version": 1,
+      "title": "质保期内质量问题全额退",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    }
+  ],
+
+  "customer_evidence": [
+    {
+      "tenant_id": "tnt-demo",
+      "case_id": "RC-DEMO-001",
+      "evidence_id": "ev-demo-01",
+      "kind": "image",
+      "uri": "oss://after-sales/RC-DEMO-001/rust-01.jpg",
+      "digest": "sha256:demo-rust-01",
+      "submitted_at": "2026-07-10T09:05:00+00:00"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "case_id": "RC-DEMO-001",
+      "evidence_id": "ev-demo-02",
+      "kind": "image",
+      "uri": "oss://after-sales/RC-DEMO-001/box-01.jpg",
+      "digest": "sha256:demo-box-01",
+      "submitted_at": "2026-07-10T09:06:00+00:00"
+    }
+  ],
+
+  "case": {
+    "tenant_id": "tnt-demo",
+    "case_id": "RC-DEMO-001",
+    "channel_id": "ch-online",
+    "order_id": "ORD-DEMO-001",
+    "order_version": 1,
+    "sku": "SKU-BRG-6204",
+    "reason_code": "quality_defect",
+    "amount_claimed": 6800.0
+  }
+}

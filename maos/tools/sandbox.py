@@ -21,6 +21,13 @@
 测试与 CI 永远走降级路径（`MAOS_SANDBOX_FORCE_SUBPROCESS=1`），保证无 Docker 环境可跑；
 靠「碰巧没装 docker」来命中降级分支不算数，那样这条路径在装了 Docker 的机器上从不被测。
 
+**第三档是不跑**（`MAOS_SANDBOX_REQUIRE_CONTAINER`，缺省关）。降级把原因写进报告
+已经比只打日志好很多，但那仍然是「事后告诉你隔离没生效」——**没有人必须同意**。
+这一档表达的是「宁可不跑，也不裸跑」：容器不可用时直接产出 `tool_error` 报告，
+一条用例都不执行。开着它，`docs/toolport-contract.md` 里「容器隔离」那句断言
+要么成立、要么这一轮根本没有结论，不存在第三种。两个开关同时为真时
+`FORCE_SUBPROCESS` 赢 —— 它是测试基础设施，本档是部署策略。
+
 ## tool_error 与 failed 是两件事
 
 `tool_error` = 环境/工具炸了，根本没跑成；`failed` = 用例真挂了，跑成了但不过。
@@ -43,12 +50,33 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from maos.config import get_config_source
+
 from maos.tools.port import ToolPort
 
 log = logging.getLogger("maos.tools.sandbox")
 
 IMAGE = "maos-sandbox"
+# 探测与 docker run 都写显式 tag。裸仓库名靠 daemon 自己补 `:latest`，而这一步
+# 在 Docker 29.6.1 上会失败：`docker image inspect maos-sandbox` 连三次 exit=1
+# 报 `No such image`，同一时刻 `docker image ls maos-sandbox` 列得出
+# `maos-sandbox:latest`、`docker run --rm maos-sandbox python -V` 也跑得通。
+# 带上 tag 之后 3/3 exit=0。省掉 tag 省下的那两个字符，换来的是沙箱静默降级。
+TAG = "latest"
+IMAGE_REF = f"{IMAGE}:{TAG}"
 DEFAULT_TIMEOUT = 300
+
+# 测试与 CI 恒走降级路径的开关（值恒为 "1"，口径不许放宽 —— 见 _docker_ready）。
+ENV_FORCE_SUBPROCESS = "MAOS_SANDBOX_FORCE_SUBPROCESS"
+
+# fail-closed 档：容器起不来就让这一轮**失败**，绝不裸跑。缺省关，见 require_container()。
+ENV_REQUIRE_CONTAINER = "MAOS_SANDBOX_REQUIRE_CONTAINER"
+
+# 本次 pytest 实际走的是哪条路径。写进 test_report 里跟报告一起落盘 ——
+# 降级只进 log.warning 的话，屏幕上「容器隔离」这句话不成立而没有人会知道。
+MODE_CONTAINER = "container"
+MODE_SUBPROCESS = "subprocess"
+MODE_NOT_RUN = "not-run"
 
 # 靶场源目录（maos/tools/sandbox.py -> 仓库根 -> scenarios/fixture-repo）
 FIXTURE_REPO = Path(__file__).resolve().parents[2] / "scenarios" / "fixture-repo"
@@ -78,8 +106,13 @@ _APPLY_PATH = re.compile(r"error: (?P<path>[^:]+): (?:patch does not apply|No su
 # 环境与工作目录
 # ---------------------------------------------------------------------------
 def sandbox_timeout() -> int:
-    """`MAOS_SANDBOX_TIMEOUT`，默认 300 秒。非法值告警回退，不抛。"""
-    raw = os.environ.get("MAOS_SANDBOX_TIMEOUT")
+    """`MAOS_SANDBOX_TIMEOUT`，默认 300 秒。非法值告警回退，不抛。
+
+    走 `maos.config` 的配置面而不是直接读 `os.environ`（T28）：缺省源就是
+    `os.environ.get`，取值逐字节不变；`MAOS_CONFIG_SOURCE=nacos` 时同一句
+    改从 Nacos 取，超时秒数因此可以不重启进程就调。
+    """
+    raw = get_config_source().get("MAOS_SANDBOX_TIMEOUT", "")
     if not raw:
         return DEFAULT_TIMEOUT
     try:
@@ -91,6 +124,44 @@ def sandbox_timeout() -> int:
         log.warning("MAOS_SANDBOX_TIMEOUT=%r 非正数，回退 %ds", raw, DEFAULT_TIMEOUT)
         return DEFAULT_TIMEOUT
     return value
+
+
+#: `require_container()` 认的两组取值。认不出的第三种一律告警回退到「关」——
+#: 拼错一个开关值不该把流水线掀翻，但更不许被静默当成「开」（那会让人以为
+#: fail-closed 生效了，而这正是本档要治的那类假象）。
+_TRUE_VALUES = ("1", "true", "yes", "on")
+_FALSE_VALUES = ("0", "false", "no", "off")
+
+
+def require_container() -> bool:
+    """`MAOS_SANDBOX_REQUIRE_CONTAINER`：宁可不跑，也不裸跑。默认**关**。
+
+    「容器隔离」是提交材料里的一句断言（`docs/toolport-contract.md` 的
+    `security_boundary`，评审会逐条对）。降级发生时那句断言就不成立 —— 而在此之前
+    降级这件事**没有人必须同意**：`_docker_ready()` 返回 False 就无条件裸跑。
+    本档就是那个「必须有人同意」：为真时容器不可用直接产出失败报告，不进降级路径。
+
+    🔴 **缺省必须是关**：未设 = False，行为与本档出现之前逐字节一致。否则 CI、
+    测试、以及任何没有 Docker 的机器全部当场变红 —— 一个默认开的 fail-closed 档
+    会在第一天就被人 export 掉，然后永远关着。
+
+    口径照 `sandbox_timeout`：走 `maos.config` 的配置面（缺省源就是
+    `os.environ.get`，取值逐字节不变），认不出的取值**告警回退、不抛**。
+
+    刻意**不做**参照实现那个 `CUMORA_BYOA_ALLOW_UNSANDBOXED=1` 式的逃生口：
+    那是给存量用户留的兼容档，MAOS 没有存量。该抄的是 `failIfUnavailable` 的
+    方向，不是逃生口 —— 多一个「危险但保留」的档位是纯负债。
+    """
+    raw = get_config_source().get(ENV_REQUIRE_CONTAINER, "")
+    if not raw:
+        return False
+    value = raw.strip().lower()
+    if value in _TRUE_VALUES:
+        return True
+    if value not in _FALSE_VALUES:
+        log.warning("%s=%r 不是布尔值，回退默认（关闭，容器不可用时仍降级）",
+                    ENV_REQUIRE_CONTAINER, raw)
+    return False
 
 
 def _clean_env(home: str) -> dict[str, str]:
@@ -110,21 +181,77 @@ def _clean_env(home: str) -> dict[str, str]:
     return env
 
 
+def _force_subprocess() -> bool:
+    """测试与 CI 那个强制降级开关。**读法一个字不许改**：直读 `os.environ`、只认 `"1"`。
+
+    它不走 `maos.config` 的配置面，也不认 `true`/`yes` —— 它是**测试基础设施**，
+    不是治理旋钮：无 Docker 环境靠它保证降级路径每次都被真的测到，口径一放宽，
+    「这条路径到底测没测到」就变成一个要现场推的问题。
+    """
+    return os.environ.get(ENV_FORCE_SUBPROCESS) == "1"
+
+
+def _image_listed() -> str:
+    """`docker image ls` 眼里这个镜像在不在。返回镜像 id，查不到返回空串。
+
+    只用来给 inspect 的失败做交叉确认，不作为主探测：`image ls` 对不存在的镜像
+    也返回 exit=0（只是输出为空），拿退出码当判据会把「镜像没有」判成「镜像有」。
+    """
+    try:
+        proc = subprocess.run(["docker", "image", "ls", "-q", IMAGE],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def _docker_ready() -> tuple[bool, str]:
-    """容器主路径能不能走。返回 (可用, 不可用的原因)。"""
-    if os.environ.get("MAOS_SANDBOX_FORCE_SUBPROCESS") == "1":
-        return False, "MAOS_SANDBOX_FORCE_SUBPROCESS=1（测试与 CI 恒走降级路径）"
+    """容器主路径能不能走。返回 (可用, 不可用的原因)。
+
+    原因文本会原样进 test_report 的 summary，所以它得说清「为什么没走容器」，
+    不能只说「不可用」—— 评委看到降级时要能当场判断这是环境没装、镜像没 build，
+    还是探测本身在骗人。
+
+    inspect 失败时再问一次 `docker image ls` 是有必要的：两者不一致就说明镜像在、
+    daemon 也在，只是探测不可靠。这一条仍然降级（保守），但原因文本会点名这个矛盾，
+    免得现场把「探测抽风」误读成「你忘了 docker build」而去做一次没用的重建。
+    """
+    if _force_subprocess():
+        return False, f"{ENV_FORCE_SUBPROCESS}=1（测试与 CI 恒走降级路径）"
     if shutil.which("docker") is None:
         return False, "找不到 docker 命令"
     try:
         # image inspect 一次同时问了两件事：daemon 在不在、镜像有没有。
-        probe = subprocess.run(["docker", "image", "inspect", IMAGE],
+        probe = subprocess.run(["docker", "image", "inspect", IMAGE_REF],
                                capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"docker 探测失败: {type(exc).__name__}: {exc}"
-    if probe.returncode != 0:
-        return False, f"镜像 {IMAGE} 不可用（先跑 docker build -t {IMAGE} -f deploy/sandbox.Dockerfile .）"
-    return True, ""
+    if probe.returncode == 0:
+        return True, ""
+
+    detail = (probe.stderr or probe.stdout or "").strip().splitlines()
+    detail = detail[0] if detail else f"退出码 {probe.returncode}"
+    listed = _image_listed()
+    if listed:
+        return False, (
+            f"探测不一致：docker image inspect {IMAGE_REF} 退出码 {probe.returncode}"
+            f"（{detail}），但 docker image ls 列得出 {IMAGE}（id={listed}）——"
+            f"镜像与 daemon 都在，是探测本身不可靠；本次仍按不可用降级")
+    return False, (f"镜像 {IMAGE_REF} 不可用（{detail}）"
+                   f"；先跑 docker build -t {IMAGE} -f deploy/sandbox.Dockerfile .")
+
+
+def container_doctor() -> tuple[bool, str]:
+    """开跑前体检：这台机器上容器档能不能走。返回 (可用, 不可用的原因)。
+
+    就是 `_docker_ready()` 的公开名字，**不是它的复制品** —— 直接转调，两者永远
+    同一个结论。给它一个不带下划线的名字是因为调用方在包外：`scripts/demo_preflight.sh`
+    这类开跑前的体检要问的正是这一句，而现在的答案只能靠「跑完看报告里的
+    `degraded_reason`」倒推 —— 那时候已经跑过了，体检的意义就没了。
+
+    纯函数：只探测，不落盘、不改 workdir、不起容器。
+    """
+    return _docker_ready()
 
 
 def _git(cwd: str | os.PathLike, *args: str) -> subprocess.CompletedProcess:
@@ -183,17 +310,64 @@ def _diff_targets(diff: str) -> list[str]:
     只校验 `patch_set` 声明的 `path` 是不够的：声明写 `auth/session.py`、
     正文的 `+++ b/tests/test_session.py` 指向别处，落盘的是正文那个。
     这一层不看正文，前面那三条校验就全是摆设。
+
+    路径先过 `unquote_c_style` 再剥 `a/` `b/`：git 把含特殊字节的路径写成
+    `"a/\\164ests/conftest.py"`，`a/` 在**引号内部**，不先解引号 `_strip_ab`
+    连前缀都认不出，剥不掉。顺序反了这一层就白做。
+
+    `\\t` 切分排在解码**之前**：diff 头里跟在路径后面的时间戳是真 tab 分隔的，
+    而路径自身的 tab 在 C-quoted 里是 `\\t` 两个字符，切不到。
     """
+    unquote = _unquote_c_style()
     targets: list[str] = []
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             parts = line.split()
-            targets.extend(_strip_ab(p) for p in parts[2:4])
+            targets.extend(_strip_ab(unquote(p)) for p in parts[2:4])
         elif line.startswith(("--- ", "+++ ")):
-            raw = line[4:].strip().split("\t")[0]
+            raw = unquote(line[4:].strip().split("\t")[0])
             if raw and raw != "/dev/null":
                 targets.append(_strip_ab(raw))
     return [t for t in targets if t]
+
+
+def _numstat_targets(base: str, cmd: list[str],
+                     payload: str) -> list[str] | dict[str, Any]:
+    """让 git 自己报出它将要写的路径清单。判定与执行同源，不会再分叉。
+
+    `--numstat -z` 报的是 git **解码后**的路径（`"a/\\164ests/…"` → `tests/…`，
+    `"a/\\056\\056/x"` → `../x`），也就是它真正要落盘的那个。`-z` 不能省：
+    不带它 git 会把含特殊字节的路径重新 C-quote 回去，等于又把解码撤销一遍。
+
+    这一份是**补充**而不是替代 `_diff_targets`：实测 `git apply --numstat` 对
+    rename 只报目标路径，`rename from tests/x to auth/y` 里的 `tests/x` 不出现 ——
+    只信 numstat 会把「删掉受保护目录下的文件」这条现成的覆盖丢掉。两份取并集。
+
+    numstat 只解析补丁、不碰工作树：上下文对不上这类失败它照样 rc=0，
+    仍旧留给后面真正的 `git apply` 去报 `apply` 阶段的错，stage 语义不变。
+    """
+    try:
+        proc = subprocess.run([*cmd, "--numstat", "-z"], cwd=base, input=payload,
+                              capture_output=True, text=True, timeout=_GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _error("apply", None, None,
+                      f"git apply --numstat 起不来: {type(exc).__name__}: {exc}")
+    if proc.returncode != 0:
+        # git 连解析都做不到 —— 是补丁集本身不合法，归 validate，不是 apply 被拒。
+        return _error("validate", None, None,
+                      (proc.stderr or proc.stdout or "").strip()
+                      or f"git apply --numstat 退出码 {proc.returncode}，但没有输出")
+
+    targets: list[str] = []
+    for record in proc.stdout.split("\0"):
+        if not record:
+            continue
+        # 记录形如 `<added>\t<deleted>\t<path>`；maxsplit=2 让路径里的真 tab
+        # 留在第三段里（`-z` 模式下路径不 quote，tab 是原样字节）。
+        fields = record.split("\t", 2)
+        if len(fields) == 3 and fields[2]:
+            targets.append(fields[2])
+    return targets
 
 
 def _protected_path_rules():
@@ -212,6 +386,15 @@ def _protected_path_rules():
     """
     from maos.skills.builtin.code_repo_patch import PROTECTED_SEGMENTS, _path_segments
     return PROTECTED_SEGMENTS, _path_segments
+
+
+def _unquote_c_style():
+    """取 C-quoted 解引号函数 —— 同样只留 code_repo_patch 那一处，理由见上。
+
+    延迟 import 的原因与 `_protected_path_rules` 完全相同（模块级会成环）。
+    """
+    from maos.skills.builtin.code_repo_patch import unquote_c_style
+    return unquote_c_style
 
 
 def _check_path(candidate: str, base: str) -> dict[str, Any] | None:
@@ -240,7 +423,10 @@ def _check_path(candidate: str, base: str) -> dict[str, Any] | None:
     # 3) 内含性：补丁路径规范化后必须落在 workdir 内。
     #    /etc/passwd、../../../.ssh/id_rsa 规范化后的分段是 etc/passwd、.ssh/id_rsa，
     #    都不在 PROTECTED_SEGMENTS 里 —— skill 层没有 workdir 可比对，这一层才有。
-    target = os.path.realpath(os.path.join(base, candidate))
+    #    这里必须拿**解码后**的路径去 join：`"a/\056\056/x"` 的字面量拼进 base 只是
+    #    一个名字古怪的子路径，落不出去；git 解码出的 `../x` 才是真会写的位置。
+    #    第 1、2 条经由 _path_segments 已各自解过码，只有这条是自己 join 的。
+    target = os.path.realpath(os.path.join(base, _unquote_c_style()(candidate)))
     if target != base and not target.startswith(base + os.sep):
         return _error("path_escape", candidate, None,
                       f"补丁路径规范化后落在 workdir 之外: {target}")
@@ -265,9 +451,15 @@ def sandbox_git_apply(
     返回 {"ok": bool, "error": {"stage", "path", "hunk", "message"} | None}。
     ok=False 时 error 必须结构化 —— Gate 要把 path 和 hunk 逐条转成 findings 喂回 Coding。
 
-    stage 取值：validate（补丁集本身不合法）/ prepare（workdir 不可用）/
-    path_check（受保护目录）/ conftest_guard / path_escape / apply（git 拒绝）。
-    hunk 是 git 自己报的行号，只在 apply 阶段有值。
+    stage 取值不变，仍是六个：validate（补丁集本身不合法，**含 git 自己解析不了**）/
+    prepare（workdir 不可用）/ path_check（受保护目录）/ conftest_guard /
+    path_escape / apply（git 拒绝）。hunk 是 git 自己报的行号，只在 apply 阶段有值。
+
+    路径校验四条来源，全过同一个 `_check_path`：patch_set 声明的 `path`、
+    `_diff_targets` 从正文抠的路径、以及 `_numstat_targets` 让 git 自己报的
+    落盘清单。前两条读字面量，最后一条读 git 解码后的结果 —— 判定与执行同源，
+    这是 C-quoted 八进制那类「字面量与落盘路径分叉」绕过的堵口。
+    并集不是冗余：numstat 对 rename 只报目标，`_diff_targets` 才看得见源路径。
     """
     files = patch_set.get("files") if isinstance(patch_set, dict) else None
     if not isinstance(files, list) or not files:
@@ -292,11 +484,25 @@ def sandbox_git_apply(
     cmd = ["git", "apply", "--whitespace=nowarn"]
     if reverse:
         cmd.append("-R")
+
+    payload = "".join(chunks)
+
+    # 第四条校验：判定与执行同源。上面三条读的是 diff 正文的字面量，而落盘的是
+    # git 解码后的路径 —— 两者一旦分叉就是绕过口（C-quoted 八进制正是这么绕的）。
+    # 这里让 git 自己报它将要写的路径，拿那份清单再过一遍同样的 _check_path。
+    listed = _numstat_targets(base, cmd, payload)
+    if isinstance(listed, dict):                    # 结构化错误，直接回
+        return listed
+    for candidate in listed:
+        failure = _check_path(candidate, base)
+        if failure is not None:
+            return failure
+
     if check_only:
         cmd.append("--check")
 
     try:
-        proc = subprocess.run(cmd, cwd=base, input="".join(chunks),
+        proc = subprocess.run(cmd, cwd=base, input=payload,
                               capture_output=True, text=True, timeout=_GIT_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as exc:
         return _error("apply", None, None, f"git apply 起不来: {type(exc).__name__}: {exc}")
@@ -315,10 +521,39 @@ def sandbox_git_apply(
 # ---------------------------------------------------------------------------
 # ToolPort 2 · 测试执行
 # ---------------------------------------------------------------------------
-def _tool_error_report(message: str, started: float) -> dict[str, Any]:
+def _degradation_note(mode: str, reason: str | None) -> str:
+    """降级路径在报告里那句话。容器路径返回空串。
+
+    三个 flag 逐个点名，不写「隔离未生效」这种概括：演示现场看到的是这句话本身，
+    它得让人当场判断出「容器隔离」这个说法这一次到底成不成立。
+    """
+    if mode != MODE_SUBPROCESS:
+        return ""
+    return (f"[沙箱降级] 本次未走容器，退化为裸 subprocess，"
+            f"--network none / --read-only / --user 1000:1000 三项均未生效；"
+            f"原因：{reason or '未记录'}")
+
+
+def _report_envelope(mode: str, reason: str | None) -> dict[str, Any]:
+    """每份 test_report 都带的执行路径字段。
+
+    `sandbox_mode` 缺失和 `sandbox_mode="container"` 是两回事：前者是「这份报告
+    没人记录过它怎么跑的」，后者是「记录过，走的容器」。下游（obs/trace.py）
+    按这个区分决定是报「降级」还是报「执行路径不可审计」，所以这里一律带上，
+    不因为「正常路径没什么好说的」就省掉。
+    """
+    return {"sandbox_mode": mode, "degraded_reason": reason}
+
+
+def _tool_error_report(message: str, started: float, *,
+                       mode: str = MODE_NOT_RUN,
+                       reason: str | None = None) -> dict[str, Any]:
     """工具层炸了：三个计数一律 0，failed=0 才不会被 Gate 当成「用例挂了」。"""
+    note = _degradation_note(mode, reason)
     return {"passed": 0, "failed": 0, "errors": 0, "cases": [],
-            "duration": round(time.perf_counter() - started, 3), "tool_error": message}
+            "duration": round(time.perf_counter() - started, 3), "tool_error": message,
+            "summary": f"测试工具未跑成：{message}" + (f"｜{note}" if note else ""),
+            **_report_envelope(mode, reason)}
 
 
 def _classify_exit(proc: subprocess.CompletedProcess) -> str | None:
@@ -343,7 +578,7 @@ def _run_in_container(base: str) -> str | None:
         "-v", f"{base}:/w", "--tmpfs", "/tmp", "-w", "/w",
         "--user", "1000:1000",
         "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
-        IMAGE, "python", "-m", "pytest", *PYTEST_ARGS, f"--junitxml=/w/{REPORT_NAME}",
+        IMAGE_REF, "python", "-m", "pytest", *PYTEST_ARGS, f"--junitxml=/w/{REPORT_NAME}",
     ]
     timeout = sandbox_timeout()
     try:
@@ -404,10 +639,17 @@ def sandbox_pytest_run(workdir: str) -> dict[str, Any]:
     返回 test_report：
       {"passed": int, "failed": int, "errors": int,
        "cases": [{"id": str, "status": str, "msg": str}],
-       "duration": float, "tool_error": str | None}
+       "duration": float, "tool_error": str | None,
+       "summary": str, "sandbox_mode": str, "degraded_reason": str | None}
 
     tool_error 与 failed 必须分开上报：前者是环境或工具炸了（根本没跑成），
     后者是用例真的挂了（跑成了但不过）。Gate 对这两种的判定不一样。
+
+    后三个键是 C-7 六键之外的**增量**（``validate_artifact`` 只查必填键在不在，
+    不禁额外键）。加它们是因为降级路径原先只留一条 ``log.warning``：容器的
+    ``--network none / --read-only / --user 1000:1000`` 三项全部失效，而报告照旧
+    全绿、``test_no_network`` 从 passed 静静变成 skipped —— 屏幕上看不出任何差别。
+    执行路径必须跟报告一起落盘，才轮得到别人来质疑它。
 
     duration 记的是墙钟耗时（含容器启停），不是 junit 里的用例执行时间和 ——
     上层要用它判「沙箱是不是慢到该调超时」，那需要的正是墙钟。
@@ -421,23 +663,45 @@ def sandbox_pytest_run(workdir: str) -> dict[str, Any]:
     report.unlink(missing_ok=True)
 
     usable, why = _docker_ready()
+    if not usable and not _force_subprocess() and require_container():
+        # fail-closed 档：宁可不跑，也不裸跑（`MAOS_SANDBOX_REQUIRE_CONTAINER`）。
+        # 走 _tool_error_report 而不是抛：tool_error 与 failed 是两件事，Gate 对
+        # 「工具没跑成」判 blocker、对「用例挂了」逐条转 findings —— 这里是前者，
+        # 一条用例都没执行过，报成 failed=0 的正常报告会被判成通过。
+        # mode 记 MODE_NOT_RUN 而不是 subprocess：压根没跑，说成降级就是记错了执行路径。
+        # 两个开关同时为真时 FORCE_SUBPROCESS 赢（DECISIONS ## task-T47）：它是测试
+        # 基础设施，本档是部署策略，测试基础设施不该被一个部署旋钮掀翻。
+        log.error("%s 要求容器隔离，而容器不可用（%s）；本次拒绝降级为裸 subprocess",
+                  ENV_REQUIRE_CONTAINER, why)
+        return _tool_error_report(
+            f"{ENV_REQUIRE_CONTAINER} 要求容器隔离，容器不可用（{why}）—— "
+            f"本次拒绝降级为裸 subprocess，一条用例都没有执行。"
+            f"这不是用例失败，是沙箱没起来：修好容器，或显式关掉 {ENV_REQUIRE_CONTAINER}",
+            started, mode=MODE_NOT_RUN, reason=why)
     if usable:
+        mode, reason = MODE_CONTAINER, None
         failure = _run_in_container(base)
     else:
         # 降级 idiom 照抄 flows/common.py::_wrap_matrix：告警 + 继续，不抛。
+        # 但只告警是不够的 —— 日志不进证据，而「这一次容器隔离没生效」正是
+        # 评委最需要看见、也最容易被一份全绿报告盖住的那件事。原因同时写进
+        # 下面的 summary / degraded_reason，跟报告一起落盘。
+        mode, reason = MODE_SUBPROCESS, why
         log.warning("容器沙箱不可用（%s），降级为裸 subprocess；env 已按白名单重建，"
                     "宿主密钥与 HOME 都不进沙箱", why)
         failure = _run_degraded(base, report)
 
     try:
         if failure is not None:
-            return _tool_error_report(failure, started)
+            return _tool_error_report(failure, started, mode=mode, reason=reason)
         if not report.is_file():
-            return _tool_error_report("pytest 没有产出 junit 报告，多半根本没跑起来", started)
+            return _tool_error_report("pytest 没有产出 junit 报告，多半根本没跑起来",
+                                      started, mode=mode, reason=reason)
         try:
             parsed = _parse_junit(report)
         except ElementTree.ParseError as exc:
-            return _tool_error_report(f"junit 报告解析失败: {exc}", started)
+            return _tool_error_report(f"junit 报告解析失败: {exc}", started,
+                                      mode=mode, reason=reason)
     finally:
         # 解析完就删：报告是本次调用的中间产物，留着会让「干跑不落盘」
         # 和「跑完 workdir 逐字节不变」这两条断言失效。
@@ -445,6 +709,11 @@ def sandbox_pytest_run(workdir: str) -> dict[str, Any]:
 
     parsed["duration"] = round(time.perf_counter() - started, 3)
     parsed["tool_error"] = None
+    counts = (f"{parsed['passed']} 过 / {parsed['failed']} 挂 / {parsed['errors']} 错")
+    note = _degradation_note(mode, reason)
+    parsed["summary"] = (f"沙箱回归（容器隔离）：{counts}" if not note
+                         else f"沙箱回归：{counts}｜{note}")
+    parsed.update(_report_envelope(mode, reason))
     return parsed
 
 
@@ -482,12 +751,16 @@ PYTEST_RUN_PORT = ToolPort(
     params_schema={"workdir": "str"},
     returns_schema={"passed": "int", "failed": "int", "errors": "int",
                     "cases": "list[{id,status,msg}]", "duration": "float",
-                    "tool_error": "str | None"},
+                    "tool_error": "str | None", "summary": "str",
+                    "sandbox_mode": "container | subprocess | not-run",
+                    "degraded_reason": "str | None"},
     failure_modes=[
         "tool_error: workdir 不可用 / docker run 起不来 / 超时（容器已强制清除）",
         "tool_error: pytest 退出码 ≥2（中断、内部错、用法错、零用例收集）",
         "tool_error: 没产出 junit 报告或报告解析失败",
         "failed>0: 用例真的挂了 —— 这不是工具失败，Gate 逐条转 findings",
+        "sandbox_mode=subprocess: 跑成了，但容器隔离本次未生效（degraded_reason 说明原因）"
+        " —— 这不是失败，是一份可信度更低的通过",
     ],
     security_boundary=(
         "主路径容器：--network none --read-only --user 1000:1000 --memory 512m "

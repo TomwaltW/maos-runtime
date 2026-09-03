@@ -1,4 +1,4 @@
-# generated at 2026-08-28T10:49:04.806542+00:00 from fa57c97def5a20f1b171bfc412a5d6a3e2f82b0b
+# generated at 2026-09-02T01:07:28.001298+00:00 from cfe438475f751bb1a7bfe034daf7b2381314888d
 
 ====================================================================
 场景 2：返工闭环（第 1 轮用例真挂，findings 喂回后第 2 轮修好）
@@ -32,33 +32,33 @@ Plan: DONE  |  修复 demo/app 的会话过期判定
     s2-test  AWAITING_REVIEW  -> DONE             [gate_pass]
   第 1 轮喂回的 findings: [{"gate": "acceptance", "severity": "major", "path": null, "id": "tests.test_session::test_expired_session", "msg": "AssertionError: 没到 TTL 就被判过期了\nassert False\n +  where False = is_session_valid(dat
   Reviewer 语义审查: status=ok
-INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['architecture', 'coding', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'requirement', 'reviewer', 'testing']
-INFO  maos.cp      创建计划 plan_47e666317fb1，共 4 个任务
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_bf8fe96ca5d4，共 4 个任务
 INFO  maos.cp      [s2-req] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [s2-req] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [s2-req] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [s2-req] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [s2-req] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [s2-req] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [s2-arch] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [s2-arch] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [s2-arch] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [s2-arch] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [s2-arch] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [s2-arch] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [s2-code] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [s2-code] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [s2-code] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.flows   [s2-code] attempt=1 沙箱回归：测试报告：4 过 / 1 挂 / 0 错
-INFO  maos.gate    [s2-code] Gate {'schema': 'pass', 'acceptance': 'fail', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> rework
+INFO  maos.flows   [s2-code] attempt=1 沙箱回归：沙箱回归（容器隔离）：4 过 / 1 挂 / 0 错
+INFO  maos.gate    [s2-code] Gate {'schema': 'pass', 'acceptance': 'fail', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> rework
 INFO  maos.cp      [s2-code] AWAITING_REVIEW -> REWORK (gate_rework)
 INFO  maos.cp      [s2-code] REWORK -> PENDING (requeue)
 INFO  maos.cp      [s2-code] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [s2-code] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [s2-code] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.flows   [s2-code] attempt=2 沙箱回归：测试报告：5 过 / 0 挂 / 0 错
-INFO  maos.gate    [s2-code] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.flows   [s2-code] attempt=2 沙箱回归：沙箱回归（容器隔离）：5 过 / 0 挂 / 0 错
+INFO  maos.gate    [s2-code] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [s2-code] AWAITING_REVIEW -> DONE (gate_pass)
 INFO  maos.cp      [s2-test] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [s2-test] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [s2-test] RUNNING -> AWAITING_REVIEW (submit_result)
-INFO  maos.gate    [s2-test] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass'} -> pass
+INFO  maos.gate    [s2-test] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [s2-test] AWAITING_REVIEW -> DONE (gate_pass)

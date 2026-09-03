@@ -35,11 +35,68 @@ from typing import Any
 from maos.agents.base import AgentIdentity, AgentOutput, BaseAgent, TaskContext, register
 from maos.artifacts import KIND_TEST_REPORT
 from maos.model.client import Tier
+from maos.tools.sandbox import MODE_NOT_RUN
 
 SKILL_VERIFY = "test.verify"
 
 STATUS_FAILED = "failed"
 STATUS_PASSED = "passed"
+
+#: 预置件在 ``degraded_reason`` 里的自述。写全「哪个函数、为什么没跑」，
+#: 因为读到它的人手上只有 trace.json，没有这份源码。
+SCRIPTED_REASON = ("场景预置件（seed_scripted_report）：本场景 DAG 无 testing 节点，"
+                   "报告是前置条件而非产物，未经沙箱执行")
+
+#: 旁路入库的产物用来自报来源的事件类型。走 ``append_event_log`` 的自由
+#: ``event_type``，**不进 contracts/events.py 的 Topic**（铁律 1）——
+#: ``SkillInvoked`` / ``ToolInvoked`` / ``AuthoritativeFactViolation`` 都是这么加的。
+#: 与 ``maos/obs/trace.py::SEEDED_EVENT`` 同值：读侧照抄而不 import，理由与那边
+#: 「只 import maos.core.store」那条依赖纪律同源。
+SEEDED_EVENT = "ArtifactSeeded"
+
+
+def record_seeded_artifact(store, *, plan_id: str, task_id: str, artifact_id: str,
+                           kind: str, version: int, source: str, reason: str,
+                           trace_id: str = "", extra: dict | None = None) -> None:
+    """给一份**绕开 ``on_task_result`` 入库**的产物补一条来源事件。
+
+    产物先落库、事件后补 —— 记的是既成事实，不是承诺。``detail.artifact_id``
+    把事件与产物**点名**绑定，``maos/obs/trace.py`` 据此认领，不靠时间窗猜
+    （``_submit_index`` 那套窗口只对 ``on_task_result`` 那条正路有效）。
+
+    这条事件补的是**审计链**，不是产物的成色：
+
+    * ``source`` 如实写产它的那个函数（``patch_verifier`` 是现跑沙箱的真产物，
+      ``seed_scripted_report`` 是不跑测试的场景预置件），两者在证据里必须始终
+      分得开 —— 把它们抹成一样，是把一个诚实的系统改成不诚实的；
+    * ``provenance`` 因此标成 ``artifact_seeded`` 而不是 ``task_result``：
+      这份产物确实没走 ``on_task_result``，冒充正路就是撒谎。洞被补上的是
+      「指不到是谁产的」，不是「它走的哪条路」—— 后者照旧写在脸上。
+
+    判产物真伪仍然看 ``trace.json`` 的 ``maos.artifact.sandbox.mode``
+    （container / subprocess / not-run），本函数一个字都不改它。
+    """
+    detail = {
+        "artifact_id": artifact_id,
+        "kind": kind,
+        "version": int(version),
+        "source": source,
+        "reason": reason,
+        "bypass": "on_task_result",
+    }
+    if extra:
+        detail.update(extra)
+    store.append_event_log({
+        "event_id": "",
+        "trace_id": trace_id or "",
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "event_type": SEEDED_EVENT,
+        "from_state": "",
+        "to_state": "",
+        "reason": source,
+        "detail": detail,
+    })
 
 
 def make_test_report(
@@ -51,6 +108,8 @@ def make_test_report(
     duration: float = 0.0,
     tool_error: str | None = None,
     summary: str = "",
+    sandbox_mode: str | None = None,
+    degraded_reason: str | None = None,
     target_task_id: str | None = None,
     target_attempt: int | None = None,
 ) -> dict:
@@ -61,6 +120,16 @@ def make_test_report(
 
     ``summary`` 不是可选装饰：Gate 的 evidence 闸要求每个 artifact 都有变更说明，
     缺了会让每一份报告都多带一条 minor finding。
+
+    ``sandbox_mode`` / ``degraded_reason`` 是这一次**在哪儿跑的**（见
+    ``tools/sandbox.py::_report_envelope``）。它们由沙箱产出、由这里搬进证据 ——
+    ``sandbox.py`` 早就把两个字段返回了，可装配层按固定具名参数收，收不下就丢了，
+    于是「容器隔离」这句话只在日志里成立、不在证据里成立。
+
+    **不传就一个键都不加**：``{"sandbox_mode": None}`` 会让「没人记过这份报告
+    怎么跑的」和「记过，取值是 None」在证据里长成一个样，而下游（obs/trace.py）
+    正是靠「键在不在」区分 ``unrecorded`` 与其余。两个键同进同退：给了 mode 才
+    谈得上 reason，reason 为 None 是「这一次没什么可说的」，与 mode 缺失不同。
     """
     case_list = [dict(c) for c in (cases or []) if isinstance(c, dict)]
     if not summary:
@@ -75,6 +144,9 @@ def make_test_report(
         "tool_error": tool_error,
         "summary": summary,
     }
+    if sandbox_mode is not None:
+        report["sandbox_mode"] = sandbox_mode
+        report["degraded_reason"] = degraded_reason
     if target_task_id is not None:
         # 报告指向「被验的是哪个任务的哪一次 attempt」。Gate 靠这两个字段把
         # 一份挂在验证方名下的报告，认领到被验任务的验收闸上（见 gate.py）。
@@ -151,19 +223,31 @@ class TestingAgent(BaseAgent):
 
         交出去而不是换一份能过闸的：没有证据就该被 Gate 拦下，这是本 Phase 的题眼。
         """
-        tool_error = res.output.get("tool_error") if isinstance(res.output, dict) else None
+        raw = res.output if isinstance(res.output, dict) else {}
+        tool_error = raw.get("tool_error")
 
         if res.status == "ok" and isinstance(res.output, dict) and not tool_error:
             return self._normalize(res.output)
 
         # 两种「没跑成」的原因在这里合流：skill 压根没注册（res.error），
         # 和 skill 跑了但工具炸了（report 的 tool_error）。后者更具体，优先。
+        #
+        # 执行路径照搬：跑成了才有 mode 是不对的 —— 「降级之后裸 subprocess 跑挂了」
+        # 和「容器里跑挂了」是两件事，而 skill 未注册那一种压根没有 mode 可搬，
+        # 键就不出现（那正是 unrecorded 该报的形态）。
         return make_test_report(
-            tool_error=tool_error or res.error or f"{SKILL_VERIFY} 未产出测试报告")
+            tool_error=tool_error or res.error or f"{SKILL_VERIFY} 未产出测试报告",
+            sandbox_mode=raw.get("sandbox_mode"),
+            degraded_reason=raw.get("degraded_reason"))
 
     @staticmethod
     def _normalize(raw: dict) -> dict:
-        """把任意来源的报告收敛成 C-7 形状，缺字段补缺省、不猜取值。"""
+        """把任意来源的报告收敛成 C-7 形状，缺字段补缺省、不猜取值。
+
+        ``sandbox_mode`` 用 ``.get()`` 而不是 ``or``：``or`` 会把空串折成 None，
+        而「记过、取值是空串」也是一种记过 —— 那是上游的 bug，该被看见，
+        不该在这里被抹成「没人记过」。
+        """
         return make_test_report(
             passed=raw.get("passed") or 0,
             failed=raw.get("failed") or 0,
@@ -172,6 +256,8 @@ class TestingAgent(BaseAgent):
             duration=raw.get("duration") or 0.0,
             tool_error=raw.get("tool_error"),
             summary=str(raw.get("summary") or ""),
+            sandbox_mode=raw.get("sandbox_mode"),
+            degraded_reason=raw.get("degraded_reason"),
         )
 
 
@@ -187,13 +273,42 @@ def seed_scripted_report(store, *, plan_id: str, task_id: str, attempt: int,
     pytest 结果」，报告必须是跑出来的 —— 接线见 ``flows/common.py::patch_verifier``。
     判据是「宣称真跑的场景不许有脚本化报告」，不是「全仓不许有」。
 
-    这里直接 ``insert_artifact``、不经 ``on_task_result``，所以预置件**没有来源
-    事件** —— ``maos/obs/trace.py`` 据此把它标成 ``provenance="unknown"`` 并计进
-    ``summary.unsourced_artifacts``。那是有意的：审计链有洞就要让洞看得见。
+    这里直接 ``insert_artifact``、不经 ``on_task_result``。旁路仍是旁路，但不再
+    是**哑**旁路：落库之后补一条 ``ArtifactSeeded``（``record_seeded_artifact``），
+    把「谁、在哪一步、为什么这么落」写进 ``event_log``。``maos/obs/trace.py``
+    据此把它标成 ``provenance="artifact_seeded"``（**不是** ``task_result`` ——
+    它确实没走那条正路），审计链从此指得到具体一行。
+
+    从前这里什么都不补，产物落成 ``provenance="unknown"``，计进
+    ``summary.unsourced_artifacts``。「让洞看得见」是对的，但看得见之后就该把它
+    补上：现在洞的形状写在事件里（``detail.source`` 点名本函数、``detail.bypass``
+    点名绕开的是谁），比一个 ``unknown`` 说得准得多。
+
+    执行路径就地补成 ``not-run``：预置件确实一次沙箱都没跑过，这是实话，也是
+    ``sandbox.pytest_run`` 声明过的三个取值之一。不补的话它在证据里与「跑过但
+    上层把字段丢了」长成同一个样（都判 ``unrecorded``），而那两件事天差地别。
+    补完之后 ``passed=1`` 配 ``sandbox_mode=not-run`` 这个组合本身就是标记：
+    **这些计数背后没有一次真实执行** —— 比一句「不可审计」说得更准。
+    调用方已经写了 ``sandbox_mode`` 就不覆盖：这里补的是缺省，不是权威。
     """
     from maos.contracts.events import new_id      # 局部 import：演示脚手架不进模块级依赖
 
+    content = dict(report)
+    content.setdefault("sandbox_mode", MODE_NOT_RUN)
+    content.setdefault("degraded_reason", SCRIPTED_REASON)
+    artifact_id = new_id("art")
     store.insert_artifact({
-        "artifact_id": new_id("art"), "task_id": task_id, "plan_id": plan_id,
-        "kind": KIND_TEST_REPORT, "version": attempt, "content": dict(report),
+        "artifact_id": artifact_id, "task_id": task_id, "plan_id": plan_id,
+        "kind": KIND_TEST_REPORT, "version": attempt, "content": content,
     })
+    plan = store.get_plan(plan_id)
+    record_seeded_artifact(
+        store, plan_id=plan_id, task_id=task_id, artifact_id=artifact_id,
+        kind=KIND_TEST_REPORT, version=attempt,
+        trace_id=(plan or {}).get("trace_id") or "",
+        source="maos.agents.testing.seed_scripted_report",
+        reason=SCRIPTED_REASON,
+        # 预置件与现跑产物的分水岭就在这一行：它恒为 not-run（除非调用方自带），
+        # 而 patch_verifier 那条路补出来的恒是沙箱真实回报的 mode。
+        extra={"sandbox_mode": content.get("sandbox_mode"), "scripted": True},
+    )

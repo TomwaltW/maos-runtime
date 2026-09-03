@@ -1,4 +1,4 @@
-# generated at 2026-08-28T10:49:05.313462+00:00 from fa57c97def5a20f1b171bfc412a5d6a3e2f82b0b
+# generated at 2026-09-02T01:07:28.846777+00:00 from cfe438475f751bb1a7bfe034daf7b2381314888d
 {
   "schema": "maos.trace/v1",
   "db": "maos.db",
@@ -6,35 +6,35 @@
   "traces": [
     {
       "schema": "maos.trace/v1",
-      "plan_id": "plan_5fe3cab1b2a4",
-      "trace_id": "trace_ecbf24465c46",
+      "plan_id": "plan_6d53a27ad6f8",
+      "trace_id": "trace_5df5da5b1884",
       "plan_state": "RUNNING",
       "goal": "幂等验证",
       "spans": [
         {
-          "trace_id": "trace_ecbf24465c46",
-          "span_id": "4298640ea3ffa591",
+          "trace_id": "trace_5df5da5b1884",
+          "span_id": "e968ee0e5f5f0649",
           "parent_span_id": null,
           "name": "plan:幂等验证",
           "kind": "plan",
-          "start": "2026-08-28T10:49:05.288027+00:00",
-          "end": "2026-08-28T10:49:05.288974+00:00",
+          "start": "2026-09-02T01:07:28.681829+00:00",
+          "end": "2026-09-02T01:07:28.686896+00:00",
           "attributes": {
-            "maos.plan_id": "plan_5fe3cab1b2a4",
+            "maos.plan_id": "plan_6d53a27ad6f8",
             "maos.plan.state": "RUNNING",
             "maos.plan.goal": "幂等验证"
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
-          "span_id": "4b4f37e3163836bc",
-          "parent_span_id": "4298640ea3ffa591",
+          "trace_id": "trace_5df5da5b1884",
+          "span_id": "961117eaf462400a",
+          "parent_span_id": "e968ee0e5f5f0649",
           "name": "task:coding:幂等测试任务",
           "kind": "task",
-          "start": "2026-08-28T10:49:05.288608+00:00",
-          "end": "2026-08-28T10:49:05.300782+00:00",
+          "start": "2026-09-02T01:07:28.686553+00:00",
+          "end": "2026-09-02T01:07:28.833095+00:00",
           "attributes": {
-            "maos.task_id": "task_b4da98c89c2f",
+            "maos.task_id": "task_87f58ccee86a",
             "maos.task.role": "coding",
             "maos.task.state": "AWAITING_REVIEW",
             "maos.task.attempt": 1,
@@ -44,13 +44,13 @@
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
+          "trace_id": "trace_5df5da5b1884",
           "span_id": "14c43806d6c7b02f",
-          "parent_span_id": "4298640ea3ffa591",
+          "parent_span_id": "e968ee0e5f5f0649",
           "name": "plan-state:PENDING->RUNNING",
           "kind": "event",
-          "start": "2026-08-28T10:49:05.289251+00:00",
-          "end": "2026-08-28T10:49:05.289251+00:00",
+          "start": "2026-09-02T01:07:28.687155+00:00",
+          "end": "2026-09-02T01:07:28.687155+00:00",
           "attributes": {
             "maos.event.seq": 1,
             "maos.event.type": "PlanTransition",
@@ -61,122 +61,149 @@
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
+          "trace_id": "trace_5df5da5b1884",
           "span_id": "0e6b968add7f3127",
-          "parent_span_id": "4b4f37e3163836bc",
+          "parent_span_id": "961117eaf462400a",
           "name": "state:PENDING->DISPATCHED",
           "kind": "event",
-          "start": "2026-08-28T10:49:05.290103+00:00",
-          "end": "2026-08-28T10:49:05.290103+00:00",
+          "start": "2026-09-02T01:07:28.687925+00:00",
+          "end": "2026-09-02T01:07:28.687925+00:00",
           "attributes": {
             "maos.event.seq": 2,
             "maos.event.type": "StateTransition",
             "maos.event.id": null,
-            "maos.task_id": "task_b4da98c89c2f",
+            "maos.task_id": "task_87f58ccee86a",
             "maos.reason": "dispatch",
             "maos.detail": {}
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
+          "trace_id": "trace_5df5da5b1884",
           "span_id": "1bad583a0b83cc75",
-          "parent_span_id": "4b4f37e3163836bc",
+          "parent_span_id": "961117eaf462400a",
           "name": "state:DISPATCHED->RUNNING",
           "kind": "event",
-          "start": "2026-08-28T10:49:05.291349+00:00",
-          "end": "2026-08-28T10:49:05.291349+00:00",
+          "start": "2026-09-02T01:07:28.688939+00:00",
+          "end": "2026-09-02T01:07:28.688939+00:00",
           "attributes": {
             "maos.event.seq": 3,
             "maos.event.type": "StateTransition",
             "maos.event.id": null,
-            "maos.task_id": "task_b4da98c89c2f",
+            "maos.task_id": "task_87f58ccee86a",
             "maos.reason": "claim",
             "maos.detail": {}
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
+          "trace_id": "trace_5df5da5b1884",
           "span_id": "825c90bd41d31c99",
-          "parent_span_id": "4b4f37e3163836bc",
+          "parent_span_id": "961117eaf462400a",
           "name": "skill:kb.retrieve",
           "kind": "event",
-          "start": "2026-08-28T10:49:05.298762+00:00",
-          "end": "2026-08-28T10:49:05.304762+00:00",
+          "start": "2026-09-02T01:07:28.704629+00:00",
+          "end": "2026-09-02T01:07:28.719629+00:00",
           "attributes": {
             "maos.event.seq": 4,
             "maos.event.type": "SkillInvoked",
             "maos.event.id": null,
-            "maos.task_id": "task_b4da98c89c2f",
+            "maos.task_id": "task_87f58ccee86a",
             "maos.reason": null,
             "maos.detail": {
               "skill": "kb.retrieve",
               "version": "1.1.0",
               "status": "ok",
-              "duration_ms": 6,
-              "input_digest": "67802f9aae8603dd18e3baffb560d443a5224a451de96f609a1776d50d6be917",
+              "duration_ms": 15,
+              "input_digest": "ff453bc37926c321d3f34873682d0311641486eb0b0e9970852bc725574a370c",
               "output_hash": "e00bd93766dc5c8e149e0981d8cdd875228e2a3f13a52001754c77d2ca03638d",
               "usage": null,
-              "invocation_id": "ee822e27673746b8814609fd66d98705"
+              "invocation_id": "a55db5d01bc846dd91df00dcde347301"
             }
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
+          "trace_id": "trace_5df5da5b1884",
           "span_id": "f019bd9b559b54fe",
-          "parent_span_id": "4b4f37e3163836bc",
-          "name": "skill:code.repo-patch",
+          "parent_span_id": "961117eaf462400a",
+          "name": "tool:git-mcp",
           "kind": "event",
-          "start": "2026-08-28T10:49:05.299444+00:00",
-          "end": "2026-08-28T10:49:05.299444+00:00",
+          "start": "2026-09-02T01:07:28.829853+00:00",
+          "end": "2026-09-02T01:07:28.953853+00:00",
           "attributes": {
             "maos.event.seq": 5,
+            "maos.event.type": "ToolInvoked",
+            "maos.event.id": null,
+            "maos.task_id": "task_87f58ccee86a",
+            "maos.reason": null,
+            "maos.detail": {
+              "tool": "git-mcp",
+              "status": "ok",
+              "duration_ms": 124,
+              "params_digest": "2d8b01a5e280d951399232b65e8af6658c311d53da7dc0d1badbc09f83ee37c3",
+              "error": null
+            }
+          }
+        },
+        {
+          "trace_id": "trace_5df5da5b1884",
+          "span_id": "c05b0c207f25e0df",
+          "parent_span_id": "961117eaf462400a",
+          "name": "skill:code.repo-patch",
+          "kind": "event",
+          "start": "2026-09-02T01:07:28.831742+00:00",
+          "end": "2026-09-02T01:07:28.957742+00:00",
+          "attributes": {
+            "maos.event.seq": 6,
             "maos.event.type": "SkillInvoked",
             "maos.event.id": null,
-            "maos.task_id": "task_b4da98c89c2f",
+            "maos.task_id": "task_87f58ccee86a",
             "maos.reason": null,
             "maos.detail": {
               "skill": "code.repo-patch",
               "version": "1.0.0",
               "status": "ok",
-              "duration_ms": 0,
-              "input_digest": "d9d43b81dd6d31eb003084926af766b388ec0d935022b3f254a8ceec96fba43f",
+              "duration_ms": 126,
+              "input_digest": "35bff438b9294d1e933a0b627de8d715eff40d62cf2983e805744f1bd89864fa",
               "output_hash": "6e7027f860c179deccea4ef074720a65cfce99169300751bc6b5f188812c0294",
               "usage": null,
-              "invocation_id": "86bd909a26034302913984c625f56b42"
+              "invocation_id": "70f3464e86614937823607b597817bae"
             }
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
-          "span_id": "7f90d799853ada3c",
-          "parent_span_id": "c05b0c207f25e0df",
+          "trace_id": "trace_5df5da5b1884",
+          "span_id": "a1f5c9f17b5fb505",
+          "parent_span_id": "1d984cefb945ccb2",
           "name": "artifact:patch_set",
           "kind": "artifact",
-          "start": "2026-08-28T10:49:05.300431+00:00",
-          "end": "2026-08-28T10:49:05.300431+00:00",
+          "start": "2026-09-02T01:07:28.832750+00:00",
+          "end": "2026-09-02T01:07:28.832750+00:00",
           "attributes": {
-            "maos.artifact.id": "art_3e54df9a645f",
+            "maos.artifact.id": "art_20566c716841",
             "maos.artifact.kind": "patch_set",
             "maos.artifact.version": 1,
-            "maos.task_id": "task_b4da98c89c2f",
+            "maos.task_id": "task_87f58ccee86a",
             "maos.artifact.provenance": "task_result",
-            "maos.artifact.provenance.event_span": "c05b0c207f25e0df",
-            "maos.artifact.provenance.note": null
+            "maos.artifact.provenance.event_span": "1d984cefb945ccb2",
+            "maos.artifact.provenance.source": null,
+            "maos.artifact.provenance.note": null,
+            "maos.artifact.sandbox.mode": null,
+            "maos.artifact.sandbox.degraded_reason": null,
+            "maos.artifact.sandbox.note": null
           }
         },
         {
-          "trace_id": "trace_ecbf24465c46",
-          "span_id": "c05b0c207f25e0df",
-          "parent_span_id": "4b4f37e3163836bc",
+          "trace_id": "trace_5df5da5b1884",
+          "span_id": "1d984cefb945ccb2",
+          "parent_span_id": "961117eaf462400a",
           "name": "state:RUNNING->AWAITING_REVIEW",
           "kind": "event",
-          "start": "2026-08-28T10:49:05.301255+00:00",
-          "end": "2026-08-28T10:49:05.301255+00:00",
+          "start": "2026-09-02T01:07:28.833408+00:00",
+          "end": "2026-09-02T01:07:28.833408+00:00",
           "attributes": {
-            "maos.event.seq": 6,
+            "maos.event.seq": 7,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_370f8a59169c",
-            "maos.task_id": "task_b4da98c89c2f",
+            "maos.event.id": "evt_aa1115840472",
+            "maos.task_id": "task_87f58ccee86a",
             "maos.reason": "submit_result",
             "maos.detail": {
               "artifacts": 1
@@ -184,22 +211,100 @@
           }
         }
       ],
+      "cost": {
+        "available": true,
+        "unavailable_reason": null,
+        "calls": 1,
+        "tokens_in": 25,
+        "tokens_out": 193,
+        "tokens_total": 218,
+        "latency_ms": 0,
+        "estimated_calls": 1,
+        "measured_calls": 0,
+        "all_estimated": true,
+        "by_role": [
+          {
+            "role": "coding",
+            "calls": 1,
+            "tokens_in": 25,
+            "tokens_out": 193,
+            "tokens_total": 218,
+            "latency_ms": 0
+          }
+        ],
+        "by_call_site": [
+          {
+            "call_site": "maos/skills/builtin/code_repo_patch.py::CodeRepoPatchSkill.run",
+            "calls": 1,
+            "tokens_in": 25,
+            "tokens_out": 193,
+            "tokens_total": 218,
+            "latency_ms": 0
+          }
+        ],
+        "by_task": [
+          {
+            "task_id": "task_87f58ccee86a",
+            "calls": 1,
+            "tokens_in": 25,
+            "tokens_out": 193,
+            "tokens_total": 218,
+            "latency_ms": 0
+          }
+        ],
+        "top_task": {
+          "task_id": "task_87f58ccee86a",
+          "calls": 1,
+          "tokens_in": 25,
+          "tokens_out": 193,
+          "tokens_total": 218,
+          "latency_ms": 0
+        },
+        "note": "estimated=1 的行是估算不是计费：缺省路径用 ScriptedModelClient，其 token 数为 len(user)//4（maos/model/client.py），非任何计费口径。all_estimated=true 时这些数字只能读作调用规模，不能读作金额。",
+        "zero_calls_note": null,
+        "failures": {
+          "available": true,
+          "unavailable_reason": null,
+          "calls": 0,
+          "latency_ms": 0,
+          "by_error_kind": [],
+          "by_call_site": [],
+          "note": "失败的模型调用单列在这里，不并进上面的 calls / tokens。它们照样烧掉了输入侧的 token，但网关没回用量，所以这里一个 token 数都不给 —— 不知道就是不知道。只读成本视图会把「这条链路很省」和「这条链路一直在失败」读成同一件事。"
+        }
+      },
       "summary": {
-        "span_count": 9,
+        "span_count": 10,
         "task_count": 1,
-        "event_count": 6,
+        "event_count": 7,
         "artifact_count": 1,
         "unsourced_artifacts": 0,
+        "seeded_artifacts": 0,
         "unresolved_task_events": 0,
+        "degraded_sandbox_reports": 0,
+        "unrecorded_sandbox_reports": 0,
         "tree_errors": []
       }
     }
   ],
   "stray_events": [],
+  "unattributed_usage": [],
   "summary": {
-    "span_count": 9,
-    "event_count": 6,
+    "span_count": 10,
+    "model_calls": 1,
+    "attributed_model_calls": 1,
+    "unattributed_model_calls": 0,
+    "attributed_tokens_total": 218,
+    "estimated_model_calls": 1,
+    "measured_model_calls": 0,
+    "all_estimated": true,
+    "cost_note": "estimated=1 的行是估算不是计费：缺省路径用 ScriptedModelClient，其 token 数为 len(user)//4（maos/model/client.py），非任何计费口径。all_estimated=true 时这些数字只能读作调用规模，不能读作金额。",
+    "failed_model_calls": 0,
+    "failure_note": "失败的模型调用单列在这里，不并进上面的 calls / tokens。它们照样烧掉了输入侧的 token，但网关没回用量，所以这里一个 token 数都不给 —— 不知道就是不知道。只读成本视图会把「这条链路很省」和「这条链路一直在失败」读成同一件事。",
+    "event_count": 7,
     "unsourced_artifacts": 0,
+    "seeded_artifacts": 0,
+    "degraded_sandbox_reports": 0,
+    "unrecorded_sandbox_reports": 0,
     "stray_event_count": 0,
     "tree_errors": []
   }

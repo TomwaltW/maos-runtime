@@ -94,7 +94,12 @@ class FlakyModel(ScriptedModelClient):
     def complete(self, *, system, user, tier):
         if any(kw in user for kw in self.script):
             return super().complete(system=system, user=user, tier=tier)
-        return ModelResponse(text=GOOD_PATCH if "返工" in user else BAD_PATCH)
+        # `model=` 与父类逐字同一口径（`model/client.py::ScriptedModelClient`）。
+        # 不填它，这两条用量的 model 列就是空的，verify 第 8 项的判据 c 拿不到
+        # `estimated` 之外的**独立来源**去交叉印证「估算没被印成真实计费」——
+        # 方向不算错（estimated=1 已经标了），但那一格只能弃权，印证不了。
+        return ModelResponse(text=GOOD_PATCH if "返工" in user else BAD_PATCH,
+                             model=f"scripted-{tier}")
 
 
 def _with_workdir(tasks: list[dict], workdir: str) -> list[dict]:
@@ -116,9 +121,15 @@ def run(*, matrix: bool = False) -> int:
         store, bus, cp, model, worker, gate = build(
             script, matrix=matrix, model=FlakyModel(script))
 
-        mgr = ManagerAgent(model)
-        plan_id = cp.create_plan(goal=GOAL, trace_id=new_id("trace"),
-                                 tasks=_with_workdir(mgr.plan(GOAL), workdir))
+        # 先生成 id 再规划（口径同 scenario_1）：规划期这一次 ask() 跑在
+        # create_plan 之前，不把 id 带进去就归属不上任何一棵树。
+        trace_id, plan_id = new_id("trace"), new_id("plan")
+        mgr = ManagerAgent(model, store=store)
+        cp.create_plan(
+            goal=GOAL, trace_id=trace_id, plan_id=plan_id,
+            tasks=_with_workdir(
+                mgr.plan(GOAL, context={"plan_id": plan_id, "trace_id": trace_id}),
+                workdir))
 
         cp.start_plan(plan_id)
         # 两轮的证据各真跑一次：每次 attempt 都先把靶场还原成基线，再打本轮的补丁。

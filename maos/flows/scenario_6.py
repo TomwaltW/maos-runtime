@@ -206,6 +206,48 @@ def seed_domain(store) -> None:
             (TENANT_ID, rule_no, version, title,
              json.dumps(params, ensure_ascii=False, sort_keys=True),
              eff_from, eff_to, ch, sku))
+    _seed_kb(store)
+
+
+def _seed_kb(store) -> dict:
+    """给规划期检索一份**有内容**的知识库。返回 `{库存, 本租户}` 两个数。
+
+    不播这一段，`KbRetrieved` 的 detail 里永远是 `docs: []`：接上检索只证明得了
+    **链路通**，证明不了**召回准**（docs/BACKLOG.md `## task-X1` 第 1 条）。而评委
+    跑 `run.py` 看到的是本场景，不是对照实验 R5。
+
+    两批，缺一不可：
+
+      · **W-1 语料的 16 条政策**（`scenarios/refund/`）**原样带着各自的租户**落库
+        （tnt-mfg-a / tnt-mfg-b），不改写成本场景的租户 —— 理由见
+        `kb/experiment.py:seed_kb_corpus`。它们是本场景**召不回**的那一批。
+      · **本场景自己的 3 条政策**（`POLICY_RULES`），投影到 `TENANT_ID` 名下 ——
+        这才是规划期检索真正召得回的那一批。
+
+    于是候选集的形状本身就成了证据：库里 19 条，本租户 3 条进得了候选集，另外
+    16 条一条都进不来。`docs: []` 变成有内容的同时，阶段一「跨租户永不召回」这条
+    最硬的约束也在真实数据上被证明了一次，而不是只写在注释里。
+
+    投影**复用 R5 那一份**（`kb/experiment.promote_policy_rule`），不在这里另写一套：
+    两套投影迟早在字段口径上分叉，而症状只是「候选集少了些」，不报错。
+    """
+    # 局部 import：`kb.experiment` 是 R5 的证据生成器，把它挂到本模块的 import 图上，
+    # `import maos.flows.scenario_6` 就会顺带拖进整个对照实验模块。
+    from maos import kb
+    from maos.kb import experiment
+
+    kb.ensure_schema(store)
+    corpus = experiment.seed_kb_corpus(store)
+    for rule_no, version, title, params, eff_from, _eff_to, _ch, _sku in POLICY_RULES:
+        experiment.promote_policy_rule(store, {
+            "tenant_id": TENANT_ID, "rule_no": rule_no, "version": version,
+            "title": title,
+            # body 与 policy_rule 表里那一列**同一个串**：知识层与业务表读到的是
+            # 同一份政策参数，两处各 dumps 一次迟早在键序上分叉。
+            "body": json.dumps(params, ensure_ascii=False, sort_keys=True),
+            "effective_from": eff_from,
+        })
+    return {"corpus": corpus, "own": len(POLICY_RULES)}
 
 
 def _count(store, table: str) -> int:
@@ -225,8 +267,27 @@ def run(*, matrix: bool = False) -> int:
     C.register_gateway(GATEWAY_NAME, MockGateway(settle_after=SETTLE_AFTER))
 
     # —— Manager 零改动复用：为代码域写的规划器，在退款域照样规划 DAG ——
-    mgr = ManagerAgent(model)
-    plan_id = cp.create_plan(goal=GOAL, trace_id=new_id("trace"), tasks=mgr.plan(GOAL))
+    # **带 store 构造**：不带的话 SkillInvoker.store is None，规划前检索恒返回空，
+    # `MAOS_KB_ENABLED` 对这条链路没有任何影响。接上之后检索真的发生，
+    # event_log 里落得下 KbRetrieved —— 关掉开关则一条都不落，对照才干净。
+    #
+    # context 只给规划期**此刻真知道**的四个维度：租户 / 业务类型 / 渠道 / SKU。
+    # 政策版本与命中规则（AS-01）是 policy.match 后面才裁出来的，规划期传进来
+    # 等于让它知道了它还不该知道的事 —— 检索上下文不是许愿池。
+    # （`plan_id` / `trace_id` 不是检索维度：`manager._KB_QUERY_FIELDS` 不收它们，
+    #  只用来给事件定归属，进不了检索查询。）
+    trace_id = new_id("trace")
+    # plan_id 先生成、规划期带着它跑：这次检索发生在 `create_plan` **之前**，
+    # 不先拿到 id，KbRetrieved / SkillInvoked 就只能落空串，成为 trace 里认领不了的
+    # 游离事件（docs/BACKLOG.md `## task-X4` 第 2 条）。归属不是硬凑的 ——
+    # 这次检索检的正是这个 Plan 该怎么排。
+    plan_id = new_id("plan")
+    mgr = ManagerAgent(model, store=store)
+    kb_context = {"tenant_id": TENANT_ID, "biz_type": C.BIZ_TYPE,
+                  "channel_id": CHANNEL_ID, "sku": SKU,
+                  "plan_id": plan_id, "trace_id": trace_id}
+    cp.create_plan(goal=GOAL, trace_id=trace_id, plan_id=plan_id,
+                   tasks=mgr.plan(GOAL, context=kb_context))
     cp.start_plan(plan_id)
     run_until_settled(bus, gate, cp, plan_id)
 
@@ -238,7 +299,9 @@ def run(*, matrix: bool = False) -> int:
     print(f"\n待主管审批: {blocked['title']}")
 
     # —— Reviewer 零改动复用：挂在 Gate 之后、审批之前 ——
-    reviewer = ReviewerAgent(model)
+    # 带 store：`review_after_gate` 直接调 `reviewer.run(ctx)`，`BaseAgent` 那层
+    # 包装会把 ctx 上的 trace_id 绑好 —— 但 store 是 None 的话这笔账压根不落库。
+    reviewer = ReviewerAgent(model, store=store)
     note = review_after_gate(reviewer, cp, plan_id, host_task=blocked)
     print(f"语义审查: {note.artifacts[0]['content']['conclusion']}")
 

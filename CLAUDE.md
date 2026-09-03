@@ -18,22 +18,6 @@
    或新迁移。业务状态是业务对象自己的字段，不是 Task 状态。
    做不到就停下来问我 —— 那说明抽象错了，不是状态机不够用。
 
-## 回答结尾规范（强制，每次都要执行）
-
-每次回答的最后，必须输出一个 `## 下一步` 段落，只写「可并行（互不阻塞）」一块。
-
-只有同时满足以下全部条件，才能标为可并行：
-- 不写同一个文件；
-- 不同时修改 `contracts/` 下任何文件（契约锁同一时间只允许一个 worktree 持有）；
-- 不共用同一个端口 / 同一份 event_log / 同一个容器名；
-- 后一条不依赖前一条的输出。
-
-格式：`[Track X @ worktree 目录] 动作 ‖ [Track Y @ worktree 目录] 动作`
-若无可并行项，写「无可并行项：原因 xxx」，不要留空，也不要为了凑数硬拆。
-
-**长度约束**：整个 `## 下一步` 不超过 15 行。超了说明拆太细，先归并。
-
-
 ## 决策与讨论上限
 
 **默认动作是执行，不是讨论。**
@@ -72,7 +56,7 @@
 
 ```bash
 python3 -m pytest maos/tests -q    # 全量测试（在仓库根目录执行）
-python3 run.py                     # 场景 1-6 端到端（Scripted 模式，无需任何 key）
+python3 run.py                     # 场景 1-7 端到端（Scripted 模式，无需任何 key）
 ```
 
 **开工自检（每天第一件事，一次工具调用）**：让 Claude 读一次 `scripts/guard_bash.py`。
@@ -82,7 +66,7 @@ python3 run.py                     # 场景 1-6 端到端（Scripted 模式，�
 
 ## 目录结构
 
-```
+```text
 maos/            正式 Python 包
   contracts/       冻结契约：events.py / states.py（禁改）
   core/            store.py（表结构禁改，只许新增表）/ control_plane.py / eventbus.py

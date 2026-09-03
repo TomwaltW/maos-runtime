@@ -118,9 +118,17 @@ def run(*, matrix: bool = False) -> int:
         store, bus, cp, model, worker, gate = build(
             script, matrix=matrix, model=select_model_client(script))
 
-        mgr = ManagerAgent(model)
-        plan_id = cp.create_plan(goal=GOAL, trace_id=new_id("trace"),
-                                 tasks=_with_workdir(mgr.plan(GOAL), workdir))
+        # 先把两个 id 拿到手，再去规划：`mgr.plan()` 跑在 `create_plan` **之前**
+        # （它是 create_plan 的入参），不带着 id 走，这一次规划烧掉的 token 就只能
+        # 落空 trace_id，成为 `unattributed_usage` 里认领不了的一行。带 store 构造
+        # 才落得下这笔账 —— 不带的话 SkillInvoker.store is None，整条记账直接跳过。
+        trace_id, plan_id = new_id("trace"), new_id("plan")
+        mgr = ManagerAgent(model, store=store)
+        cp.create_plan(
+            goal=GOAL, trace_id=trace_id, plan_id=plan_id,
+            tasks=_with_workdir(
+                mgr.plan(GOAL, context={"plan_id": plan_id, "trace_id": trace_id}),
+                workdir))
 
         cp.start_plan(plan_id)
         # coding 任务的验收证据在这一刻真跑出来：DAG 里 testing 依赖 coding，

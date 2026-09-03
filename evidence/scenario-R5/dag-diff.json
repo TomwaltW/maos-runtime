@@ -1,10 +1,20 @@
-# generated at 2026-08-28T10:49:13.678990+00:00 from fa57c97def5a20f1b171bfc412a5d6a3e2f82b0b-dirty
+# generated at 2026-09-02T01:07:30.622996+00:00 from cfe438475f751bb1a7bfe034daf7b2381314888d
 {
   "experiment": "R5 · RAG 有无对照",
   "variable": "MAOS_KB_ENABLED=0 / 1，两段的计划脚本逐字节相同",
+  "kb_funnel": {
+    "kb_doc_total": 17,
+    "same_tenant": 9,
+    "after_prefilter": 5,
+    "by_kind": {
+      "history_case": 1,
+      "policy": 16
+    },
+    "corpus_root": "scenarios/refund"
+  },
   "history_case": {
     "case_id": "case-r5-hist",
-    "plan_id": "plan_c422ef0ee0c0",
+    "plan_id": "plan_de19c8751168",
     "biz_status": "settled",
     "acked_notifications": 1,
     "promoted_doc": {
@@ -15,7 +25,7 @@
     }
   },
   "without_kb": {
-    "plan_id": "plan_bd411e31b1e8",
+    "plan_id": "plan_e28678ae0fd6",
     "plan_state": "FAILED",
     "tasks": [
       "受理多源退款诉求并聚合证据",
@@ -29,24 +39,27 @@
       "refund_payment.refund_payment",
       "refund_intake.notify"
     ],
-    "gate_result": "pass",
-    "finance_gate": "not_triggered",
+    "gate_result": "blocker",
+    "finance_gate": "blocker",
     "rework_count": 0,
     "kb_retrieved_events": 0,
+    "kb_candidate_count": 0,
     "human_approval_stops": [],
-    "biz_status": "submitted",
-    "failed_tasks": [
+    "human_dispositions": [
       {
-        "title": "发起退款并观察网关终态",
-        "error": "LookupError: case=case-r5-nokb 没有 finance_entry，金额未经核算，不许发起付款"
+        "title": "受理多源退款诉求并聚合证据",
+        "await": "human_decision",
+        "approved": false
       }
     ],
+    "biz_status": "submitted",
+    "failed_tasks": [],
     "finance_entries": 0,
     "settled": false,
     "plan_done": false
   },
   "with_kb": {
-    "plan_id": "plan_77f24b152181",
+    "plan_id": "plan_ae58baeb09f9",
     "plan_state": "DONE",
     "tasks": [
       "受理多源退款诉求并聚合证据",
@@ -66,8 +79,16 @@
     "finance_gate": "pass",
     "rework_count": 0,
     "kb_retrieved_events": 1,
+    "kb_candidate_count": 5,
     "human_approval_stops": [
       "核算退款金额并写财务分录"
+    ],
+    "human_dispositions": [
+      {
+        "title": "核算退款金额并写财务分录",
+        "await": "human_approval",
+        "approved": true
+      }
     ],
     "biz_status": "settled",
     "failed_tasks": [],
@@ -84,7 +105,25 @@
       "score": 0.719031,
       "title": "轴承锈蚀全额退款：财务核算不可省",
       "kind": "history_case"
+    },
+    {
+      "doc_id": "kb-policy-tnt-mfg-a-AS-002-v1",
+      "score": 0.410541,
+      "title": "质保期内质量问题全额退",
+      "kind": "policy"
+    },
+    {
+      "doc_id": "kb-policy-tnt-mfg-a-AS-004-v1",
+      "score": 0.15,
+      "title": "经销渠道差异（增渠道商核销，区域经理审批）",
+      "kind": "policy"
+    },
+    {
+      "doc_id": "kb-policy-tnt-mfg-a-AS-001-v1",
+      "score": 0.1,
+      "title": "无理由退货期（30 天）",
+      "kind": "policy"
     }
   ],
-  "conclusion": "关掉检索：计划漏排 ['refund_finance.refund_finance']，Plan 收在 FAILED（第六道闸 not_triggered，业务状态 submitted）；打开检索：命中历史案例补上 ['refund_finance.refund_finance'] 并接成付款的前置，Plan 收在 DONE（第六道闸 pass，业务状态 settled）。"
+  "conclusion": "关掉检索：计划漏排 ['refund_finance.refund_finance']，Plan 收在 FAILED（第六道闸 blocker，业务状态 submitted）；打开检索：命中历史案例补上 ['refund_finance.refund_finance'] 并接成付款的前置，Plan 收在 DONE（第六道闸 pass，业务状态 settled）。"
 }

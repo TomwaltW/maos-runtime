@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import sys
 
 import pytest
 
@@ -24,6 +25,7 @@ from maos.core.store import SqliteStore as CoreSqliteStore
 from maos.core.store import Store as CoreStore
 from maos.store import (
     BACKEND_ENV,
+    PgBackendUnavailable,
     PgStorePort,
     SqliteStorePort,
     StorePort,
@@ -197,15 +199,115 @@ def test_dialect_values(port: SqliteStorePort) -> None:
 
 
 def test_postgres_backend_raises_and_never_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    """本轨最要紧的一条：选 PG 必须当场响，不许悄悄给一个 sqlite。"""
+    """本轨最要紧的一条：选 PG 必须当场响，不许悄悄给一个 sqlite。
+
+    工厂放行 PG 之后改判过一次（`docs/DECISIONS.md`）。原文写的是「选 postgres 必抛」
+    —— 那在工厂无条件拒绝 PG 的年代等价于本条守的属性，放行之后就不再等价：**配了
+    可用 DSN 的机器上它会红**，而红的不是属性坏了，是前提没写在测试里。所以把前提
+    收进测试自己手里：`delenv` 摘掉 DSN，断言就变成一句在四种环境（有驱动 / 无驱动 /
+    配了 DSN / 没配 DSN）下都成立的话 —— **没有可用 PG 时，选 postgres 必须当场抛，
+    且绝不回落 sqlite**。
+
+    守的属性一个字没变，变的是抛错的理由：从「代码没写」变成「这个后端此刻用不了」。
+    对调用方是同一件事 —— 别把结果当真。类型也没变：`PgBackendUnavailable` 仍是
+    `NotImplementedError` 的子类，老调用方的 `except NotImplementedError` 照样接得住。
+    这里不断言报错正文：没装驱动的机器抛的是「没装 psycopg」那条，装了才轮到
+    「没配 DSN」那条，钉正文就等于把这条测试钉死在其中一种环境上。
+    """
     monkeypatch.setenv(BACKEND_ENV, "postgres")
+    monkeypatch.delenv(DSN_ENV, raising=False)
 
     with pytest.raises(NotImplementedError) as err:
         create_store()
 
-    assert "postgres" in str(err.value)
+    assert isinstance(err.value, PgBackendUnavailable), "契约甲钉的就是这个类型"
     monkeypatch.setenv(BACKEND_ENV, "sqlite")
     assert create_store().dialect() == "sqlite", "换回缺省应照常可用"
+
+
+# ---------------------------------------------- 工厂放行 PG 之后新增的四条
+def test_factory_hands_out_a_real_pg_port_when_pg_is_reachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连得上时工厂交出的就是 PG 后端 —— 「可插拔」在公共入口一级成立的全部内容。
+
+    本机没库也得守住这条，所以只把 `connect()` 换成一条假连接：被替掉的恰好只有
+    「连库」这一件事，工厂选谁、返回谁、方言是什么，全是真的。真库上的对照实验在
+    `maos/tests/test_pg_store_live.py`，无库自动 skip。
+    """
+    monkeypatch.setenv(BACKEND_ENV, "postgres")
+    monkeypatch.setenv(DSN_ENV, "postgresql://<user>:<pass>@<host>:<port>/<db>")
+    monkeypatch.setattr(PgStorePort, "connect", lambda self: object())
+
+    port = create_store()
+
+    assert isinstance(port, PgStorePort), "选了 postgres 就得拿到 PG 后端"
+    assert port.dialect() == "postgres", "方言不许是 sqlite —— 那就是静默回落"
+
+
+@pytest.mark.parametrize("broken", ["没配 DSN", "没装驱动"])
+def test_factory_never_falls_back_to_sqlite_when_pg_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    """两种「PG 用不了」都必须当场抛，而且抛的仍是 `NotImplementedError` 的子类。
+
+    「没装驱动」那支模拟的是缺省环境而不是异常环境：本仓库核心零运行时依赖，psycopg
+    是可选依赖，绝大多数机器上它就是没装的。`sys.modules[name] = None` 是让
+    `import name` 抛 ImportError 的标准做法，比卸载包干净。
+
+    失败时故意把拿到的方言打进断言消息 —— 静默回落的全部危险就在于它没有症状，
+    真回落成 sqlite 的那天，报错里得直接写着 `'sqlite'`。
+    """
+    monkeypatch.setenv(BACKEND_ENV, "postgres")
+    if broken == "没配 DSN":
+        monkeypatch.delenv(DSN_ENV, raising=False)
+    else:
+        monkeypatch.setenv(DSN_ENV, "postgresql://<user>:<pass>@<host>:<port>/<db>")
+        monkeypatch.setitem(sys.modules, "psycopg", None)
+
+    try:
+        got = create_store()
+    except NotImplementedError as exc:
+        caught = exc
+    else:
+        pytest.fail(f"PG 用不了（{broken}）却还是返回了 {got.dialect()!r} 后端 —— 静默回落")
+
+    assert isinstance(caught, PgBackendUnavailable), (
+        "契约甲靠这个类型钉着：老调用方的 except NotImplementedError 不许失效"
+    )
+
+
+def test_configured_but_unreachable_pg_raises_without_leaking_the_dsn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """环境里配着 DSN 也照样可能「没有可用 PG」，工厂必须抛，且不许回显口令。
+
+    连的是 127.0.0.1:1：不走 DNS、立刻被拒，测试不会挂在连接超时上。铁律 6 在工厂
+    这条新路径上同样要守 —— 没装驱动的机器走的是另一支（那支根本碰不到 DSN），
+    两支都得干净。
+    """
+    monkeypatch.setenv(BACKEND_ENV, "postgres")
+    monkeypatch.setenv(DSN_ENV, "postgresql://u:s3cr3t@127.0.0.1:1/nope")
+
+    with pytest.raises(NotImplementedError) as err:
+        create_store()
+
+    assert isinstance(err.value, PgBackendUnavailable)
+    assert "s3cr3t" not in str(err.value), "铁律 6：报错不许把连接串带出来"
+
+
+def test_default_path_is_untouched_by_the_pg_opening(monkeypatch: pytest.MonkeyPatch) -> None:
+    """放行 PG 不许动到缺省路径：三种入口仍给 sqlite，DSN 配着也拽不走它。"""
+    monkeypatch.setenv(DSN_ENV, "postgresql://<user>:<pass>@<host>:<port>/<db>")
+
+    monkeypatch.delenv(BACKEND_ENV, raising=False)
+    assert create_store().dialect() == "sqlite", "环境变量没设 → 缺省 sqlite"
+
+    monkeypatch.setenv(BACKEND_ENV, "  SQLite  ")
+    assert create_store().dialect() == "sqlite", "大小写与前后空白照旧忽略"
+
+    monkeypatch.setenv(BACKEND_ENV, "postgres")
+    assert create_store(backend="sqlite").dialect() == "sqlite", "显式传参压过环境变量"
 
 
 def test_postgres_shell_raises_on_every_operation() -> None:

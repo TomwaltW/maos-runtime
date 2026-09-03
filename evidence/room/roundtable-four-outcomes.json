@@ -1,0 +1,729 @@
+# generated at 2026-09-03T07:09:18.918257+00:00 from f4ffa764e1c4ba357295087658b46861e4df1243-dirty
+[
+  {
+    "line": 2,
+    "order_id": "ORD-2026-0004",
+    "reports": [
+      {
+        "agent_id": "refund-intake",
+        "title": "申请受理岗",
+        "data": {
+          "order_id": "ORD-2026-0004",
+          "sku": "SKU-BRG-6204",
+          "amount_paid": 9600.0,
+          "amount_claimed": 9600.0,
+          "over_paid": false,
+          "evidence_count": 1
+        }
+      },
+      {
+        "agent_id": "refund-policy",
+        "title": "规则审核岗",
+        "data": {
+          "decision": "approve",
+          "deciding_rule": null,
+          "matched_rules": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "elapsed_days": 9,
+          "pinned_policy_version": 1,
+          "approver_role": "supervisor",
+          "why": "命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定"
+        }
+      },
+      {
+        "agent_id": "refund-evidence",
+        "title": "证据核验岗",
+        "data": {
+          "items": [
+            {
+              "evidence_id": "ev-01",
+              "kind": "image",
+              "source": "smoke:@smoke:local",
+              "ok": true,
+              "note": ""
+            }
+          ],
+          "required_kinds": [
+            "image"
+          ],
+          "min_count": 1,
+          "gaps": [],
+          "verdict": "complete",
+          "consistency": [
+            {
+              "check": "logistics_signed_before_request",
+              "ok": true,
+              "note": "签收 2026-08-14T14:20:00+00:00 早于申请 2026-08-20T00:00:00+00:00"
+            },
+            {
+              "check": "qc_result_matches_reason",
+              "ok": true,
+              "note": "质检结论 defect 与诉求 quality_defect 相符"
+            },
+            {
+              "check": "evidence_digest_nonempty",
+              "ok": true,
+              "note": "1 份证据 digest 均非空"
+            }
+          ],
+          "unmet": [],
+          "requirement_source": "default",
+          "invocation_id": "51611124e614482a8ed4e364538e85c2"
+        }
+      },
+      {
+        "agent_id": "refund-risk",
+        "title": "风险反欺诈岗",
+        "data": {
+          "level": "low",
+          "score": 10,
+          "reasons": [
+            "同一客户名下有 3 笔订单快照，存在批量退款的可能"
+          ],
+          "signals": {
+            "duplicate_refund": false,
+            "already_refunded": false,
+            "frequency_30d": 1,
+            "amount_ratio": 1.0,
+            "multi_order_same_account": 3,
+            "amount_over_paid": false
+          },
+          "invocation_id": "64b70e4d4995427584f9d52a8147134f"
+        }
+      },
+      {
+        "agent_id": "refund-finance",
+        "title": "财务执行岗",
+        "data": {
+          "preview_ran": true,
+          "amount_approved": "9600.00",
+          "breakdown": {
+            "amount_claimed": "9600.00",
+            "amount_paid": "9600.00",
+            "base": "9600.00",
+            "capped_by_paid": false,
+            "refund_ratio": "1",
+            "gross": "9600.00",
+            "deduct_fee": "0.00",
+            "amount_approved": "9600.00",
+            "policy_version": 1,
+            "applied_rules": [
+              "AS-001@v1",
+              "AS-002@v1",
+              "AS-003@v1"
+            ]
+          },
+          "rule_refs": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "policy_version": 1,
+          "error": null
+        }
+      }
+    ],
+    "verdict": {
+      "case_id": "RC-ORD-2026-0004",
+      "recommend": "approve",
+      "headline": "建议批复 · 核准预演 9600.00 · 请 supervisor 拍板",
+      "reasons": [
+        "申请受理岗：订单 ORD-2026-0004，实付 9600.0，申报 9600.0，随案证据 1 份",
+        "规则审核岗：裁定 approve，依据 无单条规则决定（命中 3 条，政策 v1）",
+        "证据核验岗：核验结论 complete，缺口 0 项，随案材料 1 份",
+        "风险反欺诈岗：风险 low（评分 10），命中 1 条信号",
+        "财务执行岗：核算预演 9600.00（政策 v1），未落账"
+      ],
+      "blockers": [],
+      "approver_role": "supervisor",
+      "amount_preview": "9600.00",
+      "next_command": "/approve RC-ORD-2026-0004"
+    }
+  },
+  {
+    "line": 3,
+    "order_id": "ORD-2026-0005",
+    "reports": [
+      {
+        "agent_id": "refund-intake",
+        "title": "申请受理岗",
+        "data": {
+          "order_id": "ORD-2026-0005",
+          "sku": "SKU-SEAL-772",
+          "amount_paid": 1980.0,
+          "amount_claimed": 1980.0,
+          "over_paid": false,
+          "evidence_count": 0
+        }
+      },
+      {
+        "agent_id": "refund-policy",
+        "title": "规则审核岗",
+        "data": {
+          "decision": "approve",
+          "deciding_rule": null,
+          "matched_rules": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "elapsed_days": 53,
+          "pinned_policy_version": 1,
+          "approver_role": "supervisor",
+          "why": "命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定"
+        }
+      },
+      {
+        "agent_id": "refund-evidence",
+        "title": "证据核验岗",
+        "data": {
+          "items": [],
+          "required_kinds": [
+            "image"
+          ],
+          "min_count": 1,
+          "gaps": [
+            "缺少 image 类证据",
+            "证据份数不足：要求 1 份，实收 0 份"
+          ],
+          "verdict": "missing",
+          "consistency": [
+            {
+              "check": "logistics_signed_before_request",
+              "ok": true,
+              "note": "签收 2026-07-09T11:05:00+00:00 早于申请 2026-08-28T00:00:00+00:00"
+            },
+            {
+              "check": "qc_result_matches_reason",
+              "ok": false,
+              "note": "质检结论 pass 与诉求 quality_defect 不符（期望 defect／fail）"
+            },
+            {
+              "check": "evidence_digest_nonempty",
+              "ok": true,
+              "note": "未收到证据，无可核验的 digest"
+            }
+          ],
+          "unmet": [
+            {
+              "rule_ref": "default:quality_defect",
+              "requirement": "min_evidence_count",
+              "required": 1,
+              "actual": 0,
+              "direction": "not_applied"
+            },
+            {
+              "rule_ref": "default:quality_defect",
+              "requirement": "requires_evidence_kinds",
+              "required": [
+                "image"
+              ],
+              "actual": [],
+              "direction": "not_applied"
+            }
+          ],
+          "requirement_source": "default",
+          "invocation_id": "b9b7738cf23a4f9f80c604535a526a38"
+        }
+      },
+      {
+        "agent_id": "refund-risk",
+        "title": "风险反欺诈岗",
+        "data": {
+          "level": "medium",
+          "score": 30,
+          "reasons": [
+            "同一客户近 30 天内已有 2 笔退款记录，频率偏高",
+            "同一客户名下有 3 笔订单快照，存在批量退款的可能"
+          ],
+          "signals": {
+            "duplicate_refund": false,
+            "already_refunded": false,
+            "frequency_30d": 2,
+            "amount_ratio": 1.0,
+            "multi_order_same_account": 3,
+            "amount_over_paid": false
+          },
+          "invocation_id": "5d4fc033047f4681804a7356017bfab7"
+        }
+      },
+      {
+        "agent_id": "refund-finance",
+        "title": "财务执行岗",
+        "data": {
+          "preview_ran": true,
+          "amount_approved": "1980.00",
+          "breakdown": {
+            "amount_claimed": "1980.00",
+            "amount_paid": "1980.00",
+            "base": "1980.00",
+            "capped_by_paid": false,
+            "refund_ratio": "1",
+            "gross": "1980.00",
+            "deduct_fee": "0.00",
+            "amount_approved": "1980.00",
+            "policy_version": 1,
+            "applied_rules": [
+              "AS-001@v1",
+              "AS-002@v1",
+              "AS-003@v1"
+            ]
+          },
+          "rule_refs": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "policy_version": 1,
+          "error": null
+        }
+      }
+    ],
+    "verdict": {
+      "case_id": "RC-ORD-2026-0005",
+      "recommend": "need_more",
+      "headline": "需补件后再议 · 证据：缺少 image 类证据",
+      "reasons": [
+        "申请受理岗：订单 ORD-2026-0005，实付 1980.0，申报 1980.0，随案证据 0 份",
+        "规则审核岗：裁定 approve，依据 无单条规则决定（命中 3 条，政策 v1）",
+        "证据核验岗：核验结论 missing，缺口 2 项，随案材料 0 份",
+        "风险反欺诈岗：风险 medium（评分 30），命中 2 条信号",
+        "财务执行岗：核算预演 1980.00（政策 v1），未落账"
+      ],
+      "blockers": [
+        "证据：缺少 image 类证据",
+        "证据：证据份数不足：要求 1 份，实收 0 份",
+        "风险：同一客户近 30 天内已有 2 笔退款记录，频率偏高",
+        "风险：同一客户名下有 3 笔订单快照，存在批量退款的可能"
+      ],
+      "approver_role": "supervisor",
+      "amount_preview": "1980.00",
+      "next_command": "补齐材料后重发 /refund ORD-2026-0005 <诉求类型>"
+    }
+  },
+  {
+    "line": 4,
+    "order_id": "ORD-2026-0006",
+    "reports": [
+      {
+        "agent_id": "refund-intake",
+        "title": "申请受理岗",
+        "data": {
+          "order_id": "ORD-2026-0006",
+          "sku": "SKU-CPL-330",
+          "amount_paid": 88000.0,
+          "amount_claimed": 92000.0,
+          "over_paid": true,
+          "evidence_count": 1
+        }
+      },
+      {
+        "agent_id": "refund-policy",
+        "title": "规则审核岗",
+        "data": {
+          "decision": "approve",
+          "deciding_rule": null,
+          "matched_rules": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "elapsed_days": 14,
+          "pinned_policy_version": 1,
+          "approver_role": "supervisor",
+          "why": "命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定"
+        }
+      },
+      {
+        "agent_id": "refund-evidence",
+        "title": "证据核验岗",
+        "data": {
+          "items": [
+            {
+              "evidence_id": "ev-01",
+              "kind": "image",
+              "source": "smoke:@smoke:local",
+              "ok": true,
+              "note": ""
+            }
+          ],
+          "required_kinds": [
+            "image"
+          ],
+          "min_count": 1,
+          "gaps": [],
+          "verdict": "complete",
+          "consistency": [
+            {
+              "check": "logistics_signed_before_request",
+              "ok": true,
+              "note": "签收 2026-08-23T10:15:00+00:00 早于申请 2026-09-02T00:00:00+00:00"
+            },
+            {
+              "check": "qc_result_matches_reason",
+              "ok": true,
+              "note": "质检结论 fail 与诉求 quality_defect 相符"
+            },
+            {
+              "check": "evidence_digest_nonempty",
+              "ok": true,
+              "note": "1 份证据 digest 均非空"
+            }
+          ],
+          "unmet": [],
+          "requirement_source": "default",
+          "invocation_id": "61bf7100bc8c4069adc40c750914e08d"
+        }
+      },
+      {
+        "agent_id": "refund-risk",
+        "title": "风险反欺诈岗",
+        "data": {
+          "level": "high",
+          "score": 100,
+          "reasons": [
+            "订单 ORD-2026-0006 在退款底账里已有处理中或已退成的记录，属重复退款申请",
+            "订单 ORD-2026-0006 已有一笔退款到账（settled），本次是对同一单的二次退款",
+            "同一客户近 30 天内已有 3 笔退款记录，频率偏高",
+            "申报金额 92000.00 高于订单实付 88000.00（比值 1.05），核算会按实付封顶",
+            "同一客户名下有 3 笔订单快照，存在批量退款的可能"
+          ],
+          "signals": {
+            "duplicate_refund": true,
+            "already_refunded": true,
+            "frequency_30d": 3,
+            "amount_ratio": 1.0454545454545454,
+            "multi_order_same_account": 3,
+            "amount_over_paid": true
+          },
+          "invocation_id": "dbeb1bc807894e509fea0571e746b9c0"
+        }
+      },
+      {
+        "agent_id": "refund-finance",
+        "title": "财务执行岗",
+        "data": {
+          "preview_ran": true,
+          "amount_approved": "88000.00",
+          "breakdown": {
+            "amount_claimed": "92000.00",
+            "amount_paid": "88000.00",
+            "base": "88000.00",
+            "capped_by_paid": true,
+            "refund_ratio": "1",
+            "gross": "88000.00",
+            "deduct_fee": "0.00",
+            "amount_approved": "88000.00",
+            "policy_version": 1,
+            "applied_rules": [
+              "AS-001@v1",
+              "AS-002@v1",
+              "AS-003@v1"
+            ]
+          },
+          "rule_refs": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "policy_version": 1,
+          "error": null
+        }
+      }
+    ],
+    "verdict": {
+      "case_id": "RC-ORD-2026-0006",
+      "recommend": "escalate",
+      "headline": "建议升级审批 · 风险 high · 请 finance_manager 复核",
+      "reasons": [
+        "申请受理岗：订单 ORD-2026-0006，实付 88000.0，申报 92000.0，随案证据 1 份，申报高于实付",
+        "规则审核岗：裁定 approve，依据 无单条规则决定（命中 3 条，政策 v1）",
+        "证据核验岗：核验结论 complete，缺口 0 项，随案材料 1 份",
+        "风险反欺诈岗：风险 high（评分 100），命中 5 条信号",
+        "财务执行岗：核算预演 88000.00（政策 v1），未落账"
+      ],
+      "blockers": [
+        "风险：订单 ORD-2026-0006 在退款底账里已有处理中或已退成的记录，属重复退款申请",
+        "风险：订单 ORD-2026-0006 已有一笔退款到账（settled），本次是对同一单的二次退款",
+        "风险：同一客户近 30 天内已有 3 笔退款记录，频率偏高",
+        "风险：申报金额 92000.00 高于订单实付 88000.00（比值 1.05），核算会按实付封顶",
+        "风险：同一客户名下有 3 笔订单快照，存在批量退款的可能"
+      ],
+      "approver_role": "finance_manager",
+      "amount_preview": "88000.00",
+      "next_command": "/approve RC-ORD-2026-0006"
+    }
+  },
+  {
+    "line": 5,
+    "order_id": "ORD-2026-0006",
+    "reports": [
+      {
+        "agent_id": "refund-intake",
+        "title": "申请受理岗",
+        "data": {
+          "order_id": "ORD-2026-0006",
+          "sku": "SKU-CPL-330",
+          "amount_paid": 88000.0,
+          "amount_claimed": 88000.0,
+          "over_paid": false,
+          "evidence_count": 1
+        }
+      },
+      {
+        "agent_id": "refund-policy",
+        "title": "规则审核岗",
+        "data": {
+          "decision": "approve",
+          "deciding_rule": null,
+          "matched_rules": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "elapsed_days": 15,
+          "pinned_policy_version": 1,
+          "approver_role": "supervisor",
+          "why": "命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定"
+        }
+      },
+      {
+        "agent_id": "refund-evidence",
+        "title": "证据核验岗",
+        "data": {
+          "items": [
+            {
+              "evidence_id": "ev-01",
+              "kind": "image",
+              "source": "smoke:@smoke:local",
+              "ok": true,
+              "note": ""
+            }
+          ],
+          "required_kinds": [
+            "image"
+          ],
+          "min_count": 1,
+          "gaps": [],
+          "verdict": "complete",
+          "consistency": [
+            {
+              "check": "logistics_signed_before_request",
+              "ok": true,
+              "note": "签收 2026-08-23T10:15:00+00:00 早于申请 2026-09-03T00:00:00+00:00"
+            },
+            {
+              "check": "qc_result_matches_reason",
+              "ok": true,
+              "note": "质检结论 fail 与诉求 quality_defect 相符"
+            },
+            {
+              "check": "evidence_digest_nonempty",
+              "ok": true,
+              "note": "1 份证据 digest 均非空"
+            }
+          ],
+          "unmet": [],
+          "requirement_source": "default",
+          "invocation_id": "a4cf5f775cbf42b0b0eb6d2d51281b93"
+        }
+      },
+      {
+        "agent_id": "refund-risk",
+        "title": "风险反欺诈岗",
+        "data": {
+          "level": "high",
+          "score": 100,
+          "reasons": [
+            "订单 ORD-2026-0006 在退款底账里已有处理中或已退成的记录，属重复退款申请",
+            "订单 ORD-2026-0006 已有一笔退款到账（settled），本次是对同一单的二次退款",
+            "同一客户近 30 天内已有 3 笔退款记录，频率偏高",
+            "同一客户名下有 3 笔订单快照，存在批量退款的可能"
+          ],
+          "signals": {
+            "duplicate_refund": true,
+            "already_refunded": true,
+            "frequency_30d": 3,
+            "amount_ratio": 1.0,
+            "multi_order_same_account": 3,
+            "amount_over_paid": false
+          },
+          "invocation_id": "915515280749435093fa594dff1752c3"
+        }
+      },
+      {
+        "agent_id": "refund-finance",
+        "title": "财务执行岗",
+        "data": {
+          "preview_ran": true,
+          "amount_approved": "88000.00",
+          "breakdown": {
+            "amount_claimed": "88000.00",
+            "amount_paid": "88000.00",
+            "base": "88000.00",
+            "capped_by_paid": false,
+            "refund_ratio": "1",
+            "gross": "88000.00",
+            "deduct_fee": "0.00",
+            "amount_approved": "88000.00",
+            "policy_version": 1,
+            "applied_rules": [
+              "AS-001@v1",
+              "AS-002@v1",
+              "AS-003@v1"
+            ]
+          },
+          "rule_refs": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "policy_version": 1,
+          "error": null
+        }
+      }
+    ],
+    "verdict": {
+      "case_id": "RC-ORD-2026-0006",
+      "recommend": "escalate",
+      "headline": "建议升级审批 · 风险 high · 请 finance_manager 复核",
+      "reasons": [
+        "申请受理岗：订单 ORD-2026-0006，实付 88000.0，申报 88000.0，随案证据 1 份",
+        "规则审核岗：裁定 approve，依据 无单条规则决定（命中 3 条，政策 v1）",
+        "证据核验岗：核验结论 complete，缺口 0 项，随案材料 1 份",
+        "风险反欺诈岗：风险 high（评分 100），命中 4 条信号",
+        "财务执行岗：核算预演 88000.00（政策 v1），未落账"
+      ],
+      "blockers": [
+        "风险：订单 ORD-2026-0006 在退款底账里已有处理中或已退成的记录，属重复退款申请",
+        "风险：订单 ORD-2026-0006 已有一笔退款到账（settled），本次是对同一单的二次退款",
+        "风险：同一客户近 30 天内已有 3 笔退款记录，频率偏高",
+        "风险：同一客户名下有 3 笔订单快照，存在批量退款的可能"
+      ],
+      "approver_role": "finance_manager",
+      "amount_preview": "88000.00",
+      "next_command": "/approve RC-ORD-2026-0006"
+    }
+  },
+  {
+    "line": 6,
+    "order_id": "ORD-2026-0005",
+    "reports": [
+      {
+        "agent_id": "refund-intake",
+        "title": "申请受理岗",
+        "data": {
+          "order_id": "ORD-2026-0005",
+          "sku": "SKU-SEAL-772",
+          "amount_paid": 1980.0,
+          "amount_claimed": 1980.0,
+          "over_paid": false,
+          "evidence_count": 0
+        }
+      },
+      {
+        "agent_id": "refund-policy",
+        "title": "规则审核岗",
+        "data": {
+          "decision": "reject",
+          "deciding_rule": "AS-001@v1",
+          "matched_rules": [
+            "AS-001@v1",
+            "AS-002@v1",
+            "AS-003@v1"
+          ],
+          "elapsed_days": 58,
+          "pinned_policy_version": 1,
+          "approver_role": "supervisor",
+          "why": "AS-001@v1 窗口 30 天，第 58 天申请，58 > 30"
+        }
+      },
+      {
+        "agent_id": "refund-evidence",
+        "title": "证据核验岗",
+        "data": {
+          "items": [],
+          "required_kinds": [],
+          "min_count": 0,
+          "gaps": [],
+          "verdict": "not_required",
+          "consistency": [
+            {
+              "check": "logistics_signed_before_request",
+              "ok": true,
+              "note": "签收 2026-07-09T11:05:00+00:00 早于申请 2026-09-02T00:00:00+00:00"
+            },
+            {
+              "check": "qc_result_matches_reason",
+              "ok": true,
+              "note": "质检结论未提供，或该诉求类型没有期望的质检结论，跳过"
+            },
+            {
+              "check": "evidence_digest_nonempty",
+              "ok": true,
+              "note": "未收到证据，无可核验的 digest"
+            }
+          ],
+          "unmet": [],
+          "requirement_source": "none",
+          "invocation_id": "fb2ba46bd21e49da9bde6b1136ada9a9"
+        }
+      },
+      {
+        "agent_id": "refund-risk",
+        "title": "风险反欺诈岗",
+        "data": {
+          "level": "medium",
+          "score": 30,
+          "reasons": [
+            "同一客户近 30 天内已有 3 笔退款记录，频率偏高",
+            "同一客户名下有 3 笔订单快照，存在批量退款的可能"
+          ],
+          "signals": {
+            "duplicate_refund": false,
+            "already_refunded": false,
+            "frequency_30d": 3,
+            "amount_ratio": 1.0,
+            "multi_order_same_account": 3,
+            "amount_over_paid": false
+          },
+          "invocation_id": "8b131bb118ba4111a59a39112f57d7f5"
+        }
+      },
+      {
+        "agent_id": "refund-finance",
+        "title": "财务执行岗",
+        "data": {
+          "preview_ran": false,
+          "amount_approved": null,
+          "breakdown": null,
+          "rule_refs": null,
+          "policy_version": null,
+          "error": null
+        }
+      }
+    ],
+    "verdict": {
+      "case_id": "RC-ORD-2026-0005",
+      "recommend": "reject",
+      "headline": "不建议批复 · AS-001@v1 窗口 30 天，第 58 天申请，58 > 30",
+      "reasons": [
+        "申请受理岗：订单 ORD-2026-0005，实付 1980.0，申报 1980.0，随案证据 0 份",
+        "规则审核岗：裁定 reject，依据 AS-001@v1（命中 3 条，政策 v1）",
+        "证据核验岗：核验结论 not_required，缺口 0 项，随案材料 0 份",
+        "风险反欺诈岗：风险 medium（评分 30），命中 2 条信号",
+        "财务执行岗：未做核算预演（裁定驳回或前置不成立），无金额"
+      ],
+      "blockers": [
+        "风险：同一客户近 30 天内已有 3 笔退款记录，频率偏高",
+        "风险：同一客户名下有 3 笔订单快照，存在批量退款的可能"
+      ],
+      "approver_role": "supervisor",
+      "amount_preview": "",
+      "next_command": "/reject RC-ORD-2026-0005 <理由>"
+    }
+  }
+]

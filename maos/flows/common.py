@@ -41,17 +41,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from maos.agents.testing import make_test_report
+from maos.agents.testing import make_test_report, record_seeded_artifact
 from maos.artifacts import KIND_PATCH_SET, KIND_TEST_REPORT
 from maos.contracts.events import new_id
 from maos.contracts.states import PlanState, TaskState
 from maos.core.control_plane import ControlPlane
-from maos.core.eventbus import EventBus, InMemoryEventBus
+from maos.core.eventbus import EventBus, create_event_bus
 from maos.core.store import SqliteStore
 from maos.model.client import ModelClient, ScriptedModelClient
 from maos.runtime.gate import ReviewerGate
 from maos.runtime.worker import WorkerRuntime
 from maos.tools.sandbox import (
+    MODE_NOT_RUN,
     prepare_sandbox_workdir,
     sandbox_git_apply,
     sandbox_pytest_run,
@@ -83,10 +84,18 @@ def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | 
     script：喂给缺省 ScriptedModelClient 的「关键字 -> 应答」表。
     model ：传实例则原样注入（场景 2 的 FlakyModel 由此进入），不再按 script 构造。
     matrix：True 时事件总线经 HiClaw(Matrix) 转发，不可用则自动降级。
+
+    总线由 `core/eventbus.py::create_event_bus` 按 `MAOS_EVENTBUS_BACKEND` 造。
+    **不设这个环境变量时它返回的就是 `InMemoryEventBus`**，所以「裸 clone 不用任何
+    key 跑到 7/7」这条卖点一个字节都没动；设了才走 RocketMQ，并接受它的 drain 地板。
+
+    接这一行之前，`create_event_bus` 全仓只有测试调用过 —— 于是「总线层可替换」
+    是被证过的，而**生产路径从没走过那个开关**：可替换性停在测试里，演示链路仍然
+    写死内存版。差别不在默认行为（逐字节相同），在于这句话到底能不能说。
     """
     store = SqliteStore()
     store.init_schema()
-    bus = InMemoryEventBus()
+    bus = create_event_bus()
     if matrix:
         bus = _wrap_matrix(bus)
     cp = ControlPlane(store, bus)
@@ -227,6 +236,12 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
 
     补丁打不上按 ``tool_error`` 上报，不按「0 条失败」——本轮压根没有测试证据，
     而 Gate 对这两者的判定完全不同（铁律：tool_error 与 failed 分开报）。
+
+    两条出口都带上执行路径（``sandbox_mode`` / ``degraded_reason``）。这是本函数
+    存在感最低、也最容易漏的一段：``sandbox_pytest_run`` 早就把它们返回了，可这里
+    从前只逐字段搬那六个，于是**演示当天那份报告到底是不是在容器里跑的，证据里查不到**
+    —— 「容器隔离」只在日志里成立。补丁没落进沙箱那一条同样要报：pytest 压根没被
+    调用过，``not-run`` 说的就是这件事，它与「容器里跑挂了」不是一回事。
     """
     shutil.rmtree(workdir, ignore_errors=True)
     prepare_sandbox_workdir(workdir)
@@ -234,9 +249,13 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
     applied = sandbox_git_apply(patch_set, workdir)
     if not applied.get("ok"):
         err = applied.get("error") or {}
-        return make_test_report(tool_error=(
-            f"补丁没能落进沙箱（stage={err.get('stage')} path={err.get('path')}）: "
-            f"{err.get('message')}"))
+        return make_test_report(
+            tool_error=(
+                f"补丁没能落进沙箱（stage={err.get('stage')} path={err.get('path')}）: "
+                f"{err.get('message')}"),
+            sandbox_mode=MODE_NOT_RUN,
+            degraded_reason="补丁没落进沙箱，pytest 未被调用",
+        )
 
     raw = sandbox_pytest_run(workdir)
     return make_test_report(
@@ -246,6 +265,9 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
         cases=raw.get("cases") or (),
         duration=raw.get("duration") or 0.0,
         tool_error=raw.get("tool_error"),
+        summary=str(raw.get("summary") or ""),
+        sandbox_mode=raw.get("sandbox_mode"),
+        degraded_reason=raw.get("degraded_reason"),
     )
 
 
@@ -254,6 +276,13 @@ def patch_verifier(store, workdir: str) -> Callable[[object, str], None]:
 
     只认「同 attempt 有 patch_set、且同 attempt 还没有 test_report」这一种形状 ——
     Testing 节点自己产的报告走的是 ``test.verify``，不从这里过。
+
+    报告落库之后补一条 ``ArtifactSeeded``（``agents/testing.py::
+    record_seeded_artifact``）：这条路绕开 ``on_task_result``，从前因此在
+    ``trace.json`` 里留一份 ``provenance="unknown"`` 的产物 —— 一份**真跑出来的**
+    报告被记成「指不到是谁产的」，评委只能靠 ``sandbox.mode`` 反推。现在事件里
+    点名了本函数，``provenance`` 变成 ``artifact_seeded``，而「走的是旁路」这件事
+    照旧写在脸上（不冒充 ``task_result``）。
     """
     def _verify(_cp, plan_id: str) -> None:
         for task in store.list_tasks(plan_id):
@@ -268,11 +297,24 @@ def patch_verifier(store, workdir: str) -> Callable[[object, str], None]:
                 continue
 
             report = verify_patch_in_sandbox(patch["content"], workdir)
+            artifact_id = new_id("art")
             store.insert_artifact({
-                "artifact_id": new_id("art"), "task_id": task["task_id"],
+                "artifact_id": artifact_id, "task_id": task["task_id"],
                 "plan_id": plan_id, "kind": KIND_TEST_REPORT,
                 "version": task["attempt"], "content": report,
             })
+            record_seeded_artifact(
+                store, plan_id=plan_id, task_id=task["task_id"],
+                artifact_id=artifact_id, kind=KIND_TEST_REPORT,
+                version=task["attempt"], trace_id=task.get("trace_id") or "",
+                source="maos.flows.common.patch_verifier",
+                reason=("演示装配层的 before_review 钩子当场跑的沙箱回归："
+                        "DAG 是 requirement->architecture->coding->testing，coding 过闸"
+                        "那一刻 testing 还没派出去，报告不可能由 on_task_result 带回来"),
+                # 这份是**真跑**出来的，mode 由沙箱回报（container / subprocess /
+                # not-run），不是常量；scripted=False 与预置件那条路划清界限。
+                extra={"sandbox_mode": report.get("sandbox_mode"), "scripted": False},
+            )
             log.info("[%s] attempt=%d 沙箱回归：%s", task["task_id"], task["attempt"],
                      report["tool_error"] or report["summary"])
     return _verify

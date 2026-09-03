@@ -16,11 +16,16 @@ IO 契约（附录 B，逐字段）：
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
+from maos.core.store import record_model_failure, record_model_usage
 from maos.model.client import Tier
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
+
+#: 落 ``model_usage`` 时写进 ``call_site`` 列的值。
+CALL_SITE = "maos/skills/builtin/req_normalize.py::ReqNormalizeSkill.run"
 
 SYSTEM = """你是需求归一化助手，把用户目标改写成一句可执行、可验收的目标，并抽出约束与验收建议。
 只输出 JSON，不要任何解释文字，格式：
@@ -73,11 +78,41 @@ class ReqNormalizeSkill(Skill):
         if ctx.model is None:
             return self._fallback(goal, context)
 
-        raw = ctx.model.complete(
-            system=SYSTEM,
-            user=self._build_prompt(goal, context),
-            tier=ctx.extras.get("tier") or Tier.STRONG,
-        ).text
+        # 接住整个 ModelResponse 再取 .text：tokens_in/out 原先在这一行被丢掉。
+        # 归属键从 extras 取 —— invoker 把 plan_id / task_id / trace_id 一路带到这里
+        # （见 skills/invoker.py 的 SkillContext 构造），不需要另造一个 Run id。
+        tier = ctx.extras.get("tier") or Tier.STRONG
+        started = time.perf_counter()
+        try:
+            resp = ctx.model.complete(
+                system=SYSTEM,
+                user=self._build_prompt(goal, context),
+                tier=tier,
+            )
+        except Exception as exc:
+            # 失败也要留账（T54）：口径同 core/store.py::record_model_failure ——
+            # 不往 model_usage 编 0 token，落进不谈 token 的失败表，异常照旧上抛。
+            record_model_failure(
+                ctx.store, exc,
+                agent_role=getattr(ctx.identity, "role", "") or "unknown",
+                call_site=CALL_SITE, tier=tier,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                model=getattr(ctx.model, "model", "") or "",
+                trace_id=ctx.extras.get("trace_id") or "",
+                plan_id=ctx.extras.get("plan_id") or "",
+                task_id=ctx.extras.get("task_id"),
+            )
+            raise
+        record_model_usage(
+            ctx.store, resp, client=ctx.model,
+            agent_role=getattr(ctx.identity, "role", "") or "unknown",
+            call_site=CALL_SITE, tier=tier,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            trace_id=ctx.extras.get("trace_id") or "",
+            plan_id=ctx.extras.get("plan_id") or "",
+            task_id=ctx.extras.get("task_id"),
+        )
+        raw = resp.text
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:

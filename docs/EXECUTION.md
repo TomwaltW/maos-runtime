@@ -47,9 +47,22 @@
 >
 > ### 5. 手册已写、但仓库尚未落地的地基（记账，勿当既成事实）
 >
-> - **P1 第 7 步的 `maos/store/port.py`（StorePort 抽象）从未落地**，`maos/store/` 目录不存在。
->   P5 的「RAG 后端可插拔 SQLite / Postgres+pgvector / PolarDB」**没有地基**。
->   不阻塞退款域本轮，但 **P5 之前必须补**。见 `docs/BACKLOG.md`。
+> - ~~**P1 第 7 步的 `maos/store/port.py`（StorePort 抽象）从未落地**，`maos/store/` 目录不存在。~~
+>   ✅ **已闭环**（2026-08-31 复核）：`maos/store/` 现有 `port.py` / `sqlite_store.py` /
+>   `pg_store.py` / `pg_schema.sql`，P5 的「RAG 后端可插拔」有地基了。
+>   仍未闭环的是**退款域**那一截 —— `maos/domain/refund/objects.py` 取 `SqliteStore`
+>   的私有属性，整层仍绑死 SQLite，见 `docs/BACKLOG.md ## task-T26`。
+>
+> ### 6. 正文里的 `7/7 PASS` 是 v4 定稿时的口径，核验器现为 **8 项**
+>
+> `scripts/verify.py` 在 v4 定稿时是 7 项；第 8 项 `cost-attribution`（模型用量归到
+> Run id）于 2026-08-30 落地。**正文逐字保真，所以下面四处的 `7/7` 一个字没改**，
+> 读的时候按 8 项换算：Phase 6 步骤 1 的示例输出、Phase 6「验收」的 `verify.py` 注释、
+> Phase 7 Demo 分镜 `04:00` 那一镜、附录「评审四维映射」表的 Evidence Bundle 行。
+>
+> 当前实测（2026-08-31，基线 `dd3edff`）：主机与容器内各跑一次，两次都是
+> `RESULT: 8/8 PASS`、exit=0，证据来源 8 束（场景 1–7 + R5）。
+> 逐项读数以 `README.md` §3 那段为准 —— 那一段是刷新的，本文件不是。
 
 ---
 
@@ -82,7 +95,7 @@ v4 的改动全部指向第 2、3 条，且**采取"加轨道"而非"换轨道"*
 
 **每个 Phase 开一个 Claude Code 会话**，kickoff prompt 统一用：
 
-```
+```text
 读取仓库根目录的 CLAUDE.md 和 docs/EXECUTION.md（本手册 v4）。
 
 执行 Phase <N>，严格按其中的步骤、验收标准和禁区执行。
@@ -135,6 +148,22 @@ v4 的改动全部指向第 2、3 条，且**采取"加轨道"而非"换轨道"*
 
 理由：评委三段建议的核心诉求就三个字——**可核验**。RAG 对照证明"知识影响了规划"，verify.py 证明"这一切能被别人独立重放"，settled guard 证明"你知道权威边界在哪"。其余都是丰满度。
 
+> **以下非手册原文 · 2026-08-31（基线 `dd3edff`）实际执行回填。**
+> 上面这张表是 D1 写死的预案；七天跑完，**六项里实际只动了两项**，四项一个都没砍。
+> 判据是当场 `ls` / `grep` / `git log` 出来的，不是回忆。
+>
+> | 砍序 | 预案 | 实际 | 判据 |
+> | :-- | :-- | :-- | :-- |
+> | 1 | `obs/otel.py` 真 span | ✅ **砍了** | `maos/obs/` 只有 `trace.py`，全仓 `grep otel` 仅剩一条测试名 `test_every_span_has_otel_fields`（span 字段与 OTel 对齐，但不产 OTLP） |
+> | 2 | 软件域场景 4 | ❌ **没砍** | `maos/flows/scenario_4.py` 在，且在 `DEFAULT_SCENARIOS = (1,…,7)` 里，`run.py` 缺省就跑 |
+> | 3 | PolarDB 上云 | ❌ **没砍，而且真上了云** | 不是降级 Docker 了事：`deploy/polardb-live.md` 是**真实 PolarDB 实例**上的逐条记录（含没跑通的），`deploy/polardb.md` 才是本机 Docker 那一档 |
+> | 4 | 政策版本对照 R6 | ❌ **没砍** | `maos/flows/contrast.py` 的 `("R6", "policy_version", …)`，产 `evidence/contrast-R6/` |
+> | 5 | 渠道对照 R4 | ❌ **没砍** | 同上，`("R4", "channel", …)`；租户对照 R3 也在 |
+> | 6 | 软件域场景 3 的 reject 补偿 | ✅ **砍了**（按预案，不重复） | `scenario_3.py` 只演 `hq.decide(..., approved=True)`；`/reject` → 补偿这条路在退款域 `scenario_7.py` 走完整 |
+>
+> 「永不砍」五项**一项都没动**：settled guard、R5 对照、Evidence Bundle + `verify.py`、
+> 退款顺利/失败两场（= 场景 6 / 7）、软件域场景 1 与 2，全部在且被 `verify.py` 覆盖。
+
 ---
 
 ## 0.C 排期总表
@@ -154,15 +183,33 @@ v4 的改动全部指向第 2、3 条，且**采取"加轨道"而非"换轨道"*
 
 **落后 ≥ 半天** → 立刻执行 §0.B 砍序表，不拖到明天。
 
+> **以下非手册原文 · 2026-08-31（基线 `dd3edff`）实际进度回填。**
+> 上表的「状态」列是 D2 那天写下的原样（P1 那格的「今天」指的是 8.27），本轮不改它。
+> 实际进度以下表为准 —— 日期取自 `git log --grep='(pN)'` 的首末提交日，落点取自当场 `ls`：
+>
+> | Phase | 计划 | 实际提交区间 | 状态 | 落点 |
+> | :-- | :-- | :-- | :-- | :-- |
+> | P0 | D1 · 8.26 | 08-26 → 08-28 | ✅ 已完成 | 仓库重组；`docs/hiclaw-probe.md` |
+> | P1 | D2 · 8.27 | 08-27 → 08-29 | ✅ 已完成 | `maos/skills/`、`maos/model/client.py`、`maos/store/port.py` |
+> | P2 | D3 · 8.28 | 08-28 | ✅ 已完成 | `maos/tools/sandbox.py`；11 角色带 Identity、10 个进 `AGENT_POOL` |
+> | P3 | D4 · 8.29 | 08-28 | ✅ 已完成 | `maos/domain/refund/`；settled guard；`scenario_6.py` |
+> | P4 | D5 · 8.30 | 08-28 → 08-29 | ✅ 已完成 | `scenario_7.py` replan + 补偿；`hiclaw/matrix_bus.py`；`evidence/room/` 五图 + 41 条 |
+> | P5 | D6 · 8.31 | 08-28 → 08-30 | ✅ 已完成 | `maos/kb/`（两阶段检索 + R5 对照 + 晋升） |
+> | P6 | D7 · 9.1 | 08-29 → 08-30 | ✅ 已完成 | `maos/obs/trace.py`、`scripts/verify.py`（8 项）、`deploy/docker-compose.yml` |
+> | P7 | D8 · 9.2 | 08-29 → 08-31 | 🔄 **进行中**（整合轮 15） | `docs/demo-script.md`、`docs/submission-checklist.md`、`docs/ppt-outline.md`、`deploy/` 各手册 |
+>
+> **实际比排期快了约两天**（P6 在 8.30 就收口，计划是 9.1），所以 §0.B 砍序表始终没被
+> 「落后 ≥ 半天」这条触发 —— 六项里砍掉的两项是主动取舍，不是赶工削的。
+
 ---
 
 ## Phase 1（D2 · 8.27）Skill 层 + 真模型客户端 + StorePort
 
-### 目标
+### 目标（Phase 1）
 
 Skill 从权限字符串变成实体层；模型换真 LLM；**为业务域和 RAG 预留存储抽象**。
 
-### 步骤
+### 步骤（Phase 1）
 
 1. `maos/skills/contract.py`：
 
@@ -216,7 +263,7 @@ Skill 从权限字符串变成实体层；模型换真 LLM；**为业务域和 R
 8. 新增测试 `maos/tests/test_skills.py`：注册/取版本/越权拒绝/失败策略 retry 生效/SkillInvoked 事件落库/invocation_id 非空，≥6 条。
    新增 `maos/tests/test_store_port.py`：SQLite 后端的 execute/query/fts_search 基本行为，≥3 条。
 
-### 验收
+### 验收（Phase 1）
 
 ```bash
 python -m pytest maos/tests -q                    # 旧 9 条 + 新 ≥9 条全绿
@@ -225,9 +272,9 @@ MAOS_LLM_API_KEY=... python run.py                # 有 key：场景 1 真模型
 sqlite3 <db> "select count(*) from event_log where event_type='SkillInvoked'"   # >0
 ```
 
-### 提交
+### 提交（Phase 1）
 
-```
+```text
 feat(p1): skill contract/registry/invoker + real LLM client + StorePort abstraction
 ```
 
@@ -235,11 +282,11 @@ feat(p1): skill contract/registry/invoker + real LLM client + StorePort abstract
 
 ## Phase 2（D3 · 8.28）沙箱真实工具链 + 补全四个 Agent（软件域封版）
 
-### 目标
+### 目标（Phase 2）
 
 补丁是真补丁、测试是真测试；六角色到齐。**本 Phase 结束后软件域封版，后面不再动它。**
 
-### 步骤
+### 步骤（Phase 2）
 
 1. `maos/tools/port.py`：`@dataclass ToolPort`：tool_name / entrypoint / param_schema / return_schema / scope / retry / idempotency / audit(bool) / degrade(str)。每次调用写 `event_log(event_type="ToolInvoked")`，同样返回 `invocation_id`。
 
@@ -263,7 +310,7 @@ feat(p1): skill contract/registry/invoker + real LLM client + StorePort abstract
 
 7. 更新场景 1/2：Plan DAG 变为 `requirement → architecture → coding → testing`（reviewer 挂在 Gate 后、审批前）。场景 2 的返工改为第一轮故意给不完整契约导致真实用例挂，findings 喂回后第二轮修好。
 
-### 验收
+### 验收（Phase 2）
 
 ```bash
 python -m pytest maos/tests -q
@@ -272,9 +319,9 @@ MAOS_LLM_API_KEY=... python run.py --scenario 2     # 第一轮真实用例挂 �
 git -C /tmp/<sandbox-dir> log --oneline             # 真实 apply 记录
 ```
 
-### 提交
+### 提交（Phase 2）
 
-```
+```text
 feat(p2): sandbox git/pytest toolports, fixture repo, 4 agents, real-report gate
 ```
 
@@ -282,7 +329,7 @@ feat(p2): sandbox git/pytest toolports, fixture repo, 4 agents, real-report gate
 
 ## Phase 3（D4 · 8.29）退款业务纵切（上）：对象层 + Skill + settled guard
 
-### 目标
+### 目标（Phase 3）
 
 证明**同一编排内核能推动一个真实企业业务**。本 Phase 跑通顺利路径。
 
@@ -291,7 +338,7 @@ feat(p2): sandbox git/pytest toolports, fixture repo, 4 agents, real-report gate
 - `contracts/states.py` **不许加任何新状态、新迁移**。退款流程必须用现有状态机表达（PENDING/RUNNING/AWAITING_REVIEW/BLOCKED/DONE/FAILED + 已有迁移）。做不到就停下来问我，不要自己加状态——退款域的业务状态是**业务对象自己的字段**，不是 Task 状态。这个区分是整个论证的核心。
 - 不许改 `store.py` 现有表，只新增。
 
-### 步骤
+### 步骤（Phase 3）
 
 1. **`maos/domain/refund/schema.sql`：业务对象层（全部新增表）**
 
@@ -395,7 +442,7 @@ feat(p2): sandbox git/pytest toolports, fixture repo, 4 agents, real-report gate
 
    > 入库注：仓库实际入口为 `--scenario 6`，见文件头「入库说明 §1」。
 
-   ```
+   ```text
    多源诉求(工单+客服记录+图片证据)
      → refund.intake（去重聚合）
      → Manager 规划 DAG
@@ -418,7 +465,7 @@ feat(p2): sandbox git/pytest toolports, fixture repo, 4 agents, real-report gate
    - `business_ref` 引用完整性
    - 退款域跑完 Task 状态迁移全部落在既有状态机内（断言无新状态）
 
-### 验收
+### 验收（Phase 3）
 
 ```bash
 python -m pytest maos/tests -q
@@ -432,9 +479,9 @@ grep -rn "biz_status.*=.*'settled'" maos/ | grep -v guard.py | grep -v observe
 #   → 必须无输出（无旁路写入）
 ```
 
-### 提交
+### 提交（Phase 3）
 
-```
+```text
 feat(p3): refund domain objects, 6 skills, gateway toolport, settled guard
 ```
 
@@ -442,11 +489,11 @@ feat(p3): refund domain objects, 6 skills, gateway toolport, settled guard
 
 ## Phase 4（D5 · 8.30）退款域（下）：失败路径 + replan + 补偿 + Matrix 审批
 
-### 目标
+### 目标（Phase 4）
 
 **失败路径的价值高于顺利路径**——它展示 HITL 和补偿不是 PPT 上的框。同时把审批搬进 Matrix 房间。
 
-### 步骤
+### 步骤（Phase 4）
 
 1. **补偿回滚**（复用 v3 设计，落到退款域）：
 
@@ -463,7 +510,7 @@ feat(p3): refund domain objects, 6 skills, gateway toolport, settled guard
 
    > 入库注：仓库实际入口为 `--scenario 7`，见文件头「入库说明 §1」。
 
-   ```
+   ```text
    诉求聚合 → 政策裁定通过 → 财务核算 → 主管审批通过
      → payment.execute → 网关返 <可重试错误码>（processing 卡住）
      → payment.observe 轮询超时 → findings
@@ -490,25 +537,41 @@ feat(p3): refund domain objects, 6 skills, gateway toolport, settled guard
 
 5. 新增测试（≥6 条）：MatrixEventBus 降级模式行为与 inner bus 完全一致；审批命令解析（合法/非法/越权）；replan 触发三种边界 + 上限生效；reject 触发补偿且 `compensation_record` 落库；补偿后 `biz_status='compensated'` 且**无 settled 记录**。
 
-### 验收
+### 验收（Phase 4）
 
 ```bash
 python -m pytest maos/tests -q
 
 MAOS_LLM_API_KEY=... python run.py --scenario R1 --matrix
-# Element 里看到全过程；发 /approve → DONE。截图存 evidence/scenario-R1/
+# Element 里看到全过程；发 /approve → DONE。截图存 evidence/room/（01–03，命名见该目录 README）
 
 MAOS_LLM_API_KEY=... python run.py --scenario R2 --matrix
-# 网关失败 → replan → 达上限 → /reject → 补偿。截图存 evidence/scenario-R2/
+# 网关失败 → replan → 达上限 → /reject → 补偿。截图存 evidence/room/（04-reject-compensation.png）
 
 sqlite3 <db> "select biz_status from refund_case where case_id='<R2 的 case>'"   # compensated
 sqlite3 <db> "select count(*) from payment_observation where observed_state='settled'"  # 0
 sqlite3 <db> "select count(*) from event_log where event_type='CompensationExecuted'"   # >0
 ```
 
-### 提交
+🔴 **截图落点不许写成 `evidence/scenario-R1/` / `evidence/scenario-R2/`（这两行原来就是那么写的，是错的）。**
+`scripts/verify.py::load_cases` 按 **`scenario-` 前缀**扫 `evidence/` 下的目录——只认前缀，不认场景号——
+凡是扫到的都当成一个证据束，逐个要求 `maos.db` + `trace.json` + `result.json`。截图目录这三样一样没有，
+于是**整个 verify 进不去核验**（不是某一项 FAIL，是八项一项都跑不到，「8/8 PASS」这条头号卖点当场没）。
+本仓库 `1131795` 实测，先 `python3 scripts/make_evidence.py` 再 `python3 scripts/verify.py`
+（**那时核验器还是 7 项**，下表第一行的 `7/7` 是当时的实测读数，不改；今天同一条路径跑出的是 `8/8`）：
 
+```text
+不建 scenario-R1/                    RESULT: 7/7 PASS                                    exit=0
+建 scenario-R1/ 只放一张截图         [FAIL] 无法开始核验：缺数据库: …/scenario-R1/maos.db   exit=2
 ```
+
+`evidence/room/` 不以 `scenario-` 开头，对 `verify.py` 完全透明，所以房间侧人机交互证据走它。
+机器侧数据证据仍在 `evidence/scenario-6,7/`（R1→6、R2→7，见文件头「入库说明 §1」的编号映射），
+两者互补、缺一不可，对照关系见 `evidence/room/README.md` 的「命名对照」一节。
+
+### 提交（Phase 4）
+
+```text
 feat(p4): refund failure path, replan with cap, compensation, matrix approval
 ```
 
@@ -516,11 +579,11 @@ feat(p4): refund failure path, replan with cap, compensation, matrix approval
 
 ## Phase 5（D6 · 8.31）PolarDB RAG 层 + 对照实验
 
-### 目标
+### 目标（Phase 5）
 
 证明**历史流程知识能改善规划质量**，且这个改善是可核验的（不是"我们接了 RAG"一句话）。
 
-### 步骤
+### 步骤（Phase 5）
 
 1. **`maos/kb/schema.sql`：知识表**
 
@@ -612,7 +675,7 @@ feat(p4): refund failure path, replan with cap, compensation, matrix approval
 
 8. 新增测试（≥8 条）：跨租户绝不召回（**最重要**）；四通道各自命中；加权融合排序正确；KbRetrieved 事件含 doc_id 与分数；三条护栏各自生效；失败案例不进正例知识层。
 
-### 验收
+### 验收（Phase 5）
 
 ```bash
 python -m pytest maos/tests -q
@@ -623,9 +686,9 @@ sqlite3 <db> "select event_type, json_extract(detail,'$.docs') from event_log wh
 MAOS_STORE_BACKEND=postgres MAOS_PG_DSN=... python run.py --scenario R1   # PG 后端跑通
 ```
 
-### 提交
+### 提交（Phase 5）
 
-```
+```text
 feat(p5): two-stage kb retriever, pg/pgvector backend, rag ablation scenario, knowledge promotion
 ```
 
@@ -633,11 +696,11 @@ feat(p5): two-stage kb retriever, pg/pgvector backend, rag ablation scenario, kn
 
 ## Phase 6（D7 · 9.1）Trace + Evidence Bundle + verify.py + 部署
 
-### 目标
+### 目标（Phase 6）
 
 一条命令起全套，一条命令验真伪。**verify.py 是给评委的答案。**
 
-### 步骤
+### 步骤（Phase 6）
 
 1. `maos/obs/trace.py`：`export_trace(plan_id) -> trace.json`——从 event_log 把该 plan 的事件按 trace_id 织成 span 树（StateTransition / SkillInvoked / ToolInvoked / KbRetrieved 各成 span，parent 按 task 归属），字段对齐 OTel 语义（trace_id/span_id/parent_span_id/name/start/end/attributes）。
 
@@ -682,7 +745,7 @@ feat(p5): two-stage kb retriever, pg/pgvector backend, rag ablation scenario, kn
 
 6. `.gitignore` 确认：`evidence/` 提交（它就是交付物），沙箱临时目录 / 数据库文件不提交。
 
-### 验收
+### 验收（Phase 6）
 
 ```bash
 MAOS_LLM_API_KEY=... python scripts/make_evidence.py   # 全部场景目录齐
@@ -691,9 +754,9 @@ docker compose -f deploy/docker-compose.yml up          # 容器内场景 R1 跑
 python -m pytest maos/tests -q
 ```
 
-### 提交
+### 提交（Phase 6）
 
-```
+```text
 feat(p6): otel-aligned trace, evidence generator, verify.py, docker-compose + polardb guide
 ```
 
@@ -703,11 +766,16 @@ feat(p6): otel-aligned trace, evidence generator, verify.py, docker-compose + po
 
 前面几个 Phase 已经边做边写，本日只做汇总和冒烟。
 
-### 步骤
+### 步骤（Phase 7）
 
 1. `scripts/gen_docs.py` 生成（保证文档和代码永不打架）：
 
-   - `docs/agent-identity.md`：**十角色**清单（软件域 6 + 退款域 4），从代码 Identity 生成，按参赛手册附录 A 字段顺序
+   - `docs/agent-identity.md`：**十一角色**清单（软件域 6 + 退款域 5），从代码 Identity 生成，按参赛手册附录 A 字段顺序。
+     ⚠️ 「十一」是**带 Identity 的角色总数**，与代码里 `len(AGENT_POOL) == 10` 不矛盾——这是两个数、两件事：
+     11 个角色都有 Identity（白名单同样被 `SkillInvoker` 强制），其中 **10 个注册进 `AGENT_POOL`**（Worker 收到
+     TaskAssignment 后按 role 找得到的执行者），`manager` 是规划者、由流程层直接构造并调 `plan()`、不接派单，
+     所以有 Identity 但不进池。软件域 6 = 5 个可派单（architecture / coding / requirement / reviewer / testing）+ manager。
+     生成物自己 `docs/agent-identity.md:7` 会如实印出「11 个 / 10 个 / 1 个」并解释差在哪，**引用时别把 10 直接挂在 `AGENT_POOL` 后面**
    - `docs/skill-catalog.md`：全部 Skill × 九要素，从 SkillContract 实例生成；末尾加"版本 / 发布 / 回滚 / 质量评估"一节
    - `docs/toolport-contract.md`：ToolPort 九要素 + 已实现工具契约表 + "迁移到 MCP = 换 entrypoint 传输层，schema 与审计不变"
 
@@ -738,13 +806,13 @@ feat(p6): otel-aligned trace, evidence generator, verify.py, docker-compose + po
 
 6. **新克隆冒烟**：git clone 到全新目录，严格按新 README 从零跑场景 R1（Scripted 模式）+ verify.py，掐表 ≤15 分钟，过不了就改 README 直到过。
 
-### 验收
+### 验收（Phase 7）
 
 新克隆冒烟通过；`python scripts/gen_docs.py --check` 文档与代码一致；`ls docs/` 七份齐。
 
-### 提交
+### 提交（Phase 7）
 
-```
+```text
 docs(p7): domain portability, authoritative facts, mapping, demo script, README rewrite
 ```
 
@@ -787,10 +855,10 @@ docs(p7): domain portability, authoritative facts, mapping, demo script, README 
 
 | 评委要求 | v4 落点 | 可核验证据 |
 | :-- | :-- | :-- |
-| 用一条脱敏真实退款需求完成可执行纵向切片 | Phase 3–4，场景 R1 / R2 | `evidence/scenario-R1,R2/` |
+| 用一条脱敏真实退款需求完成可执行纵向切片 | Phase 3–4，场景 R1 / R2 | `evidence/scenario-6,7/`（R1→6、R2→7，见文件头「入库说明 §1」）+ `evidence/room/` |
 | AgentTeams 事件链 | Phase 4 MatrixEventBus 镜像 | Element 截图 + trace.json |
 | 关键 Skill 的真实调用 | 退款域 6 Skill 全部真调 | event_log 中 SkillInvoked |
-| 返工 / HITL Trace | Phase 4 replan + Matrix 审批 | `evidence/scenario-R2/trace.json` |
+| 返工 / HITL Trace | Phase 4 replan + Matrix 审批 | `evidence/scenario-7/trace.json`（R2 即场景 7） |
 | Evidence Bundle | Phase 6 | verify.py 7/7 PASS |
 | 业务对象关联到同一案例 | Phase 3 business_ref | verify.py 第 2 项 |
 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | Phase 3 settled guard + 三段 biz_status | verify.py 第 3 项 + 越权拒绝单测 |

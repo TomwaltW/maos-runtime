@@ -14,10 +14,16 @@
    落盘 —— 而 ``evidence/`` 是要入库的（铁律 6），且出口脱敏管不到 ``__repr__``
    这个入口。演示当天不炸、但密钥已经进了 git 历史，比当天炸更难收拾。
 
-真房间联通（Synapse / Element 截图）属 Phase 4，不在本模块的交付范围。本模块只
-保证「降级永远可用、接上就能镜像」：``_NioChannel`` 那条活路径在本机走不到
-（matrix-nio 未安装，恒 ImportError 降级），未经真房间实测，见
-``docs/BACKLOG.md`` 的 ``## task-E`` 小节。
+``_NioChannel`` 那条活路径在系统 python3 上走不到（matrix-nio 未安装，构造即
+ImportError，上游降级 log-only），所以它的三条关键判据全部另行验过 —— 用真
+matrix-nio 0.26.0 客户端栈打真 HTTP 到一个本地 stub homeserver，逐条撞出来的
+结论写在 ``docs/DECISIONS.md`` 的 ``## task-C2``，回归钉在
+``maos/tests/test_matrix_bus.py`` 第 7 节。**尚未在真 Synapse / Element 上跑过**
+（等 C-1 的房间），仍未验的部分记在 ``docs/BACKLOG.md`` 的 ``## task-C2``。
+
+这三处判错了的症状都是「降级」而不是「崩」，所以它们不会自己暴露 —— 这也是为什么
+判据要抽成模块级纯函数（:func:`encryption_verdict` / :func:`should_deliver`）
+而不是埋在 ``_NioChannel`` 的方法里：埋着就只能靠读代码相信。
 """
 
 from __future__ import annotations
@@ -26,13 +32,19 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FuturesTimeout
 from dataclasses import asdict, dataclass, field, replace
 from html import escape as _esc
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
+from maos.config import get_config_source
 from maos.contracts.events import Envelope, EventType
 from maos.core.eventbus import EventBus, Handler
+from maos.ingress.contracts import CHANNEL_MATRIX
 
 if TYPE_CHECKING:                                     # pragma: no cover
     from maos.runtime.gate import HumanApprovalQueue
@@ -64,6 +76,20 @@ def parse_approvers(raw: str | None) -> frozenset[str]:
     if not raw:
         return frozenset()
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def current_approvers(env: dict[str, str] | None = None) -> frozenset[str]:
+    """**现读**一次审批人名单（T28）。`env` 显式传就读它，否则走 `maos.config`。
+
+    缺省配置源就是 `os.environ.get`，所以取值与 `parse_approvers(os.environ.get(...))`
+    逐字节一致；`MAOS_CONFIG_SOURCE=nacos` 时同一句改从 Nacos 取。
+
+    显式 `env` 那一支不走配置面是刻意的：`from_env({...})` 的语义是「就按我给的这份
+    读」，把它改成读进程环境会让测试与降级自检拿到一份自己没给过的名单。
+    """
+    if env is not None:
+        return parse_approvers(env.get(ENV_APPROVERS))
+    return parse_approvers(get_config_source().get(ENV_APPROVERS, ""))
 
 
 @dataclass
@@ -98,7 +124,7 @@ class MatrixBusConfig:
             user=vals[ENV_USER],
             token=vals[ENV_TOKEN],
             room_id=vals[ENV_ROOM_ID],
-            approvers=parse_approvers(src.get(ENV_APPROVERS)),
+            approvers=current_approvers(env),
             log_only=bool(missing),
         )
 
@@ -164,15 +190,177 @@ def render_mirror(topic: str, env: Envelope) -> tuple[str, str]:
 # 房间通道
 # --------------------------------------------------------------------------
 class MirrorChannel(Protocol):
-    """镜像通道。抽出来是为了能在测试里塞一个「必炸」的实现验证旁路语义。"""
+    """镜像通道。抽出来是为了能在测试里塞一个「必炸」的实现验证旁路语义。
+
+    ``listen`` 声明在这里而不是只留在 ``_NioChannel`` 上：下游（C-3 的 room_demo）
+    拿到的是 :attr:`MatrixEventBus.channel`，形状写进 Protocol 才有一处可读的出处。
+    否则换一个通道实现时漏掉 listen，症状是「房间里发命令没反应」—— 离原因很远。
+    """
 
     def send(self, plain: str, html: str) -> None: ...
+
+    def listen(self, on_message: Callable[[str, str], None],
+               on_attachment: Callable[[str, Any], None] | None = None) -> None: ...
 
     def close(self) -> None: ...
 
 
 class RoomEncrypted(RuntimeError):
     """房间开了端到端加密。不装 ``matrix-nio[e2e]``，遇加密房直接降级（phase-3.md:14/20）。"""
+
+
+#: runbook 抬头那一条：跑真房间必须用这个解释器，系统 python3 没装 matrix-nio。
+#: 路径写死是刻意的 —— 报错要给的是**能直接粘的那一行**，不是「请自行找个装了 nio 的解释器」。
+VENV_PYTHON = os.path.expanduser("~/.maos-matrix/venv/bin/python")
+
+
+class MatrixDepMissing(RuntimeError):
+    """``matrix-nio`` 没装。这是**环境错**，不是运行时故障 —— 两者必须分开。
+
+    别的降级（连不上、token 失效、撞加密房）都是「房间那边出了事」，重试或换个房间
+    就能好；这一条是「你用错了解释器」，重试一万次都一样。而它们原来共用同一条
+    ``except Exception`` 分支：同一行 WARNING、同样降级 log-only、退出码同样是 0，
+    于是终端照常刷「房间消息」、场景照常跑完 —— 截那个窗口当证据，形态与真房间
+    **无法分辨**。这是整条链路最贵的一步（``docs/matrix-room-runbook.md`` 抬头）。
+
+    单独一个类型，就是为了让上游能把它判出来、并给它一个**非 0 的退出码**。
+    """
+
+
+class RoomSendTimeout(TimeoutError):
+    """单次 send 超过通道超时。**这不等于消息没发出去。**
+
+    Synapse 默认开 ``rc_message`` 限流，演示开头那一串镜像是连发的，直接打穿；
+    matrix-nio 收到 429 会自己退避重试（实测一轮 approve 打出 4 条
+    ``Got 429 response (ratelimited), sleeping for ~4.5s``）。退避把单次 send 拖过
+    超时，等待方就放弃了 —— 可**协程还在私有循环上跑**，退避结束消息照样送达。
+
+    所以它是虚警。两条推论都写进了处理它的代码里：
+    ① 不许计进 ``MAX_MIRROR_FAILURES``（否则一次限流就把镜像永久降级掉，
+       虚警亲手做实成真故障）；② 措辞必须说清「别重跑」—— 重跑只会再撞一次限流。
+    """
+
+
+#: 异常消息为空时的占位。见 :func:`describe_exc`。
+NO_MESSAGE = "<该异常没有消息>"
+
+_TIMEOUT_HINT = ("这多半是 Synapse 的 rc_message 限流（429），matrix-nio 正在后台退避重试，"
+                 "消息很可能仍会送达 —— **不要重跑**，重跑只会再撞一次限流。"
+                 "唯一算数的判据是去房间里数消息")
+
+
+def describe_exc(exc: BaseException) -> str:
+    """把异常压成一行**永不为空**的人话。所有 ``except`` 分支的日志都过这一道。
+
+    ``log.warning("失败（%s）", exc)`` 有个哑坑：``concurrent.futures.TimeoutError``
+    的 ``str()`` 恰好是**空字符串**，于是终端上打出来的是 ``房间回话失败（）`` ——
+    括号里什么都没有。读的人既不知道是什么错，也无从判断严重程度，而这条恰恰是
+    最需要读懂的一条：它是虚警（见 :class:`RoomSendTimeout`）。T 轮实测一轮
+    approve 打了 3 条这个空括号，房间里 23 条消息一条不少。
+
+    所以类名一律带上、消息为空时补占位；超时类再追一句「别重跑」的处置口径 ——
+    告警的价值在于**读的人下一步该干什么**，只说「失败了」等于没说。
+    """
+    text = str(exc).strip()
+    line = f"{type(exc).__name__}: {text or NO_MESSAGE}"
+    if isinstance(exc, (TimeoutError, _FuturesTimeout)):
+        line += f"（{_TIMEOUT_HINT}）"
+    return line
+
+
+# --------------------------------------------------------------------------
+# 两个纯判据
+# --------------------------------------------------------------------------
+# 抽成模块级纯函数，是为了能在**没装 matrix-nio、也没有 Synapse** 的解释器里直接
+# 断言 —— 本机 python3 与 CI 正是这种环境，而这两处恰好是整个模块里判错了也不会
+# 崩、只会静默降级的地方。不抽出来，它们就只能靠读代码相信。
+ENC_CLEAR = "clear"
+ENC_ENCRYPTED = "encrypted"
+ENC_ERROR = "error"
+
+#: Synapse 对「状态事件不存在」回的 errcode。matrix-nio 把响应体里的 ``errcode``
+#: 原样放进 ``status_code``（实测：是这个字符串，不是 HTTP 404 那个数字）。
+ERRCODE_NOT_FOUND = "M_NOT_FOUND"
+
+#: 首次 sync 用的过滤器：一条 timeline 消息都不要，只为把 ``next_batch`` 推到「现在」。
+NO_HISTORY_FILTER = {"room": {"timeline": {"limit": 0}}}
+
+
+def encryption_verdict(resp: Any) -> tuple[str, str]:
+    """把 ``room_get_state_event("m.room.encryption")`` 的返回判成 ``(档位, 说明)``。
+
+    **不按返回类型判，按内容判** —— 这是 matrix-nio 0.26.0 实测逼出来的
+    （见 ``docs/DECISIONS.md`` 的 ``## task-C2``）：
+
+    ``AsyncClient.create_matrix_response`` 里只有 **HTTP 404** 那一条分支会把响应体
+    转成 ``RoomGetStateEventError``；其余非 200（403 机器人不在房间、401 token 失效）
+    统统落进 ``else`` 走 ``RoomGetStateEventResponse.from_dict``，而它的实现就是一句
+    ``return cls(parsed_dict, ...)`` —— **把错误体原样包成一个「成功」响应**。
+    于是「返回的不是 Error 就是已加密」这个判据，会把「机器人没进房间」和
+    「token 过期」一起念成「房间开了加密」，然后降级，日志里留一个假原因。
+
+    用 ``getattr`` 而不是 ``isinstance``，同样是为了能在没装 matrix-nio 的解释器里
+    被直接调用。两个类的字段本就互斥：Error 有 ``status_code`` 没 ``content``，
+    Response 有 ``content`` 没 ``status_code``。
+    """
+    status_code = getattr(resp, "status_code", None)
+    if status_code is not None:
+        if status_code == ERRCODE_NOT_FOUND:
+            return ENC_CLEAR, ERRCODE_NOT_FOUND      # 状态事件查不到 = 房间未加密
+        return ENC_ERROR, f"{status_code} {getattr(resp, 'message', '')}".strip()
+
+    content = getattr(resp, "content", None)
+    if not isinstance(content, dict):
+        return ENC_ERROR, f"无法识别的状态查询响应：{type(resp).__name__}"
+    if content.get("errcode"):
+        # 非 404 的错误体，被 from_dict 包成了「成功」响应。别念成加密房。
+        return ENC_ERROR, f"{content['errcode']} {content.get('error', '')}".strip()
+    algorithm = content.get("algorithm")
+    return ENC_ENCRYPTED, str(algorithm) if algorithm else "m.room.encryption 已设置"
+
+
+#: 同房间里**其他**机器人账号的 mxid，逗号分隔（岗位账号由
+#: ``deploy/synapse/add_agents.sh`` 建号时写进 ``~/.maos-matrix/agents.env``）。
+#: 不进 :class:`MatrixBusConfig`（那张字段表被 C-6 冻结），由 :func:`open_channel`
+#: **现读**一次 —— 口径同 :func:`current_approvers`。常量在这里定义一次，
+#: 免得字面量散在 open_channel 与建号脚本两处各写一份、改一处漏一处。
+ENV_ROOM_BOTS = "MAOS_ROOM_BOTS"
+
+
+def should_deliver(room_id: str, self_user_id: str, room: Any, event: Any, *,
+                   ignored_senders: frozenset[str] = frozenset()) -> bool:
+    """这条房间事件该不该喂给 ``on_message``。三条否决都不能省。
+
+    · **不是本房间的** —— ``sync`` 是全量的，一个 client 可能同时在多个房间里。
+    · **sender 是自己** —— 比的是服务器给的权威 mxid（``whoami`` 回填的
+      ``user_id``），不是 ``MATRIX_USER`` 原文。实测：``AsyncClient(hs, user)``
+      只把 user 原样存进 ``.user``，``.user_id`` 在 login/whoami 之前恒为空串；
+      ``MATRIX_USER`` 若写成 localpart（``maos-bot``），它和 ``event.sender``
+      （``@maos-bot:maos.local``）永远不相等 —— 回声过滤就成了摆设。
+    · **sender 在 ``ignored_senders`` 里** —— 同一个房间里的**别的**机器人账号
+      （退款圆桌那五个岗位号）。一个房间只该有一个监听者：岗位号发言若喂进
+      ``on_message``，闲聊回复器会去接它一句，岗位号下一轮再接 —— 两个机器人
+      互相接龙刷屏，而每一条单看都合法。名单为空时行为与加这条之前逐字一致。
+
+    第三条今天是**第二道保险**：岗位号经 :meth:`_NioChannel.send` 发的是
+    ``m.notice``，nio 解析成 ``RoomMessageNotice``，根本不会派给只注册了
+    ``RoomMessageText`` 的回调。哪天有人把发言改成 ``m.text``、或拿岗位号在
+    Element 里手打字，它才是唯一防线 —— 所以不能因为"今天走不到"就省掉。
+
+    keyword-only 而不是第五个位置参数：现存三个调用方（含
+    ``scripts/matrix_probe.py``）全是四个位置实参，加位置参数会把它们一起变成
+    TypeError，而那是在**回调里**抛的（症状：房间从此一片安静）。
+    """
+    if getattr(room, "room_id", None) != room_id:
+        return False
+    sender = getattr(event, "sender", None)
+    if sender and sender in ignored_senders:
+        return False
+    return not (sender and sender == self_user_id)
+
+
+#: send 的缺省超时（秒）。构造期仍用 10s —— 连不上要早知道，发消息要经得起退避。
+DEFAULT_SEND_TIMEOUT = 30.0
 
 
 class _NioChannel:
@@ -183,18 +371,44 @@ class _NioChannel:
     ``run_coroutine_threadsafe`` 同步等结果。不用 ``asyncio.run``：``AsyncClient``
     要跨调用保持会话状态，每次新建循环等于每次重登。
 
-    **本机 matrix-nio 未安装，这条路径在测试与 CI 里永远走不到**（构造即
-    ImportError，上游降级 log-only）。真房间联通属 Phase 4 的活，届时按
-    docs/BACKLOG.md 的 ``## task-E`` 逐条实测。
+    构造顺序是 **whoami -> 查加密**，``listen`` 里再接 **先同步 -> 后挂回调**。
+    三步都不能换序，理由分别写在 :meth:`_verify_identity`、:func:`encryption_verdict`
+    与 :meth:`listen` 上。系统 python3 未装 matrix-nio，构造即 ImportError 由上游
+    降级 log-only；测试用 ``sys.modules["nio"]`` 注入假模块走完整条路径。
     """
 
-    def __init__(self, config: MatrixBusConfig, *, timeout: float = 10.0) -> None:
+    #: 与 `ChannelAdapter.name` 同名同义，好让本通道能直接塞进 `IngressRouter.adapters`
+    #: 当取件器用（router 只调 ``fetch``，不碰 verify/parse/send 那三个 webhook 方法）。
+    name = CHANNEL_MATRIX
+
+    def __init__(self, config: MatrixBusConfig, *, timeout: float = 10.0,
+                 send_timeout: float | None = None,
+                 ignored_senders: frozenset[str] | None = None) -> None:
         import asyncio
 
-        from nio import AsyncClient           # 未装则 ImportError -> 调用方降级
+        from nio import AsyncClient           # 未装 -> open_channel 换成 MatrixDepMissing
 
         self._timeout = timeout
+        #: 同房间里别的机器人账号，:func:`should_deliver` 的第三条否决。
+        #: 走参数不走 ``config``：``MatrixBusConfig`` 的字段表被 C-6 冻结。
+        self._ignored_senders = (frozenset() if ignored_senders is None
+                                 else frozenset(ignored_senders))
+        #: send 单独一档，比构造期宽。一次 429 退避就是几秒，连发几条镜像很容易累计
+        #: 过 10 秒 —— 用同一个 10s 去卡 send，得到的是一串「失败」告警，而消息其实
+        #: 都送到了。**不是调大到把限流盖住**：限流照旧由 nio 自己那条
+        #: ``Got 429 response`` 打出来，真超过这一档也照旧告警，只是措辞换成
+        #: 「超时不等于没送达」（见 :class:`RoomSendTimeout`）。
+        self._send_timeout = DEFAULT_SEND_TIMEOUT if send_timeout is None else send_timeout
         self._room_id = config.room_id
+        self._sync_task: Any = None
+        self._pending_sends: set[Any] = set()
+        self._pending_send_failed = False
+        self._pending_sends_lock = threading.Lock()
+        #: ``listen`` 的回调在这条线程上跑，**不在事件循环线程上**。单 worker 是刻意的：
+        #: 房间消息的到达顺序就是处理顺序（先 /refund 后 /approve 不能颠倒）。
+        #: 为什么必须离开循环线程，见 :meth:`_offload`。
+        self._callback_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="matrix-callback")
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop, name="matrix-bus", daemon=True)
@@ -203,7 +417,17 @@ class _NioChannel:
         self._client = AsyncClient(config.homeserver, config.user)
         # 用 access token 直接鉴权，不走 password login：演示机上不该出现口令。
         self._client.access_token = config.token
-        self._await(self._verify_room())
+        #: 权威 mxid。先拿 config.user 兜底，_verify_identity 用服务器的回答覆盖它。
+        self._user_id = config.user
+        try:
+            self._await(self._verify_identity())
+            self._await(self._verify_room())
+        except BaseException:
+            # 构造失败要把私有循环收干净。降级是**常态路径**（连不上 / 加密房 /
+            # token 失效都走这里），每失败一次漏一条守护线程加一个事件循环，
+            # 进程里就多一份永不退出的后台 —— 而它不报错，只是慢慢堆。
+            self._shutdown_loop()
+            raise
 
     # -- 事件循环管线 -----------------------------------------------------
     def _run_loop(self) -> None:
@@ -212,30 +436,102 @@ class _NioChannel:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _await(self, coro: Any) -> Any:
+    def _await(self, coro: Any, timeout: float | None = None) -> Any:
+        """把协程扔进私有循环并**同步等**结果。超时后协程仍在循环上继续跑。
+
+        「继续跑」是刻意的，不是没写完：撞限流时 nio 正在退避重试，取消它等于亲手
+        把一条本来会送达的消息掐掉。调用方放弃等待，消息照样落地 —— 所以超时在这里
+        只是「我不等了」，不是「它失败了」（见 :class:`RoomSendTimeout`）。
+        """
         import asyncio
 
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(self._timeout)
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(
+            self._timeout if timeout is None else timeout)
 
     # -- 房间动作 ---------------------------------------------------------
+    async def _verify_identity(self) -> None:
+        """先问服务器「我是谁」。一次调用办两件事，缺哪件都会在别处变成哑故障。
+
+        ① **验 token**。赋 ``client.access_token`` 只让 nio 本地的 ``logged_in``
+           变 True（它的实现就是 ``bool(self.access_token)``），服务器认不认要等
+           第一次真请求。放在开工这一刻，token 失效的症状是一句
+           ``M_UNKNOWN_TOKEN``；不放，症状是演示到一半才降级、且原因指向房间。
+        ② **拿权威 mxid**。``AsyncClient(hs, user)`` 只把 user 原样存进 ``.user``，
+           ``.user_id`` 在此之前恒为空串 —— 而回声过滤要比的正是这个。
+        """
+        from nio import WhoamiError
+
+        resp = await self._client.whoami()
+        if isinstance(resp, WhoamiError):
+            raise RuntimeError(
+                f"access_token 未通过服务器校验：{resp.status_code} {resp.message}")
+        self._user_id = getattr(resp, "user_id", "") or self._user_id
+
     async def _verify_room(self) -> None:
         """开工前先确认房间没开 E2EE。加密房必须**当场**降级，不能等 send 失败。
 
-        ``m.room.encryption`` 状态事件存在 = 房间已加密。查不到（M_NOT_FOUND）才是
-        未加密；其余错误（房间不存在、token 失效）一律当连接失败抛出去降级。
+        判据本身在 :func:`encryption_verdict`，那里解释了为什么不能按返回类型判。
         """
-        from nio import RoomGetStateEventError
-
         resp = await self._client.room_get_state_event(self._room_id, "m.room.encryption")
-        if isinstance(resp, RoomGetStateEventError):
-            if getattr(resp, "status_code", "") == "M_NOT_FOUND":
-                return
-            raise RuntimeError(f"房间状态查询失败：{getattr(resp, 'message', resp)}")
-        raise RoomEncrypted(
-            "房间开启了端到端加密；本轨不装 matrix-nio[e2e]，直接降级 log-only")
+        verdict, detail = encryption_verdict(resp)
+        if verdict == ENC_CLEAR:
+            return
+        if verdict == ENC_ENCRYPTED:
+            raise RoomEncrypted(
+                f"房间开启了端到端加密（{detail}）；本轨不装 matrix-nio[e2e]，降级 log-only")
+        raise RuntimeError(f"房间状态查询失败：{detail}")
 
     def send(self, plain: str, html: str) -> None:
-        self._await(self._send(plain, html))
+        """发一条进房间。超时换成 :class:`RoomSendTimeout` 抛出，**不是**普通失败。
+
+        换类型是为了让上游能把「我不等了」和「它失败了」分开处理 —— 裸的
+        ``concurrent.futures.TimeoutError`` 混在 ``except Exception`` 里，
+        既说不出原因（``str()`` 是空串），也会被计进永久降级的失败次数。
+        """
+        import asyncio
+
+        future = asyncio.run_coroutine_threadsafe(self._send(plain, html), self._loop)
+        try:
+            future.result(self._send_timeout)
+        except _FuturesTimeout as exc:
+            with self._pending_sends_lock:
+                self._pending_sends.add(future)
+            future.add_done_callback(self._pending_send_done)
+            raise RoomSendTimeout(
+                f"{self._send_timeout:.0f}s 内没等到房间回执；协程仍在后台重试，"
+                f"这条消息很可能已经送达") from exc
+
+    def _pending_send_done(self, future: Any) -> None:
+        failure: Exception | None = None
+        try:
+            future.result()
+        except Exception as exc:                        # noqa: BLE001
+            failure = exc
+            log.warning("超时后的房间发送最终失败（%s）", describe_exc(exc))
+        # failure 与 pending→空必须在同一把锁里同时可见；反过来先 discard，
+        # flush 可能正好在两句之间看见空集合并误报成功。
+        with self._pending_sends_lock:
+            if failure is not None:
+                self._pending_send_failed = True
+            self._pending_sends.discard(future)
+
+    def flush_pending_sends(self, *, timeout: float = 45.0) -> bool:
+        """等待已经超时但仍在后台重试的发送；只用于证据入口有序收口。"""
+        import concurrent.futures
+
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._pending_sends_lock:
+                pending = set(self._pending_sends)
+                failed = self._pending_send_failed
+            if not pending:
+                return not failed
+            remaining = max(deadline - time.monotonic(), 0.0)
+            if remaining == 0:
+                return False
+            _, not_done = concurrent.futures.wait(pending, timeout=remaining)
+            if not_done:
+                return False
 
     async def _send(self, plain: str, html: str) -> None:
         from nio import RoomSendError
@@ -255,34 +551,327 @@ class _NioChannel:
         if isinstance(resp, RoomSendError):
             raise RuntimeError(f"房间发送失败：{getattr(resp, 'message', resp)}")
 
-    def listen(self, on_message: Callable[[str, str], None]) -> None:
-        """在私有事件循环里常驻 ``sync_forever``，房间消息喂给 ``on_message(sender, body)``。"""
+    def listen(self, on_message: Callable[[str, str], None],
+               on_attachment: Callable[[str, Any], None] | None = None) -> None:
+        """在私有事件循环里常驻 ``sync_forever``，房间消息喂给 ``on_message(sender, body)``。
+
+        **先同步、后挂回调** —— 这个顺序是本方法的全部要点，反过来写会出真事故。
+        Matrix 的首次 ``/sync``（不带 ``since``）会把每个房间 timeline 的最近若干条
+        **历史**一并返回，nio 照样把它们派发给 ``add_event_callback``（已实测：喂一份
+        带历史 timeline 的 SyncResponse 进去，回调当场被触发）。于是半小时前有人在
+        房间里打过的一句 ``/approve task-x``，bot 一起来就当成新指令重放 ——
+        而审批是不可逆动作。所以先空跑一次 ``sync`` 把 ``next_batch`` 推到「现在」，
+        再挂回调；此后 ``sync_forever`` 从 ``next_batch`` 续，只看得见新消息。
+
+        守护线程里的私有循环在主线程阻塞时照常转（已实测），C-3 的 ``room_demo``
+        正是「主线程等人、后台收消息」这个用法。
+
+        房间里发出来的**附件**（``m.image`` 与 ``m.file``）走 ``on_attachment(sender,
+        Attachment)``，与文本分开两个回调而不是给 ``on_message`` 加第三个参数：现存的
+        每一个调用方都写着 ``lambda sender, body: ...``（`test_matrix_bus.py`、
+        `test_refund_room_wiring.py` 共七处），加位置参数会把它们全部变成 TypeError，
+        而那是在**回调里**抛的。不传 ``on_attachment`` 就完全不注册附件回调，
+        行为与加这条能力之前逐字一致。``m.file`` 必须一起挂：Element 把 PDF、CSV
+        和它认不出的一切都发成 ``m.file``，只挂 ``m.image`` 的后果不是「拒收」而是
+        **一声不吭** —— 发的人只能得出「机器人挂了」这个结论（真房间实测）。
+
+        **两个回调都在工作线程上跑，不在事件循环线程上。** 这是真房间里撞出来的：
+        nio 在 ``sync_forever`` 里 ``await`` 回调，也就是回调跑在私有循环线程上；
+        回调里只要调一次 :meth:`send` 或 :meth:`fetch`，就是在循环线程上同步等一个
+        要**这条循环**才能推进的协程 —— 自己等自己，必然等到超时。症状是回帖固定
+        迟到 30s、取件 100% 超时，而单元测试（回调里不发消息）全绿。见 :meth:`_offload`。
+        """
         from nio import RoomMessageText
 
+        # 回调在循环线程上跑的那几行（判该不该投递、翻译附件）也包住：nio 的
+        # ``sync_forever`` 对回调抛出的任何异常是 ``except: raise`` —— 一条形状不对的
+        # 事件就能把整条 sync 掀掉，此后房间里发什么都没反应，且没有一行日志说为什么。
         async def _cb(room: Any, event: Any) -> None:
-            if getattr(room, "room_id", None) != self._room_id:
+            try:
+                deliver = should_deliver(self._room_id, self._user_id, room, event,
+                                         ignored_senders=self._ignored_senders)
+                if not deliver:
+                    self._warn_self_command(room, event)
+                    return
+                sender, body = event.sender, event.body
+            except Exception as exc:                    # noqa: BLE001
+                log.warning("房间文本事件形状不对（%s），本条跳过", describe_exc(exc))
                 return
-            if getattr(event, "sender", None) == self._client.user:
-                return                                  # 不听自己的回声
-            on_message(event.sender, event.body)
+            await self._offload(on_message, sender, body)
 
+        def _media_cb(kind: str) -> Callable[[Any, Any], Any]:
+            async def _cb_media(room: Any, event: Any) -> None:
+                try:
+                    if not should_deliver(self._room_id, self._user_id, room, event,
+                                          ignored_senders=self._ignored_senders):
+                        return
+                    att = self._attachment_of(event, kind=kind)
+                    sender = event.sender
+                except Exception as exc:                # noqa: BLE001
+                    log.warning("房间附件事件形状不对（%s），本条跳过", describe_exc(exc))
+                    return
+                if att is not None:
+                    await self._offload(on_attachment, sender, att)
+            return _cb_media
+
+        cursor = self._await(self._skip_history())
         self._client.add_event_callback(_cb, RoomMessageText)
+        if on_attachment is not None:
+            # 在分支里 import 而不是在函数顶上：这两个名字在测试与降级路径塞的
+            # **只有几个符号**的假 nio 模块里不存在。放在顶上会让不收附件的调用方
+            # 也一起 ImportError —— 那正好违背上面那句「不传 on_attachment 行为逐字一致」。
+            from nio import RoomMessageFile, RoomMessageImage
+
+            self._client.add_event_callback(_media_cb("image"), RoomMessageImage)
+            self._client.add_event_callback(_media_cb("file"), RoomMessageFile)
+
         import asyncio
 
-        asyncio.run_coroutine_threadsafe(
-            self._client.sync_forever(timeout=30_000), self._loop)
+        self._sync_task = asyncio.run_coroutine_threadsafe(
+            self._client.sync_forever(timeout=30_000, since=cursor), self._loop)
+
+    def alive(self) -> bool:
+        """监听还在不在。``listen`` 之后为 True，sync 循环结束（正常收口或炸了）为 False。
+
+        常驻入口靠它决定要不要退出：``sync_forever`` 一旦因异常结束，进程自己不会死，
+        房间里发什么都没反应 —— 与「机器人挂了」无法分辨，而这正是最贵的那种失败。
+        """
+        task = self._sync_task
+        return task is not None and not task.done()
+
+    def failure(self) -> str:
+        """监听结束的原因（一行人话）；还活着或正常取消时是空串。"""
+        task = self._sync_task
+        if task is None or not task.done() or task.cancelled():
+            return ""
+        exc = task.exception()
+        return describe_exc(exc) if exc is not None else ""
+
+    async def _offload(self, callback: Callable[..., Any], *args: Any) -> None:
+        """把一次回调挪到工作线程上跑完，循环线程只**挂起等待**、不阻塞。
+
+        ``await run_in_executor`` 而不是 fire-and-forget 提交：前者让 ``sync_forever``
+        在这条回调跑完之前不去拉下一批事件，房间消息的处理顺序与到达顺序一致
+        （审批命令的先后是有意义的）；循环线程在等待期间照常转，回调里发出的
+        :meth:`send` / :meth:`fetch` 协程能被推进 —— 这正是它与「回调直接在循环上跑」
+        的全部区别。
+
+        回调抛出的异常在这里截住并记日志。放它出去的话，nio 会把 ``sync_forever``
+        整条掀掉，此后房间里发什么都没反应，且没有任何一行说明为什么。
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(self._callback_executor, callback, *args)
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("房间回调抛出异常（%s），监听继续", describe_exc(exc))
+
+    def _attachment_of(self, event: Any, *, kind: str = "image") -> Any:
+        """把一条 ``m.image`` / ``m.file`` 事件翻成 :class:`~maos.ingress.contracts.Attachment`。
+
+        复用 ingress 那个形状而不是自定义一个，是为了让 router 的取件、白名单、
+        内容寻址落盘那一整套对 Matrix **一行不改**地适用 —— 房间与飞书群在
+        「有人发了张照片」这件事上没有任何区别，两套形状只会让两边的证据
+        digest 算法各漂各的。
+
+        **加密房间的媒体不收**（``event.key`` 存在即为加密附件）。收下它会拿到
+        一份 AES 密文，落盘、算 digest、回一句「已收下」全都成功，只有真去打开
+        那张图的人才会发现是乱码 —— 又一次「看起来成功了的失败」。解密要 olm 与
+        完整的 E2EE 会话，超出本层范围，所以显式跳过并出声。
+        """
+        from maos.ingress.contracts import Attachment
+
+        mxc = str(getattr(event, "url", "") or "")
+        if not mxc:
+            # 加密房间里 url 挪进了 event.file，取不到就是加密媒体。
+            log.warning("房间图片没有明文 url（多半是加密房间的媒体），本条跳过")
+            return None
+        info = (getattr(event, "source", None) or {}).get("content", {}).get("info") or {}
+        return Attachment(
+            channel=CHANNEL_MATRIX,
+            file_key=mxc,
+            kind=kind,
+            filename=str(getattr(event, "body", "") or ""),
+            mime=str(info.get("mimetype") or ""),
+            size=int(info.get("size") or 0),
+        )
+
+    def fetch(self, att: Any) -> bytes:
+        """按 ``mxc://`` 取回字节。签名与 `ChannelAdapter.fetch` 一致，可直接注册进 router。
+
+        nio 的 ``download`` 在 0.20 前后换过签名（``(server_name, media_id)`` ->
+        ``(mxc=...)``），两种都试是因为本机装的是 venv 里的 0.26.0，而演示机上
+        那份可能更老 —— 版本差异的症状是一句 TypeError，而它会被 sync 循环吞掉。
+
+        **不能在事件循环线程上调**（:meth:`listen` 的回调已经替调用方离开了那条
+        线程）。在循环线程上调它就是自己等自己，30s 后必超时 —— 真房间实测：
+        同一个 mxc，独立连接 0.01s 下完，循环线程上 30s 超时。
+        """
+        mxc = str(getattr(att, "file_key", "") or "")
+        if not mxc.startswith("mxc://"):
+            raise RuntimeError(f"不是 mxc URI：{mxc!r}")
+        server, _, media_id = mxc[len("mxc://"):].partition("/")
+        if not server or not media_id:
+            raise RuntimeError(f"mxc URI 缺服务器或 media_id：{mxc!r}")
+
+        try:
+            resp = self._await(self._client.download(mxc=mxc),
+                               timeout=self._send_timeout)
+        except TypeError:
+            resp = self._await(self._client.download(server_name=server,
+                                                     media_id=media_id),
+                               timeout=self._send_timeout)
+        body = getattr(resp, "body", None)
+        if not isinstance(body, (bytes, bytearray)):
+            raise RuntimeError(
+                f"下载失败：{getattr(resp, 'message', None) or type(resp).__name__}")
+        return bytes(body)
+
+    def _warn_self_command(self, room: Any, event: Any) -> None:
+        """被回声过滤丢掉的那条如果**是审批命令**，出声说一句。
+
+        回声过滤本身没错，不过滤就自激。错的是它的**症状**：bot 账号自己在 Element
+        里打的 ``/approve`` 也一起被丢，而丢掉之后房间里什么都不会发生 —— 没有回执、
+        没有报错、任务照旧停在 BLOCKED。发命令的人只能得出「程序没在听」这个结论，
+        而真正该做的是换个账号再发一遍。
+
+        所以丢之前先看一眼：是自己发的、且长得像审批命令，就在日志里点破。判据用
+        :func:`looks_like_command` 而不是自己再写一遍 —— 两份判据一定会漂，
+        漂了的症状又是这条提示不出现，等于白加。
+        """
+        if getattr(room, "room_id", None) != self._room_id:
+            return                                       # 别的房间，与回声无关
+        if getattr(event, "sender", None) != self._user_id:
+            return
+        if not looks_like_command(getattr(event, "body", "") or ""):
+            return                                       # 自己发的普通回执，本就该丢
+        log.warning("忽略了一条 bot 自己发的审批命令（%s）—— 机器人不听自己的回声。"
+                    "请换一个**人类**账号（MAOS_APPROVERS 里的那个）在 Element 里发",
+                    self._user_id)
+
+    async def _skip_history(self) -> str:
+        """空跑一次 sync，只为把 ``next_batch`` 推到「现在」；过滤器把 timeline 压到 0 条。"""
+        response = await self._client.sync(timeout=0, sync_filter=NO_HISTORY_FILTER)
+        cursor = getattr(response, "next_batch", None)
+        if not isinstance(cursor, str) or not cursor:
+            # 不读 client.next_batch：那里可能残留上一轮的旧游标；也不回显 response，
+            # 错误对象并不承诺不带敏感字段。边界没拿到就绝不能监听审批命令。
+            raise RuntimeError("首次 /sync 未返回有效 next_batch，无法证明历史边界；拒绝监听")
+        return cursor
 
     def close(self) -> None:
+        """有序收口：停 sync -> 等 sync 落地 -> 关客户端 -> 清生成器 -> 停循环 -> 等线程 -> 关循环。
+
+        **顺序就是这个方法的全部内容。** 原来的实现只做了第 1、3 步就 stop 掉循环，
+        代价是退出时刷一屏 ``RuntimeError: Event loop is closed``、
+        ``Task was destroyed but it is pending!``、
+        ``Exception ignored in: <coroutine object AsyncClient.sync_forever ...>``：
+        ``sync_forever`` 那条常驻协程和 aiohttp 的连接池都还活着，循环却已经停了，
+        于是解释器退出时 GC 去跑它们的 ``__del__``，每一个都要碰那个再也不会转的循环。
+
+        这些报错发生在终态**之后**，不影响判定也不影响退出码 —— 但它们会把真正该看的
+        那几行冲出屏幕，而这套链路所有的失败都只在日志里（见模块抬头不变量 1）。
+        """
+        if self._loop.is_closed():
+            return                                      # 已经收过口，重复调用是空操作
+        if not self.flush_pending_sends(timeout=self._send_timeout):
+            # 最终失败已经由 callback 记录；这里只补报仍在途，避免把两种状态混成
+            # “未完成”并重复告警。
+            with self._pending_sends_lock:
+                still_pending = bool(self._pending_sends)
+            if still_pending:
+                log.warning("关闭 Matrix 通道前仍有后台发送未完成；将继续执行有序收口")
+        try:
+            self._client.stop_sync_forever()
+        except Exception as exc:                        # noqa: BLE001 —— 没在 sync 也无所谓
+            log.debug("停止 sync_forever 异常（已忽略）：%s", describe_exc(exc))
+        self._stop_sync_task()
+        # sync 已停，不会再有新回调进来；在跑的那一条**等它跑完**，而且要在循环还转着
+        # 的时候等 —— 它可能正卡在 send / fetch 上等这条循环推进协程。先停循环再等，
+        # 它会在 send_timeout 后带着 TimeoutError 出来，回帖丢掉、进程退出被拖住 30s。
+        # 只有 close() 本身就是从回调里调的那种情况不能等（等自己 = 死锁）。
+        in_worker = threading.current_thread().name.startswith("matrix-callback")
+        self._callback_executor.shutdown(wait=not in_worker)
         try:
             self._await(self._client.close())
         except Exception as exc:                        # noqa: BLE001 —— 关闭失败无所谓
-            log.debug("Matrix 客户端关闭异常（已忽略）：%s", exc)
+            log.debug("Matrix 客户端关闭异常（已忽略）：%s", describe_exc(exc))
+        self._shutdown_loop()
+
+    def _stop_sync_task(self) -> None:
+        """cancel 掉 ``sync_forever`` 并**等它真的结束**。
+
+        ``stop_sync_forever()`` 只置一个标志位，nio 要等当前这轮长轮询（timeout=30s）
+        回来才看得见它 —— 光调它就往下走，收口跑完协程还挂着，正是上面那一屏报错的
+        第一个来源。``CancelledError`` 继承的是 ``BaseException`` 不是 ``Exception``，
+        所以必须显式列进 except，否则它会穿过去掀掉收口。
+        """
+        import asyncio
+        import concurrent.futures
+
+        task = self._sync_task
+        if task is None:
+            return
+        self._sync_task = None
+        task.cancel()
+        try:
+            task.result(self._timeout)
+        except (_FuturesTimeout, concurrent.futures.CancelledError,
+                asyncio.CancelledError):
+            pass                                        # 取消掉/等超时都算收到了
+        except Exception as exc:                        # noqa: BLE001
+            log.debug("sync 任务收尾异常（已忽略）：%s", describe_exc(exc))
+
+    def _shutdown_loop(self) -> None:
+        """把私有循环连同它的守护线程收干净。构造失败与正常收口共用这一条路径。
+
+        必须**等线程退出**再 ``loop.close()``：关一个还在转的循环会当场抛
+        ``RuntimeError: Cannot close a running event loop``。等不到就宁可漏一条
+        守护线程 —— 收口这一步炸掉，比多一条永不退出的后台更难查。
+        """
+        if self._loop.is_closed():
+            return
+        try:
+            self._await(self._loop.shutdown_asyncgens())
+        except Exception as exc:                        # noqa: BLE001
+            log.debug("async 生成器收尾异常（已忽略）：%s", describe_exc(exc))
         self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=self._timeout)
+        if self._thread.is_alive():
+            log.debug("事件循环线程 %.0fs 内未退出，跳过 loop.close()", self._timeout)
+            return
+        self._loop.close()
 
 
-def open_channel(config: MatrixBusConfig) -> MirrorChannel:
-    """按 config 打开真房间通道。任何失败都原样抛出，由调用方统一降级。"""
-    return _NioChannel(config)
+def open_channel(config: MatrixBusConfig, *,
+                 ignored_senders: frozenset[str] | None = None) -> MirrorChannel:
+    """按 config 打开真房间通道。任何失败都原样抛出，由调用方统一降级。
+
+    只有一处例外：``matrix-nio`` 没装时把 ``ModuleNotFoundError`` 换成
+    :class:`MatrixDepMissing`，并把**当前解释器**写进消息里。理由见那个类的注释 ——
+    这是「拿系统 python3 跑」这个坑唯一能被自动认出来的地方，认不出它就只能靠人
+    记得去查，而这套链路里「记得去查」从来没成立过。
+
+    ``exc.name != "nio"`` 那一支不能省：``matrix-nio`` 装了但它自己缺依赖时，
+    抛的也是 ``ModuleNotFoundError``，念成「你没装 nio」会把人指向错的方向。
+
+    ``ignored_senders`` 不传时**现读**一次 :data:`ENV_ROOM_BOTS`（口径同
+    :func:`current_approvers`：读进程环境，不进 config、不进 dataclass）。
+    现读而不是让调用方传，是为了让 ``hiclaw/room_ingress.py`` 那个常驻入口
+    **一个字不改**就吃到岗位账号名单 —— 它拿到的正是这一句的返回值。
+    显式传 ``frozenset()`` 可以关掉这层，测试与「就按我给的这份读」都靠它。
+    """
+    if ignored_senders is None:
+        ignored_senders = parse_approvers(os.environ.get(ENV_ROOM_BOTS))
+    try:
+        return _NioChannel(config, ignored_senders=ignored_senders)
+    except ModuleNotFoundError as exc:
+        if exc.name != "nio":
+            raise
+        raise MatrixDepMissing(
+            f"当前解释器没装 matrix-nio：{sys.executable}。"
+            f"改用装了它的那个重跑：{VENV_PYTHON}") from exc
 
 
 # --------------------------------------------------------------------------
@@ -291,6 +880,14 @@ def open_channel(config: MatrixBusConfig) -> MirrorChannel:
 #: 连续镜像失败这么多次后永久降级。房间挂一整场时，不该把控制台刷成告警墙 ——
 #: 那会把真正的业务日志淹掉，而镜像失败本身已经在第一次就报过了。
 MAX_MIRROR_FAILURES = 3
+
+#: 为什么没进房间。``log_only`` 这一个布尔把两件事抹平成了同一个 True：
+#: 「本来就没打算进房间」（env 没配）和「打算进但没进成」（解释器错 / 连不上）。
+#: 前者是自检的常态，后者是事故 —— 它们的正确退出码不一样，所以原因要单记一份。
+DEGRADE_NONE = ""              #: 接通了，房间是活的
+DEGRADE_ENV = "env"            #: 四个必填 env 没配齐 = 明确的降级意图
+DEGRADE_DEPS = "deps"          #: matrix-nio 没装 = 解释器用错了（最贵的那一步）
+DEGRADE_CONNECT = "connect"    #: 配齐也装了，但连不上 / 撞加密房 / token 失效
 
 
 class MatrixEventBus(EventBus):
@@ -307,15 +904,43 @@ class MatrixEventBus(EventBus):
         self.config = config
         self._channel: MirrorChannel | None = None
         self._failures = 0
+        #: 降级原因，取值见 DEGRADE_* 那组常量。入口靠它决定退出码。
+        self.degrade_reason = DEGRADE_NONE
+        #: 降级原因的一行详情（已过 describe_exc）。接通时是空串。
+        self.degrade_detail = ""
         if config.log_only:
+            self.degrade_reason = DEGRADE_ENV
             log.warning("Matrix 总线降级 log-only：不进房间，三方法行为等同 %s",
                         type(inner).__name__)
             return
         try:
             self._channel = channel if channel is not None else open_channel(config)
-        except Exception as exc:                        # noqa: BLE001 —— 见不变量 2
-            log.warning("Matrix 房间连接失败（%s），降级 log-only", exc)
+        except MatrixDepMissing as exc:
+            # 单独一支、单独一个级别：这不是「房间连不上」，是**解释器用错了**。
+            # 四个 env 都配齐说明操作者确实想进房间，而这条原来与其他降级共用
+            # 一行 WARNING、退出码同样是 0 —— 于是终端照常刷「房间消息」、场景照常
+            # 跑完，截那个窗口当证据与真房间无法分辨。ERROR 只是让它在屏幕上站住，
+            # **真正的闸在入口**（room_demo 按 degrade_reason 非 0 退出）。
+            self.degrade_reason = DEGRADE_DEPS
+            self.degrade_detail = describe_exc(exc)
+            log.error("Matrix 房间没接通：%s", self.degrade_detail)
+            log.error("降级 log-only —— 终端仍会照常刷「房间消息」，但房间里一条都不会有")
             self.config = replace(config, log_only=True)
+        except Exception as exc:                        # noqa: BLE001 —— 见不变量 2
+            self.degrade_reason = DEGRADE_CONNECT
+            self.degrade_detail = describe_exc(exc)
+            log.warning("Matrix 房间连接失败（%s），降级 log-only", self.degrade_detail)
+            self.config = replace(config, log_only=True)
+
+    @property
+    def channel(self) -> "MirrorChannel | None":
+        """当前镜像通道；降级或未接通时为 None。C-3 的 room_demo 靠它起监听。
+
+        只读是刻意的：``_channel`` 的唯一写入方是本类的降级逻辑（连续镜像失败
+        ``MAX_MIRROR_FAILURES`` 次后置 None）。开一个 setter 就多一条绕过降级的路 ——
+        外部把通道塞回来，永久降级就失效了，而症状是告警墙，不是崩。
+        """
+        return self._channel
 
     # -- EventBus 三方法（签名逐字对齐 maos/core/eventbus.py:26-34）---------
     def publish(self, topic: str, env: Envelope) -> None:
@@ -351,10 +976,16 @@ class MatrixEventBus(EventBus):
             return
         try:
             self._channel.send(plain, html)             # type: ignore[union-attr]
+        except RoomSendTimeout as exc:
+            # **超时不计入失败次数。** nio 还在后台退避重试，这条消息很可能已经落地
+            # （T 轮实测：3 条超时告警，房间里 23 条消息一条不少）。计进去的话，
+            # 撞一次限流就够 3 次、直接触发永久降级 —— 那之后房间里是真的一条都没有
+            # 了，一次虚警被自己亲手做实成了真故障。
+            log.warning("Matrix 镜像超时（%s）；未计入失败次数", describe_exc(exc))
         except Exception as exc:                        # noqa: BLE001 —— 见不变量 1
             self._failures += 1
             log.warning("Matrix 镜像失败第 %d 次（%s），inner 总线不受影响",
-                        self._failures, exc)
+                        self._failures, describe_exc(exc))
             if self._failures >= MAX_MIRROR_FAILURES:
                 log.warning("镜像连续失败 %d 次，永久降级 log-only", self._failures)
                 self.config = replace(self.config, log_only=True)
@@ -367,7 +998,7 @@ class MatrixEventBus(EventBus):
             try:
                 self._channel.close()
             except Exception as exc:                    # noqa: BLE001
-                log.debug("关闭镜像通道异常（已忽略）：%s", exc)
+                log.debug("关闭镜像通道异常（已忽略）：%s", describe_exc(exc))
             self._channel = None
 
     def __getattr__(self, name: str) -> Any:
@@ -456,7 +1087,7 @@ class RoomApprovalBridge:
             return ""
 
         cmd = parse_approval_command(text)
-        if sender not in self.config.approvers:
+        if sender not in self._effective_approvers():
             action = text.split(maxsplit=1)[0][1:].lower()
             self._record_denied(sender, action, cmd.task_id if cmd else "")
             return self._say(f"无审批权限：{sender} 不在 MAOS_APPROVERS 名单内")
@@ -470,7 +1101,7 @@ class RoomApprovalBridge:
         except Exception as exc:                        # noqa: BLE001
             # 房间里一条打错的 task_id 不该掀掉整个进程；但也不能静默 ——
             # 发命令的人必须当场知道「这条没生效」，否则会一直等一个不会来的结果。
-            log.warning("审批未生效 %s：%s", cmd.task_id, exc)
+            log.warning("审批未生效 %s：%s", cmd.task_id, describe_exc(exc))
             return self._say(f"审批未生效：{cmd.task_id} —— {exc}")
 
         verb = "已批准" if approved else "已驳回"
@@ -480,6 +1111,22 @@ class RoomApprovalBridge:
         return self._say(reply)
 
     # -- 内部 -------------------------------------------------------------
+    def _effective_approvers(self) -> frozenset[str]:
+        """每次判定现读一次名单（T28）—— **改审批人不必重启进程**。
+
+        口径照抄 `gate._finance_threshold` 那条已定的决策（`docs/DECISIONS.md`
+        2026-08-28 P3）：在 import 时固化，改一次配置就得重启；现读则让
+        `MAOS_CONFIG_SOURCE=nacos` 下 Nacos 推来的新名单在**下一条审批命令**上
+        就生效。这是 §5.4 那个动态治理演示成立的地方。
+
+        读到空就回落构造时那份快照。这一条留着三处活路，都不是假设：
+        `MatrixBusConfig.from_env({...})` 显式给字典造的 config、
+        `room_demo.py` 降级自检里 `replace(config, approvers=...)` 换过的 config、
+        以及测试里直接 `MatrixBusConfig(approvers=...)` 构造的那些。
+        进程环境没配名单时，它们仍按自己那份判 —— 与 T28 之前逐字节一致。
+        """
+        return current_approvers() or self.config.approvers
+
     def _record_denied(self, sender: str, action: str, task_id: str) -> None:
         """把越权尝试写进 event_log。写不进去也不许把异常抛给房间监听循环。"""
         store = getattr(self.queue, "store", None)
@@ -500,12 +1147,12 @@ class RoomApprovalBridge:
                 "detail": {"sender": sender, "command": action, "task_id": task_id},
             })
         except Exception as exc:                        # noqa: BLE001
-            log.warning("越权审批记录写入失败（%s）", exc)
+            log.warning("越权审批记录写入失败（%s）", describe_exc(exc))
 
     def _say(self, text: str) -> str:
         if self.channel is not None:
             try:
                 self.channel.send(text, f"<p>{_esc(text)}</p>")
             except Exception as exc:                    # noqa: BLE001 —— 回话也是旁路
-                log.warning("房间回话失败（%s），判定已生效", exc)
+                log.warning("房间回话失败（%s），判定已生效", describe_exc(exc))
         return text

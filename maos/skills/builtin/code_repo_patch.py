@@ -22,11 +22,18 @@ from __future__ import annotations
 
 import json
 import posixpath
+import time
 from typing import Any
 
+from maos.core.store import record_model_failure, record_model_usage
 from maos.model.client import Tier
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
+from maos.tools.mcp.git_tool import FIXTURE_ROOT, GIT_MCP_PORT
+from maos.tools.port import invoke_tool
+
+#: 落 ``model_usage`` 时写进 ``call_site`` 列的值。
+CALL_SITE = "maos/skills/builtin/code_repo_patch.py::CodeRepoPatchSkill.run"
 
 # 受保护目录名：路径按 / 分段后任一段命中即安全事件。"tests" 挡的是「改测试让测试通过」。
 #
@@ -52,10 +59,71 @@ class ProtectedPathViolation(Exception):
     """
 
 
+# git 的 quote_c_style 只用这几个字母转义，其余不可打印/高位字节一律走三位八进制。
+# 抄的是 git 源码 quote.c 的 cq_lookup 表，多一个少一个都会让解码与 git 分叉。
+_C_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n",
+              "r": "\r", "t": "\t", "v": "\v", '"': '"', "\\": "\\"}
+
+
+def unquote_c_style(path: str) -> str:
+    """把 git 的 C-quoted 路径解回真实路径；不是 C-quoted 的原样返回。
+
+    git 对含特殊字节的路径写成 ``"a/\\164ests/conftest.py"`` —— 双引号包裹 + 反斜杠
+    转义，其中 ``\\164`` 是 ``t`` 的八进制。``git apply`` 会把它解码成 ``tests/…``
+    再落盘，而 ``_path_segments`` 从前直接吃原串：``\\164ests`` 里的反斜杠被当成
+    路径分隔符，段变成 ``164ests``，与 ``tests`` 不相等，三条校验一起失效。
+
+    **只在首尾都是双引号时才解码**。合法路径里也可能带引号，「凡带引号一律拒绝」
+    是把漏拦换成误伤 —— 正常补丁从此打不进去，不是修好了。
+
+    八进制转义编的是**字节**（UTF-8 逐字节），所以先解成 bytes 再按 UTF-8 解码；
+    解不出的字节走 surrogateescape 保留，不让一个畸形字节把整条路径吞掉。
+
+    遇到无法识别的转义序列时保留反斜杠原样，不抛。这里是安全判定的上游，
+    抛异常等于把「路径可疑」变成「整次产出崩掉」，而崩掉的那次没人会去看它想写哪。
+    """
+    if len(path) < 2 or not path.startswith('"') or not path.endswith('"'):
+        return path
+
+    body = path[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if char != "\\":
+            out.extend(char.encode("utf-8", errors="surrogateescape"))
+            i += 1
+            continue
+        if i + 1 >= len(body):                      # 末尾孤立反斜杠，原样留着
+            out.extend(b"\\")
+            break
+        nxt = body[i + 1]
+        triple = body[i + 1:i + 4]
+        if nxt in _C_ESCAPES:
+            out.extend(_C_ESCAPES[nxt].encode("utf-8"))
+            i += 2
+            continue
+        # git 只写恰好三位、且落在单字节内的八进制（最大 \377）。位数不足、
+        # 混进 8/9、或 \400 以上都不是 git 的产物，按「不是转义」处理。
+        # 这里用不得 str.isdigit()：它对 '²' 这类 Unicode 数字也返回 True。
+        if len(triple) == 3 and all(c in "01234567" for c in triple):
+            value = int(triple, 8)
+            if value <= 0xFF:
+                out.append(value)
+                i += 4
+                continue
+        out.extend(b"\\")                           # 认不出的转义：反斜杠原样保留
+        i += 1
+    return out.decode("utf-8", errors="surrogateescape")
+
+
 def _path_segments(path: str) -> list[str]:
     """把补丁路径规范化成小写分段，供分段相等匹配。
 
-    归一四件事，每一件不做就是一个绕过口：
+    归一**五**件事，每一件不做就是一个绕过口：
+      * C-quoted 解引号：``"a/\\164ests/conftest.py"`` 是 git 自己的路径写法，
+        它会解码成 ``tests/…`` 再落盘。不先解码，下面那条「反斜杠 → 斜杠」
+        反而帮倒忙 —— 转义反斜杠被吃成分隔符，段成了 ``164ests``；
       * 反斜杠 → 斜杠：``.github\\workflows\\ci.yml`` 否则整条是一个段，判不出来；
       * 折叠 ``.`` / ``..`` / 重复斜杠：``./infra/x`` 与 ``maos/../infra/x``
         必须和 ``infra/x`` 判成同一个；
@@ -63,10 +131,13 @@ def _path_segments(path: str) -> list[str]:
       * casefold：本机 APFS 默认大小写不敏感，``Secrets/prod.env`` 与
         ``secrets/prod.env`` 在磁盘上是同一个文件，判定却会放行前者。
 
+    解码必须排在最前：它产出的才是 git 眼里的真实路径，后面四件都得对着那一条做。
+
     normpath 消不掉开头的 ``..``（``../infra/x`` 原样返回），所以残留的
     ``..`` 段在这里一并滤掉 —— 留着它只会让越界路径躲开分段匹配。
     """
-    collapsed = posixpath.normpath(path.replace("\\", "/"))
+    decoded = unquote_c_style(path)
+    collapsed = posixpath.normpath(decoded.replace("\\", "/"))
     return [seg.casefold() for seg in collapsed.split("/") if seg not in ("", ".", "..")]
 
 
@@ -116,11 +187,51 @@ class CodeRepoPatchSkill(Skill):
             # 与 req.normalize 不同：补丁没有规则兜底可言，无模型就是接线错了。
             raise RuntimeError("code.repo-patch 需要 ctx.model，调用方必须传 extras={'model': ...}")
 
-        raw = ctx.model.complete(
-            system=SYSTEM,
-            user=self._build_prompt(payload, ctx),
-            tier=ctx.extras.get("tier") or Tier.MEDIUM,
-        ).text
+        # 接住整个 ModelResponse 再取 .text（口径同 req_normalize）：补丁产出是本仓
+        # 最贵的一类调用，用量在这一行丢掉，成本视图里最大的那一块就是空的。
+        # 补丁基线经 git-mcp 取（``depends_tools`` 里声明的那个 git-mcp，现在真调了）。
+        # 拿的是「这份补丁是针对哪个 HEAD 产出的」——补丁本身不带基线，事后就只能靠
+        # 时间戳去猜它对应哪一版代码，而时间戳在返工链上恰好是最不可信的那个字段。
+        # 失败一律抛：连不上就是连不上，不许悄悄回落到本地 git，否则「这一步走没走
+        # MCP」在证据里查不出来。
+        baseline = invoke_tool(
+            GIT_MCP_PORT,
+            {"op": "baseline", "root": FIXTURE_ROOT},
+            store=ctx.store, extras=ctx.extras,
+        )
+
+        tier = ctx.extras.get("tier") or Tier.MEDIUM
+        started = time.perf_counter()
+        try:
+            resp = ctx.model.complete(
+                system=SYSTEM,
+                user=self._build_prompt(payload, ctx, baseline),
+                tier=tier,
+            )
+        except Exception as exc:
+            # 失败也要留账（T54），口径同 req_normalize：补丁是本仓最贵的一类调用，
+            # 一次超时烧掉的输入侧 token 原先在成本视图里完全不存在。
+            record_model_failure(
+                ctx.store, exc,
+                agent_role=getattr(ctx.identity, "role", "") or "unknown",
+                call_site=CALL_SITE, tier=tier,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                model=getattr(ctx.model, "model", "") or "",
+                trace_id=ctx.extras.get("trace_id") or "",
+                plan_id=ctx.extras.get("plan_id") or "",
+                task_id=ctx.extras.get("task_id"),
+            )
+            raise
+        record_model_usage(
+            ctx.store, resp, client=ctx.model,
+            agent_role=getattr(ctx.identity, "role", "") or "unknown",
+            call_site=CALL_SITE, tier=tier,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            trace_id=ctx.extras.get("trace_id") or "",
+            plan_id=ctx.extras.get("plan_id") or "",
+            task_id=ctx.extras.get("task_id"),
+        )
+        raw = resp.text
 
         try:
             patch = json.loads(raw)
@@ -160,13 +271,27 @@ class CodeRepoPatchSkill(Skill):
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _build_prompt(payload: dict, ctx: SkillContext) -> str:
-        """attempt 从 extras 取，不进 payload —— 入参字段以附录 B 为准，不许扩。"""
+    def _build_prompt(payload: dict, ctx: SkillContext, baseline: dict | None = None) -> str:
+        """attempt 从 extras 取，不进 payload —— 入参字段以附录 B 为准，不许扩。
+
+        基线行只放 sha / 分支 / 干净与否三个短标量，**不放文件内容**：
+        ``ScriptedModelClient`` 按 ``kw in user`` 子串匹配取第一个命中的键，
+        往提示词里灌仓库正文会凭空多出误命中，而那种失配表现成「模型答非所问」，
+        查起来会绕很远。
+        """
         parts = [
             f"任务：{payload.get('title', '')}",
             f"任务输入：{json.dumps(payload.get('inputs') or {}, ensure_ascii=False)}",
             f"验收标准：{json.dumps(payload.get('acceptance') or [], ensure_ascii=False)}",
         ]
+        if baseline:
+            parts.append(
+                "补丁基线：%s@%s（%s）" % (
+                    baseline.get("repo_name") or "?",
+                    baseline.get("head_short") or "?",
+                    "工作树有未提交改动" if baseline.get("dirty") else "工作树干净",
+                )
+            )
         findings = payload.get("rework_findings") or []
         attempt = int(ctx.extras.get("attempt") or 1)
         if attempt > 1 and findings:

@@ -9,12 +9,51 @@ Track B 加新 Agent 时只做两件事：继承 BaseAgent、在 AGENT_POOL 里�
 
 from __future__ import annotations
 
+import contextvars
+import functools
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from maos.core.store import record_model_failure, record_model_usage
 from maos.model.client import ModelClient, Tier
 from maos.skills.invoker import SkillInvoker
+
+#: ``ask()`` 落 ``model_usage`` 时写进 ``call_site`` 列的值。
+CALL_SITE_ASK = "maos/agents/base.py::BaseAgent.ask"
+
+#: ``run()`` 执行期间的任务归属（trace_id / plan_id / task_id）。
+#:
+#: 为什么要这么一个东西：``ask()`` 的签名是 ``(system, user)``，里面看得到
+#: ``self.identity`` 却看不到 ``TaskContext``，而 ``trace_id`` 只在后者上。两个调用方
+#: （``agents/reviewer.py::ReviewerAgent.run`` 与 ``agents/manager.py::ManagerAgent.plan``）
+#: 都不在本轨可改范围内，给 ``ask()`` 加参数也就没人传得进来 —— 所以归属由
+#: ``BaseAgent`` 自己在 ``run()`` 进出时绑定，签名一个字节不动。
+#:
+#: 用 ContextVar 而不是实例属性：``WorkerRuntime`` 每个 role 只建一个 Agent 实例并反复
+#: 复用（``runtime/worker.py``），实例属性会在并发/嵌套调用间串味，把 A 任务的成本
+#: 记到 B 任务头上。ContextVar 天然按执行上下文隔离，且 ``reset`` 保证退出即还原。
+#:
+#: 绑不上的照旧是空 —— 见 ``core/store.py::record_model_usage`` 里那段「不许编 trace_id」。
+_ATTRIBUTION: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "maos_agent_attribution", default={})
+
+
+def _bind_attribution(fn):
+    """把 ``run(ctx)`` 包一层：进函数绑归属，出函数还原。只读 ctx，不改它。"""
+    @functools.wraps(fn)
+    def _run(self, ctx, *args, **kwargs):
+        token = _ATTRIBUTION.set({
+            "trace_id": getattr(ctx, "trace_id", "") or "",
+            "plan_id": getattr(ctx, "plan_id", "") or "",
+            "task_id": getattr(ctx, "task_id", None),
+        })
+        try:
+            return fn(self, ctx, *args, **kwargs)
+        finally:
+            _ATTRIBUTION.reset(token)
+    return _run
 
 
 @dataclass(frozen=True)
@@ -56,6 +95,34 @@ class AgentOutput:
     error: str | None = None
     metrics: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """失败必须给理由 —— 从「可能」变成「不可能」（T49 §5.2）。
+
+        ``AgentOutput(status="failed")`` 不带 ``error`` 原先是**合法构造**：
+        类型上完全成立，下游拿到的却是一个「失败了但没说为什么」的结果，
+        审计链就断在这里 —— 事后没人答得上这次为什么没成。
+
+        ``ReviewerAgent._needs_human`` 的 docstring 早就守着同一条（「产出空白
+        意见书会让下游以为『审过了、没问题』」），但那是**一个 Agent 的自觉**，
+        管不到另外几十个构造点。立在 dataclass 上才对全仓生效。
+
+        参照 cumora 的工具协议（``docs/refs/cumora-turn-loop.md`` §3 #2）：
+        ``reason`` 是必填字段，缺了直接判 invalid，理由写得很直白 ——
+        reason is required so the runtime can audit why the turn stopped。
+
+        ``blocked`` 收 ``open_questions`` **或** ``error``：它有两种正当形态 ——
+        「有问题要问人」和「被挡住了」，两者都算说明了为什么停。
+        """
+        if self.status == "failed" and not (self.error or "").strip():
+            raise ValueError(
+                "AgentOutput(status='failed') 必须带 error 说明为什么失败 —— "
+                "失败而不给理由会让审计链断在这里，事后没人答得上这次为什么没成。")
+        if self.status == "blocked" and not (
+                self.open_questions or (self.error or "").strip()):
+            raise ValueError(
+                "AgentOutput(status='blocked') 必须带 open_questions 或 error —— "
+                "说明是「有问题要问人」还是「被挡住了」，光说停了等于没说。")
+
 
 class PermissionDenied(Exception):
     """Agent 越权。不要 catch，这是安全事件，应当中止并记录。"""
@@ -63,6 +130,23 @@ class PermissionDenied(Exception):
 
 class BaseAgent(ABC):
     identity: AgentIdentity
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """给每个自己实现了 ``run()`` 的子类装上归属绑定（见 ``_ATTRIBUTION``）。
+
+        装在这里而不是 ``@register`` 上：``ReviewerAgent`` 走的是
+        ``reviewer.py::review_after_gate`` 直接 ``reviewer.run(ctx)``，**不经 Worker 队列**，
+        而 ``@register`` 只决定进不进 ``AGENT_POOL``，管不到谁来调。绑定必须跟着
+        ``run()`` 本身走，才不会漏掉这条旁路。
+
+        抽象声明不包（包了会把 ``__isabstractmethod__`` 抹掉，让没实现 run 的类
+        也能被实例化）；中间基类与叶子类各自实现 run 时两层都包，嵌套 set/reset
+        是安全的，内层退出即还原成外层。
+        """
+        super().__init_subclass__(**kwargs)
+        fn = cls.__dict__.get("run")
+        if callable(fn) and not getattr(fn, "__isabstractmethod__", False):
+            cls.run = _bind_attribution(fn)
 
     def __init__(self, model: ModelClient, store: Any = None) -> None:
         self.model = model
@@ -94,7 +178,43 @@ class BaseAgent(ABC):
             raise PermissionDenied(f"{self.identity.agent_id} 无权写 {resource}")
 
     def ask(self, system: str, user: str) -> str:
-        return self.model.complete(system=system, user=user, tier=self.identity.model_tier).text
+        """调模型并把用量挂到当前 ``trace_id`` 上，然后照旧只返回文本。
+
+        接住整个 ``ModelResponse`` 而不是直接 ``.text``：``tokens_in`` / ``tokens_out``
+        原先在这一行被丢掉，全仓因此没有一处成本口径。返回值形状不变，调用方零改动。
+
+        抛异常的调用**不往 ``model_usage`` 落行**：网关没给回用量，编一行 0 token
+        只会让「调用失败」伪装成「这次很便宜」。但它也不再是无声的（T54）——
+        失败落进 ``model_call_failure``（一张不谈 token 的表），异常原样往上抛，
+        上层的 AgentOutput / 事件链照旧。两张表加起来才是「这次跑了几次模型」。
+        """
+        started = time.perf_counter()
+        attribution = _ATTRIBUTION.get()
+        try:
+            resp = self.model.complete(system=system, user=user,
+                                       tier=self.identity.model_tier)
+        except Exception as exc:
+            record_model_failure(
+                getattr(self.skills, "store", None), exc,
+                agent_role=self.identity.role, call_site=CALL_SITE_ASK,
+                tier=self.identity.model_tier,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                model=getattr(self.model, "model", "") or "",
+                trace_id=attribution.get("trace_id", ""),
+                plan_id=attribution.get("plan_id", ""),
+                task_id=attribution.get("task_id"),
+            )
+            raise
+        record_model_usage(
+            getattr(self.skills, "store", None), resp,
+            client=self.model, agent_role=self.identity.role,
+            call_site=CALL_SITE_ASK, tier=self.identity.model_tier,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            trace_id=attribution.get("trace_id", ""),
+            plan_id=attribution.get("plan_id", ""),
+            task_id=attribution.get("task_id"),
+        )
+        return resp.text
 
 
 # 可插拔 Agent 池：role -> Agent 类

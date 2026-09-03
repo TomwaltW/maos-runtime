@@ -1,0 +1,60 @@
+# 本地 Nacos（standalone，内嵌 derby）—— 只为在本机把「四个旋钮从环境变量搬进
+# 可动态治理的配置面」这条链路跑通，**不是生产部署样例**。
+#
+# 铁律 6：这个文件里不许出现任何口令。三个 auth 相关的值一律从**进程环境变量**取，
+# 缺省值只在 `MAOS_NACOS_*` 未设时兜底，且兜底值本身是公开的演示值 —— 换句话说，
+# 「不配就是不安全」这件事写在脸上，而不是藏在一个看起来像密钥的字面量里。
+#
+#   export NACOS_AUTH_TOKEN=<自己生成的 base64，原文至少 32 字节>
+#   export NACOS_AUTH_IDENTITY_KEY=<任意串>
+#   export NACOS_AUTH_IDENTITY_VALUE=<任意串>
+#   docker compose -f deploy/nacos/docker-compose.yml up -d
+#
+# 生成 token 的一条命令（不写进任何文件，只 export）：
+#   openssl rand -base64 48
+#
+# 不想每开一个 shell 就 export 三遍，就在本文件旁边建一个 `.env`（本目录，
+# 已被 .gitignore 挡在版本库外），把那三行写进去 —— 下面的 `env_file` 声明的就是它，
+# `required: false` 保证**没建这个文件时照常起得来**。
+#
+# 🔴 `.env` 里只放上面那三个 `NACOS_AUTH_*`。**`MAOS_NACOS_*` 那一组不要放进来** ——
+# 它们是给宿主机上的 MAOS 进程读的，Nacos 容器一个都用不上；写进 env_file 的后果是
+# 把 `MAOS_NACOS_PASSWORD` 白白注进 Nacos 容器的环境变量里，多一处能被 `docker inspect`
+# 读出来的口令面（铁律 6）。MAOS 侧那一组走宿主机 shell 的 export，见 deploy/nacos.md。
+#
+# ⚠️ 本目录本该再配一份 `.env.example` 供 `cp` —— 当前**建不出来**，撞了工具侧的
+# deny 规则（与 `deploy/.env.example` 同一条）。键名清单与占位符写法记在
+# `docs/BACKLOG.md` 的 `## task-T35`，deny 放开后照抄即可。
+#
+# 端口只绑 127.0.0.1：这台机器上跑的是一个带审批人名单的治理面，
+# 默认绑 0.0.0.0 等于把「谁能批钱」这张表挂到局域网上。
+
+services:
+  nacos:
+    image: nacos/nacos-server:v2.4.3
+    container_name: maos-nacos
+    env_file:
+      # 只读本目录下的 .env（相对本 compose 文件解析）。没有这个文件也照常起。
+      - path: .env
+        required: false
+    environment:
+      MODE: standalone
+      # 单机内嵌 derby，不外挂 MySQL —— 本地演示不需要，也少一个要配口令的面。
+      SPRING_DATASOURCE_PLATFORM: ""
+      NACOS_AUTH_ENABLE: "true"
+      NACOS_AUTH_TOKEN: "${NACOS_AUTH_TOKEN:?需要先 export NACOS_AUTH_TOKEN（base64，原文 >= 32 字节）}"
+      NACOS_AUTH_IDENTITY_KEY: "${NACOS_AUTH_IDENTITY_KEY:?需要先 export NACOS_AUTH_IDENTITY_KEY}"
+      NACOS_AUTH_IDENTITY_VALUE: "${NACOS_AUTH_IDENTITY_VALUE:?需要先 export NACOS_AUTH_IDENTITY_VALUE}"
+      NACOS_AUTH_TOKEN_EXPIRE_SECONDS: "18000"
+      JVM_XMS: 512m
+      JVM_XMX: 512m
+      JVM_XMN: 256m
+    ports:
+      - "127.0.0.1:8848:8848"   # 控制台 / OpenAPI
+      - "127.0.0.1:9848:9848"   # 客户端 gRPC（nacos-sdk-python v2 走这条）
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8848/nacos/v1/console/health/readiness"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s

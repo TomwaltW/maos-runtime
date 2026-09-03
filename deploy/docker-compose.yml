@@ -1,50 +1,173 @@
 # MAOS 一键起 —— 评委拿到仓库后的第一条命令。
 #
-#   docker compose -f deploy/docker-compose.yml up            # 容器内跑场景 1
-#   docker compose -f deploy/docker-compose.yml run --rm maos python run.py
+#   docker compose -f deploy/docker-compose.yml up --exit-code-from maos   # 容器内跑场景 1
+#   docker compose -f deploy/docker-compose.yml run --rm verify            # 容器内核验 -> RESULT: 7/7 PASS
 #   docker compose -f deploy/docker-compose.yml --profile pg up -d pgvector
 #
-# 三个刻意的选择，先说清楚免得被当成偷懒：
+# 完整手册（前置要求、实测耗时、收尾、跑不通怎么办）见 deploy/README.md。
 #
-# 1. **maos 服务不 build 镜像，直接用 python:3.11-slim + 挂仓库。**
-#    MAOS 核心是零运行时依赖（见 pyproject.toml 的 dependencies = []），
-#    所以不需要构建步骤：没有 build 就没有「镜像与源码不同步」这类问题，
-#    改一行代码重跑立刻生效。要装 hiclaw / obs 的额外依赖时才需要自己的 Dockerfile。
+# 五个刻意的选择，先说清楚免得被当成偷懒：
 #
-# 2. **pgvector 挂在 `pg` profile 下，缺省不起。**
-#    本轮 MAOS 仍走 SQLite，向量检索是 P5 的事。如果让它随缺省 `up` 一起起来，
-#    postgres 会一直常驻，而 maos 跑完场景就退出 —— `up` 于是永远不返回，
-#    验收命令看起来像卡住了。要用时加 `--profile pg`。
+# 1. **镜像 = python:3.11-slim + git + pytest，就地 inline 构建。**
+#    这里原先写的是「不 build 镜像，直接用 python:3.11-slim」，理由是「MAOS 零运行时依赖
+#    （见 pyproject.toml 的 dependencies = []）」。那条理由只对了一半，2026-08-29 首次
+#    真跑连炸两次才问出来：dependencies = [] 说的是 **Python 包**依赖，
+#    而 MAOS 有两个**外部命令**依赖，slim 镜像里一个都没有。
 #
-# 3. **不在这里起 Synapse。** 它需要先生成 homeserver.yaml 与签名密钥，
+#    第一炸（模块导入期，连场景都没进）—— maos/tools/sandbox.py 的
+#    prepare_sandbox_workdir() 要 git init / git apply / git apply -R：
+#
+#        FileNotFoundError: [Errno 2] No such file or directory: 'git'
+#
+#    第二炸（跑到一半，补上 git 之后才露出来）—— 沙箱回归 sandbox_pytest_run()
+#    走 [sys.executable, "-m", "pytest", ..., --junitxml=...]，没有 pytest 就没有
+#    junit 报告，Gate 判 tool_error 两轮打回，plan 终态是 FAILED 而不是 DONE：
+#
+#        测试工具未跑成：pytest 没有产出 junit 报告，多半根本没跑起来
+#        AssertionError  (scenario_1.py:143  assert ... == PlanState.DONE)
+#
+#    git 管补丁的 apply 与 -R 回滚，pytest 管回归的真跑，两个都是真·运行时依赖，
+#    不是可选装饰，所以必须构建。用 dockerfile_inline 而不是新开一个 Dockerfile：
+#    镜像只有四行，摊在这里读者一眼看全。注意别和 deploy/sandbox.Dockerfile 混 ——
+#    那是**另一个**用途的镜像（模型生成的代码在里面跑），越小逃逸面越小；
+#    两边都不钉 pytest 版本，保持一致。
+#
+# 2. **源码仍然 :ro，证据落在独立的命名卷 /evidence 上。**
+#    只读挂载不是省事，是安全叙事的一部分：容器改不动宿主机的源码树。所以不把它
+#    放成 rw 了事，另挂一个可写命名卷到 /evidence，三个好处一次拿全：
+#      · 源码保持不可写（实测容器内 touch /app/… 报 Read-only file system）；
+#      · 证据写得进去，容器内跑得了 make_evidence.py + verify.py；
+#      · 卷起始为空，所以容器里核验的是**这一次现产的**证据，不是仓库里躺着的那份 ——
+#        正是要给评委看的东西：不是信这份证据，是自己再产一份。
+#    代价：容器产的证据不落到宿主机（这是有意的，见下），要取出来见
+#    deploy/README.md「证据怎么取出来」。
+#
+#    ⚠️ 为什么不 bind 到宿主机 evidence/：容器跑一次就往宿主机写 50+ 个文件，
+#    git status 立刻脏一屏，整合轮与录制都会被绊到。
+#    ⚠️ 为什么不叠在 /app/evidence 上：见 volumes 那一段的注释，一句话是
+#    「会让每一份容器产的证据都假称 -dirty」。
+#
+# 3. **verify 服务挂在 verify profile 下。** 不挂 profile 的话缺省 up 会把它一起拉起来，
+#    而抬头第一条命令说好了「只跑场景 1」。docker compose run 会自动启用目标服务
+#    自己的 profile，所以 `run --rm verify` 不用额外加 --profile。
+#
+# 4. **pgvector 挂在 pg profile 下，缺省不起。**
+#    本轮 MAOS 仍走 SQLite，向量检索是 P5 的事。如果让它随缺省 up 一起起来，
+#    postgres 会一直常驻，而 maos 跑完场景就退出 —— up 于是永远不返回，
+#    验收命令看起来像卡住了。要用时加 --profile pg。
+#
+# 5. **不在这里起 Synapse。** 它需要先生成 homeserver.yaml 与签名密钥，
 #    塞进 compose 会变成一堆没法一键跑通的前置步骤。并排起法见文件末尾注释。
+#
+# ⚠️ 退出码陷阱（2026-08-29 实测）：裸 `docker compose up` 在**容器崩溃时也返回 0**，
+#    只有加 --exit-code-from <服务名> 才透传容器退出码。所以任何拿 `up; echo $?`
+#    当「跑通了没有」判据的脚本都是假判据 —— 抬头第一条命令因此写死了这个开关。
+#    已记 docs/BACKLOG.md ## task-T9。
 
 name: maos
 
+# 两个服务同一个镜像、同一套挂载，差别只在 command。锚点摊在这里，
+# 免得改一处漏一处（尤其是 volumes —— 漏了 evidence 卷就又变成只读跑不了核验）。
+x-maos-runtime: &maos-runtime
+  # image 与 build 并存：compose 构建一次、打上这个 tag，两个服务共用，不会各建一遍。
+  image: maos-runtime:local
+  build:
+    # 上下文取 deploy/ 而不是仓库根：inline Dockerfile 一个文件都不 COPY，
+    # 上下文只用来走个过场，拿仓库根会把 .git 与 evidence/ 白白塞进去。
+    context: .
+    dockerfile_inline: |
+      FROM python:3.11-slim
+      RUN apt-get update \
+       && apt-get install -y --no-install-recommends git \
+       && rm -rf /var/lib/apt/lists \
+       && pip install --no-cache-dir pytest \
+       && git config --system --add safe.directory /app
+  working_dir: /app
+  # 容器不联网。这不是加固表演，是**跑通的前提**（2026-08-29 实测的第三炸）：
+  # scenarios/fixture-repo/tests/test_isolation_probe.py 拿 /.dockerenv 存不存在
+  # 判「我在不在沙箱容器里」，在则断言连外网必抛 OSError，不在则 skip。
+  # 那条判据默认 MAOS 自己跑在宿主机上、只有沙箱才是容器 —— 而这里 MAOS 自己就在
+  # 容器里，/.dockerenv 照样存在，探针于是对着**降级路径的裸 subprocess** 要求断网：
+  #
+  #     FAILED tests/test_isolation_probe.py::test_no_network - Failed: DID NOT RAISE OSError
+  #
+  # 回归一挂，Gate 两轮打回，plan 终态 FAILED，scenario_1.py:143 断言 DONE 处炸。
+  # 靶场是别的轨的面，本轨不改它（铁律 4，已记 docs/BACKLOG.md ## task-T9）。
+  # 改这里是因为：探针断言的是「沙箱没有网」，而 network_mode: none 之后这句话
+  # **真的成立**了（子进程继承容器的网络命名空间，同样无网），不是把红的调绿，
+  # 是把断言要的性质补上。顺带这也让「容器内跑模型生成的代码」这个叙事更硬。
+  #
+  # 代价：文件末尾那条 `--scenario 1 --matrix` 连不上 host.docker.internal:8008，
+  # 会按 C-6 降级回进程内总线。要带真总线跑就把这行注掉。
+  network_mode: none
+  volumes:
+    # 只读挂载：容器里跑的就是仓库这一份代码，且它改不动宿主机的源码树。
+    - ..:/app:ro
+    # 唯一的可写面。证据束、临时目录、SQLite 库都落这里。
+    #
+    # 挂在 /evidence 而**不是** /app/evidence，理由是出处 sha 的诚实性：
+    # 命名卷叠在 /app/evidence 上会把仓库里已跟踪的那 58 个证据文件整个遮住，
+    # 于是容器内 `git status --porcelain -uno` 把它们全看成「被删」，
+    # make_evidence.py 的 git_sha() 据此给每一份容器产的证据打上 `-dirty`
+    # （实测：在一份工作区干净的 clone 里跑，产出的头照样带 `-dirty`）。
+    # 那个后缀要指示的是「跑这批证据的代码与 HEAD 不一致」—— 挂载方式把它变成
+    # 恒为真的假信号，而这个仓库对出处的要求是「含糊比没有更坏」。
+    # 挪到 /evidence，容器内 git 看到的是干净工作区，sha 就是真的 sha。
+    # 代价：落盘路径不再是缺省值，所以 verify 服务显式传 --out / --evidence。
+    - evidence:/evidence
+  environment:
+    PYTHONPATH: /app
+    PYTHONUNBUFFERED: "1"
+    # 容器里没有 docker daemon，沙箱走子进程路径而不是嵌套容器。
+    MAOS_SANDBOX_FORCE_SUBPROCESS: "1"
+    # 证据的出处 sha。留空时 make_evidence.py 自己在 /app 里跑 git rev-parse ——
+    # 评委拿到的是普通 clone，容器内只读跑 git 是通的（本机实测 rev-parse 与
+    # status --porcelain -uno 都 rc=0，只读文件系统不妨碍这两条）。
+    # 只有从 git worktree 挂进来时不通：worktree 的 .git 是个指向宿主机绝对路径的
+    # 指针文件，容器里那个路径不存在。那时在宿主机上传一个进来即可，见 deploy/README.md。
+    #
+    # 镜像里那行 `git config --system --add safe.directory /app` 是给 Linux 原生 docker
+    # 留的保险：那边 bind mount 保真宿主机 uid，容器内 root 看仓库属主是别人，
+    # git 会以 "detected dubious ownership" 拒跑。本机（Docker Desktop / macOS）的
+    # 文件共享层会把属主映射成容器用户，**实测不加这行也通** —— 即是说这行在本机
+    # 无从验证，是照着 git 的已知行为加的，不是实测出来的。
+    MAOS_EVIDENCE_PINNED_SHA: ${MAOS_EVIDENCE_PINNED_SHA:-}
+  # deploy/.env 不存在时 compose 会报错，所以标 required: false ——
+  # 全部键都可缺省（缺省即降级为确定性本地实现），空环境也应当跑得通。
+  #
+  # ⚠️ 本该配套一份 deploy/.env.example 全量样例，但该路径被本机的权限 deny 规则
+  #    拦住写不进去（与根目录 .env.example 同一条规则，见 docs/BACKLOG.md
+  #    ## task-omega）。键名清单在 docs/BACKLOG.md 那一条里列全了，
+  #    本轨按派单要求停在这里报告，没有绕道用别的文件名替代。
+  env_file:
+    - path: .env
+      required: false
+
 services:
   maos:
-    image: python:3.11-slim
-    working_dir: /app
-    # 只读挂载：容器里跑的就是仓库这一份代码，且它改不动宿主机的源码树。
-    # 证据要落盘时改成可写，或另挂一个卷到 /app/evidence。
-    volumes:
-      - ..:/app:ro
-    environment:
-      PYTHONPATH: /app
-      PYTHONUNBUFFERED: "1"
-      # 容器里没有 docker daemon，沙箱走子进程路径而不是嵌套容器。
-      MAOS_SANDBOX_FORCE_SUBPROCESS: "1"
-    # deploy/.env 不存在时 compose 会报错，所以标 required: false ——
-    # 全部键都可缺省（缺省即降级为确定性本地实现），空环境也应当跑得通。
-    #
-    # ⚠️ 本该配套一份 deploy/.env.example 全量样例，但该路径被本机的权限 deny 规则
-    #    拦住写不进去（与根目录 .env.example 同一条规则，见 docs/BACKLOG.md
-    #    ## task-omega）。键名清单在 docs/BACKLOG.md 那一条里列全了，
-    #    本轨按派单要求停在这里报告，没有绕道用别的文件名替代。
-    env_file:
-      - path: .env
-        required: false
+    <<: *maos-runtime
+    # 容器内的解释器就叫 python（python:3.11-slim 的官方入口）。
+    # 「本机一律 python3」那条只管宿主机上直接执行的命令，容器内不适用，不要改。
     command: ["python", "run.py", "--scenario", "1"]
+
+  # 一条命令核验：现产证据 -> 重放校验 -> RESULT: 7/7 PASS。
+  #
+  #   docker compose -f deploy/docker-compose.yml run --rm verify
+  #
+  # 为什么是「先产再验」而不是直接验仓库里那份：verify.py 要读每场自带的 maos.db，
+  # 而 .gitignore 排掉了 *.db —— 仓库里那份证据是**没有库**的，直接验必然
+  # 「[FAIL] 缺数据库」。所以核验的完整含义是「从零复现一遍再校验」，
+  # 这也正好是评委要看的：不是信我这份证据，是自己再产一份。
+  verify:
+    <<: *maos-runtime
+    profiles: ["verify"]
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        python scripts/make_evidence.py --out /evidence
+        python scripts/verify.py --evidence /evidence
 
   # P5 预备：两阶段检索的向量库。本轮 MAOS 不连它，起来也只是空跑。
   pgvector:
@@ -55,9 +178,15 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maos-local-dev}
       POSTGRES_DB: ${POSTGRES_DB:-maos}
     ports:
+      # 本机已有 postgres 占着 5432 时，用 POSTGRES_PORT 换一个，
+      # 不要去杀宿主机上别人的进程。
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # 首次初始化时自动 CREATE EXTENSION vector，不必起完再手动连进去跑 DDL。
+      # 🔴 只在 pgdata 卷为空时执行（官方镜像行为）；卷里已有数据就安静跳过，
+      #    不报错。要重跑得 `docker compose --profile pg down -v` 先删卷。
+      - ./pg-initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       # 拿 pg_isready 而不是 `SELECT 1`：前者不需要密码，后者会因为鉴权失败
       # 把「库没起来」和「口令配错了」混成同一个症状。
@@ -67,6 +196,8 @@ services:
       retries: 10
 
 volumes:
+  # 容器内证据束的落盘处。想从零复现就先 docker volume rm maos_evidence。
+  evidence:
   pgdata:
 
 # ---------------------------------------------------------------------------
@@ -99,3 +230,7 @@ volumes:
 #
 # 四个键缺任何一个，MatrixEventBus 构造失败即降级回进程内总线（C-6）——
 # 所以上面这一整段没做也不影响任何一条验收命令。
+#
+# 已经有房间在跑时（deploy/synapse/up.sh 起的 maos-synapse / maos-element），
+# 上面这一段不用做，也**不要**去动那两个容器 —— 它们不归本 compose 项目管，
+# 收尾时别用 down --remove-orphans。见 deploy/README.md「收尾与红线」。

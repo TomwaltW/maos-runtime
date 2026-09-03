@@ -1,0 +1,73 @@
+# MAOS T27 · 本地 RocketMQ 5.x —— 三个服务，缺一不可
+#
+#   namesrv  路由注册中心（broker 把自己注册上去）
+#   broker   真正存消息的那个
+#   proxy    5.x 的 gRPC 接入层 —— 🔴 Python 客户端连的是它（8081），不是 namesrv（9876）
+#
+# 配错最多的一处就是最后那条：把 endpoints 写成 9876 会连上一个说 remoting 协议的端口，
+# 症状是 gRPC 侧握手超时，不是「拒绝连接」，很容易误判成网络问题。
+#
+# 起：  docker compose -f deploy/rocketmq/docker-compose.yml up -d
+# 停：  docker compose -f deploy/rocketmq/docker-compose.yml down -v
+#
+# 端口映射刻意避开 8080 —— 本仓库 deploy/docker-compose.yml 的 Matrix Element 已占用。
+services:
+  namesrv:
+    image: apache/rocketmq:5.3.2
+    container_name: rmqnamesrv
+    ports:
+      - "9876:9876"
+    command: sh mqnamesrv
+    healthcheck:
+      # 镜像里没有 netstat / ss，只有 bash。/dev/tcp 是真连一次端口，比数进程可靠。
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9876'"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  broker:
+    image: apache/rocketmq:5.3.2
+    container_name: rmqbroker
+    depends_on:
+      namesrv:
+        condition: service_healthy
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+      - "10912:10912"
+    environment:
+      NAMESRV_ADDR: namesrv:9876
+      # 本机跑，别让 JVM 一上来吃掉 8G。
+      JAVA_OPT_EXT: "-server -Xms512m -Xmx512m -Xmn256m"
+    volumes:
+      - ./broker.conf:/home/rocketmq/broker.conf:ro
+    command: sh mqbroker -c /home/rocketmq/broker.conf
+    healthcheck:
+      # 🔴 判据是「已注册进 namesrv」，不是「10911 端口通了」。
+      # 端口先通、注册后到，中间那几秒里 proxy 一旦起来就会拿不到路由，
+      # 直接以 `create system broadcast topic ... failed on cluster` 退出（实测踩过一次）。
+      test: ["CMD-SHELL", "sh mqadmin clusterList -n namesrv:9876 2>/dev/null | grep -q broker-a"]
+      interval: 3s
+      timeout: 10s
+      retries: 30
+
+  proxy:
+    image: apache/rocketmq:5.3.2
+    container_name: rmqproxy
+    depends_on:
+      broker:
+        condition: service_healthy
+    ports:
+      - "8090:8080"   # HTTP / remoting（8080 本机已被 Matrix Element 占用）
+      - "8081:8081"   # gRPC —— Python 客户端的 endpoints 指这里
+    environment:
+      NAMESRV_ADDR: namesrv:9876
+      JAVA_OPT_EXT: "-server -Xms512m -Xmx512m -Xmn256m"
+    command: sh mqproxy
+    # 兜底：上面那条 depends_on 已经把已知的那个竞态封了，这条管没想到的。
+    restart: on-failure:3
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

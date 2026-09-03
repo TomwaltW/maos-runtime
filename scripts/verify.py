@@ -7,7 +7,7 @@
 **这是给评委的答案。** 检索不准顶多说效果一般；无法核验就是零分。所以本文件的
 每一项都必须能被外人独立跑一遍，且失败时说得出「失败意味着什么」。
 
-七项：
+八项：
 
     1 hash-integrity      每个 skill/tool 调用的 input_digest / output_hash 与
                           event_log 一致          -> 失败 = 证据被篡改或事后手写
@@ -20,14 +20,25 @@
                                                   -> 失败 = 事件链不完整
     5 kb-hit              每个 KbRetrieved 的 doc_id 在 kb_doc 中存在
                                                   -> 失败 = RAG 命中是编的
-    6 business-outcome    每个 Plan 终态都有 business_outcome，DONE 必须有外部判据
+    6 business-outcome    每个 Plan 终态都有 business_outcome，DONE 必须有外部判据，
+                          且每条判据都在库里回查得到
                                                   -> 失败 =「Agent 都完成了」被当成业务成功
-    7 history-case        每条 history_case 知识都能追溯到 outcome='success' 的真实 case
+    7 history-case        本库晋升的 history_case 都能追溯到 outcome='success'
+                          的真实 case（外部导入的知识不在判据内，但不许全空）
                                                   -> 失败 = 知识层被污染
+    8 cost-attribution    每条 model_usage 都挂得到 plan 的 trace_id、task_id 回查得到，
+                          estimated 标记与 model 列相符，归属不上的逐条点名
+                                                  -> 失败 = 成本归因是假的，或估算被
+                                                     印成了真实计费
 
 **SKIP 的纪律**：上游能力没落地的项输出 ``[SKIP]`` 并在结尾显式列名，
 **不计进 PASS 的分子**。静默跳过等于谎报 —— 一个 7/7 里藏着两个没跑的，
 比老老实实写 5/5 PASS + 2 SKIP 更坏。
+
+**空转也算没跑**：分母为 0 的项一律不判 PASS（``_idle_skip``）。``0/0 PASS``
+与「真跑了且全过」在屏幕上长得一模一样，是这个核验器能犯的最坏的错 —— 只跑了
+``make_evidence.py`` 而没产 ``scenario-R5`` 的人，会拿到一屏满分，而 RAG 的
+两项守卫一次都没执行。SKIP 至少看得出没跑，且不进分子。
 
 **依赖方向**：本文件不 import ``maos/domain/**`` 的业务逻辑，只按「表在不在」
 决定某一项跑还是 SKIP（铁律 9）。唯一的例外是 ``resolve_business_ref``：
@@ -55,6 +66,51 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 #: 权威回执的唯一写入者。与 maos/domain/refund/guard.py::AUTHORITATIVE_WRITER 同名，
 #: 但这里不 import 它 —— 本文件要在退款域缺席时也能跑（那时第 3 项 SKIP）。
 AUTHORITATIVE_WRITER = "payment.observe"
+
+#: 权威终态要求回执里的 `observed_state` 取什么值。与
+#: maos/domain/refund/guard.py::AUTHORITATIVE_RECEIPT_STATE **同源**，
+#: 改一边就要改另一边（那边的注释里写着取值域的出处：回执的 `status` 字段，
+#: 四态 processing/unknown/settled/failed，不是 `outcome` 的 success/failed/unknown）。
+#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要在退款域缺席时照跑。
+AUTHORITATIVE_RECEIPT_STATE = {"settled": frozenset({"settled"})}
+
+#: 业务状态机里**没有出边**的状态 —— 案子走到这里就收口了，不会再动。
+#: 与 maos/domain/refund/guard.py::BIZ_STATUS_FLOW 同源（那张表里出边为空的三个：
+#: settled / rejected / compensated）。照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同。
+#:
+#: 这三个之外的（submitted / approved / gateway_accepted / processing）都是**中间态**：
+#: 案子还在路上。「有回执但不是 settled」这句话对两边的含义天差地别 ——
+#: 收口在 compensated 上是**正确行为**（场景 7 的题眼就是「全程没有经过 settled」，
+#: 补偿收口的案子本来就一条 settled 观察都不该有），停在 gateway_accepted 上才是
+#: 「观察到了但没收口」，那才值得点名。加一个新终态就往这里加，别散在判断里。
+BIZ_TERMINAL_STATES = frozenset({"settled", "rejected", "compensated"})
+
+#: 外部判据的取值域。与 ``make_evidence.py::derive_business_outcome`` 里两处
+#: ``evidence.append`` 的 ``kind`` 同源 —— 生成侧装得进什么，核验侧才认什么。
+#: Agent 对自己的评价（``patch_set`` 里的 ``self_check``）不在其中，README §3 写死了这条。
+#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要能独立于生成脚本跑。
+EXTERNAL_EVIDENCE_KINDS = frozenset({"test_report", "payment_observation"})
+
+#: 终态 -> 生成侧唯一写得出的 ``(status, basis)``，出处 ``make_evidence.py::derive_business_outcome``
+#: 那三支 if：``FAILED`` 恒配 ``plan_failed``，有判据的 ``DONE`` 恒配 ``external_evidence``。
+#: ``DONE`` 还有第三种取值 ``("undetermined", "no_external_evidence")``（判据为空时），
+#: 但它在第 6 项里先被「DONE 但没有任何外部判据」判负，走不到自述比对那一步。
+#: 非终态的 ``("in_progress", "plan_not_terminal")`` 同理不在本项判据内。
+#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要能独立于生成脚本跑。
+TERMINAL_OUTCOME = {
+    "DONE": ("succeeded", "external_evidence"),
+    "FAILED": ("failed", "plan_failed"),
+}
+
+#: ``business_outcome.source`` 生成侧写死的唯一取值，出处同 TERMINAL_OUTCOME。
+#: 它是这份结论的**出身**声明：改掉它等于声称这些数字不是从库里推出来的。
+OUTCOME_SOURCE = "derived-from-db-at-export-time"
+
+#: 出处注释里 sha 的合法后缀 —— `make_evidence.py` 在工作区脏时写 `<sha>-dirty`。
+#: `scenario-R5` 恒带这个后缀：它由 `build_r5()` 在场景 1-7 已经把 evidence/ 改脏之后
+#: 才自算 sha（其余场景共用主流程开头那一次干净的取值）。这是 submission-checklist.md
+#: §A-2 认下的当前口径，不是篡改，所以比对前一律先剥掉它。
+_SHA_DIRTY_SUFFIX = "-dirty"
 
 
 @dataclass
@@ -84,6 +140,16 @@ class Check:
         """记一笔但不判负 —— 印给评委看，不改判定。"""
         self.notes.append(f"warn: {note}")
 
+    def info(self, note: str) -> None:
+        """照旧印出来，但不是 warn —— 「查过了，是预期」与「值得看一眼」不是一回事。
+
+        分开是因为 warn 在这个仓库里是**有基线的**（``maos/tests/test_verify_warn.py``
+        钉住行数与类别，多一行就红）。把「已确认符合设计」的观察也塞进 warn，基线
+        就永远在漂，真出现的那一行反而淹没在里面；而直接不印，等于把「这件事我们
+        看过、结论是预期」这句话从证据里抹掉 —— 那是评委最该看到的一句。
+        """
+        self.notes.append(f"info: {note}")
+
 
 class VerifyError(RuntimeError):
     """证据本身读不了。这不是「某一项没过」，是没法开始核验。"""
@@ -92,23 +158,87 @@ class VerifyError(RuntimeError):
 # ---------------------------------------------------------------------------
 # 证据读取
 # ---------------------------------------------------------------------------
-def load_evidence_json(path: str):
-    """读 make_evidence.py 写的 json：跳过首行出处注释。缺注释即判不合规。"""
+#: 出处注释的形状：`# generated at <ISO8601> from <sha>`（make_evidence.py::header_line）。
+_HEADER_RE = re.compile(r"^# generated at (?P<at>\S+) from (?P<sha>\S+)\s*$")
+
+
+def header_sha(path: str, first_line: str) -> str:
+    """从出处注释里取出 sha，剥掉 `-dirty` 后缀。首行不成形即判不合规。"""
+    match = _HEADER_RE.match(first_line.rstrip("\n"))
+    if not match:
+        raise VerifyError(f"{path} 首行不是出处注释（铁律 3），证据格式不合规")
+    sha = match.group("sha")
+    return sha[: -len(_SHA_DIRTY_SUFFIX)] if sha.endswith(_SHA_DIRTY_SUFFIX) else sha
+
+
+def evidence_sha(evidence_root: str) -> str | None:
+    """整束证据自报的出处 sha —— `INDEX.json` 的 `git_sha`，且它自己的首行得与之对上。
+
+    这是全束唯一一处「代码是哪个 commit」的声明，各文件的首行都拿它当锚。
+    没有 INDEX.json 就返回 None（只产了单场景的老束），那时退回到只校验首行成形 ——
+    宁可少查一层，也不许对着不存在的锚点把一整束正常证据判负。
+    """
+    path = os.path.join(evidence_root, "INDEX.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        declared = header_sha(path, fh.readline())
+        try:
+            index = json.loads(fh.read())
+        except ValueError as exc:
+            raise VerifyError(f"{path} 不是合法 JSON: {exc}") from exc
+    recorded = str(index.get("git_sha") or "")
+    if not recorded:
+        raise VerifyError(f"{path} 没有 git_sha，整束证据没有出处锚点（铁律 3）")
+    recorded = (recorded[: -len(_SHA_DIRTY_SUFFIX)]
+                if recorded.endswith(_SHA_DIRTY_SUFFIX) else recorded)
+    if declared != recorded:
+        raise VerifyError(
+            f"{path} 首行出处 sha={declared} 与它自己记的 git_sha={recorded} 不一致 ——"
+            f" 索引的出处都自相矛盾，这一束证据说不清是哪份代码产的")
+    return recorded
+
+
+def load_evidence_json(path: str, *, expect_sha: str | None = None):
+    """读 make_evidence.py 写的 json：校验首行出处注释，再读正文。
+
+    `expect_sha` 非空时，首行的 sha 必须与它一致（`-dirty` 后缀先剥掉，见
+    `_SHA_DIRTY_SUFFIX`）。只查「首行以 `# generated at ` 开头」是挡不住事的：
+    把整行换成 `# generated at 2020-01-01T00:00:00+00:00 from deadbeef` 一样合格式，
+    而这份文件自称出自一份根本不是本次核验对象的代码。**失败意味着**：这个文件的
+    出处是编的 —— 它证明不了任何事，与它同束的其余文件也跟着不可信。
+    """
     if not os.path.exists(path):
         raise VerifyError(f"缺文件: {path}")
     with open(path, encoding="utf-8") as fh:
-        first = fh.readline()
-        if not first.startswith("# generated at "):
-            raise VerifyError(f"{path} 首行不是出处注释（铁律 3），证据格式不合规")
+        sha = header_sha(path, fh.readline())
+        if expect_sha and sha != expect_sha:
+            raise VerifyError(
+                f"{path} 首行自称出自 {sha}，与 INDEX.json 记的 {expect_sha} 不是同一份代码"
+                f" —— 出处对不上的证据不予采信（铁律 3）")
         try:
             return json.loads(fh.read())
         except ValueError as exc:
             raise VerifyError(f"{path} 不是合法 JSON: {exc}") from exc
 
 
+#: 缺库时该往哪走 —— **产它的命令由目录名决定**。`scenario-R5` 不由
+#: `make_evidence.py` 的场景循环产（它按 `maos.main.ALL_SCENARIOS` 跑 1-7），
+#: 而由 `maos.kb.experiment` 单独产。对着 R5 印「先跑 make_evidence.py」，
+#: 照做的人会拿到一模一样的报错再撞一次 —— 提示指向一条解决不了它的命令，
+#: 比没有提示更坏。BACKLOG ## task-W5 第 2 条 / ## task-X3 第 4 条。
+_DB_HINT_DEFAULT = "python3 scripts/make_evidence.py"
+_DB_HINTS = {"scenario-R5": "python3 -m maos.kb.experiment"}
+
+
+def missing_db_hint(db_path: str) -> str:
+    """缺 ``db_path`` 这个库时，该跑哪条命令把它产出来。"""
+    return _DB_HINTS.get(os.path.basename(os.path.dirname(db_path)), _DB_HINT_DEFAULT)
+
+
 def connect_ro(db_path: str) -> sqlite3.Connection:
     if not os.path.exists(db_path):
-        raise VerifyError(f"缺数据库: {db_path}（先跑 python3 scripts/make_evidence.py）")
+        raise VerifyError(f"缺数据库: {db_path}（先跑 {missing_db_hint(db_path)}）")
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
@@ -135,6 +265,9 @@ class Case:
     tables: set[str]
     trace: dict
     result: dict
+    #: 这一束在 INDEX.json 里自报的 git sha；本目录每个 json 的首行都得与它对上。
+    #: None = 没有 INDEX.json，那时只校验首行成形（见 evidence_sha）。
+    expect_sha: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +368,8 @@ def check_business_ref(cases: list[Case]) -> Check:
         recorded = {(o["plan_id"], o["task_id"], o["tenant_id"], o["object_type"],
                      o["object_id"], o["object_version"]): o
                     for o in load_evidence_json(
-                        os.path.join(case.directory, "business-objects.json")).get("objects", [])}
+                        os.path.join(case.directory, "business-objects.json"),
+                        expect_sha=case.expect_sha).get("objects", [])}
         for r in case.conn.execute("SELECT * FROM business_ref"):
             ref = dict(r)
             key = (ref["plan_id"], ref["task_id"], ref["tenant_id"], ref["object_type"],
@@ -262,10 +396,18 @@ def check_business_ref(cases: list[Case]) -> Check:
 def check_authoritative_fact(cases: list[Case]) -> Check:
     """settled 是权威终态，只有 payment.observe 写得进去（铁律 8）。
 
-    两头都查：settled 必须有回执；回执的 actor_invocation_id 必须真的属于一次
-    payment.observe 调用。只查前者的话，任何一个 skill 自己伪造一条回执就能过关。
+    三头都查：settled 必须有回执；回执的 actor_invocation_id 必须真的属于一次
+    payment.observe 调用；且回执里至少有一条**说的是到账了**。
+    只查第一条，任何一个 skill 自己伪造一条回执就能过关；只查前两条，一条网关明确
+    失败的真回执就能给 settled 背书 —— 那时系统持有的是「有一张回执」，
+    而不是「网关说到账了」，两者差着这一项的全部意义。
+
+    为什么这一项非有牙不可：`refund_case` / `payment_observation` 两张表**不参与**
+    第 4 项的 trace 重放（那一项比对的是 span 树与事件链），所以对这两张表的直接
+    篡改，全核验器只有这一项拦得住。
     """
-    chk = Check("authoritative-fact", "settled 有回执，且回执出自 payment.observe")
+    chk = Check("authoritative-fact", "settled 有回执，回执出自 payment.observe 且说到账了")
+    allowed = AUTHORITATIVE_RECEIPT_STATE["settled"]
     live = [c for c in cases if {"refund_case", "payment_observation"} <= c.tables]
     if not live:
         chk.skip("本轮证据里没有 refund_case / payment_observation 表（退款场景未落地）")
@@ -299,16 +441,44 @@ def check_authoritative_fact(cases: list[Case]) -> Check:
                     chk.bad(f"{label}: 回执的 actor_invocation_id={actor} 不属于任何一次 "
                             f"{AUTHORITATIVE_WRITER} 调用 —— 权威事实边界被绕过")
                     bad = True
+            # 回执得**说的是这件事**。上面两问查的是「有没有回执」「回执是谁递的」，
+            # 都问不到回执的内容 —— 一条网关明确失败的观察（observed_state='failed'）
+            # 由真的 payment.observe 落库，两问全过，却给 settled 背了书。
+            seen = sorted({str(o["observed_state"]) for o in obs})
+            if not (set(seen) & allowed):
+                chk.bad(f"{label}: 有回执，但没有一条说到账了（observed_state={seen}，"
+                        f"要的是 {sorted(allowed)}）—— 「有一张回执」被当成了"
+                        f"「网关说到账了」，settled 背后没有外部权威支撑")
+                bad = True
             if not bad:
                 chk.ok()
 
-        # 反面：有回执、案子却没到 settled，属于观察到了但没收口，点名但不判负。
+        # 反面：有回执、案子却没到 settled。原先这里一句话报完，把两种正相反的
+        # 情况说成同一件事：
+        #
+        #   * 收口在**别的终态**上（rejected / compensated）—— 那是正确行为，不是洞。
+        #     场景 7 的题眼恰恰是「业务状态 compensated，全程没有经过 settled，
+        #     settled 观察 0 条」；对着它报 warn，等于把设计意图报成可疑。
+        #   * 停在**中间态**上（submitted / approved / gateway_accepted / processing）
+        #     —— 观察到了但没收口，那才是该看一眼的。
+        #
+        # 细化的是措辞与分流，不是牙齿：中间态照旧 warn，而 settled 那三道判负
+        # （没回执 / 回执来源不对 / 回执没说到账）一条没动 —— 那三条才是这一项的牙。
         orphan = case.conn.execute(
-            "SELECT o.case_id FROM payment_observation o JOIN refund_case r"
+            "SELECT o.case_id, r.biz_status FROM payment_observation o JOIN refund_case r"
             " ON o.tenant_id=r.tenant_id AND o.case_id=r.case_id"
-            " WHERE r.biz_status!='settled'").fetchall()
+            " WHERE r.biz_status!='settled' GROUP BY o.case_id, r.biz_status").fetchall()
         for o in orphan:
-            chk.warn(f"{case.name} case={o['case_id']}: 有回执但 biz_status 不是 settled")
+            status = str(o["biz_status"])
+            label = f"{case.name} case={o['case_id']}"
+            if status in BIZ_TERMINAL_STATES:
+                chk.info(f"{label}: 有回执且案子收口在 biz_status={status}（非 settled 终态）"
+                         f" —— 预期行为：settled 是权威终态，收口在别处的案子本来就"
+                         f"不该有 settled 观察")
+                continue
+            chk.warn(f"{label}: 有回执但案子停在中间态 biz_status={status} —— 观察到了"
+                     f"但没收口（既没到 settled，也没落到 "
+                     f"{sorted(BIZ_TERMINAL_STATES - {'settled'})} 任何一个终态）")
     return chk
 
 
@@ -338,20 +508,150 @@ def check_trace_tree(cases: list[Case]) -> Check:
             chk.bad(f"{case.name}: trace.json 与库重放结果不一致（证据被改过或库已变）")
         else:
             chk.ok()
-        strays = case.trace.get("stray_events") or []
-        if strays:
-            kinds = sorted({s.get("event_type", "?") for s in strays})
-            chk.warn(f"{case.name}: {len(strays)} 条事件的 plan_id 指不到任何 plan，"
-                     f"不在任何一棵树内（类型 {kinds}）")
+        _warn_stray_events(chk, case)
         unsourced = case.trace.get("summary", {}).get("unsourced_artifacts", 0)
         if unsourced:
             chk.warn(f"{case.name}: {unsourced} 份产物没有来源事件（provenance=unknown）")
+        _check_seeded_provenance(chk, case)
+        _warn_sandbox_path(chk, case)
     return chk
+
+
+#: ``ArtifactSeeded`` 事件在 span 树里的名字前缀，出处
+#: ``maos/obs/trace.py::_EVENT_NAME``（``f"artifact-seeded:{kind}"``）。
+_SEEDED_SPAN_PREFIX = "artifact-seeded:"
+
+
+def _check_seeded_provenance(chk: Check, case: Case) -> None:
+    """``provenance="artifact_seeded"`` 得**兑现**它自称的那条来源，不能只是个标签。
+
+    这一条是随「补上审计链」一起长出来的判据，不补它就是拿一条 warn 换一个新洞：
+    从前旁路产物在证据里是 ``unknown``，谁也骗不了谁；现在它可以自称
+    ``artifact_seeded``，于是必须有人查「那条来源事件真的在吗、真的是它吗」。
+    否则给任意一份来路不明的产物贴上这个标签，warn 就消失了，而这一项照旧满分。
+
+    三问，任何一问不过都判负（不是 warn —— 自称有来源却指不出来，是伪造）：
+
+    1. ``provenance.event_span`` 非空，且在同一棵树里找得到那条 span；
+    2. 那条 span 确实是一条 ``ArtifactSeeded`` 事件，不是随手指的别的 span；
+    3. ``provenance.source`` 非空 —— 「谁产的」是这条事件存在的全部理由，
+       缺了它审计链等于只补了一半。
+
+    span 树与库重放逐字节一致由上面那条 replay 比对保证，所以这里读 trace.json
+    就够了：能改到这里的人也改得了库，而那会先在 replay 那一关不等。
+    """
+    for trace in case.trace.get("traces", []):
+        by_id = {s["span_id"]: s for s in trace["spans"]}
+        seeded = [s for s in trace["spans"]
+                  if (s["attributes"].get("maos.artifact.provenance") == "artifact_seeded")]
+        for s in seeded:
+            attrs = s["attributes"]
+            label = (f"{case.name} plan={trace['plan_id']} "
+                     f"artifact={attrs.get('maos.artifact.id')}")
+            ref = attrs.get("maos.artifact.provenance.event_span")
+            src = attrs.get("maos.artifact.provenance.source")
+            if not ref or ref not in by_id:
+                chk.bad(f"{label}: 自称 provenance=artifact_seeded，却指不到来源 span"
+                        f"（event_span={ref!r}）—— 标签是贴上去的，来源事件并不存在")
+                continue
+            if not str(by_id[ref].get("name", "")).startswith(_SEEDED_SPAN_PREFIX):
+                chk.bad(f"{label}: 来源 span {ref} 不是 ArtifactSeeded 事件"
+                        f"（name={by_id[ref].get('name')!r}）—— 随手指了棵别的树")
+                continue
+            if not src:
+                chk.bad(f"{label}: 有来源事件却没说是谁产的（provenance.source 为空）"
+                        f" —— 审计链只补了一半")
+                continue
+            chk.ok()
+
+    # 旁路本身仍要一眼看得见：洞补上了，「这些没走 on_task_result」这件事没变。
+    count = case.trace.get("summary", {}).get("seeded_artifacts", 0)
+    if count:
+        sources = sorted({
+            s["attributes"].get("maos.artifact.provenance.source") or "?"
+            for t in case.trace.get("traces", []) for s in t["spans"]
+            if s["attributes"].get("maos.artifact.provenance") == "artifact_seeded"})
+        chk.info(f"{case.name}: {count} 份产物走旁路入库（未经 on_task_result），"
+                 f"来源已由 ArtifactSeeded 事件点名：{'；'.join(sources)}。"
+                 f"这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode")
+
+
+def _warn_stray_events(chk: Check, case: Case) -> None:
+    """游离事件的 warn。**一个 case 仍然只出一条**，只是把两种形态分开说。
+
+    ``plan_id`` 是空串和 ``plan_id`` 非空却指不到 plan，看起来都是「不在任何一棵树
+    内」，但含义天差地别：
+
+    * 空串 = **规划期调用**。检索、需求归一这些发生在 ``create_plan`` 之前，
+      那一刻还没有 plan_id 可写。事件本身是完整的、哈希也对得上，没有丢。
+    * 非空却查不到 = 事件指向一个不存在的 Plan，那才是真的该查。
+
+    原措辞把两者一律说成「指不到任何 plan」，读起来像事件丢了。现在按形态分开报，
+    真出现第二种时不会被第一种的解释盖住 —— 判据没放宽，反而多认一种形态。
+    """
+    strays = case.trace.get("stray_events") or []
+    if not strays:
+        return
+    kinds = sorted({s.get("event_type", "?") for s in strays})
+    pre_plan = [s for s in strays if not (s.get("plan_id") or "").strip()]
+    dangling = [s for s in strays if (s.get("plan_id") or "").strip()]
+
+    parts = []
+    if pre_plan:
+        parts.append(f"{len(pre_plan)} 条是**建 Plan 之前**发生的调用（plan_id 为空串，"
+                     f"不是事件丢了）")
+    if dangling:
+        parts.append(f"{len(dangling)} 条 plan_id 非空却指不到任何 plan —— 这一种要查")
+    chk.warn(f"{case.name}: {len(strays)} 条事件不在任何一棵树内（类型 {kinds}）："
+             + "；".join(parts)
+             + "。根因：ControlPlane.create_plan 自己生成 plan_id、不接受外部传入"
+               "（docs/BACKLOG.md task-X4 第 2 条）")
+
+
+def _warn_sandbox_path(chk: Check, case: Case) -> None:
+    """test_report 到底在哪儿跑的。降级与不可审计分开报，谁都不许静静过去。
+
+    一份降级跑出来的报告和一份容器跑出来的报告，计数上长得一模一样 ——
+    差别只在 ``--network none`` 那条探针是 skipped 还是 passed，而 skipped
+    不进 passed/failed/errors 任何一个计数。不在这里点名，「容器隔离」这句话
+    当场不成立而屏幕上看不出任何差别。
+    """
+    summary = case.trace.get("summary", {})
+    degraded = summary.get("degraded_sandbox_reports", 0)
+    unrecorded = summary.get("unrecorded_sandbox_reports", 0)
+    if degraded:
+        reasons = sorted({
+            s["attributes"].get("maos.artifact.sandbox.degraded_reason") or "未记录"
+            for t in case.trace.get("traces", []) for s in t["spans"]
+            if s["attributes"].get("maos.artifact.sandbox.mode") == "subprocess"})
+        chk.warn(f"{case.name}: {degraded} 份 test_report 是**降级**跑出来的，"
+                 f"容器隔离（--network none / --read-only / --user 1000:1000）本次未生效；"
+                 f"原因：{'；'.join(reasons)}")
+    if unrecorded:
+        chk.warn(f"{case.name}: {unrecorded} 份 test_report **执行路径不可审计** —— "
+                 f"报告里没有 sandbox_mode，判不出这一次是真在容器里跑的还是降级跑的"
+                 f"（docs/BACKLOG.md task-X4 第 1 条）")
 
 
 # ---------------------------------------------------------------------------
 # 第 5 项：kb-hit
 # ---------------------------------------------------------------------------
+def _idle_skip(chk: Check, cases: list[Case], what: str) -> None:
+    """分母为 0 —— 本项一次都没执行过。判 SKIP，并说清缺的是哪一份证据。
+
+    印成 ``0/0 PASS`` 是这个核验器能犯的最坏的错：它跟「真跑了且全过」在屏幕上
+    长得**一模一样**，而守卫其实空转。SKIP 不进分子（见文件头「SKIP 的纪律」），
+    至少看得出没跑。RAG 两项的素材全在 ``scenario-R5`` 那一束里，所以缺它时
+    直接把补跑的命令印出来 —— 「没核到」要在屏幕上看得见，还要说得出往哪走。
+    """
+    tail = ""
+    if "scenario-R5" not in {c.name for c in cases}:
+        tail = ("；本轮没有 scenario-R5，而 RAG 的证据全在那一束里 —— "
+                "跑 python3 scripts/make_evidence.py 一并产出，"
+                "或 python3 -m maos.kb.experiment 单独补")
+    chk.skip(f"空转：{what}，本项判据一次都没执行{tail}")
+
+
 def check_kb_hit(cases: list[Case]) -> Check:
     chk = Check("kb-hit", "KbRetrieved 的 doc_id 在 kb_doc 中存在")
     live = [c for c in cases if "kb_doc" in c.tables]
@@ -370,19 +670,167 @@ def check_kb_hit(cases: list[Case]) -> Check:
                     chk.ok()
                 else:
                     chk.bad(f"{case.name} seq={e['seq']}: doc_id={doc_id!r} 不在 kb_doc 里")
+    if chk.total == 0:
+        _idle_skip(chk, cases, "证据束里没有一条 KbRetrieved 事件")
     return chk
 
 
 # ---------------------------------------------------------------------------
 # 第 6 项：business-outcome
 # ---------------------------------------------------------------------------
+def _test_report_backing(case: Case, plan_id: str, item: dict) -> str:
+    """``test_report`` 判据回查 ``artifact`` 表。返回失败理由；空串 = 回查得到。
+
+    判据二（``payment_observation``）指的不是产物，走另一个函数 —— 那一类**没有**
+    ``artifact_id``，拿同一套字段名去查两种东西是 C-7 的反例。
+    """
+    artifact_id = item.get("artifact_id")
+    if not artifact_id:
+        return "一条 test_report 判据没有 artifact_id，无从回查"
+    row = case.conn.execute(
+        "SELECT plan_id, task_id, kind, version, content FROM artifact"
+        " WHERE artifact_id=?", (artifact_id,)).fetchone()
+    if row is None:
+        return f"artifact_id={artifact_id!r} 在库里查无此物"
+    if row["plan_id"] != plan_id:
+        return (f"artifact_id={artifact_id!r} 属于 plan={row['plan_id']}，"
+                f"不能给本 plan 背书")
+    if row["kind"] != "test_report":
+        return (f"artifact_id={artifact_id!r} 在库里的 kind 是 {row['kind']!r}，"
+                f"不是外部判据类")
+    if (item.get("task_id"), item.get("version")) != (row["task_id"], row["version"]):
+        return (f"artifact_id={artifact_id!r} 记的 task/version 与库里不符："
+                f"记 {item.get('task_id')!r}/{item.get('version')!r}，"
+                f"库里 {row['task_id']!r}/{row['version']!r}")
+    content = _loads(row["content"], {}) or {}
+    if content.get("failed") or content.get("errors") or content.get("tool_error"):
+        return (f"artifact_id={artifact_id!r} 这份报告自己就没过"
+                f"（failed={content.get('failed')!r} errors={content.get('errors')!r} "
+                f"tool_error={content.get('tool_error')!r}），背不了书")
+    if item.get("passed") != content.get("passed"):
+        return (f"artifact_id={artifact_id!r} 记的 passed={item.get('passed')!r} "
+                f"与库里 {content.get('passed')!r} 不符")
+    return ""
+
+
+def _observation_backing(case: Case, plan_id: str, item: dict) -> str:
+    """``payment_observation`` 判据回查退款两张表。返回失败理由；空串 = 回查得到。
+
+    生成侧（``derive_business_outcome`` 判据二）只给 ``biz_status='settled'`` 的 case
+    记这一类判据，回执字段逐个抄自 ``payment_observation`` 行，所以这里照着倒推。
+    """
+    if not {"refund_case", "payment_observation"} <= case.tables:
+        return ("记了 payment_observation 判据，本库却没有退款那两张表 —— "
+                "生成侧根本推不出这一条")
+    tenant_id, case_id = item.get("tenant_id"), item.get("case_id")
+    request_id = item.get("request_id")
+    if not (tenant_id and case_id and request_id):
+        return f"一条 payment_observation 判据缺 tenant_id/case_id/request_id：{item!r}"
+    row = case.conn.execute(
+        "SELECT plan_id, biz_status FROM refund_case WHERE tenant_id=? AND case_id=?",
+        (tenant_id, case_id)).fetchone()
+    if row is None:
+        return f"refund_case ({tenant_id}, {case_id}) 在库里查无此行"
+    if row["plan_id"] != plan_id:
+        return f"case={case_id} 属于 plan={row['plan_id']}，不能给本 plan 背书"
+    if row["biz_status"] != "settled":
+        return (f"case={case_id} 的 biz_status 是 {row['biz_status']!r} 而非 settled，"
+                f"生成侧只给 settled 记这一类判据")
+    hits = case.conn.execute(
+        "SELECT gateway_code, observed_state, actor_invocation_id FROM payment_observation"
+        " WHERE tenant_id=? AND case_id=? AND request_id=?",
+        (tenant_id, case_id, request_id)).fetchall()
+    if not hits:
+        return f"request_id={request_id!r} 在 payment_observation 里查无此回执"
+    if not any((h["gateway_code"], h["observed_state"], h["actor_invocation_id"])
+               == (item.get("gateway_code"), item.get("observed_state"),
+                   item.get("actor_invocation_id")) for h in hits):
+        return (f"request_id={request_id!r} 记的回执与库里没有一行对得上："
+                f"记 code={item.get('gateway_code')!r} "
+                f"state={item.get('observed_state')!r} "
+                f"actor={item.get('actor_invocation_id')!r}")
+    return ""
+
+
+def evidence_backing(case: Case, plan_id: str, item: object) -> str:
+    """一条外部判据能不能在**库里**回查到。返回失败理由；空串 = 回查得到。
+
+    为什么非得在这里回查：第 4 项 trace-tree 的牙齿是「trace.json 与库重放逐字节
+    一致」，而它**不看 result.json**；第 6 项从前只数这个列表的长度。于是
+    ``result.json`` 里的外部判据成了整束证据里唯一一处「写什么就是什么」的地方 ——
+    偏偏它就是用来证明「这单业务真的成了」的那一处（G-2）。
+
+    三问同时成立才算一条有效判据：指得到的东西在不在库里、属不属于**这个** plan、
+    它的 kind 是不是外部判据类（Agent 自评不算，见 EXTERNAL_EVIDENCE_KINDS）。
+
+    与 ``unaudited_evidence_count`` 那条 warn 是**两个维度**，不要混：那条说的是
+    入库路径（绕开 ``on_task_result``，审计链指不到是哪一步产的），这里说的是内容
+    对不对得上库。一条判据完全可以「来源未审计（warn）」而「回查得到（PASS）」——
+    scenario 1/2/3/5 现在就是这样：真产物，只是入库时没走事件。
+    """
+    if not isinstance(item, dict):
+        return f"外部判据不是一个对象：{item!r}"
+    kind = item.get("kind")
+    if kind not in EXTERNAL_EVIDENCE_KINDS:
+        return (f"kind={kind!r} 不是外部判据类"
+                f"（取值域 {sorted(EXTERNAL_EVIDENCE_KINDS)}，出处 make_evidence.py）")
+    if kind == "test_report":
+        return _test_report_backing(case, plan_id, item)
+    return _observation_backing(case, plan_id, item)
+
+
+def outcome_selfclaim(state: str, outcome: dict, unaudited: int) -> list[str]:
+    """``business_outcome`` 那四个自述字段与证据的**就地**比对。返回全部失败理由。
+
+    第 6 项从前只查 ``external_evidence`` 里**指得到的东西**（G-2 把产物和回执做进了
+    回查）。可 ``plan_state`` / ``basis`` / ``source`` / ``unaudited_evidence_count``
+    这四个字段谁也没查过 —— 它们描述的是「这份结论是怎么来的」。结论本身长了牙齿之后，
+    描述结论的那层**元数据**就成了整束证据里最后一处「写什么就是什么」。
+
+    危害不是伪造成功，是**伪造干净**：把 ``unaudited_evidence_count`` 抹成 0，
+    第 6 项那条「来源未审计」的 warn 就凭空消失，而 verify 照印 ``7/7 PASS``。
+    一屏没有 warn 的 7/7 比有 warn 的 7/7 更像「这套东西没问题」—— 而那条 warn
+    恰恰是评委判断「这份报告是不是脚手架」的唯一线索（H-1 实测：warn 12 行掉到 11 行，
+    七项读数一个不变）。所以调用侧那条 warn 改按**列表里数出来的**条数印，
+    不按报告自述的数字印：判负归判负，warn 一行都不许被判据吃掉（G-2 的口径）。
+
+    四条都不新查库：``state`` 调用侧已经拿到，其余三个在生成侧是死的推导，照着倒推。
+    ``provenance`` 本身对不对得上事件链**不在这里判**（那要重算入库路径，是另一件事，
+    见 BACKLOG ``## task-H1``）—— 这里只保证「自述的数」等于「列表里数得出来的数」。
+    """
+    expect_status, expect_basis = TERMINAL_OUTCOME[state]
+    wrong: list[str] = []
+    if outcome.get("plan_state") != state:
+        wrong.append(f"plan_state 自述 {outcome.get('plan_state')!r}，库里是 {state!r}")
+    if outcome.get("basis") != expect_basis:
+        wrong.append(f"status={expect_status!r} 配的 basis 只能是 {expect_basis!r}"
+                     f"（生成侧是死的推导，出处 make_evidence.py），"
+                     f"报告写的是 {outcome.get('basis')!r}")
+    if outcome.get("source") != OUTCOME_SOURCE:
+        wrong.append(f"source 自述 {outcome.get('source')!r}，"
+                     f"生成侧只写得出 {OUTCOME_SOURCE!r}")
+    if outcome.get("unaudited_evidence_count") != unaudited:
+        wrong.append(f"unaudited_evidence_count 自述 "
+                     f"{outcome.get('unaudited_evidence_count')!r}，"
+                     f"external_evidence 里 provenance='unknown' 的实有 {unaudited} 条"
+                     f" —— 抹掉这个数就是抹掉那条 warn")
+    return wrong
+
+
 def check_business_outcome(cases: list[Case]) -> Check:
     """Plan 走到 DONE 不等于业务成功。DONE 必须指得出一条**外部**判据。
 
     「外部」的意思是这条判据不是 Agent 对自己的评价：回归报告是沙箱/测试给的，
     payment_observation 是支付网关给的；``patch_set.self_check`` 不算。
+
+    FAILED 一侧同样有牙齿。从前这一支只要 ``business_outcome`` 是个非空 dict 就放行，
+    于是「库里 FAILED、``result.json`` 也老实记 FAILED（躲开上面那条 state 比对）、
+    ``business_outcome.status`` 却写 succeeded」这一手一声不吭（H-1 实测：7/7 PASS、
+    exit=0、warn 一行不少）。判负要判在**自称**上，不是判在 state 上 —— 因为
+    state 本来就是老实的，那正是这一手能躲过去的原因。
     """
-    chk = Check("business-outcome", "Plan 终态有 business_outcome，DONE 有外部判据")
+    chk = Check("business-outcome",
+                "Plan 终态有 business_outcome，DONE 的外部判据回查得到")
     for case in cases:
         db_states = {r["plan_id"]: r["state"] for r in case.conn.execute(
             "SELECT plan_id, state FROM plan")}
@@ -402,8 +850,13 @@ def check_business_outcome(cases: list[Case]) -> Check:
             if not isinstance(outcome, dict) or not outcome.get("status"):
                 chk.bad(f"{label}: 终态 {state} 却没有 business_outcome")
                 continue
+            # 来源未审计的条数按**列表里数出来的**印，不按报告自述的数字印：
+            # 自述的数一旦被抹成 0，下面那条 warn 就凭空消失，而七项读数一个不变。
+            # 自述与实数对不上是判负的事（outcome_selfclaim），但 warn 照印不误。
+            ev = outcome.get("external_evidence") or []
+            unaudited = sum(1 for e in ev
+                            if isinstance(e, dict) and e.get("provenance") == "unknown")
             if state == "DONE":
-                ev = outcome.get("external_evidence") or []
                 if not ev:
                     chk.bad(f"{label}: DONE 但没有任何外部判据 —— "
                             f"「Agent 都完成了」不等于业务成功")
@@ -411,10 +864,42 @@ def check_business_outcome(cases: list[Case]) -> Check:
                 if outcome.get("status") != "succeeded":
                     chk.bad(f"{label}: 有外部判据却记成 status={outcome.get('status')}")
                     continue
-                unaudited = outcome.get("unaudited_evidence_count") or 0
                 if unaudited:
+                    # 措辞只说这一项证得了的事：**入库路径**上没有来源事件。
+                    # 原措辞写的是「场景预置件，非实跑产出」—— 那是它证不了的断言，
+                    # 而且现在是错的：场景 1/2 的报告由 flows/common.py::patch_verifier
+                    # 真跑沙箱产出（真 workdir、真 git apply、真 pytest），只是插入时
+                    # 绕开 on_task_result，于是审计链指不到产出它的那一步。
+                    # 把「入库路径证不了」读成「内容是假的」，会把已经兑现的外部判据
+                    # 重新贬回脚手架 —— 那正是这条 warn 想防的事情的反面。
                     chk.warn(f"{label}: {unaudited} 条外部判据来源未审计"
-                             f"（场景预置件，非实跑产出）")
+                             f"（**无来源事件**：入库时绕开 on_task_result，"
+                             f"审计链指不到是哪一步产的）。"
+                             f"这说的是入库路径，不是内容真伪：可能是场景预置件"
+                             f"（scenario 3/5 的 seed_scripted_report），也可能是演示装配层"
+                             f"现跑的真产物（scenario 1/2 的 patch_verifier）。"
+                             f"判真伪看 trace.json 的 maos.artifact.sandbox.mode")
+                # 列表非空还不够 —— 里面装的每一条都得在库里指得到东西。
+                broken = [why for why in
+                          (evidence_backing(case, plan_id, item) for item in ev) if why]
+                if broken:
+                    chk.bad(f"{label}: {len(broken)}/{len(ev)} 条外部判据回查不到 —— "
+                            f"result.json 里写什么就算什么，那不叫判据："
+                            + "；".join(broken))
+                    continue
+            elif outcome.get("status") != TERMINAL_OUTCOME[state][0]:
+                # FAILED 一侧的牙齿：库里老实记了 FAILED，报告自称成功照样判负。
+                chk.bad(f"{label}: 库里是 FAILED，报告却自称 "
+                        f"status={outcome.get('status')!r} —— 失败的 Plan 没有"
+                        f"「业务成功」这一说，生成侧那一支只写得出 "
+                        f"{TERMINAL_OUTCOME[state][0]!r}")
+                continue
+            # 结论有了牙齿，描述结论的那四个字段还得对得上（见 outcome_selfclaim）。
+            wrong = outcome_selfclaim(state, outcome, unaudited)
+            if wrong:
+                chk.bad(f"{label}: business_outcome 的自述字段与证据对不上 —— "
+                        f"这一层从前没人查过：" + "；".join(wrong))
+                continue
             chk.ok()
     return chk
 
@@ -423,17 +908,36 @@ def check_business_outcome(cases: list[Case]) -> Check:
 # 第 7 项：history-case
 # ---------------------------------------------------------------------------
 def check_history_case(cases: list[Case]) -> Check:
-    chk = Check("history-case", "history_case 知识可追溯到 outcome='success' 的真实 case")
+    """**本库晋升的** history_case 必须回查得到一条 settled 的 refund_case。
+
+    判据只覆盖本库晋升出来的那些，不覆盖外部导入的历史知识（BACKLOG ## task-X3
+    第 3 条）：导入的知识按定义没有本库记录，而给它造一条就是伪造证据（铁律 3）。
+    原判据要求**每一条** history_case 都回查得到，等于把「外部导入的知识」挡在
+    任何证据库之外 —— 规则本身是对的（它守的是「RAG 命中不是编的」），只是太窄。
+
+    区分标志是现成的：本库晋升的 ``source_case_id`` 在 ``refund_case`` 里有行，
+    导入的没有。放宽到此为止 —— 「一条都回查不到」仍判负，见函数末尾：
+    否则这一项会退化成「库里全是导入知识 -> 0/0 -> 过」，那正是空转。
+    """
+    chk = Check("history-case", "本库晋升的 history_case 可追溯到 outcome='success' 的真实 case")
     live = [c for c in cases if "kb_doc" in c.tables]
     if not live:
         chk.skip("kb 层未落地：本轮无 kb_doc 表，history_case 这一类知识尚不存在（P5 才建）")
         return chk
+    seen = imported = 0
     for case in live:
+        local = set()
+        if "refund_case" in case.tables:
+            local = {r[0] for r in case.conn.execute("SELECT case_id FROM refund_case")}
         for r in case.conn.execute(
                 "SELECT doc_id, source_case_id FROM kb_doc WHERE kind='history_case'"):
+            seen += 1
             src = r["source_case_id"]
             if not src:
                 chk.bad(f"{case.name} doc={r['doc_id']}: history_case 没有 source_case_id")
+                continue
+            if src not in local:
+                imported += 1        # 外部导入：本库没有它的 case 行，不在本项判据内
                 continue
             hit = case.conn.execute(
                 "SELECT 1 FROM refund_case WHERE case_id=? AND biz_status='settled'",
@@ -442,6 +946,121 @@ def check_history_case(cases: list[Case]) -> Check:
                 chk.ok()
             else:
                 chk.bad(f"{case.name} doc={r['doc_id']}: 追不到成功收口的真实 case {src}")
+    if imported:
+        chk.warn(f"{imported} 条 history_case 的 source_case_id 不在本库 refund_case 里，"
+                 f"按**外部导入的历史知识**处理，不在本项判据内 —— "
+                 f"给它补一条本库 case 才是伪造证据（铁律 3）")
+    if chk.total == 0:
+        if seen:
+            # 有素材却一条都没进判据 = 放宽放过头的那个形态，判负。
+            chk.bad(f"{seen} 条 history_case 全部回查不到本库 refund_case —— "
+                    f"放宽是为了放行外部导入的知识，不是让本项退化成空转")
+        else:
+            _idle_skip(chk, cases, "证据束里没有一条 history_case 知识")
+    return chk
+
+
+# ---------------------------------------------------------------------------
+# 第 8 项：cost-attribution
+# ---------------------------------------------------------------------------
+#: ``ScriptedModelClient`` 写进 ``model_usage.model`` 的前缀，出处
+#: ``maos/model/client.py``（``model=f"scripted-{tier}"``）。它是判「这一行是不是估算」
+#: 的**第二个独立来源**：``estimated`` 列由调用点按 client 的**类型**写
+#: （``maos/core/store.py::usage_is_estimated``），两者同源就等于自己跟自己对账。
+#: 照抄而不 import 的理由同 AUTHORITATIVE_WRITER。
+SCRIPTED_MODEL_PREFIX = "scripted-"
+
+
+def check_cost_attribution(cases: list[Case]) -> Check:
+    """每一行模型用量都挂得到 Run id，且没把估算印成真实计费。
+
+    四条判据，各自「失败意味着什么」：
+
+    a. ``trace_id`` 非空的行，该 trace_id 必须在 ``plan`` 表里存在 —— **不悬空**。
+       失败 = 成本挂在了一条不存在的 run 上，归因是假的。
+    b. ``task_id`` 非空的行，该 task_id 必须在 ``task`` 表里存在。
+       失败 = 「哪个 task 最贵」指着一个库里没有的任务，分摊是编的。
+    c. ``estimated`` 必须与 ``model`` 列相符（``scripted-*`` ⟺ ``estimated=1``）；
+       ``model`` 为空时印证不了，只有「声称真实计费却说不出是哪个模型」判负。
+       失败 = 估算被印成了真实计费 —— 在评委面前给出一个虚假的精确信号。
+    d. ``trace_id`` 为空的行，必须逐条出现在 ``trace.json`` 的 ``unattributed_usage`` 里。
+       失败 = 归属不上的成本被藏起来了。这一条是 a 的看门人：没有它，把所有
+       trace_id 清空就能让 a 无条件全绿，而成本归因整个消失。
+
+    空串 ``trace_id`` 本身**不判负**：``ManagerAgent.plan()`` 跑在 ``create_plan``
+    之前，那一刻确实没有 Run id 可挂。如实记录再点名，好过编一个让它看起来有归属。
+    """
+    chk = Check("cost-attribution", "模型用量挂得到 trace_id，且估算没被印成计费")
+    live = [c for c in cases if "model_usage" in c.tables]
+    if not live:
+        chk.skip("成本记账未落地：本轮证据束里没有一张 model_usage 表（T29 才建）")
+        return chk
+
+    orphans = 0
+    blind = 0
+    for case in live:
+        plans = {r[0] for r in case.conn.execute("SELECT trace_id FROM plan")}
+        tasks = {r[0] for r in case.conn.execute("SELECT task_id FROM task")}
+        # trace.json 里点了名的那些（按 seq 认，seq 是 model_usage 的主键）
+        named = {r.get("seq") for t in [case.trace] for r in t.get("unattributed_usage", [])}
+
+        for r in case.conn.execute(
+                "SELECT seq, trace_id, task_id, agent_role, call_site, model, estimated"
+                " FROM model_usage ORDER BY seq"):
+            where = f"{case.name} seq={r['seq']} ({r['agent_role']}@{r['call_site']})"
+
+            if r["trace_id"]:
+                if r["trace_id"] in plans:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: trace_id={r['trace_id']!r} 在 plan 表里不存在"
+                            f" —— 成本挂在了一条不存在的 run 上")
+            else:
+                orphans += 1
+                if r["seq"] in named:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: trace_id 为空却没出现在 trace.json 的"
+                            f" unattributed_usage 里 —— 归属不上的成本被藏起来了")
+
+            if r["task_id"]:
+                if r["task_id"] in tasks:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: task_id={r['task_id']!r} 在 task 表里不存在")
+
+            # 三态，不是两态。空 model 是真实存在的第三种：
+            # flows/scenario_2.py 的 FlakyModel 直接 `ModelResponse(text=...)`，
+            # 不填 model —— 它是 ScriptedModelClient 的子类，estimated=1 没错，
+            # 但 model 列这个**独立来源**说不出话，印证不了也否定不了。
+            model = str(r["model"] or "")
+            if not model:
+                if r["estimated"]:
+                    blind += 1          # 方向安全：已经标成估算了，只是印证不了
+                else:
+                    chk.bad(f"{where}: 声称真实计费（estimated=0）却说不出是哪个模型"
+                            f"（model 为空）—— 这正是「虚假的精确信号」")
+            elif model.startswith(SCRIPTED_MODEL_PREFIX) == bool(r["estimated"]):
+                chk.ok()
+            else:
+                chk.bad(f"{where}: estimated={r['estimated']} 与 model={model!r} 不符"
+                        f" —— 估算与真实计费的标记对不上，成本口径不可信")
+
+    if chk.total == 0:
+        # 不走 _idle_skip：它的补跑提示是 RAG 专用的（scenario-R5），
+        # 对成本这一项会把人指错方向。纪律同它 —— 0/0 不许判 PASS。
+        chk.skip("空转：证据束里一条 model_usage 都没有，本项判据一次都没执行"
+                 "；跑 python3 scripts/make_evidence.py 重产证据束")
+        return chk
+    if orphans:
+        # info 不是 warn：这些行是**如实记录**的已知缺口，不是新出现的问题。
+        # 印出来是要紧的 —— 「有多少成本归不上账」正是评委该看见的那个数。
+        chk.info(f"{orphans} 条用量归属不上任何 Run id（trace_id 为空），已在"
+                 f" trace.json 的 unattributed_usage 里逐条点名")
+    if blind:
+        chk.info(f"{blind} 条用量的 model 列为空（判据 c 无法交叉印证，方向安全："
+                 f"这些行都已标成 estimated=1）—— 出处 flows/scenario_2.py 的 FlakyModel"
+                 f" 直接构造 ModelResponse 不填 model，见 docs/BACKLOG.md ## task-T29")
     return chk
 
 
@@ -453,6 +1072,7 @@ CHECKS = [
     check_kb_hit,
     check_business_outcome,
     check_history_case,
+    check_cost_attribution,
 ]
 
 
@@ -479,6 +1099,7 @@ def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
     if not dirs:
         raise VerifyError(
             f"{evidence_root} 下没有 scenario-* 目录；先跑 python3 scripts/make_evidence.py")
+    expect_sha = evidence_sha(evidence_root)
     cases = []
     for d in dirs:
         db_path = resolve_db(evidence_root, d, db_arg)
@@ -486,8 +1107,9 @@ def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
         cases.append(Case(
             name=os.path.basename(d), directory=d, db_path=db_path, conn=conn,
             tables=table_names(conn),
-            trace=load_evidence_json(os.path.join(d, "trace.json")),
-            result=load_evidence_json(os.path.join(d, "result.json")),
+            trace=load_evidence_json(os.path.join(d, "trace.json"), expect_sha=expect_sha),
+            result=load_evidence_json(os.path.join(d, "result.json"), expect_sha=expect_sha),
+            expect_sha=expect_sha,
         ))
     return cases
 

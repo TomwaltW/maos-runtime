@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from maos.agents.base import AgentIdentity
 from maos.model.client import Tier
 from maos.roundtable import stages
-from maos.roundtable.speaker import Speaker
+from maos.roundtable.speaker import SPEECH_LIMIT, SYSTEM_TMPL, Speaker
 
 log = logging.getLogger("maos.roundtable")
 
@@ -115,10 +115,16 @@ class StageReport:
 class RefundRoundtable:
     """五岗圆桌。实现 `TeamObserver`：三个钩子 + 一份名册。"""
 
-    def __init__(self, model, voices, *, ledger_loader=None) -> None:   # noqa: ANN001
+    def __init__(self, model, voices, *, ledger_loader=None,        # noqa: ANN001
+                 pace=None) -> None:
         self.model = model
         self.voices = voices
         self._ledger_loader = ledger_loader
+        #: 发言节奏回调 `(i, total) -> None`，每岗**发言进房间之后**调一次。
+        #: 缺省 `None` = 一次都不调：测试与冒烟脚本零等待，一秒都不许变慢。
+        #: 本包里不许 import `time`、不许自己 sleep —— 停多久由注入方定，
+        #: 平台无关层只负责给一个可以插进去的点。
+        self._pace = pace
         self._speakers: dict[str, Speaker] = {
             agent_id: Speaker(identity_of(ROLE_OF[agent_id]), model, TITLES[agent_id])
             for agent_id in TEAM_ORDER
@@ -154,12 +160,27 @@ class RefundRoundtable:
         return StageReport(agent_id=agent_id, title=speaker.title, facts=facts,
                            speech=speech, data=data, spoken_by_model=by_model)
 
+    def _tick(self, index: int, total: int) -> None:
+        """走完一岗，通知注入方可以停一拍了。
+
+        `pace` 是观感不是主路：抛了只记 WARNING，后面几岗照发。缺省 `None`
+        直接返回 —— 判空放在这里而不是调用点，是为了让 `_round` 只有一条主线。
+        """
+        if self._pace is None:
+            return
+        try:
+            self._pace(index, total)
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("发言节奏回调失败（%s: %s），发言照常",
+                        type(exc).__name__, exc)
+
     def _round(self, builders: dict, agent_ids: tuple[str, ...]) -> list[StageReport]:
         """按名册顺序走一圈。**某一岗算不出事实也照样发言** —— 一个岗位在房间里
         凭空消失，比它说「我这儿出错了」更难排查。"""
         history: list[tuple[str, str]] = []
         reports: list[StageReport] = []
-        for agent_id in agent_ids:
+        total = len(agent_ids)
+        for index, agent_id in enumerate(agent_ids, 1):
             try:
                 facts, data = builders[agent_id]()
             except Exception as exc:                    # noqa: BLE001
@@ -168,6 +189,8 @@ class RefundRoundtable:
                 facts = f"{TITLES.get(agent_id, agent_id)}的事实汇总失败：{reason}，本岗这一轮没有结论"
                 data = {"error": reason}
             reports.append(self._say(agent_id, facts, data, history))
+            # 最后一岗说完也调：收口卡在它之后，那一停顿正是「五岗说完了，主席要发言了」。
+            self._tick(index, total)
         return reports
 
     # -- TeamObserver -------------------------------------------------------
@@ -229,6 +252,66 @@ class RefundRoundtable:
         except Exception as exc:                        # noqa: BLE001
             log.warning("圆桌回执整轮失败（%s: %s），本轮不发言", type(exc).__name__, exc)
             return []
+
+    # -- 合议收口 -----------------------------------------------------------
+    def verdict_of(self, reports: list[StageReport], checked: dict | None = None):
+        """五岗结论 -> 一张给 boss 的批复建议卡。
+
+        **另取一次，不塞进 reports**：`on_preflight` 的返回形状写在跨轨契约里、
+        有三个消费方，往里加第六个元素会让所有按 `TEAM_ORDER` 遍历的地方多出
+        一个不存在的岗位。
+
+        惰性 import 是为了避开环：`verdict` 读本模块的 `TEAM_ORDER` / `TITLES`，
+        本模块只在这一个方法里用到它。
+        """
+        from maos.roundtable.verdict import decide
+
+        return decide(reports, case_id=str((checked or {}).get("case_id") or ""))
+
+    # -- 点名问答 -----------------------------------------------------------
+    def answer(self, agent_id: str, question: str, *, facts: str = "") -> str:
+        """房间里 @某一岗提问，由**那一岗自己**回，而不是主通道用助手的口气回一段。
+
+        `agent_id` 不在名册里直接 `KeyError` —— 怎么跟提问的人说，由调用方决定：
+        在这里编一句「查无此人」，router 就没法把它和真的回答区分开。
+
+        没模型 / 调用失败 / 空回答一律退回该岗位的 duty，**不返回空串**：
+        房间里的空消息比不回更难查（同 `Speaker.speak` 的取舍）。
+        """
+        speaker = self._speakers[agent_id]
+        duty_line = self._duty_line(speaker)
+        if not speaker.live:
+            return duty_line
+
+        system = SYSTEM_TMPL.format(
+            title=speaker.title, agent_id=speaker.identity.agent_id,
+            duty=speaker.identity.duty, room=speaker.room, limit=SPEECH_LIMIT)
+        asked = (question or "").strip() or "你是干什么的"
+        parts = [f"【有人在群里问你】\n{asked}"]
+        if (facts or "").strip():
+            parts.append(f"【你手上的事实】\n{facts.strip()}")
+
+        try:
+            out = speaker.model.complete(system=system, user="\n\n".join(parts),
+                                         tier=speaker.identity.model_tier).text
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("岗位 %s 答问调模型失败（%s: %s），退回岗位职责",
+                        agent_id, type(exc).__name__, exc)
+            return duty_line
+
+        text = (out or "").strip()
+        if not text:
+            log.warning("岗位 %s 答问时模型回了空话，退回岗位职责", agent_id)
+            return duty_line
+        return text
+
+    @staticmethod
+    def _duty_line(speaker: Speaker) -> str:
+        """零模型的自我介绍：职责 + 手上装着什么。skill 名来自 identity，不是编的。"""
+        skills = sorted(speaker.identity.allowed_skills)
+        tail = (f"手上装着 {'、'.join(skills)}，这几件事问我。" if skills
+                else "本岗暂时没有装载可用的 skill。")
+        return f"我是{speaker.title}，{speaker.identity.duty}。{tail}"
 
     def roster(self) -> list[dict]:
         """五岗名册。skill 三元组来自注册表里的 `SkillContract`，不是模型编的 ——

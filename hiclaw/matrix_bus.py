@@ -35,6 +35,7 @@ import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FuturesTimeout
 from dataclasses import asdict, dataclass, field, replace
 from html import escape as _esc
@@ -43,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 from maos.config import get_config_source
 from maos.contracts.events import Envelope, EventType
 from maos.core.eventbus import EventBus, Handler
+from maos.ingress.contracts import CHANNEL_MATRIX
 
 if TYPE_CHECKING:                                     # pragma: no cover
     from maos.runtime.gate import HumanApprovalQueue
@@ -197,7 +199,8 @@ class MirrorChannel(Protocol):
 
     def send(self, plain: str, html: str) -> None: ...
 
-    def listen(self, on_message: Callable[[str, str], None]) -> None: ...
+    def listen(self, on_message: Callable[[str, str], None],
+               on_attachment: Callable[[str, Any], None] | None = None) -> None: ...
 
     def close(self) -> None: ...
 
@@ -350,6 +353,10 @@ class _NioChannel:
     降级 log-only；测试用 ``sys.modules["nio"]`` 注入假模块走完整条路径。
     """
 
+    #: 与 `ChannelAdapter.name` 同名同义，好让本通道能直接塞进 `IngressRouter.adapters`
+    #: 当取件器用（router 只调 ``fetch``，不碰 verify/parse/send 那三个 webhook 方法）。
+    name = CHANNEL_MATRIX
+
     def __init__(self, config: MatrixBusConfig, *, timeout: float = 10.0,
                  send_timeout: float | None = None) -> None:
         import asyncio
@@ -368,6 +375,11 @@ class _NioChannel:
         self._pending_sends: set[Any] = set()
         self._pending_send_failed = False
         self._pending_sends_lock = threading.Lock()
+        #: ``listen`` 的回调在这条线程上跑，**不在事件循环线程上**。单 worker 是刻意的：
+        #: 房间消息的到达顺序就是处理顺序（先 /refund 后 /approve 不能颠倒）。
+        #: 为什么必须离开循环线程，见 :meth:`_offload`。
+        self._callback_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="matrix-callback")
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop, name="matrix-bus", daemon=True)
@@ -510,7 +522,8 @@ class _NioChannel:
         if isinstance(resp, RoomSendError):
             raise RuntimeError(f"房间发送失败：{getattr(resp, 'message', resp)}")
 
-    def listen(self, on_message: Callable[[str, str], None]) -> None:
+    def listen(self, on_message: Callable[[str, str], None],
+               on_attachment: Callable[[str, Any], None] | None = None) -> None:
         """在私有事件循环里常驻 ``sync_forever``，房间消息喂给 ``on_message(sender, body)``。
 
         **先同步、后挂回调** —— 这个顺序是本方法的全部要点，反过来写会出真事故。
@@ -523,22 +536,166 @@ class _NioChannel:
 
         守护线程里的私有循环在主线程阻塞时照常转（已实测），C-3 的 ``room_demo``
         正是「主线程等人、后台收消息」这个用法。
+
+        房间里发出来的**附件**（``m.image`` 与 ``m.file``）走 ``on_attachment(sender,
+        Attachment)``，与文本分开两个回调而不是给 ``on_message`` 加第三个参数：现存的
+        每一个调用方都写着 ``lambda sender, body: ...``（`test_matrix_bus.py`、
+        `test_refund_room_wiring.py` 共七处），加位置参数会把它们全部变成 TypeError，
+        而那是在**回调里**抛的。不传 ``on_attachment`` 就完全不注册附件回调，
+        行为与加这条能力之前逐字一致。``m.file`` 必须一起挂：Element 把 PDF、CSV
+        和它认不出的一切都发成 ``m.file``，只挂 ``m.image`` 的后果不是「拒收」而是
+        **一声不吭** —— 发的人只能得出「机器人挂了」这个结论（真房间实测）。
+
+        **两个回调都在工作线程上跑，不在事件循环线程上。** 这是真房间里撞出来的：
+        nio 在 ``sync_forever`` 里 ``await`` 回调，也就是回调跑在私有循环线程上；
+        回调里只要调一次 :meth:`send` 或 :meth:`fetch`，就是在循环线程上同步等一个
+        要**这条循环**才能推进的协程 —— 自己等自己，必然等到超时。症状是回帖固定
+        迟到 30s、取件 100% 超时，而单元测试（回调里不发消息）全绿。见 :meth:`_offload`。
         """
         from nio import RoomMessageText
 
+        # 回调在循环线程上跑的那几行（判该不该投递、翻译附件）也包住：nio 的
+        # ``sync_forever`` 对回调抛出的任何异常是 ``except: raise`` —— 一条形状不对的
+        # 事件就能把整条 sync 掀掉，此后房间里发什么都没反应，且没有一行日志说为什么。
         async def _cb(room: Any, event: Any) -> None:
-            if should_deliver(self._room_id, self._user_id, room, event):
-                on_message(event.sender, event.body)
-            else:
-                self._warn_self_command(room, event)
+            try:
+                deliver = should_deliver(self._room_id, self._user_id, room, event)
+                if not deliver:
+                    self._warn_self_command(room, event)
+                    return
+                sender, body = event.sender, event.body
+            except Exception as exc:                    # noqa: BLE001
+                log.warning("房间文本事件形状不对（%s），本条跳过", describe_exc(exc))
+                return
+            await self._offload(on_message, sender, body)
+
+        def _media_cb(kind: str) -> Callable[[Any, Any], Any]:
+            async def _cb_media(room: Any, event: Any) -> None:
+                try:
+                    if not should_deliver(self._room_id, self._user_id, room, event):
+                        return
+                    att = self._attachment_of(event, kind=kind)
+                    sender = event.sender
+                except Exception as exc:                # noqa: BLE001
+                    log.warning("房间附件事件形状不对（%s），本条跳过", describe_exc(exc))
+                    return
+                if att is not None:
+                    await self._offload(on_attachment, sender, att)
+            return _cb_media
 
         cursor = self._await(self._skip_history())
         self._client.add_event_callback(_cb, RoomMessageText)
+        if on_attachment is not None:
+            # 在分支里 import 而不是在函数顶上：这两个名字在测试与降级路径塞的
+            # **只有几个符号**的假 nio 模块里不存在。放在顶上会让不收附件的调用方
+            # 也一起 ImportError —— 那正好违背上面那句「不传 on_attachment 行为逐字一致」。
+            from nio import RoomMessageFile, RoomMessageImage
+
+            self._client.add_event_callback(_media_cb("image"), RoomMessageImage)
+            self._client.add_event_callback(_media_cb("file"), RoomMessageFile)
 
         import asyncio
 
         self._sync_task = asyncio.run_coroutine_threadsafe(
             self._client.sync_forever(timeout=30_000, since=cursor), self._loop)
+
+    def alive(self) -> bool:
+        """监听还在不在。``listen`` 之后为 True，sync 循环结束（正常收口或炸了）为 False。
+
+        常驻入口靠它决定要不要退出：``sync_forever`` 一旦因异常结束，进程自己不会死，
+        房间里发什么都没反应 —— 与「机器人挂了」无法分辨，而这正是最贵的那种失败。
+        """
+        task = self._sync_task
+        return task is not None and not task.done()
+
+    def failure(self) -> str:
+        """监听结束的原因（一行人话）；还活着或正常取消时是空串。"""
+        task = self._sync_task
+        if task is None or not task.done() or task.cancelled():
+            return ""
+        exc = task.exception()
+        return describe_exc(exc) if exc is not None else ""
+
+    async def _offload(self, callback: Callable[..., Any], *args: Any) -> None:
+        """把一次回调挪到工作线程上跑完，循环线程只**挂起等待**、不阻塞。
+
+        ``await run_in_executor`` 而不是 fire-and-forget 提交：前者让 ``sync_forever``
+        在这条回调跑完之前不去拉下一批事件，房间消息的处理顺序与到达顺序一致
+        （审批命令的先后是有意义的）；循环线程在等待期间照常转，回调里发出的
+        :meth:`send` / :meth:`fetch` 协程能被推进 —— 这正是它与「回调直接在循环上跑」
+        的全部区别。
+
+        回调抛出的异常在这里截住并记日志。放它出去的话，nio 会把 ``sync_forever``
+        整条掀掉，此后房间里发什么都没反应，且没有任何一行说明为什么。
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(self._callback_executor, callback, *args)
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("房间回调抛出异常（%s），监听继续", describe_exc(exc))
+
+    def _attachment_of(self, event: Any, *, kind: str = "image") -> Any:
+        """把一条 ``m.image`` / ``m.file`` 事件翻成 :class:`~maos.ingress.contracts.Attachment`。
+
+        复用 ingress 那个形状而不是自定义一个，是为了让 router 的取件、白名单、
+        内容寻址落盘那一整套对 Matrix **一行不改**地适用 —— 房间与飞书群在
+        「有人发了张照片」这件事上没有任何区别，两套形状只会让两边的证据
+        digest 算法各漂各的。
+
+        **加密房间的媒体不收**（``event.key`` 存在即为加密附件）。收下它会拿到
+        一份 AES 密文，落盘、算 digest、回一句「已收下」全都成功，只有真去打开
+        那张图的人才会发现是乱码 —— 又一次「看起来成功了的失败」。解密要 olm 与
+        完整的 E2EE 会话，超出本层范围，所以显式跳过并出声。
+        """
+        from maos.ingress.contracts import Attachment
+
+        mxc = str(getattr(event, "url", "") or "")
+        if not mxc:
+            # 加密房间里 url 挪进了 event.file，取不到就是加密媒体。
+            log.warning("房间图片没有明文 url（多半是加密房间的媒体），本条跳过")
+            return None
+        info = (getattr(event, "source", None) or {}).get("content", {}).get("info") or {}
+        return Attachment(
+            channel=CHANNEL_MATRIX,
+            file_key=mxc,
+            kind=kind,
+            filename=str(getattr(event, "body", "") or ""),
+            mime=str(info.get("mimetype") or ""),
+            size=int(info.get("size") or 0),
+        )
+
+    def fetch(self, att: Any) -> bytes:
+        """按 ``mxc://`` 取回字节。签名与 `ChannelAdapter.fetch` 一致，可直接注册进 router。
+
+        nio 的 ``download`` 在 0.20 前后换过签名（``(server_name, media_id)`` ->
+        ``(mxc=...)``），两种都试是因为本机装的是 venv 里的 0.26.0，而演示机上
+        那份可能更老 —— 版本差异的症状是一句 TypeError，而它会被 sync 循环吞掉。
+
+        **不能在事件循环线程上调**（:meth:`listen` 的回调已经替调用方离开了那条
+        线程）。在循环线程上调它就是自己等自己，30s 后必超时 —— 真房间实测：
+        同一个 mxc，独立连接 0.01s 下完，循环线程上 30s 超时。
+        """
+        mxc = str(getattr(att, "file_key", "") or "")
+        if not mxc.startswith("mxc://"):
+            raise RuntimeError(f"不是 mxc URI：{mxc!r}")
+        server, _, media_id = mxc[len("mxc://"):].partition("/")
+        if not server or not media_id:
+            raise RuntimeError(f"mxc URI 缺服务器或 media_id：{mxc!r}")
+
+        try:
+            resp = self._await(self._client.download(mxc=mxc),
+                               timeout=self._send_timeout)
+        except TypeError:
+            resp = self._await(self._client.download(server_name=server,
+                                                     media_id=media_id),
+                               timeout=self._send_timeout)
+        body = getattr(resp, "body", None)
+        if not isinstance(body, (bytes, bytearray)):
+            raise RuntimeError(
+                f"下载失败：{getattr(resp, 'message', None) or type(resp).__name__}")
+        return bytes(body)
 
     def _warn_self_command(self, room: Any, event: Any) -> None:
         """被回声过滤丢掉的那条如果**是审批命令**，出声说一句。
@@ -599,6 +756,12 @@ class _NioChannel:
         except Exception as exc:                        # noqa: BLE001 —— 没在 sync 也无所谓
             log.debug("停止 sync_forever 异常（已忽略）：%s", describe_exc(exc))
         self._stop_sync_task()
+        # sync 已停，不会再有新回调进来；在跑的那一条**等它跑完**，而且要在循环还转着
+        # 的时候等 —— 它可能正卡在 send / fetch 上等这条循环推进协程。先停循环再等，
+        # 它会在 send_timeout 后带着 TimeoutError 出来，回帖丢掉、进程退出被拖住 30s。
+        # 只有 close() 本身就是从回调里调的那种情况不能等（等自己 = 死锁）。
+        in_worker = threading.current_thread().name.startswith("matrix-callback")
+        self._callback_executor.shutdown(wait=not in_worker)
         try:
             self._await(self._client.close())
         except Exception as exc:                        # noqa: BLE001 —— 关闭失败无所谓

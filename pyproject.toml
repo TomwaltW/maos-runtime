@@ -18,6 +18,13 @@ dev = ["pytest"]
 # 模块级不 import psycopg，只在 `_driver()` 里惰性 import —— 装不装都不影响导入。
 pg = ["psycopg[binary]>=3.1"]
 
+# IM 渠道接入（maos/ingress/）。**可选**：飞书把应用后台的 Encrypt Key 留空即
+# 明文回调，标准库就够，不装它飞书整条链路照跑；企业微信 / 微信客服的回调**强制
+# AES 加密**，缺这一项时 `crypto._aes_backend()` 显式抛 ChannelDepMissing 而不是
+# 静默回落 —— 取向与 pg 后端一致（静默回落的症状是「群里发了没反应」）。
+# pycryptodome 也认，见 `maos/ingress/crypto.py::_aes_backend`。
+ingress = ["cryptography>=41"]
+
 [tool.setuptools.packages.find]
 include = ["maos*", "hiclaw*"]
 

@@ -647,6 +647,33 @@ class _FakeRoomMessageText:
     """占位：只用来当 add_event_callback 的过滤类型。"""
 
 
+class _FakeRoomMessageMedia:
+    """照 nio 的 RoomMessageImage / RoomMessageFile 抄字段：sender / body / url / source。"""
+
+    def __init__(self, sender: str, body: str, url: str = "", *, mimetype: str = "",
+                 size: int = 0) -> None:
+        self.sender = sender
+        self.body = body
+        self.url = url
+        self.source = {"content": {"info": {"mimetype": mimetype, "size": size}}}
+
+
+class _FakeRoomMessageImage(_FakeRoomMessageMedia):
+    pass
+
+
+class _FakeRoomMessageFile(_FakeRoomMessageMedia):
+    pass
+
+
+class _FakeDownloadResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+
+_TYPED_EVENTS = (_FakeRoomMessageText, _FakeRoomMessageImage, _FakeRoomMessageFile)
+
+
 class _FakeAsyncClient:
     """够 ``_NioChannel`` 跑完整条路径的假客户端，逐笔记录调用顺序。
 
@@ -721,8 +748,16 @@ class _FakeAsyncClient:
 
     async def _dispatch(self, events):
         for room, event in events:
-            for cb, _cls in list(self.callbacks):
+            for cb, cls in list(self.callbacks):
+                # 真 nio 按注册时的事件类型分发。老用例的 `_Msg` 不属于任何类型，
+                # 仍派给所有回调（那些用例只挂了文本回调，形态不变）。
+                if isinstance(event, _TYPED_EVENTS) and not isinstance(event, cls):
+                    continue
                 await cb(room, event)
+
+    async def download(self, mxc=None, **kw):
+        self.calls.append(f"download({mxc})")
+        return _FakeDownloadResponse(b"%PDF-fake-bytes-for-" + str(mxc).encode())
 
     def add_event_callback(self, cb, event_class):
         self.calls.append("add_event_callback")
@@ -751,6 +786,8 @@ def fake_nio(monkeypatch):
     module.RoomSendError = _FakeSendError
     module.SyncError = _FakeSyncError
     module.RoomMessageText = _FakeRoomMessageText
+    module.RoomMessageImage = _FakeRoomMessageImage
+    module.RoomMessageFile = _FakeRoomMessageFile
     module.RoomGetStateEventError = _FakeStateError
     monkeypatch.setitem(sys.modules, "nio", module)
 
@@ -1272,3 +1309,216 @@ def test_bots_own_ordinary_messages_stay_silent(fake_nio, caplog):
 
     assert "不听自己的回声" not in caplog.text, f"把普通回执也喊了：{caplog.text}"
     channel.close()
+
+
+# ==========================================================================
+# 8. 回调离开事件循环线程（真房间实测：回调里 send / fetch 必然 30s 超时）
+# ==========================================================================
+# nio 在 sync_forever 里 await 回调，回调就跑在私有循环线程上；回调里再
+# run_coroutine_threadsafe(...).result() 等同一条循环，是自己等自己。
+# 症状：回帖固定迟到 30s、取件 100% 超时 —— 而回调里不发消息的单测全绿。
+# 下面四条钉的是「listen 的回调不在循环线程上，且回调里能 send / fetch」。
+
+
+def _room_and_att_events():
+    room = _Room("!room:example.org")
+    image = _FakeRoomMessageImage(APPROVER, "破损.jpg", "mxc://example.org/img1",
+                                  mimetype="image/jpeg", size=412)
+    sheet = _FakeRoomMessageFile(APPROVER, "bad-requests.csv", "mxc://example.org/csv1",
+                                 mimetype="text/csv", size=463)
+    return room, image, sheet
+
+
+def test_listener_callbacks_run_off_the_event_loop_thread(fake_nio, monkeypatch):
+    """回调线程 != 循环线程，且回调里 send 当场落地、不撞 RoomSendTimeout。
+
+    把 send 超时压到 0.5s：死锁还在的话，这里会在 0.5s 后拿到 RoomSendTimeout，
+    而不是等 30s —— 用例失败得快、且失败的理由指向根因。
+    """
+    monkeypatch.setattr(matrix_bus, "DEFAULT_SEND_TIMEOUT", 0.5)
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    client.live = [(_Room("!room:example.org"), _Msg(APPROVER, "/approve t1"))]
+
+    seen: list[dict] = []
+
+    def on_message(sender: str, body: str) -> None:
+        entry = {"thread": threading.get_ident(), "error": None}
+        try:
+            channel.send(f"回执 {body}", "<p>回执</p>")
+        except Exception as exc:                        # noqa: BLE001
+            entry["error"] = exc
+        seen.append(entry)
+
+    channel.listen(on_message)
+    assert client.sync_done.wait(5), "sync_forever 没跑完"
+
+    assert len(seen) == 1
+    assert seen[0]["error"] is None, f"回调里 send 失败了：{seen[0]['error']!r}"
+    assert seen[0]["thread"] != channel._thread.ident, "回调仍在事件循环线程上跑"
+    assert [row["body"] for row in client.sent] == ["回执 /approve t1"]
+    channel.close()
+
+
+def test_file_and_image_events_both_reach_on_attachment(fake_nio):
+    """m.file 与 m.image 都进 on_attachment，各带自己的 kind；文本回调收不到它们。
+
+    Element 把 PDF / CSV 和它认不出的一切都发成 m.file。只挂 m.image 的后果
+    不是「拒收」而是一声不吭 —— 真房间实测，发的人只能得出「机器人挂了」。
+    """
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    room, image, sheet = _room_and_att_events()
+    client.live = [(room, _Msg(APPROVER, "先说一句")), (room, image), (room, sheet)]
+
+    texts: list[str] = []
+    atts: list = []
+    channel.listen(lambda sender, body: texts.append(body),
+                   lambda sender, att: atts.append(att))
+    assert client.sync_done.wait(5), "sync_forever 没跑完"
+
+    assert texts == ["先说一句"], f"附件事件漏进了文本回调：{texts}"
+    assert [(a.kind, a.filename, a.file_key, a.mime, a.size) for a in atts] == [
+        ("image", "破损.jpg", "mxc://example.org/img1", "image/jpeg", 412),
+        ("file", "bad-requests.csv", "mxc://example.org/csv1", "text/csv", 463),
+    ]
+    assert all(a.channel == matrix_bus.CHANNEL_MATRIX for a in atts)
+    channel.close()
+
+
+def test_fetch_works_from_inside_the_attachment_callback(fake_nio, monkeypatch):
+    """取件就发生在回调里（有人发图 -> 回调 -> 取件）—— 这条路径必须不超时。
+
+    这是原始事故的直接复现：修复前 fetch 在循环线程上等 download，30s 超时；
+    修复后回调在工作线程上，download 协程能被循环推进。
+    """
+    monkeypatch.setattr(matrix_bus, "DEFAULT_SEND_TIMEOUT", 0.5)
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    room, image, _sheet = _room_and_att_events()
+    client.live = [(room, image)]
+
+    got: list = []
+
+    def on_attachment(sender: str, att) -> None:
+        try:
+            got.append(channel.fetch(att))
+        except Exception as exc:                        # noqa: BLE001
+            got.append(exc)
+
+    channel.listen(lambda sender, body: None, on_attachment)
+    assert client.sync_done.wait(5), "sync_forever 没跑完"
+
+    assert got and isinstance(got[0], bytes), f"回调里取件失败：{got}"
+    assert got[0].startswith(b"%PDF-fake-bytes-for-mxc://example.org/img1")
+    assert "download(mxc://example.org/img1)" in client.calls
+    channel.close()
+
+
+def test_exploding_callback_does_not_kill_the_listener(fake_nio, caplog):
+    """回调抛了异常：记日志、继续听下一条。掀掉 sync_forever 的症状是此后全静默。"""
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    room = _Room("!room:example.org")
+    client.live = [(room, _Msg(APPROVER, "第一条会炸")), (room, _Msg(APPROVER, "第二条"))]
+
+    seen: list[str] = []
+
+    def on_message(sender: str, body: str) -> None:
+        if "炸" in body:
+            raise RuntimeError("处理第一条时炸了")
+        seen.append(body)
+
+    with caplog.at_level("WARNING", logger="maos.matrix"):
+        channel.listen(on_message)
+        assert client.sync_done.wait(5), "sync_forever 没跑完 —— 回调的异常把它掀了"
+
+    assert seen == ["第二条"]
+    assert "房间回调抛出异常" in caplog.text and "处理第一条时炸了" in caplog.text
+    channel.close()
+
+
+def test_close_waits_for_the_in_flight_callback(fake_nio, monkeypatch):
+    """收口时正在跑的回调要**跑完**，且它里面的 send 要落地。
+
+    评审实测：`shutdown(wait=False)` 后立刻关客户端、停循环，回调里的 send 撞
+    `Event loop is closed`、回帖丢掉；卡在 fetch 上的回调要等满 send_timeout 才出来，
+    进程退出被拖住 30s。
+    """
+    monkeypatch.setattr(matrix_bus, "DEFAULT_SEND_TIMEOUT", 2.0)
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    client.live = [(_Room("!room:example.org"), _Msg(APPROVER, "慢慢处理"))]
+    started = threading.Event()
+    outcome: list = []
+
+    def on_message(sender: str, body: str) -> None:
+        started.set()
+        time.sleep(0.4)                                 # 模拟一次慢处理（调模型 / 跑预检）
+        try:
+            channel.send("处理完了", "<p>处理完了</p>")
+            outcome.append("sent")
+        except Exception as exc:                        # noqa: BLE001
+            outcome.append(exc)
+
+    channel.listen(on_message)
+    assert started.wait(5), "回调没起来"
+    t0 = time.time()
+    channel.close()                                     # 回调还在 sleep 里
+    elapsed = time.time() - t0
+
+    assert outcome == ["sent"], f"收口把在跑的回调坑了：{outcome}"
+    assert [row["body"] for row in client.sent] == ["处理完了"]
+    assert elapsed < 1.5, f"close 等了 {elapsed:.1f}s —— 像是等到了 send_timeout 而不是等回调跑完"
+
+
+def test_malformed_media_event_does_not_kill_the_listener(fake_nio, caplog):
+    """一条 content.info 形状不对的附件事件：记日志、跳过；下一条照收。
+
+    这几行跑在循环线程上、在 _offload 之前；nio 对回调抛出的异常是 `except: raise`，
+    不包住的话整条 sync 就没了 —— 进程还在，房间里从此一片安静。
+    """
+    channel = open_channel(_live_config())
+    client = fake_nio.instances[-1]
+    room, image, _sheet = _room_and_att_events()
+    broken = _FakeRoomMessageImage(APPROVER, "坏事件.png", "mxc://example.org/bad")
+    broken.source = {"content": {"info": "not-a-dict"}}
+    client.live = [(room, broken), (room, image)]
+
+    atts: list = []
+    with caplog.at_level("WARNING", logger="maos.matrix"):
+        channel.listen(lambda sender, body: None, lambda sender, att: atts.append(att))
+        assert client.sync_done.wait(5), "sync_forever 没跑完 —— 坏事件把它掀了"
+
+    assert [a.filename for a in atts] == ["破损.jpg"]
+    assert "房间附件事件形状不对" in caplog.text
+    # 假 sync_forever 派发完就正常返回：sync_done 置位在协程收尾之前，等它一下。
+    deadline = time.time() + 5
+    while time.time() < deadline and channel.alive():
+        time.sleep(0.02)
+    assert channel.alive() is False and channel.failure() == ""
+    channel.close()
+
+
+def test_alive_and_failure_reflect_the_sync_task(fake_nio):
+    """常驻入口靠 alive() 决定要不要退出；sync 炸了要能从 failure() 读到原因。"""
+    fake_nio.hang_sync = True
+    channel = open_channel(_live_config())
+    assert channel.alive() is False, "还没 listen 就说活着"
+    channel.listen(lambda sender, body: None)
+    assert channel.alive() is True and channel.failure() == ""
+    channel.close()
+    assert channel.alive() is False
+
+    async def exploding_sync(*a, **kw):
+        raise RuntimeError("sync 炸了")
+
+    channel2 = open_channel(_live_config())
+    fake_nio.instances[-1].sync_forever = exploding_sync
+    channel2.listen(lambda sender, body: None)
+    deadline = time.time() + 5
+    while time.time() < deadline and channel2.alive():
+        time.sleep(0.02)
+    assert channel2.alive() is False
+    assert "sync 炸了" in channel2.failure()
+    channel2.close()

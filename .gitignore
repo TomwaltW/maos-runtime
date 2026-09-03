@@ -45,3 +45,8 @@ maos/skills/builtin/_private_probe.py
 # 但 MAOS_SANDBOX_WORKDIR 指到仓库里时会在这儿冒出来，挡一道。
 maos-sb-*/
 .tmp-scenario-*/
+
+# 入站附件的字节落盘处（maos/ingress/attachments.py）。
+# 客户发来的照片里可能有身份证、面单、聊天截图 —— 图一旦进 git 历史就取不出来，
+# 而 scripts/make_evidence.py 的密钥扫描只认文本、扫不到 PNG（见 docs/BACKLOG.md）。
+var/attachments/

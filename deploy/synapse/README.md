@@ -80,3 +80,78 @@ bash deploy/synapse/up.sh               # 全新 generate、新账号、新房�
 
 新房间意味着新的 `room_id` 和新 token，**下游三轨必须重新 source `room.env`**。
 只是想让容器重启，用不带 `--purge` 的 `down.sh` 就够了。
+
+## Agent 账号（退款圆桌）
+
+`up.sh` 管的是地基三个号（`maos-bot` / `boss` / `intern`）。退款圆桌要让**五个岗位各用
+自己的 Matrix 账号发言** —— Element 里五个头像、五个显示名，谁说的一眼可见，而不是
+五段话都顶着 `maos-bot` 的头像、靠 `【岗位 · 工号】` 前缀区分。那五个号由这个脚本建：
+
+```bash
+bash deploy/synapse/add_agents.sh                        # 建号 + 设显示名 + 进房 + 写 agents.env
+bash deploy/synapse/add_agents.sh --dry-run              # 只打计划，一个请求都不发
+bash deploy/synapse/add_agents.sh --room '!x:maos.local' # 覆盖房间（缺省取 room.env 的 MATRIX_ROOM_ID）
+```
+
+它对 `maos-intake` / `maos-policy` / `maos-evidence` / `maos-risk` / `maos-finance` 逐个：
+注册（`--no-admin`）→ 取 token → 用该号自己的 token 设显示名（申请受理岗 / 规则审核岗 /
+证据核验岗 / 风险反欺诈岗 / 财务执行岗）→ `maos-bot` 邀请、该号自己 join → **join 之后**
+再用该号自己的 token 自查房间非加密。前提是 `up.sh` 已经跑过（要 `room.env` 与容器）。
+
+> 顺序不能反。未 join 的号去查 `m.room.encryption` 拿到的是 403，而 matrix-nio 会把非 404
+> 的错误体原样包成「成功」响应 —— 于是「号还没进房」被念成「房间开了加密」，降级日志里
+> 留一个假原因。原委写在 `hiclaw/matrix_bus.py::encryption_verdict`。
+
+### 产物：`~/.maos-matrix/agents.env`
+
+`chmod 600`、仓库外、永不入库，`export` 形式可直接 source。每岗三键 + 末尾一个名单，共 16 行：
+
+```
+MAOS_AGENT_<AGENT_KEY>_USER        # mxid，如 @maos-intake:maos.local
+MAOS_AGENT_<AGENT_KEY>_PASSWORD    # 口令（<只在文件里>）
+MAOS_AGENT_<AGENT_KEY>_TOKEN       # access_token（<只在文件里>）
+MAOS_ROOM_BOTS                     # 五个 mxid 逗号连接
+```
+
+`<AGENT_KEY>` = `agent_id.upper().replace("-", "_")`，五个值是 `REFUND_INTAKE` / `REFUND_POLICY` /
+`REFUND_EVIDENCE` / `REFUND_RISK` / `REFUND_FINANCE`。推导函数是 `hiclaw/room_voices.py::env_keys_of`，
+全仓只此一份（这个脚本是 shell、没法 import，那份字面量与它一起改）。
+
+`MAOS_ROOM_BOTS` 给的是**监听侧**：`hiclaw/matrix_bus.py::open_channel` 现读它，进
+`should_deliver` 的忽略名单 —— 一个房间只该有一个监听者，否则 `maos-bot` 会去接岗位号的
+发言、岗位号下一轮再接，两个机器人互相接龙刷屏。
+
+🔴 **和 `room.env` 是两个文件，不是一个。** `up.sh` 每次跑都会**整份重写** `room.env`
+（见它的第 8 节），所以岗位账号的凭证必须独立存放；反过来这个脚本也一个字不碰
+`room.env` 与 `creds.txt`。跑房间时两份都要 source：
+
+```bash
+set -a; . ~/.maos-matrix/room.env; . ~/.maos-matrix/agents.env; set +a
+```
+
+### 限流：为什么重跑必须零登录
+
+Synapse 的 `rc_login.address` 默认 **`burst_count=5` / `per_second=0.003`**（实测于容器内
+`synapse/config/ratelimiting.py`，本机 `homeserver.yaml` 里一个 `rc_` 键都没写，全是缺省）。
+五个号首跑正好把桶用满，补回一个令牌要 333 秒。所以：
+
+- **口令能沿用就沿用，token 能用就不重登** —— 脚本先 `. agents.env`，再拿旧 token 打一次
+  `/account/whoami`，认得出就完全跳过登录。实测第二次跑**零登录** `exit=0`。
+- 真要登的那几个号，**两次登录之间歇 3 秒**（口径同 `docs/BACKLOG.md` 里那条「一条命令
+  一次登陆在 Synapse 上会卡死」）。
+- 撞 429 就按响应体的 `retry_after_ms` 退避重试，**不改 `homeserver.yaml` 放宽限流**
+  （`docs/DECISIONS.md` 2026-08-29 那条已定：放宽限流是把测试环境调成和生产不一样）。
+- **绝不重登 `maos-bot`**，它的 token 归 `up.sh` 管。
+
+撞满限流的症状是进程**静止**而不是报错（nio 会 sleep 几十秒重试，而 429 响应体里没有
+`user_id`，schema 校验再报一次错），排查方向会指向房间或网络 —— 所以这几条不是省事，是必须。
+
+### 怎么重来
+
+```bash
+rm -f ~/.maos-matrix/agents.env      # 口令与 token 一起丢掉，下次跑重新生成、重新登录
+bash deploy/synapse/add_agents.sh
+```
+
+账号本身不会被删（它们在数据卷里）。真要连账号一起清，只能 `down.sh --purge` 重建整个卷。
+🔴 删了 `agents.env` 就是五次登录，正好顶满 `burst_count` —— 别在演示前十分钟做这件事。

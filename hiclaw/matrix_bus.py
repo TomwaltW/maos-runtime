@@ -319,8 +319,17 @@ def encryption_verdict(resp: Any) -> tuple[str, str]:
     return ENC_ENCRYPTED, str(algorithm) if algorithm else "m.room.encryption 已设置"
 
 
-def should_deliver(room_id: str, self_user_id: str, room: Any, event: Any) -> bool:
-    """这条房间事件该不该喂给 ``on_message``。两条否决都不能省。
+#: 同房间里**其他**机器人账号的 mxid，逗号分隔（岗位账号由
+#: ``deploy/synapse/add_agents.sh`` 建号时写进 ``~/.maos-matrix/agents.env``）。
+#: 不进 :class:`MatrixBusConfig`（那张字段表被 C-6 冻结），由 :func:`open_channel`
+#: **现读**一次 —— 口径同 :func:`current_approvers`。常量在这里定义一次，
+#: 免得字面量散在 open_channel 与建号脚本两处各写一份、改一处漏一处。
+ENV_ROOM_BOTS = "MAOS_ROOM_BOTS"
+
+
+def should_deliver(room_id: str, self_user_id: str, room: Any, event: Any, *,
+                   ignored_senders: frozenset[str] = frozenset()) -> bool:
+    """这条房间事件该不该喂给 ``on_message``。三条否决都不能省。
 
     · **不是本房间的** —— ``sync`` 是全量的，一个 client 可能同时在多个房间里。
     · **sender 是自己** —— 比的是服务器给的权威 mxid（``whoami`` 回填的
@@ -328,10 +337,25 @@ def should_deliver(room_id: str, self_user_id: str, room: Any, event: Any) -> bo
       只把 user 原样存进 ``.user``，``.user_id`` 在 login/whoami 之前恒为空串；
       ``MATRIX_USER`` 若写成 localpart（``maos-bot``），它和 ``event.sender``
       （``@maos-bot:maos.local``）永远不相等 —— 回声过滤就成了摆设。
+    · **sender 在 ``ignored_senders`` 里** —— 同一个房间里的**别的**机器人账号
+      （退款圆桌那五个岗位号）。一个房间只该有一个监听者：岗位号发言若喂进
+      ``on_message``，闲聊回复器会去接它一句，岗位号下一轮再接 —— 两个机器人
+      互相接龙刷屏，而每一条单看都合法。名单为空时行为与加这条之前逐字一致。
+
+    第三条今天是**第二道保险**：岗位号经 :meth:`_NioChannel.send` 发的是
+    ``m.notice``，nio 解析成 ``RoomMessageNotice``，根本不会派给只注册了
+    ``RoomMessageText`` 的回调。哪天有人把发言改成 ``m.text``、或拿岗位号在
+    Element 里手打字，它才是唯一防线 —— 所以不能因为"今天走不到"就省掉。
+
+    keyword-only 而不是第五个位置参数：现存三个调用方（含
+    ``scripts/matrix_probe.py``）全是四个位置实参，加位置参数会把它们一起变成
+    TypeError，而那是在**回调里**抛的（症状：房间从此一片安静）。
     """
     if getattr(room, "room_id", None) != room_id:
         return False
     sender = getattr(event, "sender", None)
+    if sender and sender in ignored_senders:
+        return False
     return not (sender and sender == self_user_id)
 
 
@@ -358,12 +382,17 @@ class _NioChannel:
     name = CHANNEL_MATRIX
 
     def __init__(self, config: MatrixBusConfig, *, timeout: float = 10.0,
-                 send_timeout: float | None = None) -> None:
+                 send_timeout: float | None = None,
+                 ignored_senders: frozenset[str] | None = None) -> None:
         import asyncio
 
         from nio import AsyncClient           # 未装 -> open_channel 换成 MatrixDepMissing
 
         self._timeout = timeout
+        #: 同房间里别的机器人账号，:func:`should_deliver` 的第三条否决。
+        #: 走参数不走 ``config``：``MatrixBusConfig`` 的字段表被 C-6 冻结。
+        self._ignored_senders = (frozenset() if ignored_senders is None
+                                 else frozenset(ignored_senders))
         #: send 单独一档，比构造期宽。一次 429 退避就是几秒，连发几条镜像很容易累计
         #: 过 10 秒 —— 用同一个 10s 去卡 send，得到的是一串「失败」告警，而消息其实
         #: 都送到了。**不是调大到把限流盖住**：限流照旧由 nio 自己那条
@@ -559,7 +588,8 @@ class _NioChannel:
         # 事件就能把整条 sync 掀掉，此后房间里发什么都没反应，且没有一行日志说为什么。
         async def _cb(room: Any, event: Any) -> None:
             try:
-                deliver = should_deliver(self._room_id, self._user_id, room, event)
+                deliver = should_deliver(self._room_id, self._user_id, room, event,
+                                         ignored_senders=self._ignored_senders)
                 if not deliver:
                     self._warn_self_command(room, event)
                     return
@@ -572,7 +602,8 @@ class _NioChannel:
         def _media_cb(kind: str) -> Callable[[Any, Any], Any]:
             async def _cb_media(room: Any, event: Any) -> None:
                 try:
-                    if not should_deliver(self._room_id, self._user_id, room, event):
+                    if not should_deliver(self._room_id, self._user_id, room, event,
+                                          ignored_senders=self._ignored_senders):
                         return
                     att = self._attachment_of(event, kind=kind)
                     sender = event.sender
@@ -813,7 +844,8 @@ class _NioChannel:
         self._loop.close()
 
 
-def open_channel(config: MatrixBusConfig) -> MirrorChannel:
+def open_channel(config: MatrixBusConfig, *,
+                 ignored_senders: frozenset[str] | None = None) -> MirrorChannel:
     """按 config 打开真房间通道。任何失败都原样抛出，由调用方统一降级。
 
     只有一处例外：``matrix-nio`` 没装时把 ``ModuleNotFoundError`` 换成
@@ -823,9 +855,17 @@ def open_channel(config: MatrixBusConfig) -> MirrorChannel:
 
     ``exc.name != "nio"`` 那一支不能省：``matrix-nio`` 装了但它自己缺依赖时，
     抛的也是 ``ModuleNotFoundError``，念成「你没装 nio」会把人指向错的方向。
+
+    ``ignored_senders`` 不传时**现读**一次 :data:`ENV_ROOM_BOTS`（口径同
+    :func:`current_approvers`：读进程环境，不进 config、不进 dataclass）。
+    现读而不是让调用方传，是为了让 ``hiclaw/room_ingress.py`` 那个常驻入口
+    **一个字不改**就吃到岗位账号名单 —— 它拿到的正是这一句的返回值。
+    显式传 ``frozenset()`` 可以关掉这层，测试与「就按我给的这份读」都靠它。
     """
+    if ignored_senders is None:
+        ignored_senders = parse_approvers(os.environ.get(ENV_ROOM_BOTS))
     try:
-        return _NioChannel(config)
+        return _NioChannel(config, ignored_senders=ignored_senders)
     except ModuleNotFoundError as exc:
         if exc.name != "nio":
             raise

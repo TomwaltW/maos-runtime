@@ -1075,7 +1075,9 @@ def test_missing_matrix_nio_names_the_interpreter_you_actually_used(no_nio):
 
 def test_a_different_missing_module_is_not_blamed_on_nio(monkeypatch):
     """nio 装了但它自己缺依赖时，不许念成「你没装 nio」—— 那会把人指向错方向。"""
-    def _boom(config):
+    # `**kw` 是给 open_channel 的 `ignored_senders=` 留的（T84）：假件的签名要跟着
+    # 被测函数走，否则这条用例断的就不再是「怪谁」，而是「假件参数对不上」。断言不动。
+    def _boom(config, **kw):
         raise ModuleNotFoundError("No module named 'h11'", name="h11")
 
     monkeypatch.setattr(matrix_bus, "_NioChannel", _boom)
@@ -1521,4 +1523,101 @@ def test_alive_and_failure_reflect_the_sync_task(fake_nio):
         time.sleep(0.02)
     assert channel2.alive() is False
     assert "sync 炸了" in channel2.failure()
+    channel2.close()
+
+
+# -- 忽略名单：同房间里别的机器人账号（T84）--------------------------------
+#: 退款圆桌那五个岗位号之一。本文件用 example.org 域，与真房间的 maos.local 无关。
+VOICE_MXID = "@maos-intake:example.org"
+
+
+def test_should_deliver_drops_ignored_senders():
+    """名单里的 sender 不进 on_message；名单外的照进（第三条否决）。
+
+    一个房间只该有一个监听者：岗位号的发言若喂进 ``on_message``，闲聊回复器会接
+    一句、岗位号下一轮再接 —— 两个机器人互相接龙刷屏，而每一条单看都合法。
+    """
+    room = _Room("!room:example.org")
+    ignored = frozenset({VOICE_MXID})
+    assert should_deliver("!room:example.org", BOT_MXID, room,
+                          _Msg(VOICE_MXID, "受理完毕，转规则审核岗"),
+                          ignored_senders=ignored) is False
+    assert should_deliver("!room:example.org", BOT_MXID, room,
+                          _Msg(APPROVER, "/approve t1"),
+                          ignored_senders=ignored) is True
+
+
+def test_should_deliver_positional_call_is_still_compatible():
+    """四个位置实参、不传 keyword 时行为与加名单之前**逐字一致**。
+
+    钉的是调用形态：现存三个调用方（``listen`` 两处与 ``scripts/matrix_probe.py``）
+    全是四个位置实参。第五个参数若写成位置参数，它们会一起变成 TypeError ——
+    而那是在**回调里**抛的，症状是房间从此一片安静，没有一行日志说为什么。
+    """
+    room = _Room("!room:example.org")
+    assert should_deliver("!room:example.org", BOT_MXID, room,
+                          _Msg(VOICE_MXID, "受理完毕")) is True
+    assert should_deliver("!room:example.org", BOT_MXID, room,
+                          _Msg(BOT_MXID, "[t1] TaskResult")) is False
+    assert should_deliver("!room:example.org", BOT_MXID, _Room("!other:example.org"),
+                          _Msg(APPROVER, "/approve t1")) is False
+
+    kind = inspect.signature(should_deliver).parameters["ignored_senders"].kind
+    assert kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def _listen_and_collect(channel, client, events):
+    """挂上监听、喂一批 live 事件、把进到 on_message 的 sender 收回来。"""
+    seen: list[str] = []
+    client.live = list(events)
+    channel.listen(lambda sender, body: seen.append(sender))
+    assert client.sync_done.wait(5), "sync_forever 没跑完"
+    return seen
+
+
+def test_open_channel_reads_room_bots_from_env_when_not_given(fake_nio, monkeypatch):
+    """不传 ``ignored_senders`` 时 ``open_channel`` **现读** ``MAOS_ROOM_BOTS``。
+
+    现读而不是让调用方传，是为了让 ``hiclaw/room_ingress.py`` 那个常驻入口**一个字
+    不改**就吃到岗位账号名单 —— 它拿到的正是 ``open_channel`` 的返回值。口径同
+    ``current_approvers``：读进程环境，不进 config、不进 dataclass（C-6 冻结）。
+    """
+    room = _Room("!room:example.org")
+    events = [(room, _Msg(VOICE_MXID, "受理完毕，转规则审核岗")),
+              (room, _Msg(APPROVER, "/approve t1"))]
+
+    monkeypatch.setenv(matrix_bus.ENV_ROOM_BOTS,
+                       VOICE_MXID + ", @maos-policy:example.org")
+    channel = open_channel(_live_config())
+    assert _listen_and_collect(channel, fake_nio.instances[-1], events) == [APPROVER]
+    channel.close()
+
+    # 名单撤掉，同一批事件全进来 —— 证明上面那条挡住的确实是名单，不是别的否决。
+    monkeypatch.delenv(matrix_bus.ENV_ROOM_BOTS)
+    channel2 = open_channel(_live_config())
+    assert _listen_and_collect(channel2, fake_nio.instances[-1], events) == \
+        [VOICE_MXID, APPROVER]
+    channel2.close()
+
+
+def test_explicit_ignored_senders_overrides_env(fake_nio, monkeypatch):
+    """显式传 ``ignored_senders=`` 时不读 env —— 「就按我给的这份读」。
+
+    与 ``MatrixBusConfig.from_env(env=...)`` 同一条取向：显式给了还去读进程环境，
+    会让测试与降级自检拿到一份自己没给过的名单。
+    """
+    room = _Room("!room:example.org")
+    monkeypatch.setenv(matrix_bus.ENV_ROOM_BOTS, VOICE_MXID)
+
+    channel = open_channel(_live_config(), ignored_senders=frozenset())
+    seen = _listen_and_collect(channel, fake_nio.instances[-1],
+                              [(room, _Msg(VOICE_MXID, "受理完毕"))])
+    assert seen == [VOICE_MXID], "env 的名单在显式传参时仍然生效了"
+    channel.close()
+
+    channel2 = open_channel(_live_config(), ignored_senders=frozenset({APPROVER}))
+    seen2 = _listen_and_collect(channel2, fake_nio.instances[-1],
+                               [(room, _Msg(VOICE_MXID, "受理完毕")),
+                                (room, _Msg(APPROVER, "/approve t1"))])
+    assert seen2 == [VOICE_MXID], "显式名单没生效"
     channel2.close()

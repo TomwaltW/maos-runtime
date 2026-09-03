@@ -160,3 +160,35 @@ def test_outsider_in_matrix_room_is_still_denied():
     out = r.handle(_msg("/approve RC-ORD-2026-0001", channel=CHANNEL_MATRIX,
                         sender="@intern:maos.local", msg_id="b"))
     assert "无审批权限" in out and runs == []
+
+
+# --------------------------------------------------------------------------
+# 圆桌名单进【事实】（T88）
+# --------------------------------------------------------------------------
+def test_chat_facts_include_the_roster_when_a_team_is_wired():
+    """接了圆桌，模型才有资格答「你们那边都有谁」—— 答案只能来自这一段。"""
+    from maos.tests.test_ingress_router import FakeTeam
+
+    ad = FakeAdapter()
+    model = _EchoModel()
+    r = IngressRouter({ad.name: ad}, store=_store(), runner=Runs(),
+                      chat=ChatResponder(model), team=FakeTeam())
+    r.handle(_msg("你们那边都有谁"))
+
+    facts = model.calls[-1]["user"]
+    assert "圆桌岗位与技能：" in facts
+    assert "申请受理岗（refund-intake）" in facts and "refund.intake@1.0.0" in facts
+    assert "第 6 条" not in facts                       # 规矩在 system 里，不混进事实
+    assert "有哪些岗位" in model.calls[-1]["system"]     # 第 6 条确实在系统提示里
+
+
+def test_chat_facts_omit_the_roster_without_a_team():
+    """没接圆桌就一个字都不给：模型看不见的东西才编不出来（铁律 8）。"""
+    ad = FakeAdapter()
+    model = _EchoModel()
+    r = IngressRouter({ad.name: ad}, store=_store(), runner=Runs(),
+                      chat=ChatResponder(model))
+    r.handle(_msg("你们那边都有谁"))
+
+    facts = model.calls[-1]["user"]
+    assert "圆桌岗位与技能" not in facts and "refund-intake" not in facts

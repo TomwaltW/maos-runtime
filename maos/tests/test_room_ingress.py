@@ -117,3 +117,72 @@ def test_main_refuses_to_start_without_room_env(monkeypatch, capsys):
         monkeypatch.delenv(name, raising=False)
     assert room_ingress.main([]) == room_ingress.EXIT_NO_ENV
     assert "没配齐" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# 圆桌装配（T88）—— 两个可选件都不在，房间照常起
+# --------------------------------------------------------------------------
+def test_main_still_wires_when_roundtable_and_voices_are_missing(monkeypatch, capsys):
+    """圆桌引擎与发声面都没装载：退回单机器人，命令面照样接上，退出码仍是 0。
+
+    房间入口是这条链路唯一的常驻进程 —— 让它因为一个旁路组件没装就起不来，
+    等于用「圆桌不在」换来「命令面也没了」。而退化必须说出来：静默退化与
+    「机器人挂了」无法分辨，那正是本模块要消灭的东西。
+    """
+    import sys
+
+    from maos.model.client import ScriptedModelClient
+
+    monkeypatch.setitem(sys.modules, "maos.roundtable.team", None)
+    monkeypatch.setitem(sys.modules, "hiclaw.room_voices", None)
+
+    ch = _Channel()
+    wired: dict = {}
+    original_wire = room_ingress.wire
+
+    def _wire(channel, **kw):
+        wired.update(kw)
+        return original_wire(channel, **kw)
+
+    monkeypatch.setattr(room_ingress, "open_channel", lambda cfg: ch)
+    monkeypatch.setattr(room_ingress, "serve", lambda channel, **kw: 0)
+    monkeypatch.setattr(room_ingress, "wire", _wire)
+    monkeypatch.setattr(room_ingress, "ChatResponder",
+                        lambda: ChatResponder(ScriptedModelClient({})))
+    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+    monkeypatch.setenv("MATRIX_USER", "@maos-bot:example.org")
+    monkeypatch.setenv("MATRIX_TOKEN", "not-a-real-token")
+    monkeypatch.setenv("MATRIX_ROOM_ID", ROOM)
+
+    assert room_ingress.main([]) == room_ingress.EXIT_OK
+    assert "未装载" in capsys.readouterr().out
+    assert wired["team"] is None
+    assert ch.on_message is not None and ch.on_attachment is not None
+
+    ch.on_message(BOSS, "/help")
+    assert "/refund" in ch.sent[-1][0]                 # 命令面一个字不受影响
+
+
+def test_proxy_voice_escapes_html_and_keeps_the_name_tag():
+    """代言形态与 `ap_room.render_speech` 同构，**但两份都转义** —— 那边没转义，
+    模型吐一个 `<` 就能把 formatted_body 破掉，而 Synapse 不报错。
+    """
+    ch = _Channel()
+    voices = room_ingress._ProxyVoiceSet(
+        ch, agent_ids=("refund-intake", "refund-policy"),
+        titles={"refund-intake": "申请受理岗"}, user_id="@maos-bot:example.org")
+
+    voices.voice("refund-intake").say("a <b> & c")
+    plain, html = ch.sent[-1]
+    assert plain.startswith("【")
+    assert plain == "【申请受理岗 · refund-intake】 a <b> & c"
+    assert "&lt;b&gt; &amp;" in html and "<code>refund-intake</code>" in html
+
+    # 岗位名没给就退回工号，照样发得出去（契约 §1.3：任何 agent_id 都不抛）
+    seat = voices.voice("refund-policy")
+    assert seat.title == "refund-policy" and seat.own_identity is False
+    assert voices.voice("谁都不认识的岗").agent_id == "谁都不认识的岗"
+
+    assert voices.bot_users() == frozenset()           # 一个独立账号都没接通
+    assert "代言" in voices.describe() and "token" not in voices.describe().lower()
+    voices.close()

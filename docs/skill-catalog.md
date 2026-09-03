@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-注册表里共 **30 个 skill / 30 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
+注册表里共 **31 个 skill / 31 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
 
 失败策略取值域冻结为 `retry`、`fallback`、`escalate`（maos/skills/contract.py:16）。
 
@@ -41,6 +41,7 @@
 | `payment.observe` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/payment_observe.py:36` |
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:62` |
 | `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:65` |
+| `refund.evidence_check` | `1.0.0` | 制造售后退款域 | `refund_evidence` | escalate | （空） | `maos/skills/builtin/refund/evidence_check.py:109` |
 | `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:59` |
 | `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:51` |
 | `test.verify` | `1.0.0` | 软件交付域 | `testing` | escalate | `sandbox` | `maos/skills/builtin/test_verify.py:30` |
@@ -506,6 +507,23 @@
 | `reuse_note` | ⑧ 复用说明 | 任何「外部已经收到请求、但本地要收口」的域都该照此写：先留档最后一次观察、再开人工工单、最后才推进本地状态；三步顺序不可换 |
 | `owner_roles` | ⑨ 归属角色 | `refund_payment` |
 
+### refund.evidence_check @ 1.0.0
+
+实现：`RefundEvidenceCheckSkill` @ `maos/skills/builtin/refund/evidence_check.py:109`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 核验随案证据是否满足政策/缺省举证要求，并与物流签收、质检结论交叉核对（零模型，可复现） |
+| `input_schema` | ② 输入 | `case_seed`: dict（同 refund.intake 的 case_seed，取 reason_code）<br>`customer_evidence`: list[dict{evidence_id,kind,uri,digest,source}]（可空）<br>`rules`: list[dict{rule_no,version,title,ref,params}]（contrast.policy_view 的 rules 形状）<br>`order_facts`: dict{logistics:{carrier,tracking_no,signed_at}, qc_report:{report_no,result,issued_at}}（可空）<br>`requested_at`: str（ISO8601） |
+| `output_schema` | ③ 输出 | `items`: list[dict{evidence_id,kind,source,ok,note}]（逐份证据的核验）<br>`required_kinds`: list[str]（归一化后的排序并集）<br>`min_count`: int（min_evidence_count 的最大值，无则 0）<br>`gaps`: list[str]（人话：缺什么）<br>`verdict`: complete\|partial\|missing\|not_required<br>`consistency`: list[dict{check,ok,note}]（物流时序 / 质检结论 / digest 非空）<br>`unmet`: list[dict{rule_ref,requirement,required,actual,direction}]<br>`requirement_source`: policy\|default\|none（这次按哪一级判的）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `case_seed` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读入参，不碰附件字节（只看 digest 是否登记，不去取 uri）；不写库不调模型；不裁定赔付，举证不足只报 direction=not_applied |
+| `reuse_note` | ⑧ 复用说明 | 任何「按规则声明的举证要求核验随案材料」的场景都可照此复用，换域只换默认表与交叉核对项 |
+| `owner_roles` | ⑨ 归属角色 | `refund_evidence` |
+
 ### refund.intake @ 1.0.0
 
 实现：`RefundIntakeSkill` @ `maos/skills/builtin/refund/intake.py:59`
@@ -566,4 +584,4 @@
 - **回滚**：旧版本从不被覆盖，`get(name, "1.0.0")` 永远拿得到当年那一个。在册版本用 `versions(name)` 列（maos/skills/registry.py:84）。升级期间在跑的旧 Plan 因此行为可复现 —— 这是保留历史版本的**唯一**理由。
 - **质量评估**：每次调用落一条 `SkillInvoked`，`detail` 带 `status` / `duration_ms` / `input_digest` / `output_hash` / `usage`；按 `skill + version` 聚合 event_log 即可得到成功率与耗时分布，无需另建埋点。证据侧由 `scripts/verify.py` 第 1 项做哈希一致性重放。
 
-当前在册的 30 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。
+当前在册的 31 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。

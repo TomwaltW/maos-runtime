@@ -554,3 +554,211 @@ def test_oversized_body_is_rejected(live_server):
 
 def test_routes_cover_all_three_channels():
     assert set(ROUTES.values()) == {CHANNEL_FEISHU, CHANNEL_WECOM, CHANNEL_WECHAT_KF}
+
+
+# --------------------------------------------------------------------------
+# 圆桌钩子（T88）—— 旁路观察者：回帖之后触发、锁之外触发、抛了也不改回帖
+# --------------------------------------------------------------------------
+class FakeTeam:
+    """`TeamObserver` 的假件：记下四个方法各拿到什么 kwargs。
+
+    ``order`` 传进来就与 adapter 共用一份调用顺序 —— 「回帖先出房间、圆桌后说话」
+    这件事只能靠一份共享的顺序表钉住，各记各的看不出谁先谁后。
+    """
+
+    #: 契约 §1.4 的 roster 形状。两岗足够分辨「有独立账号」与「代言」两条渲染路径。
+    ROSTER = [
+        {"agent_id": "refund-intake", "title": "申请受理岗", "role": "refund_intake",
+         "duty": "受理退款申请，核对订单要素与随案证据",
+         "user_id": "@maos-bot:maos.local", "own_identity": False,
+         "skills": [{"name": "refund.intake", "version": "1.0.0",
+                     "purpose": "把客户诉求变成一条可裁定的申请"}]},
+        {"agent_id": "refund-finance", "title": "财务执行岗", "role": "refund_finance",
+         "duty": "核算核准金额并执行付款",
+         "user_id": "@maos-finance:maos.local", "own_identity": True,
+         "skills": [{"name": "finance.settle", "version": "1.0.0",
+                     "purpose": "按政策算出核准金额"}]},
+    ]
+
+    def __init__(self, order: list | None = None, *, boom: str = "") -> None:
+        self.calls: list[dict] = []
+        self.order = [] if order is None else order
+        self.boom = boom
+
+    def _log(self, kind: str, kw: dict) -> list:
+        self.order.append(kind)
+        self.calls.append({"kind": kind, **kw})
+        if self.boom == kind:
+            raise RuntimeError(f"{kind} 钩子炸了")
+        return []
+
+    def on_preflight(self, **kw) -> list:
+        return self._log("preflight", kw)
+
+    def on_sheet(self, **kw) -> list:
+        return self._log("sheet", kw)
+
+    def on_execute(self, **kw) -> list:
+        return self._log("execute", kw)
+
+    def roster(self) -> list[dict]:
+        return [dict(seat) for seat in self.ROSTER]
+
+    def last(self, kind: str) -> dict:
+        return [c for c in self.calls if c["kind"] == kind][-1]
+
+
+def _second_store() -> SqliteStore:
+    """第二个 router 要第二个库 —— 共用一个的话去重会把第二条 /refund 吞掉。"""
+    s = SqliteStore(":memory:")
+    s.init_schema()
+    return s
+
+
+SHEET_CSV = ("订单号,诉求类型,申报金额,申请日期\n"
+             f"{ORDER},质量问题,6800,2026-07-10\n"
+             "ORD-9999-9999,质量问题,500,2026-07-10\n").encode("utf-8")
+
+
+class SheetAdapter(FakeAdapter):
+    """带 ``fetch`` 的 adapter —— 申请表要先取件、按内容认出来才走 handle_sheet。"""
+
+    def __init__(self, blob: bytes) -> None:
+        super().__init__()
+        self.blob = blob
+
+    def fetch(self, att) -> bytes:
+        return self.blob
+
+
+def test_router_without_team_answers_refund_exactly_as_before(store):
+    """缺省不接圆桌：回帖与接了圆桌时逐字相同，且一次钩子都不发生。"""
+    lone, ad_lone = _router(store)
+    team = FakeTeam()
+    teamed, _ = _router(_second_store(), team=team)
+
+    assert _refund(lone) == _refund(teamed)
+    assert len(ad_lone.sent) == 1                     # 回帖一条，没有第二条来自圆桌
+    assert lone._pending() == []                      # 没装圆桌就一件事都不登记
+    assert [c["kind"] for c in team.calls] == ["preflight"]
+
+
+def test_preflight_hook_fires_after_the_reply_with_the_same_case_id(store):
+    """回帖先出房间、圆桌后说话 —— 处置结论不该等五次模型调用。"""
+    order: list[str] = []
+
+    class Recording(FakeAdapter):
+        def send(self, msg: OutboundMessage) -> None:
+            order.append("send")
+            super().send(msg)
+
+    team = FakeTeam(order)
+    r, _ = _router(store, adapter=Recording(), team=team)
+    reply = _refund(r)
+
+    assert order == ["send", "preflight"]
+    call = team.last("preflight")
+    assert set(call) == {"kind", "payload", "checked", "ledger",
+                         "evidence", "requested_by"}
+    assert call["checked"]["case_id"] == CASE and CASE in reply
+    assert call["requested_by"] == ALICE and call["evidence"] == []
+    assert call["payload"]["case"] and call["ledger"]["order_snapshot"]
+
+
+def test_team_exception_does_not_change_the_reply(store, caplog):
+    """圆桌炸了只记 WARNING：它是旁路，不该带走「这一单批了没有」这个结论。"""
+    lone, _ = _router(store)
+    boom, ad = _router(_second_store(), team=FakeTeam(boom="preflight"))
+    with caplog.at_level("WARNING", logger="maos.ingress.router"):
+        angry = _refund(boom)
+
+    assert angry == _refund(lone)
+    assert len(ad.sent) == 1
+    assert "圆桌 preflight 钩子失败" in caplog.text and "钩子炸了" in caplog.text
+
+
+def test_execute_hook_gets_result_and_operator_outside_the_lock(store):
+    """放行的钩子必须在锁外跑：runner 在锁内，钩子里再取一次锁就是自锁死。"""
+    seen: dict = {}
+
+    class LockPeeking(FakeTeam):
+        router = None
+
+        def on_execute(self, **kw) -> list:
+            seen["free"] = self.router._lock.acquire(blocking=False)
+            if seen["free"]:
+                self.router._lock.release()
+            return super().on_execute(**kw)
+
+    team = LockPeeking()
+    r, _ = _router(store, team=team)
+    team.router = r
+    _refund(r)
+    out = r.handle(_msg(f"/approve {CASE}", msg_id="m2"))
+
+    assert f"已放行 {CASE}" in out
+    call = team.last("execute")
+    assert set(call) == {"kind", "payload", "result", "operator"}
+    assert call["result"] == RESULT_SETTLED and call["operator"] == ALICE
+    assert seen["free"] is True
+
+
+def test_sheet_hook_fires_once_with_one_row_per_line(store, tmp_path):
+    """一张表说一次、行全给出去 —— 50 行 x 5 岗 = 250 条会把房间刷爆。"""
+    from maos.ingress.attachments import AttachmentBuffer, AttachmentStore
+    from maos.ingress.contracts import Attachment
+
+    team = FakeTeam()
+    ad = SheetAdapter(SHEET_CSV)
+    r = IngressRouter({ad.name: ad}, store=store, runner=Runs(),
+                      approvers=lambda: frozenset({ALICE}), team=team,
+                      attachment_store=AttachmentStore(tmp_path),
+                      attachment_buffer=AttachmentBuffer())
+    r.handle(InboundMessage(
+        channel=CHANNEL_FEISHU, chat_id="oc_1", sender=ALICE, text="", msg_id="s1",
+        attachments=(Attachment(channel=CHANNEL_FEISHU, file_key="k1", kind="file",
+                                filename="requests.csv", mime="text/csv"),)))
+
+    assert [c["kind"] for c in team.calls] == ["sheet"]
+    call = team.last("sheet")
+    assert set(call) == {"kind", "rows", "ledger", "requested_by"}
+    assert call["requested_by"] == ALICE
+    rows = call["rows"]
+    assert len(rows) == 2
+    good, bad = rows
+    assert set(good) == {"line", "order_id", "reason_raw", "payload", "checked",
+                         "error", "problems", "warnings"}
+    assert good["order_id"] == ORDER and good["checked"]["case_id"] == CASE
+    assert good["payload"]["case"] and good["problems"] == []
+    # 坏行压根没走到预检，三者一个都不许瞎填
+    assert bad["problems"] and bad["checked"] is None and bad["payload"] is None
+    assert bad["error"] is None
+
+
+def test_team_command_renders_roster_without_calling_the_model(store):
+    """/team 是只读的自我介绍：名单来自常量与注册表，一次模型都不调（铁律 8）。"""
+    from maos.ingress.chat import ChatResponder
+    from maos.tests.test_ingress_chat import _EchoModel
+
+    model = _EchoModel()
+    r, _ = _router(store, team=FakeTeam(), chat=ChatResponder(model))
+    out = r.handle(_msg("/team"))
+
+    assert "申请受理岗（refund-intake）" in out
+    assert "财务执行岗（refund-finance）" in out
+    assert "refund.intake@1.0.0" in out and "finance.settle@1.0.0" in out
+    assert "受理退款申请" in out                        # duty 那一行
+    assert "由 maos-bot 代言" in out                    # 没独立账号的那一岗要说明白
+    assert "@maos-finance:maos.local" in out           # 有独立账号的报 mxid
+    assert model.calls == []
+
+
+def test_team_command_without_team_says_so(store):
+    """没接圆桌就明说，不装作有；外部渠道也答得上来 —— 它不碰钱也不碰待办。"""
+    lone, _ = _router(store)
+    assert "没接圆桌" in lone.handle(_msg("/team"))
+
+    kf, ad = _router(_second_store(), adapter=FakeAdapter(CHANNEL_WECHAT_KF))
+    out = kf.handle(_msg("/team", channel=CHANNEL_WECHAT_KF))
+    assert "没接圆桌" in out and len(ad.sent) == 1
+    assert "不受理审批命令" not in out                  # 不吃 ALLOW_APPROVAL 那道闸

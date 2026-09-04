@@ -254,12 +254,23 @@ def test_sheet_facts_summarize_rows_once_per_stage(approved: tuple[dict, dict],
          "checked": ok_checked, "error": None, "problems": [], "warnings": []},
         {"line": 3, "order_id": ORDER, "reason_raw": "无理由", "payload": no_payload,
          "checked": no_checked, "error": None, "problems": [], "warnings": ["日期未填"]},
+        # 表格填错的行：`router._sheet_rows` 的 docstring 说死了 payload / checked /
+        # error **三者都是 None** —— 它压根没走到预检。原来这一行把 error 也填上了，
+        # 于是 invalid 与 problem_rows 恰好都等于 1，两张事实卡取错计数器也测不出来。
         {"line": 4, "order_id": "ORD-9999", "reason_raw": "坏了", "payload": None,
-         "checked": None, "error": "底账里没有订单 ORD-9999",
-         "problems": ["订单号不存在"], "warnings": []},
+         "checked": None, "error": None,
+         "problems": ["底账里没有订单 ORD-9999"], "warnings": []},
+        # 进了预检才抛错的行：表本身填得对，problems 是空的。这一态与上一态必须分开摆，
+        # 合成一行的话「填错」与「预检失败」两个计数就再也分不出对错。
+        {"line": 5, "order_id": ORDER, "reason_raw": "质量问题", "payload": ok_payload,
+         "checked": None, "error": "预检失败：底账政策视图读不到",
+         "problems": [], "warnings": []},
     ]
     stats = stages.sheet_stats(rows)
-    assert (stats["total"], stats["valid"], stats["invalid"]) == (3, 2, 1)
+    assert (stats["total"], stats["valid"], stats["invalid"]) == (4, 2, 1)
+    assert stats["problem_rows"] == 1
+    # 三态互斥且穷尽 —— 加不平就说明有一整类行没人数，正是「填错 0 行」那个 bug。
+    assert stats["valid"] + stats["invalid"] + stats["problem_rows"] == stats["total"]
     assert (stats["approve"], stats["reject"]) == (1, 1)
     assert stats["pending_case_ids"] == [CASE_ID]
 
@@ -269,6 +280,37 @@ def test_sheet_facts_summarize_rows_once_per_stage(approved: tuple[dict, dict],
                   stages.facts_sheet_finance):
         facts, data = build(rows)
         assert facts.strip(), f"{build.__name__} 一句话都没说"
-        assert data["total"] == 3
+        assert data["total"] == 4
         extra = _numbers(facts) - allowed
         assert not extra, f"{build.__name__} 的汇总里出现了 rows 里没有的数字：{extra}"
+
+
+def test_all_rows_misfiled_is_not_reported_as_zero_problems() -> None:
+    """整表填错时，两张卡不许把「填错」念成 0。
+
+    真房间 2026-09-04 的现场：boss 拖进一张 5 行的表，「诉求类型」那列整列是空的
+    （表头写成了别名表里没有的名字），5 行全部停在解析阶段、一行都没进预检。
+    于是 `valid=0`、`invalid=0`，而受理岗那句「填错的 N 行」取的正是 `invalid` ——
+    房间里念出来就是「5 行里能建案 0 行，填错 0 行，但有填写问题 5 行」，
+    规则审核岗接着念「另有 0 行因填写问题没有裁定」。两句话同用「填写问题」四个字、
+    背后却是两个计数器，模型受「一个数字都不许改」约束，只能如实报「数字对不上」，
+    后面三岗跟着一路推诿 —— 五岗全程没说错一个字，错的是事实卡取数。
+    """
+    rows = [{"line": i, "order_id": f"ORD-2026-000{i}", "reason_raw": "",
+             "payload": None, "checked": None, "error": None,
+             "problems": ["诉求类型不能空 —— 不知道为什么退，就套不上任何一条政策"],
+             "warnings": []} for i in range(2, 7)]
+
+    stats = stages.sheet_stats(rows)
+    assert (stats["total"], stats["valid"], stats["invalid"]) == (5, 0, 0)
+    assert stats["problem_rows"] == 5
+
+    intake, _ = stages.facts_sheet_intake(rows)
+    policy, _ = stages.facts_sheet_policy(rows)
+    # 不钉措辞、钉「填错」这个语义旁边的数：它必须是 5，不许是 0。
+    # 两个方向都认 —— 受理岗写「填错…5 行」，规则岗写「5 行因…填错」。
+    near_5 = re.compile(r"填错[^0-9]{0,12}5 行|5 行[^0-9]{0,12}填错")
+    assert near_5.search(intake), intake
+    assert near_5.search(policy), policy
+    # 两张卡说的是同一件事，就不许出现一张说 5、另一张说 0。
+    assert "0 行因" not in policy and "填错的 0 行" not in intake

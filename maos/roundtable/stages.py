@@ -426,16 +426,31 @@ def facts_finance_result(result: dict) -> tuple[str, dict]:
 # --------------------------------------------------------------------------
 def sheet_stats(rows: list[dict]) -> dict:
     """一张申请表的行统计。五个岗共用同一份计数 —— 各岗自己数一遍，
-    数出五个不一样的「合法行数」，房间里没人知道该信哪个。"""
+    数出五个不一样的「合法行数」，房间里没人知道该信哪个。
+
+    **一行只落一个桶，三个桶加起来等于 total。** 契约 §1.4 的行有三态，
+    不是两态（`router._sheet_rows` 的 docstring 是这条的出处）：
+
+      · ``checked`` 是 dict        -> ``valid``：预检走通、有裁定
+      · ``error`` 非空             -> ``invalid``：进了预检、抛错了
+      · ``problems`` 非空          -> ``problem_rows``：**表就填错了，压根没进预检**
+
+    第三态最容易被漏掉，因为它 ``payload`` / ``checked`` / ``error`` 三者都是 None。
+    漏掉的症状是整表填错时 ``total=5`` 而 ``valid=invalid=0`` —— 三个数加不平，
+    事实卡把「填错 0 行」念给房间，模型只能报「数字对不上」，后面四岗跟着推诿。
+    ``problem_rows`` 显式排掉带 ``error`` 的行，是为了让这条不变式与入参无关地成立：
+    上游哪天把两个字段同时填上，这里也不会一行数两遍。
+    """
     rows = [r for r in (rows or []) if isinstance(r, dict)]
     ok = [r for r in rows if not r.get("error") and isinstance(r.get("checked"), dict)]
     bad = [r for r in rows if r.get("error")]
+    unfiled = [r for r in rows if not r.get("error") and r.get("problems")]
     approve = [r for r in ok if str((r["checked"] or {}).get("decision") or "") == "approve"]
     reject = [r for r in ok if str((r["checked"] or {}).get("decision") or "") == "reject"]
     return {
         "total": len(rows), "valid": len(ok), "invalid": len(bad),
         "approve": len(approve), "reject": len(reject),
-        "problem_rows": len([r for r in rows if r.get("problems")]),
+        "problem_rows": len(unfiled),
         "warning_rows": len([r for r in rows if r.get("warnings")]),
         # 「需证据」= 会走到证据核验的行。裁定驳回的单子不进这一步。
         "need_evidence": len(approve),
@@ -449,10 +464,17 @@ def _pending_line(stats: dict) -> str:
 
 
 def facts_sheet_intake(rows: list[dict]) -> tuple[str, dict]:
+    """受理岗念**三态**：能建案 / 表格填错 / 预检失败，三个数加起来是总行数。
+
+    「填错」取 `problem_rows`，**不是** `invalid` —— 后者是「进了预检才抛的错」。
+    取错的症状不是崩：同一张卡上「填错 0 行」与「有填写问题 5 行」并排念出来，
+    房间里没人知道该信哪个，而下一岗接话时只能说「口径不同」。
+    """
     stats = sheet_stats(rows)
     lines = [
-        f"这张表共 {stats['total']} 行，其中能建案的 {stats['valid']} 行、填错的 {stats['invalid']} 行",
-        f"有填写问题的 {stats['problem_rows']} 行，有提示的 {stats['warning_rows']} 行",
+        f"这张表共 {stats['total']} 行：能建案 {stats['valid']} 行、"
+        f"表格填错没进预检 {stats['problem_rows']} 行、预检失败 {stats['invalid']} 行",
+        f"另有 {stats['warning_rows']} 行带提示（不阻断）",
         "填错的行不会进入后续环节，改好再拖一次表即可",
     ]
     return "\n".join(lines), stats
@@ -463,7 +485,10 @@ def facts_sheet_policy(rows: list[dict]) -> tuple[str, dict]:
     lines = [
         f"按下单锁定的政策版本逐行裁定：{stats['valid']} 行有结论，"
         f"批准 {stats['approve']} 行、驳回 {stats['reject']} 行",
-        f"另有 {stats['invalid']} 行因填写问题没有裁定",
+        # 「因填写问题没有裁定」的正主是 problem_rows。原来这里取 invalid，
+        # 与受理岗那句用同一个词、却挂在另一个计数器上 —— 两张卡当场对不上。
+        f"另有 {stats['problem_rows']} 行因表格填错没进预检、"
+        f"{stats['invalid']} 行预检失败，这两类都没有裁定",
         _pending_line(stats),
     ]
     return "\n".join(lines), stats

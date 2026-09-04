@@ -666,7 +666,7 @@ def test_6_non_terminal_plan_is_not_judged(tmp_path):
                                wall_ms=1, log="", sha="abc", secrets={})
     shutil.copy(path, root / "scenario-1" / "maos.db")
     chk = _run_verify(root)["business-outcome"]
-    assert chk.status == verify.PASS and chk.total == 0
+    assert chk.status == verify.SKIP and chk.total == 0
 
 
 # -- 第 5、7 项：SKIP 语义 --------------------------------------------------

@@ -20,6 +20,9 @@ MAOS 的回答是一条铁律（`CLAUDE.md` 铁律 8）：
 | :-- | :-- | :-- | :-- |
 | 退款到没到账 | 支付网关 | `payment_observation`（**观察记录**，带 `poll_count`） | 只有 `payment.observe` |
 | 退款案子的业务状态 | MAOS 自己（这是它自己的业务对象） | `refund_case.biz_status` | `create_case()` / `update_biz_status()` 两个入口，无第三条 |
+| 保险赔款到没到账 | 赔付方 | `claim_payment_observation`（带请求编号、观察状态、`poll_count`）；`claim_case.biz_status='paid'` 是到账投影 | 只有 `claim.observe` 能落回执及写入 `paid`，由 `maos/domain/claim/guard.py` 守卫 |
+| 银行差错款项是否退回 | 清算方的 `pacs.004` 资金退回报文；`camt.029` 撤销决议不等于资金退回 | `resolution_observation`（带报文类型、原因码与退回金额）；`investigation_case.biz_status='returned'` 是资金退回投影 | 只有 `investigation.observe` 能落观察及写入 `returned`，由 `maos/domain/investigation/guard.py` 守卫 |
+| 应付货款是否已划出 | 银行 | `ap_payment_observation`（已付款状态及 `bank_reference` 流水号）；`ap_case.biz_status='settled'` 是银行已付款投影 | 只有 `ap.observe` 能落回单及写入 `settled`，由 `maos/domain/ap/guard.py` 守卫 |
 | 测试过没过 | 沙箱里的 `pytest` | `test_report` artifact | 只有 `sandbox.pytest_run` 这个 ToolPort |
 | 任务做完没有 | MAOS 自己 | Task 状态机 | 只有 Control Plane |
 
@@ -29,6 +32,14 @@ MAOS 的回答是一条铁律（`CLAUDE.md` 铁律 8）：
   → gateway_accepted → processing`）；
 - **但其中 `settled` 这一个值是外部权威事实的投影**，它不属于 MAOS。所以
   `settled` 被单独拎出来，做成一个只有观察者写得进的状态。
+
+三个新域遵循同一边界：各域 `guard.py` 的 `AUTHORITATIVE_WRITER` 与
+`AUTHORITATIVE_STATES` 分别为 `claim.observe` / `{paid}`、
+`investigation.observe` / `{returned}`、`ap.observe` / `{settled}`。
+观察与权威状态投影同事务落库，业务状态仍留在业务表，Task 状态机不扩展。
+调查域还要求 `pacs.004`、退回金额和退回原因码；仅有 `camt.029/CNCL`
+「指令已撤销」不能写 `returned`。AP 则要求已付款回单带银行流水号。
+场景 8–10 目前使用 Mock 赔付方 / 清算方 / 银行验证这些边界，真实服务接通另行验收。
 
 ```python
 # maos/domain/refund/guard.py:27

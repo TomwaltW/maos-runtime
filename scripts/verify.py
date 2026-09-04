@@ -40,10 +40,9 @@
 ``make_evidence.py`` 而没产 ``scenario-R5`` 的人，会拿到一屏满分，而 RAG 的
 两项守卫一次都没执行。SKIP 至少看得出没跑，且不进分子。
 
-**依赖方向**：本文件不 import ``maos/domain/**`` 的业务逻辑，只按「表在不在」
-决定某一项跑还是 SKIP（铁律 9）。唯一的例外是 ``resolve_business_ref``：
-``object_type -> 表/主键`` 的映射在业务域里有唯一一份，在这里再抄一份就是 C-7
-的反例，所以宁可软 import 它，也不另立第二份口径。
+**依赖方向**：证据装配层读取 ``maos.domain.DOMAIN_REGISTRY`` 与域守卫常量，
+按业务表是否存在选择判据；内核不依赖域注册表（铁律 9）。``--domains`` 额外
+展开新域的三项结果，缺失素材显式 SKIP；默认八项汇总与冻结退款输出保持不变。
 """
 
 from __future__ import annotations
@@ -60,36 +59,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from maos.domain import DOMAIN_REGISTRY, DomainSpec
+
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
-#: 权威回执的唯一写入者。与 maos/domain/refund/guard.py::AUTHORITATIVE_WRITER 同名，
-#: 但这里不 import 它 —— 本文件要在退款域缺席时也能跑（那时第 3 项 SKIP）。
-AUTHORITATIVE_WRITER = "payment.observe"
-
-#: 权威终态要求回执里的 `observed_state` 取什么值。与
-#: maos/domain/refund/guard.py::AUTHORITATIVE_RECEIPT_STATE **同源**，
-#: 改一边就要改另一边（那边的注释里写着取值域的出处：回执的 `status` 字段，
-#: 四态 processing/unknown/settled/failed，不是 `outcome` 的 success/failed/unknown）。
-#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要在退款域缺席时照跑。
-AUTHORITATIVE_RECEIPT_STATE = {"settled": frozenset({"settled"})}
-
-#: 业务状态机里**没有出边**的状态 —— 案子走到这里就收口了，不会再动。
-#: 与 maos/domain/refund/guard.py::BIZ_STATUS_FLOW 同源（那张表里出边为空的三个：
-#: settled / rejected / compensated）。照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同。
-#:
-#: 这三个之外的（submitted / approved / gateway_accepted / processing）都是**中间态**：
-#: 案子还在路上。「有回执但不是 settled」这句话对两边的含义天差地别 ——
-#: 收口在 compensated 上是**正确行为**（场景 7 的题眼就是「全程没有经过 settled」，
-#: 补偿收口的案子本来就一条 settled 观察都不该有），停在 gateway_accepted 上才是
-#: 「观察到了但没收口」，那才值得点名。加一个新终态就往这里加，别散在判断里。
-BIZ_TERMINAL_STATES = frozenset({"settled", "rejected", "compensated"})
-
-#: 外部判据的取值域。与 ``make_evidence.py::derive_business_outcome`` 里两处
-#: ``evidence.append`` 的 ``kind`` 同源 —— 生成侧装得进什么，核验侧才认什么。
-#: Agent 对自己的评价（``patch_set`` 里的 ``self_check``）不在其中，README §3 写死了这条。
-#: 照抄而不 import 的理由与 AUTHORITATIVE_WRITER 同：核验器要能独立于生成脚本跑。
-EXTERNAL_EVIDENCE_KINDS = frozenset({"test_report", "payment_observation"})
+# 兼容既有调用方的退款常量名；判据本身由注册表引用域守卫，禁止另抄一份。
+AUTHORITATIVE_WRITER = DOMAIN_REGISTRY["refund"].authoritative_writer
+AUTHORITATIVE_RECEIPT_STATE = DOMAIN_REGISTRY["refund"].receipt_states
+BIZ_TERMINAL_STATES = DOMAIN_REGISTRY["refund"].terminal_states
+EXTERNAL_EVIDENCE_KINDS = frozenset({"test_report"} | {
+    spec.observation_table for spec in DOMAIN_REGISTRY.values()})
 
 #: 终态 -> 生成侧唯一写得出的 ``(status, basis)``，出处 ``make_evidence.py::derive_business_outcome``
 #: 那三支 if：``FAILED`` 恒配 ``plan_failed``，有判据的 ``DONE`` 恒配 ``external_evidence``。
@@ -393,42 +373,35 @@ def check_business_ref(cases: list[Case]) -> Check:
 # ---------------------------------------------------------------------------
 # 第 3 项：authoritative-fact
 # ---------------------------------------------------------------------------
-def check_authoritative_fact(cases: list[Case]) -> Check:
-    """settled 是权威终态，只有 payment.observe 写得进去（铁律 8）。
-
-    三头都查：settled 必须有回执；回执的 actor_invocation_id 必须真的属于一次
-    payment.observe 调用；且回执里至少有一条**说的是到账了**。
-    只查第一条，任何一个 skill 自己伪造一条回执就能过关；只查前两条，一条网关明确
-    失败的真回执就能给 settled 背书 —— 那时系统持有的是「有一张回执」，
-    而不是「网关说到账了」，两者差着这一项的全部意义。
-
-    为什么这一项非有牙不可：`refund_case` / `payment_observation` 两张表**不参与**
-    第 4 项的 trace 重放（那一项比对的是 span 树与事件链），所以对这两张表的直接
-    篡改，全核验器只有这一项拦得住。
-    """
+def check_authoritative_fact(cases: list[Case], *, domain: DomainSpec | None = None) -> Check:
+    """权威终态须有支持该状态的回执，并追得到本域 observe 调用。"""
     chk = Check("authoritative-fact", "settled 有回执，回执出自 payment.observe 且说到账了")
-    allowed = AUTHORITATIVE_RECEIPT_STATE["settled"]
-    live = [c for c in cases if {"refund_case", "payment_observation"} <= c.tables]
+    if domain is not None:
+        chk.title = (f"{'/'.join(sorted(domain.authoritative_states))} 有回执，"
+                     f"回执出自 {domain.authoritative_writer} 且满足本域权威判据")
+    domains = [domain] if domain else list(DOMAIN_REGISTRY.values())
+    live = [(case, spec) for case in cases for spec in domains if spec.case_table in case.tables]
     if not live:
-        chk.skip("本轮证据里没有 refund_case / payment_observation 表（退款场景未落地）")
+        chk.skip("本轮证据里没有 refund_case / payment_observation 表（退款场景未落地）"
+                 if domain is None else f"本轮证据里没有 {domain.case_table} / {domain.observation_table} 表")
         return chk
-
-    for case in live:
-        observer_ids = set()
-        for e in case.conn.execute("SELECT detail FROM event_log WHERE event_type='SkillInvoked'"):
-            d = _loads(e["detail"], {}) or {}
-            if d.get("skill") == AUTHORITATIVE_WRITER and d.get("invocation_id"):
-                observer_ids.add(d["invocation_id"])
-
+    for case, spec in live:
+        observer_ids = _observer_ids(case, spec)
+        states = sorted(spec.authoritative_states)
+        marks = ",".join("?" for _ in states)
         settled = case.conn.execute(
-            "SELECT tenant_id, case_id FROM refund_case WHERE biz_status='settled'").fetchall()
+            f"SELECT tenant_id, {spec.case_id_column}, biz_status FROM {spec.case_table}"
+            f" WHERE biz_status IN ({marks})", states).fetchall()
         for c in settled:
-            obs = case.conn.execute(
-                "SELECT * FROM payment_observation WHERE tenant_id=? AND case_id=?",
-                (c["tenant_id"], c["case_id"])).fetchall()
-            label = f"{case.name} case={c['case_id']}"
+            status = c["biz_status"]
+            allowed = spec.receipt_states.get(status, frozenset())
+            obs = (case.conn.execute(
+                f"SELECT * FROM {spec.observation_table} WHERE tenant_id=? AND {spec.case_id_column}=?",
+                (c["tenant_id"], c[spec.case_id_column])).fetchall()
+                if spec.observation_table in case.tables else [])
+            label = f"{case.name} case={c[spec.case_id_column]}"
             if not obs:
-                chk.bad(f"{label}: biz_status=settled 却没有 payment_observation —— "
+                chk.bad(f"{label}: biz_status={status} 却没有 {spec.observation_table} —— "
                         f"外部状态被直接写死为终态")
                 continue
             bad = False
@@ -439,47 +412,54 @@ def check_authoritative_fact(cases: list[Case]) -> Check:
                     bad = True
                 elif actor not in observer_ids:
                     chk.bad(f"{label}: 回执的 actor_invocation_id={actor} 不属于任何一次 "
-                            f"{AUTHORITATIVE_WRITER} 调用 —— 权威事实边界被绕过")
+                            f"{spec.authoritative_writer} 调用 —— 权威事实边界被绕过")
                     bad = True
-            # 回执得**说的是这件事**。上面两问查的是「有没有回执」「回执是谁递的」，
-            # 都问不到回执的内容 —— 一条网关明确失败的观察（observed_state='failed'）
-            # 由真的 payment.observe 落库，两问全过，却给 settled 背了书。
             seen = sorted({str(o["observed_state"]) for o in obs})
             if not (set(seen) & allowed):
                 chk.bad(f"{label}: 有回执，但没有一条说到账了（observed_state={seen}，"
                         f"要的是 {sorted(allowed)}）—— 「有一张回执」被当成了"
-                        f"「网关说到账了」，settled 背后没有外部权威支撑")
+                        f"「网关说到账了」，{status} 背后没有外部权威支撑")
+                bad = True
+            elif spec.name != "refund" and not any(
+                    not spec.observation_error(status, dict(o)) for o in obs):
+                reasons = sorted({spec.observation_error(status, dict(o)) for o in obs})
+                chk.bad(f"{label}: 权威回执不满足 {spec.name} 守卫判据：{'；'.join(reasons)}")
                 bad = True
             if not bad:
                 chk.ok()
 
-        # 反面：有回执、案子却没到 settled。原先这里一句话报完，把两种正相反的
-        # 情况说成同一件事：
-        #
-        #   * 收口在**别的终态**上（rejected / compensated）—— 那是正确行为，不是洞。
-        #     场景 7 的题眼恰恰是「业务状态 compensated，全程没有经过 settled，
-        #     settled 观察 0 条」；对着它报 warn，等于把设计意图报成可疑。
-        #   * 停在**中间态**上（submitted / approved / gateway_accepted / processing）
-        #     —— 观察到了但没收口，那才是该看一眼的。
-        #
-        # 细化的是措辞与分流，不是牙齿：中间态照旧 warn，而 settled 那三道判负
-        # （没回执 / 回执来源不对 / 回执没说到账）一条没动 —— 那三条才是这一项的牙。
+        if spec.observation_table not in case.tables:
+            continue
         orphan = case.conn.execute(
-            "SELECT o.case_id, r.biz_status FROM payment_observation o JOIN refund_case r"
-            " ON o.tenant_id=r.tenant_id AND o.case_id=r.case_id"
-            " WHERE r.biz_status!='settled' GROUP BY o.case_id, r.biz_status").fetchall()
+            f"SELECT o.{spec.case_id_column}, r.biz_status FROM {spec.observation_table} o"
+            f" JOIN {spec.case_table} r ON o.tenant_id=r.tenant_id"
+            f" AND o.{spec.case_id_column}=r.{spec.case_id_column}"
+            f" WHERE r.biz_status NOT IN ({marks})"
+            f" GROUP BY o.{spec.case_id_column}, r.biz_status", states).fetchall()
+        authority = "/".join(states)
         for o in orphan:
             status = str(o["biz_status"])
-            label = f"{case.name} case={o['case_id']}"
-            if status in BIZ_TERMINAL_STATES:
-                chk.info(f"{label}: 有回执且案子收口在 biz_status={status}（非 settled 终态）"
-                         f" —— 预期行为：settled 是权威终态，收口在别处的案子本来就"
-                         f"不该有 settled 观察")
+            label = f"{case.name} case={o[spec.case_id_column]}"
+            if status in spec.terminal_states:
+                chk.info(f"{label}: 有回执且案子收口在 biz_status={status}（非 {authority} 终态）"
+                         f" —— 预期行为：{authority} 是权威终态，收口在别处的案子本来就"
+                         f"不该有 {authority} 观察")
                 continue
             chk.warn(f"{label}: 有回执但案子停在中间态 biz_status={status} —— 观察到了"
-                     f"但没收口（既没到 settled，也没落到 "
-                     f"{sorted(BIZ_TERMINAL_STATES - {'settled'})} 任何一个终态）")
+                     f"但没收口（既没到 {authority}，也没落到 "
+                     f"{sorted(spec.terminal_states - spec.authoritative_states)} 任何一个终态）")
+    if chk.total == 0:
+        chk.skip("空转：证据束里没有待核验的权威终态，本项判据一次都没执行")
     return chk
+
+
+def _observer_ids(case: Case, spec: DomainSpec) -> set[str]:
+    if "event_log" not in case.tables:
+        return set()
+    return {d["invocation_id"] for row in case.conn.execute(
+        "SELECT detail FROM event_log WHERE event_type='SkillInvoked'")
+        if (d := _loads(row["detail"], {}) or {}).get("skill") == spec.authoritative_writer
+        and d.get("invocation_id")}
 
 
 # ---------------------------------------------------------------------------
@@ -714,41 +694,50 @@ def _test_report_backing(case: Case, plan_id: str, item: dict) -> str:
 
 
 def _observation_backing(case: Case, plan_id: str, item: dict) -> str:
-    """``payment_observation`` 判据回查退款两张表。返回失败理由；空串 = 回查得到。
-
-    生成侧（``derive_business_outcome`` 判据二）只给 ``biz_status='settled'`` 的 case
-    记这一类判据，回执字段逐个抄自 ``payment_observation`` 行，所以这里照着倒推。
-    """
-    if not {"refund_case", "payment_observation"} <= case.tables:
-        return ("记了 payment_observation 判据，本库却没有退款那两张表 —— "
+    """按注册表回查业务对象、完整回执字段及本域权威判据。"""
+    spec = next(spec for spec in DOMAIN_REGISTRY.values() if spec.observation_table == item["kind"])
+    if not {spec.case_table, spec.observation_table} <= case.tables:
+        return (f"记了 {spec.observation_table} 判据，本库却没有"
+                f"{'退款那' if spec.name == 'refund' else spec.name + ' 那'}两张表 —— "
                 "生成侧根本推不出这一条")
-    tenant_id, case_id = item.get("tenant_id"), item.get("case_id")
-    request_id = item.get("request_id")
+    tenant_id, case_id = item.get("tenant_id"), item.get(spec.case_id_column)
+    request_key = spec.observation_fields[0]
+    request_id = item.get(request_key)
     if not (tenant_id and case_id and request_id):
-        return f"一条 payment_observation 判据缺 tenant_id/case_id/request_id：{item!r}"
+        return f"一条 {spec.observation_table} 判据缺 tenant_id/{spec.case_id_column}/{request_key}：{item!r}"
     row = case.conn.execute(
-        "SELECT plan_id, biz_status FROM refund_case WHERE tenant_id=? AND case_id=?",
+        f"SELECT plan_id, biz_status FROM {spec.case_table} WHERE tenant_id=? AND {spec.case_id_column}=?",
         (tenant_id, case_id)).fetchone()
     if row is None:
-        return f"refund_case ({tenant_id}, {case_id}) 在库里查无此行"
+        return f"{spec.case_table} ({tenant_id}, {case_id}) 在库里查无此行"
     if row["plan_id"] != plan_id:
         return f"case={case_id} 属于 plan={row['plan_id']}，不能给本 plan 背书"
-    if row["biz_status"] != "settled":
-        return (f"case={case_id} 的 biz_status 是 {row['biz_status']!r} 而非 settled，"
-                f"生成侧只给 settled 记这一类判据")
+    if row["biz_status"] not in spec.authoritative_states:
+        authority = "/".join(sorted(spec.authoritative_states))
+        return (f"case={case_id} 的 biz_status 是 {row['biz_status']!r} 而非 {authority}，"
+                f"生成侧只给 {authority} 记这一类判据")
     hits = case.conn.execute(
-        "SELECT gateway_code, observed_state, actor_invocation_id FROM payment_observation"
-        " WHERE tenant_id=? AND case_id=? AND request_id=?",
+        f"SELECT * FROM {spec.observation_table}"
+        f" WHERE tenant_id=? AND {spec.case_id_column}=? AND {request_key}=?",
         (tenant_id, case_id, request_id)).fetchall()
     if not hits:
-        return f"request_id={request_id!r} 在 payment_observation 里查无此回执"
-    if not any((h["gateway_code"], h["observed_state"], h["actor_invocation_id"])
-               == (item.get("gateway_code"), item.get("observed_state"),
-                   item.get("actor_invocation_id")) for h in hits):
-        return (f"request_id={request_id!r} 记的回执与库里没有一行对得上："
+        return f"{request_key}={request_id!r} 在 {spec.observation_table} 里查无此回执"
+    matched = [h for h in hits if all(h[key] == item.get(key) for key in spec.observation_fields)]
+    if not matched:
+        return (f"{request_key}={request_id!r} 记的回执与库里没有一行对得上："
                 f"记 code={item.get('gateway_code')!r} "
                 f"state={item.get('observed_state')!r} "
                 f"actor={item.get('actor_invocation_id')!r}")
+    # 冻结退款输出保留既有分工：其权威内容与 actor 由第 3 项核验。
+    if spec.name != "refund":
+        actor = item.get("actor_invocation_id")
+        if actor not in _observer_ids(case, spec):
+            return f"{spec.observation_table} 的 actor={actor!r} 不属于 {spec.authoritative_writer} 调用"
+        reason = spec.observation_error(row["biz_status"], item)
+        if reason:
+            return reason
+        if item.get("provenance") != spec.observation_table:
+            return f"{spec.observation_table} 的 provenance 与观察表不符"
     return ""
 
 
@@ -817,7 +806,7 @@ def outcome_selfclaim(state: str, outcome: dict, unaudited: int) -> list[str]:
     return wrong
 
 
-def check_business_outcome(cases: list[Case]) -> Check:
+def check_business_outcome(cases: list[Case], *, domain: DomainSpec | None = None) -> Check:
     """Plan 走到 DONE 不等于业务成功。DONE 必须指得出一条**外部**判据。
 
     「外部」的意思是这条判据不是 Agent 对自己的评价：回归报告是沙箱/测试给的，
@@ -832,8 +821,13 @@ def check_business_outcome(cases: list[Case]) -> Check:
     chk = Check("business-outcome",
                 "Plan 终态有 business_outcome，DONE 的外部判据回查得到")
     for case in cases:
+        if domain is not None and domain.case_table not in case.tables:
+            continue
+        domain_plans = ({r[0] for r in case.conn.execute(f"SELECT plan_id FROM {domain.case_table}")}
+                        if domain is not None else None)
         db_states = {r["plan_id"]: r["state"] for r in case.conn.execute(
-            "SELECT plan_id, state FROM plan")}
+            "SELECT plan_id, state FROM plan")
+                     if domain_plans is None or r["plan_id"] in domain_plans}
         recorded = {p["plan_id"]: p for p in case.result.get("plans", [])}
         for plan_id, state in db_states.items():
             label = f"{case.name} plan={plan_id}"
@@ -901,63 +895,80 @@ def check_business_outcome(cases: list[Case]) -> Check:
                         f"这一层从前没人查过：" + "；".join(wrong))
                 continue
             chk.ok()
+    if chk.total == 0:
+        chk.skip("空转：证据束里没有待核验的业务 Plan 终态，本项判据一次都没执行")
     return chk
 
 
 # ---------------------------------------------------------------------------
 # 第 7 项：history-case
 # ---------------------------------------------------------------------------
-def check_history_case(cases: list[Case]) -> Check:
-    """**本库晋升的** history_case 必须回查得到一条 settled 的 refund_case。
-
-    判据只覆盖本库晋升出来的那些，不覆盖外部导入的历史知识（BACKLOG ## task-X3
-    第 3 条）：导入的知识按定义没有本库记录，而给它造一条就是伪造证据（铁律 3）。
-    原判据要求**每一条** history_case 都回查得到，等于把「外部导入的知识」挡在
-    任何证据库之外 —— 规则本身是对的（它守的是「RAG 命中不是编的」），只是太窄。
-
-    区分标志是现成的：本库晋升的 ``source_case_id`` 在 ``refund_case`` 里有行，
-    导入的没有。放宽到此为止 —— 「一条都回查不到」仍判负，见函数末尾：
-    否则这一项会退化成「库里全是导入知识 -> 0/0 -> 过」，那正是空转。
-    """
+def check_history_case(cases: list[Case], *, domain: DomainSpec | None = None) -> Check:
+    """本库晋升的历史知识按业务域、租户与案号追溯；全为外部导入仍判负。"""
     chk = Check("history-case", "本库晋升的 history_case 可追溯到 outcome='success' 的真实 case")
-    live = [c for c in cases if "kb_doc" in c.tables]
+    live = [c for c in cases if "kb_doc" in c.tables
+            and (domain is None or domain.case_table in c.tables)]
     if not live:
         chk.skip("kb 层未落地：本轮无 kb_doc 表，history_case 这一类知识尚不存在（P5 才建）")
         return chk
     seen = imported = 0
+    present = {spec.name for c in live for spec in DOMAIN_REGISTRY.values() if spec.case_table in c.tables}
+    table_label = (domain.case_table if domain else
+                   DOMAIN_REGISTRY["refund"].case_table if present <= {"refund"} else "业务对象表")
     for case in live:
-        local = set()
-        if "refund_case" in case.tables:
-            local = {r[0] for r in case.conn.execute("SELECT case_id FROM refund_case")}
-        for r in case.conn.execute(
-                "SELECT doc_id, source_case_id FROM kb_doc WHERE kind='history_case'"):
+        available = [spec for spec in DOMAIN_REGISTRY.values() if spec.case_table in case.tables]
+        for r in case.conn.execute("SELECT * FROM kb_doc WHERE kind='history_case'"):
+            row = dict(r)
+            biz_type = row.get("biz_type")
+            spec = DOMAIN_REGISTRY.get(biz_type)
+            if not biz_type and len(available) == 1:
+                spec = available[0]  # 兼容早期只有单域且无 biz_type 的证据库。
+            if domain is not None and spec != domain:
+                continue
             seen += 1
-            src = r["source_case_id"]
+            src = row["source_case_id"]
             if not src:
-                chk.bad(f"{case.name} doc={r['doc_id']}: history_case 没有 source_case_id")
+                chk.bad(f"{case.name} doc={row['doc_id']}: history_case 没有 source_case_id")
                 continue
-            if src not in local:
-                imported += 1        # 外部导入：本库没有它的 case 行，不在本项判据内
+            if not biz_type and len(available) > 1:
+                chk.bad(f"{case.name} doc={row['doc_id']}: history_case 缺 biz_type，不能在多个域间借同号 case 背书")
                 continue
-            hit = case.conn.execute(
-                "SELECT 1 FROM refund_case WHERE case_id=? AND biz_status='settled'",
-                (src,)).fetchone()
-            if hit:
+            hit = None
+            if spec is not None and spec.case_table in case.tables:
+                hit = case.conn.execute(
+                    f"SELECT biz_status FROM {spec.case_table} WHERE tenant_id=? AND {spec.case_id_column}=?",
+                    (row.get("tenant_id"), src)).fetchone()
+            if hit is None:
+                imported += 1
+                continue
+            if hit["biz_status"] in spec.authoritative_states:
                 chk.ok()
             else:
-                chk.bad(f"{case.name} doc={r['doc_id']}: 追不到成功收口的真实 case {src}")
+                chk.bad(f"{case.name} doc={row['doc_id']}: 追不到成功收口的真实 case {src}")
     if imported:
-        chk.warn(f"{imported} 条 history_case 的 source_case_id 不在本库 refund_case 里，"
+        chk.warn(f"{imported} 条 history_case 的 source_case_id 不在本库 {table_label} 里，"
                  f"按**外部导入的历史知识**处理，不在本项判据内 —— "
                  f"给它补一条本库 case 才是伪造证据（铁律 3）")
     if chk.total == 0:
         if seen:
-            # 有素材却一条都没进判据 = 放宽放过头的那个形态，判负。
-            chk.bad(f"{seen} 条 history_case 全部回查不到本库 refund_case —— "
+            chk.bad(f"{seen} 条 history_case 全部回查不到本库 {table_label} —— "
                     f"放宽是为了放行外部导入的知识，不是让本项退化成空转")
         else:
             _idle_skip(chk, cases, "证据束里没有一条 history_case 知识")
     return chk
+
+
+def domain_checks(cases: list[Case]) -> list[Check]:
+    """显式展开三个新域；没有证据的域和没有本地晋升的历史项均显示 SKIP。"""
+    results = []
+    for name, spec in DOMAIN_REGISTRY.items():
+        if name == "refund":
+            continue
+        for check in (check_authoritative_fact, check_business_outcome, check_history_case):
+            result = check(cases, domain=spec)
+            result.key = f"{name}/{result.key}"
+            results.append(result)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -967,7 +978,7 @@ def check_history_case(cases: list[Case]) -> Check:
 #: ``maos/model/client.py``（``model=f"scripted-{tier}"``）。它是判「这一行是不是估算」
 #: 的**第二个独立来源**：``estimated`` 列由调用点按 client 的**类型**写
 #: （``maos/core/store.py::usage_is_estimated``），两者同源就等于自己跟自己对账。
-#: 照抄而不 import 的理由同 AUTHORITATIVE_WRITER。
+#: 独立于生成脚本保留这条模型命名前缀。
 SCRIPTED_MODEL_PREFIX = "scripted-"
 
 
@@ -1084,7 +1095,7 @@ def resolve_db(evidence_root: str, scenario_dir: str, db_arg: str | None) -> str
     if db_arg and os.path.isfile(db_arg):
         return db_arg
     base = db_arg if (db_arg and os.path.isdir(db_arg)) else evidence_root
-    candidate = os.path.join(base, os.path.basename(scenario_dir), "maos.db")
+    candidate = os.path.join(base, os.path.relpath(scenario_dir, evidence_root), "maos.db")
     if os.path.exists(candidate):
         return candidate
     return os.path.join(scenario_dir, "maos.db")
@@ -1099,13 +1110,17 @@ def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
     if not dirs:
         raise VerifyError(
             f"{evidence_root} 下没有 scenario-* 目录；先跑 python3 scripts/make_evidence.py")
+    # 同一 flow 的独立 runtime 保持各自事件 seq/快照主键，不合并数据库。
+    dirs = [directory for scenario in dirs for directory in [scenario, *sorted(
+        os.path.join(scenario, child) for child in os.listdir(scenario)
+        if child.startswith("runtime-") and os.path.isdir(os.path.join(scenario, child)))]]
     expect_sha = evidence_sha(evidence_root)
     cases = []
     for d in dirs:
         db_path = resolve_db(evidence_root, d, db_arg)
         conn = connect_ro(db_path)
         cases.append(Case(
-            name=os.path.basename(d), directory=d, db_path=db_path, conn=conn,
+            name=os.path.relpath(d, evidence_root), directory=d, db_path=db_path, conn=conn,
             tables=table_names(conn),
             trace=load_evidence_json(os.path.join(d, "trace.json"), expect_sha=expect_sha),
             result=load_evidence_json(os.path.join(d, "result.json"), expect_sha=expect_sha),
@@ -1153,10 +1168,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=None,
                         help="库文件或库目录；缺省用每个场景目录自带的 maos.db")
     parser.add_argument("--json", action="store_true", help="机器可读输出")
+    parser.add_argument("--domains", action="store_true", help="显式展开三个新业务域的权威、结果与历史核验；缺失证据输出 SKIP")
     args = parser.parse_args(argv)
 
     cases = load_cases(args.evidence, args.db)
     results = [fn(cases) for fn in CHECKS]
+    if args.domains:
+        results.extend(domain_checks(cases))
     try:
         return render(results, cases, args.json)
     finally:

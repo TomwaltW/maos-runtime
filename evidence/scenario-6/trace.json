@@ -1,4 +1,4 @@
-# generated at 2026-09-02T01:07:29.778312+00:00 from cfe438475f751bb1a7bfe034daf7b2381314888d
+# generated at 2026-09-04T23:43:01.986060+00:00 from 6086dfcb33454aea486e08632797eeed70731b24-dirty
 {
   "schema": "maos.trace/v1",
   "db": "maos.db",
@@ -6,19 +6,19 @@
   "traces": [
     {
       "schema": "maos.trace/v1",
-      "plan_id": "plan_d51ccffe89c6",
-      "trace_id": "trace_c689609a0446",
+      "plan_id": "plan_4aecf460e15b",
+      "trace_id": "trace_6c2a50fbd642",
       "plan_state": "DONE",
       "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
       "spans": [
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "14c43806d6c7b02f",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "kb:retrieve",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.708584+00:00",
-          "end": "2026-09-02T01:07:29.709176+00:00",
+          "start": "2026-09-04T23:43:01.918268+00:00",
+          "end": "2026-09-04T23:43:01.918861+00:00",
           "attributes": {
             "maos.event.seq": 1,
             "maos.event.type": "KbRetrieved",
@@ -66,7 +66,7 @@
               ],
               "hit_count": 3,
               "candidate_count": 3,
-              "duration_ms": 0.592,
+              "duration_ms": 0.593,
               "query": {
                 "tenant_id": "tnt-mfg-001",
                 "biz_type": "refund",
@@ -84,13 +84,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "0e6b968add7f3127",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "skill:kb.retrieve",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.708965+00:00",
-          "end": "2026-09-02T01:07:29.709965+00:00",
+          "start": "2026-09-04T23:43:01.918712+00:00",
+          "end": "2026-09-04T23:43:01.919712+00:00",
           "attributes": {
             "maos.event.seq": 2,
             "maos.event.type": "SkillInvoked",
@@ -105,32 +105,32 @@
               "input_digest": "574ef066fb0e1d6d15f43d25d49b29ae4dde1f45459905126ba7ac8d0a0c2f07",
               "output_hash": "b589b18690ff5d57cfcfbdddaf97a234bdb3e14eaf859be7d22e8273aa0a3b4d",
               "usage": null,
-              "invocation_id": "08d1f71455d94513b1b757eb2ae0e05a"
+              "invocation_id": "723dd167dbaf442b8b289b9157389c7b"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "89e7f079b505a704",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "0d30e83ef8d5258f",
           "parent_span_id": null,
           "name": "plan:处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
           "kind": "plan",
-          "start": "2026-09-02T01:07:29.709832+00:00",
-          "end": "2026-09-02T01:07:29.763295+00:00",
+          "start": "2026-09-04T23:43:01.919692+00:00",
+          "end": "2026-09-04T23:43:01.968483+00:00",
           "attributes": {
-            "maos.plan_id": "plan_d51ccffe89c6",
+            "maos.plan_id": "plan_4aecf460e15b",
             "maos.plan.state": "DONE",
             "maos.plan.goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款"
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "e3ac855743cc9cce",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "task:refund_intake:受理多源退款诉求并聚合证据",
           "kind": "task",
-          "start": "2026-09-02T01:07:29.710157+00:00",
-          "end": "2026-09-02T01:07:29.721006+00:00",
+          "start": "2026-09-04T23:43:01.920035+00:00",
+          "end": "2026-09-04T23:43:01.929971+00:00",
           "attributes": {
             "maos.task_id": "task-s6-intake",
             "maos.task.role": "refund_intake",
@@ -142,13 +142,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "7655c7a9fcec767f",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "task:refund_policy:按下单锁定的政策版本裁定退款资格",
           "kind": "task",
-          "start": "2026-09-02T01:07:29.710486+00:00",
-          "end": "2026-09-02T01:07:29.726642+00:00",
+          "start": "2026-09-04T23:43:01.920351+00:00",
+          "end": "2026-09-04T23:43:01.936931+00:00",
           "attributes": {
             "maos.task_id": "task-s6-policy",
             "maos.task.role": "refund_policy",
@@ -162,13 +162,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "11a5fbd3a2ae3585",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "task:refund_finance:核算退款金额并写财务分录",
           "kind": "task",
-          "start": "2026-09-02T01:07:29.710810+00:00",
-          "end": "2026-09-02T01:07:29.739872+00:00",
+          "start": "2026-09-04T23:43:01.920634+00:00",
+          "end": "2026-09-04T23:43:01.948710+00:00",
           "attributes": {
             "maos.task_id": "task-s6-finance",
             "maos.task.role": "refund_finance",
@@ -182,13 +182,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "548563d9fd280cdb",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "task:refund_payment:发起退款并观察网关终态",
           "kind": "task",
-          "start": "2026-09-02T01:07:29.711099+00:00",
-          "end": "2026-09-02T01:07:29.752218+00:00",
+          "start": "2026-09-04T23:43:01.920933+00:00",
+          "end": "2026-09-04T23:43:01.961119+00:00",
           "attributes": {
             "maos.task_id": "task-s6-payment",
             "maos.task.role": "refund_payment",
@@ -202,13 +202,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "af2727baa10cb022",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "task:refund_intake:通知客户退款结果",
           "kind": "task",
-          "start": "2026-09-02T01:07:29.711375+00:00",
-          "end": "2026-09-02T01:07:29.762476+00:00",
+          "start": "2026-09-04T23:43:01.921234+00:00",
+          "end": "2026-09-04T23:43:01.967629+00:00",
           "attributes": {
             "maos.task_id": "task-s6-notify",
             "maos.task.role": "refund_intake",
@@ -222,13 +222,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "1bad583a0b83cc75",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "plan-state:PENDING->RUNNING",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.712035+00:00",
-          "end": "2026-09-02T01:07:29.712035+00:00",
+          "start": "2026-09-04T23:43:01.922157+00:00",
+          "end": "2026-09-04T23:43:01.922157+00:00",
           "attributes": {
             "maos.event.seq": 3,
             "maos.event.type": "PlanTransition",
@@ -239,13 +239,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "825c90bd41d31c99",
           "parent_span_id": "e3ac855743cc9cce",
           "name": "state:PENDING->DISPATCHED",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.712858+00:00",
-          "end": "2026-09-02T01:07:29.712858+00:00",
+          "start": "2026-09-04T23:43:01.922945+00:00",
+          "end": "2026-09-04T23:43:01.922945+00:00",
           "attributes": {
             "maos.event.seq": 4,
             "maos.event.type": "StateTransition",
@@ -256,13 +256,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "f019bd9b559b54fe",
           "parent_span_id": "e3ac855743cc9cce",
           "name": "state:DISPATCHED->RUNNING",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.713966+00:00",
-          "end": "2026-09-02T01:07:29.713966+00:00",
+          "start": "2026-09-04T23:43:01.924166+00:00",
+          "end": "2026-09-04T23:43:01.924166+00:00",
           "attributes": {
             "maos.event.seq": 5,
             "maos.event.type": "StateTransition",
@@ -273,13 +273,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "c05b0c207f25e0df",
           "parent_span_id": "e3ac855743cc9cce",
           "name": "skill:issue.aggregate",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.714705+00:00",
-          "end": "2026-09-02T01:07:29.714705+00:00",
+          "start": "2026-09-04T23:43:01.924965+00:00",
+          "end": "2026-09-04T23:43:01.924965+00:00",
           "attributes": {
             "maos.event.seq": 6,
             "maos.event.type": "SkillInvoked",
@@ -294,18 +294,18 @@
               "input_digest": "bc6f2ab27dc5f2f11145cc4b37051b2d8134b347007f581779a16c767c17ef90",
               "output_hash": "2e04cc2483fec44ccc3e22a2a8b18757539c6a4666220ae4e94e57f14303fbf2",
               "usage": null,
-              "invocation_id": "e368b65df7a348eabdc5a6492231cb2f"
+              "invocation_id": "c230a51ab66f4b65bdc01be56493f664"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "1d984cefb945ccb2",
           "parent_span_id": "e3ac855743cc9cce",
           "name": "skill:refund.intake",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.716994+00:00",
-          "end": "2026-09-02T01:07:29.718994+00:00",
+          "start": "2026-09-04T23:43:01.927204+00:00",
+          "end": "2026-09-04T23:43:01.929204+00:00",
           "attributes": {
             "maos.event.seq": 7,
             "maos.event.type": "SkillInvoked",
@@ -318,22 +318,22 @@
               "status": "ok",
               "duration_ms": 2,
               "input_digest": "7ce06968c1cdd3c8ae0e7f6b162ae8d2ec84f029d115ad9b3250fd5d421becee",
-              "output_hash": "326fd6874e7c8cce2e3447f8212a88593da85a4037453c7aea5f21986f20ba93",
+              "output_hash": "6d8538dc771d1580ebb46fdcc7c6f33f66324837a2ae87280bcef99ebe6d8dfa",
               "usage": null,
-              "invocation_id": "5fbb4722996546fea638ec47aab5e453"
+              "invocation_id": "8cd04711dfb548bf8d776f653ec946a1"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "954738d809d6106c",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "a466adf6a168d2a5",
           "parent_span_id": "b598f1afa3a61e2c",
           "name": "artifact:refund_case_draft",
           "kind": "artifact",
-          "start": "2026-09-02T01:07:29.717738+00:00",
-          "end": "2026-09-02T01:07:29.717738+00:00",
+          "start": "2026-09-04T23:43:01.927998+00:00",
+          "end": "2026-09-04T23:43:01.927998+00:00",
           "attributes": {
-            "maos.artifact.id": "art_75b38852e267",
+            "maos.artifact.id": "art_747ac5b8c1e9",
             "maos.artifact.kind": "refund_case_draft",
             "maos.artifact.version": 1,
             "maos.task_id": "task-s6-intake",
@@ -347,17 +347,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "b598f1afa3a61e2c",
           "parent_span_id": "e3ac855743cc9cce",
           "name": "state:RUNNING->AWAITING_REVIEW",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.718359+00:00",
-          "end": "2026-09-02T01:07:29.718359+00:00",
+          "start": "2026-09-04T23:43:01.928617+00:00",
+          "end": "2026-09-04T23:43:01.928617+00:00",
           "attributes": {
             "maos.event.seq": 8,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_adc74ae158fc",
+            "maos.event.id": "evt_0327ec8c06e0",
             "maos.task_id": "task-s6-intake",
             "maos.reason": "submit_result",
             "maos.detail": {
@@ -366,17 +366,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "6f0f76cd03af3f59",
           "parent_span_id": "e3ac855743cc9cce",
           "name": "state:AWAITING_REVIEW->DONE",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.721282+00:00",
-          "end": "2026-09-02T01:07:29.721282+00:00",
+          "start": "2026-09-04T23:43:01.930262+00:00",
+          "end": "2026-09-04T23:43:01.930262+00:00",
           "attributes": {
             "maos.event.seq": 9,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_0de44c172312",
+            "maos.event.id": "evt_fc8d24909199",
             "maos.task_id": "task-s6-intake",
             "maos.reason": "gate_pass",
             "maos.detail": {
@@ -393,13 +393,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "e36889435ea0bebe",
           "parent_span_id": "7655c7a9fcec767f",
           "name": "state:PENDING->DISPATCHED",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.721961+00:00",
-          "end": "2026-09-02T01:07:29.721961+00:00",
+          "start": "2026-09-04T23:43:01.931057+00:00",
+          "end": "2026-09-04T23:43:01.931057+00:00",
           "attributes": {
             "maos.event.seq": 10,
             "maos.event.type": "StateTransition",
@@ -410,13 +410,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "b0145be6ec90da8d",
           "parent_span_id": "7655c7a9fcec767f",
           "name": "state:DISPATCHED->RUNNING",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.723215+00:00",
-          "end": "2026-09-02T01:07:29.723215+00:00",
+          "start": "2026-09-04T23:43:01.932588+00:00",
+          "end": "2026-09-04T23:43:01.932588+00:00",
           "attributes": {
             "maos.event.seq": 11,
             "maos.event.type": "StateTransition",
@@ -427,13 +427,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "2c12301f667b3dfe",
           "parent_span_id": "7655c7a9fcec767f",
           "name": "skill:policy.match",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.724274+00:00",
-          "end": "2026-09-02T01:07:29.724274+00:00",
+          "start": "2026-09-04T23:43:01.933861+00:00",
+          "end": "2026-09-04T23:43:01.933861+00:00",
           "attributes": {
             "maos.event.seq": 12,
             "maos.event.type": "SkillInvoked",
@@ -446,22 +446,22 @@
               "status": "ok",
               "duration_ms": 0,
               "input_digest": "535a70acb1a74972e96e637a444c1eaf2bd635172027baf0c8d34ca2615ad0bb",
-              "output_hash": "e1657a825a33cff15766a91ce6926eeb1de23a1eac7c57c1b5de579545565d69",
+              "output_hash": "93bbb8a4c958d8d62d06d6e1158a00538f4ed500102b72d98946bdc7edcfa3ae",
               "usage": null,
-              "invocation_id": "1a9df8e7799a4b75882c4a8406cea007"
+              "invocation_id": "966da2110ebc4aeb908e07addfe655ac"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "9b938f55abd21a9c",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "67a26fa9d564928b",
           "parent_span_id": "3a58b55c96654e2c",
           "name": "artifact:refund_policy_decision",
           "kind": "artifact",
-          "start": "2026-09-02T01:07:29.724914+00:00",
-          "end": "2026-09-02T01:07:29.724914+00:00",
+          "start": "2026-09-04T23:43:01.934613+00:00",
+          "end": "2026-09-04T23:43:01.934613+00:00",
           "attributes": {
-            "maos.artifact.id": "art_3fe9b3f819f0",
+            "maos.artifact.id": "art_40aabcd288f4",
             "maos.artifact.kind": "refund_policy_decision",
             "maos.artifact.version": 1,
             "maos.task_id": "task-s6-policy",
@@ -475,17 +475,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "3a58b55c96654e2c",
           "parent_span_id": "7655c7a9fcec767f",
           "name": "state:RUNNING->AWAITING_REVIEW",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.725453+00:00",
-          "end": "2026-09-02T01:07:29.725453+00:00",
+          "start": "2026-09-04T23:43:01.935311+00:00",
+          "end": "2026-09-04T23:43:01.935311+00:00",
           "attributes": {
             "maos.event.seq": 13,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_c1351001e7b4",
+            "maos.event.id": "evt_2c03dc6565f0",
             "maos.task_id": "task-s6-policy",
             "maos.reason": "submit_result",
             "maos.detail": {
@@ -494,17 +494,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "a4656479608fee3a",
           "parent_span_id": "7655c7a9fcec767f",
           "name": "state:AWAITING_REVIEW->DONE",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.726908+00:00",
-          "end": "2026-09-02T01:07:29.726908+00:00",
+          "start": "2026-09-04T23:43:01.937281+00:00",
+          "end": "2026-09-04T23:43:01.937281+00:00",
           "attributes": {
             "maos.event.seq": 14,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_adbf20c41d65",
+            "maos.event.id": "evt_1af65a54c8b5",
             "maos.task_id": "task-s6-policy",
             "maos.reason": "gate_pass",
             "maos.detail": {
@@ -521,13 +521,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "1133ea2ead06fd2d",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "state:PENDING->DISPATCHED",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.727586+00:00",
-          "end": "2026-09-02T01:07:29.727586+00:00",
+          "start": "2026-09-04T23:43:01.938210+00:00",
+          "end": "2026-09-04T23:43:01.938210+00:00",
           "attributes": {
             "maos.event.seq": 15,
             "maos.event.type": "StateTransition",
@@ -538,13 +538,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "4157d6035bf5aa45",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "state:DISPATCHED->RUNNING",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.728797+00:00",
-          "end": "2026-09-02T01:07:29.728797+00:00",
+          "start": "2026-09-04T23:43:01.940141+00:00",
+          "end": "2026-09-04T23:43:01.940141+00:00",
           "attributes": {
             "maos.event.seq": 16,
             "maos.event.type": "StateTransition",
@@ -555,13 +555,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "f5ce54d1629e6bbd",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "skill:policy.match",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.729845+00:00",
-          "end": "2026-09-02T01:07:29.729845+00:00",
+          "start": "2026-09-04T23:43:01.941490+00:00",
+          "end": "2026-09-04T23:43:01.941490+00:00",
           "attributes": {
             "maos.event.seq": 17,
             "maos.event.type": "SkillInvoked",
@@ -574,20 +574,20 @@
               "status": "ok",
               "duration_ms": 0,
               "input_digest": "535a70acb1a74972e96e637a444c1eaf2bd635172027baf0c8d34ca2615ad0bb",
-              "output_hash": "16fe3348e1986edfee0527c9ff51e7d1ae4d66372a9f3e718f4a7f4d0b862cc8",
+              "output_hash": "a859a896d32c7394bc1cab48525212bc0c2add5bb244f232cdd6f838ee5ce132",
               "usage": null,
-              "invocation_id": "5461233f3018469db1f8a2de7186fe7e"
+              "invocation_id": "145b57389cd94d31a5ff892129145ad4"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "b77daac37ad294d1",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "skill:finance.settle",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.734141+00:00",
-          "end": "2026-09-02T01:07:29.737141+00:00",
+          "start": "2026-09-04T23:43:01.942622+00:00",
+          "end": "2026-09-04T23:43:01.942622+00:00",
           "attributes": {
             "maos.event.seq": 18,
             "maos.event.type": "SkillInvoked",
@@ -598,24 +598,24 @@
               "skill": "finance.settle",
               "version": "1.0.0",
               "status": "ok",
-              "duration_ms": 3,
-              "input_digest": "5731ff514641329f3bb0fa12a39b8d7273d1ad9748869c86e96bd3cfe80d5028",
-              "output_hash": "239958845a7a6359e666e0448dfbcabe13616d4a67704cdfb59c86191b18aa65",
+              "duration_ms": 0,
+              "input_digest": "dafa626dc50c625ea67024dcdb50f343dbf062fd85c1ce98868f63ff219cea62",
+              "output_hash": "03693b97955ab408ac971ec639d1f401a6503aec5f0cb355147832ab75b3b3d6",
               "usage": null,
-              "invocation_id": "c29b67c50d6a46059c729fcba4d9e963"
+              "invocation_id": "2af2f4053bec4c4b8b05b3f4dfe2578e"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "80228a59a29cd725",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "65e20ef9193ce7d8",
           "parent_span_id": "2978f270b7acee95",
           "name": "artifact:refund_finance_settlement",
           "kind": "artifact",
-          "start": "2026-09-02T01:07:29.734890+00:00",
-          "end": "2026-09-02T01:07:29.734890+00:00",
+          "start": "2026-09-04T23:43:01.943388+00:00",
+          "end": "2026-09-04T23:43:01.943388+00:00",
           "attributes": {
-            "maos.artifact.id": "art_16f902041742",
+            "maos.artifact.id": "art_38f146adb52f",
             "maos.artifact.kind": "refund_finance_settlement",
             "maos.artifact.version": 1,
             "maos.task_id": "task-s6-finance",
@@ -629,17 +629,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "2978f270b7acee95",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "state:RUNNING->AWAITING_REVIEW",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.735492+00:00",
-          "end": "2026-09-02T01:07:29.735492+00:00",
+          "start": "2026-09-04T23:43:01.943986+00:00",
+          "end": "2026-09-04T23:43:01.943986+00:00",
           "attributes": {
             "maos.event.seq": 19,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_8531a7d904b7",
+            "maos.event.id": "evt_c8a5a4a69757",
             "maos.task_id": "task-s6-finance",
             "maos.reason": "submit_result",
             "maos.detail": {
@@ -648,17 +648,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "34e310480456bf02",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "state:AWAITING_REVIEW->BLOCKED",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.736898+00:00",
-          "end": "2026-09-02T01:07:29.736898+00:00",
+          "start": "2026-09-04T23:43:01.945586+00:00",
+          "end": "2026-09-04T23:43:01.945586+00:00",
           "attributes": {
             "maos.event.seq": 20,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_bba6ea97b77f",
+            "maos.event.id": "evt_4ebbe1746991",
             "maos.task_id": "task-s6-finance",
             "maos.reason": "gate_needs_human",
             "maos.detail": {
@@ -676,15 +676,15 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "47f5d7f7f3f963a6",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "78855be66499f0be",
           "parent_span_id": "4a0e306e54611d72",
           "name": "artifact:review_note",
           "kind": "artifact",
-          "start": "2026-09-02T01:07:29.738629+00:00",
-          "end": "2026-09-02T01:07:29.738629+00:00",
+          "start": "2026-09-04T23:43:01.947261+00:00",
+          "end": "2026-09-04T23:43:01.947261+00:00",
           "attributes": {
-            "maos.artifact.id": "art_d872c6c7a92f",
+            "maos.artifact.id": "art_5b42309d37f5",
             "maos.artifact.kind": "review_note",
             "maos.artifact.version": 1,
             "maos.task_id": "task-s6-finance",
@@ -698,13 +698,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "4a0e306e54611d72",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "artifact-seeded:review_note",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.738922+00:00",
-          "end": "2026-09-02T01:07:29.738922+00:00",
+          "start": "2026-09-04T23:43:01.947593+00:00",
+          "end": "2026-09-04T23:43:01.947593+00:00",
           "attributes": {
             "maos.event.seq": 21,
             "maos.event.type": "ArtifactSeeded",
@@ -712,7 +712,7 @@
             "maos.task_id": "task-s6-finance",
             "maos.reason": "maos.agents.reviewer.review_after_gate",
             "maos.detail": {
-              "artifact_id": "art_d872c6c7a92f",
+              "artifact_id": "art_5b42309d37f5",
               "kind": "review_note",
               "version": 1,
               "source": "maos.agents.reviewer.review_after_gate",
@@ -722,13 +722,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "b6bc68f89824581a",
           "parent_span_id": "11a5fbd3a2ae3585",
           "name": "state:BLOCKED->DONE",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.740140+00:00",
-          "end": "2026-09-02T01:07:29.740140+00:00",
+          "start": "2026-09-04T23:43:01.949034+00:00",
+          "end": "2026-09-04T23:43:01.949034+00:00",
           "attributes": {
             "maos.event.seq": 22,
             "maos.event.type": "StateTransition",
@@ -742,13 +742,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "632a06b4423c4448",
           "parent_span_id": "548563d9fd280cdb",
           "name": "state:PENDING->DISPATCHED",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.741083+00:00",
-          "end": "2026-09-02T01:07:29.741083+00:00",
+          "start": "2026-09-04T23:43:01.950194+00:00",
+          "end": "2026-09-04T23:43:01.950194+00:00",
           "attributes": {
             "maos.event.seq": 23,
             "maos.event.type": "StateTransition",
@@ -759,13 +759,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "a5ae6caefd2d3af8",
           "parent_span_id": "548563d9fd280cdb",
           "name": "state:DISPATCHED->RUNNING",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.742478+00:00",
-          "end": "2026-09-02T01:07:29.742478+00:00",
+          "start": "2026-09-04T23:43:01.951342+00:00",
+          "end": "2026-09-04T23:43:01.951342+00:00",
           "attributes": {
             "maos.event.seq": 24,
             "maos.event.type": "StateTransition",
@@ -776,13 +776,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "e8f981528d8df708",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "biz:submitted->approved",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.744073+00:00",
-          "end": "2026-09-02T01:07:29.744073+00:00",
+          "start": "2026-09-04T23:43:01.952456+00:00",
+          "end": "2026-09-04T23:43:01.952456+00:00",
           "attributes": {
             "maos.event.seq": 25,
             "maos.event.type": "RefundBizStatusChanged",
@@ -793,19 +793,19 @@
               "tenant_id": "tnt-mfg-001",
               "case_id": "case-s6-0001",
               "actor": "payment.execute",
-              "invocation_id": "3f55e5a7fb334e5c91e8cb0f4a25c450",
+              "invocation_id": "5944492e26ac44e084f75e42453dd656",
               "observation_attached": false
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "41a0f5a880b0d39d",
           "parent_span_id": "548563d9fd280cdb",
           "name": "tool:gateway.refund",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.744432+00:00",
-          "end": "2026-09-02T01:07:29.744432+00:00",
+          "start": "2026-09-04T23:43:01.952839+00:00",
+          "end": "2026-09-04T23:43:01.952839+00:00",
           "attributes": {
             "maos.event.seq": 26,
             "maos.event.type": "ToolInvoked",
@@ -822,36 +822,36 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "f479719bccb511f8",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "biz:approved->gateway_accepted",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.745706+00:00",
-          "end": "2026-09-02T01:07:29.745706+00:00",
+          "start": "2026-09-04T23:43:01.954250+00:00",
+          "end": "2026-09-04T23:43:01.954250+00:00",
           "attributes": {
             "maos.event.seq": 27,
             "maos.event.type": "RefundBizStatusChanged",
             "maos.event.id": null,
             "maos.task_id": null,
-            "maos.reason": "网关受理 request_id=gw_2278853ea4614ecc code=10000",
+            "maos.reason": "网关受理 request_id=gw_62a4435aae5847e2 code=10000",
             "maos.detail": {
               "tenant_id": "tnt-mfg-001",
               "case_id": "case-s6-0001",
               "actor": "payment.execute",
-              "invocation_id": "3f55e5a7fb334e5c91e8cb0f4a25c450",
+              "invocation_id": "5944492e26ac44e084f75e42453dd656",
               "observation_attached": false
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "e983e72f4b746c08",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "biz:gateway_accepted->processing",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.746366+00:00",
-          "end": "2026-09-02T01:07:29.746366+00:00",
+          "start": "2026-09-04T23:43:01.955046+00:00",
+          "end": "2026-09-04T23:43:01.955046+00:00",
           "attributes": {
             "maos.event.seq": 28,
             "maos.event.type": "RefundBizStatusChanged",
@@ -862,19 +862,19 @@
               "tenant_id": "tnt-mfg-001",
               "case_id": "case-s6-0001",
               "actor": "payment.execute",
-              "invocation_id": "3f55e5a7fb334e5c91e8cb0f4a25c450",
+              "invocation_id": "5944492e26ac44e084f75e42453dd656",
               "observation_attached": false
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "3e12cf065f9c4717",
           "parent_span_id": "548563d9fd280cdb",
           "name": "skill:payment.execute",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.746709+00:00",
-          "end": "2026-09-02T01:07:29.749709+00:00",
+          "start": "2026-09-04T23:43:01.955462+00:00",
+          "end": "2026-09-04T23:43:01.958462+00:00",
           "attributes": {
             "maos.event.seq": 29,
             "maos.event.type": "SkillInvoked",
@@ -887,20 +887,20 @@
               "status": "ok",
               "duration_ms": 3,
               "input_digest": "373b3a4fa810b4b278d1325acbd66c1db2eb867d9fa62c1e32c41f6f60740e5f",
-              "output_hash": "1edb624109b3e409893efa51832aacc71b0e48890a6da439080fe2f28af4b0aa",
+              "output_hash": "88211a076863aaed6e3e4bc4c3e4b2a2af70de8069c043cd113c2e6e7a139cf9",
               "usage": null,
-              "invocation_id": "3f55e5a7fb334e5c91e8cb0f4a25c450"
+              "invocation_id": "5944492e26ac44e084f75e42453dd656"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "bc9f1aa030ae5b9e",
           "parent_span_id": "548563d9fd280cdb",
           "name": "tool:gateway.query",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.747271+00:00",
-          "end": "2026-09-02T01:07:29.747271+00:00",
+          "start": "2026-09-04T23:43:01.956101+00:00",
+          "end": "2026-09-04T23:43:01.956101+00:00",
           "attributes": {
             "maos.event.seq": 30,
             "maos.event.type": "ToolInvoked",
@@ -911,19 +911,19 @@
               "tool": "gateway.query",
               "status": "ok",
               "duration_ms": 0,
-              "params_digest": "b87d7d31e5ad8e75c9f51aa8625f2e7a549a999f771b41b28d97b2a93f7dfcb1",
+              "params_digest": "ce3ea047996b9d560cc904595803c56b10a58333724c5f58a1a3df33793d4801",
               "error": null
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "b50f1b83bc402b01",
           "parent_span_id": "548563d9fd280cdb",
           "name": "tool:gateway.query",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.747584+00:00",
-          "end": "2026-09-02T01:07:29.747584+00:00",
+          "start": "2026-09-04T23:43:01.956443+00:00",
+          "end": "2026-09-04T23:43:01.956443+00:00",
           "attributes": {
             "maos.event.seq": 31,
             "maos.event.type": "ToolInvoked",
@@ -934,19 +934,19 @@
               "tool": "gateway.query",
               "status": "ok",
               "duration_ms": 0,
-              "params_digest": "b87d7d31e5ad8e75c9f51aa8625f2e7a549a999f771b41b28d97b2a93f7dfcb1",
+              "params_digest": "ce3ea047996b9d560cc904595803c56b10a58333724c5f58a1a3df33793d4801",
               "error": null
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "012bd57346cdb264",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "biz:processing->settled",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.748283+00:00",
-          "end": "2026-09-02T01:07:29.748283+00:00",
+          "start": "2026-09-04T23:43:01.957281+00:00",
+          "end": "2026-09-04T23:43:01.957281+00:00",
           "attributes": {
             "maos.event.seq": 32,
             "maos.event.type": "RefundBizStatusChanged",
@@ -957,19 +957,19 @@
               "tenant_id": "tnt-mfg-001",
               "case_id": "case-s6-0001",
               "actor": "payment.observe",
-              "invocation_id": "e669705f9a324f02ab68a00802aed352",
+              "invocation_id": "6956c63c912b4007bece4da24b0b850f",
               "observation_attached": true
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "4a1fdabb422d422b",
           "parent_span_id": "548563d9fd280cdb",
           "name": "skill:payment.observe",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.748627+00:00",
-          "end": "2026-09-02T01:07:29.749627+00:00",
+          "start": "2026-09-04T23:43:01.957720+00:00",
+          "end": "2026-09-04T23:43:01.958720+00:00",
           "attributes": {
             "maos.event.seq": 33,
             "maos.event.type": "SkillInvoked",
@@ -981,23 +981,23 @@
               "version": "1.0.0",
               "status": "ok",
               "duration_ms": 1,
-              "input_digest": "285537359cd7f002e7bfa7e0b08e77b9afb8ea4010001f8cc375bc3a68eacf22",
-              "output_hash": "dd998299fdc0a2aed754df46284ff26d86f61ccbbd9f479ab442931518a46984",
+              "input_digest": "4198c9a4795b530bab56a3d7db4030c0e85141e41b0ee307e7b0f9d7ebecedd9",
+              "output_hash": "5b3c6b394fde76c0884da44f96c9fddf5d4e4a2ba1bca08c5c599b58f1eb3b75",
               "usage": null,
-              "invocation_id": "e669705f9a324f02ab68a00802aed352"
+              "invocation_id": "6956c63c912b4007bece4da24b0b850f"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "af5999653a128422",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "c0aa719aff0adc19",
           "parent_span_id": "bd4c263dd1e4d447",
           "name": "artifact:refund_payment_request",
           "kind": "artifact",
-          "start": "2026-09-02T01:07:29.749768+00:00",
-          "end": "2026-09-02T01:07:29.749768+00:00",
+          "start": "2026-09-04T23:43:01.958685+00:00",
+          "end": "2026-09-04T23:43:01.958685+00:00",
           "attributes": {
-            "maos.artifact.id": "art_070e4e373c2c",
+            "maos.artifact.id": "art_65e7ba20ce36",
             "maos.artifact.kind": "refund_payment_request",
             "maos.artifact.version": 1,
             "maos.task_id": "task-s6-payment",
@@ -1011,15 +1011,15 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "062cc8fa9bd4b9ec",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "ce30280dc54add4a",
           "parent_span_id": "bd4c263dd1e4d447",
           "name": "artifact:refund_payment_receipt",
           "kind": "artifact",
-          "start": "2026-09-02T01:07:29.750289+00:00",
-          "end": "2026-09-02T01:07:29.750289+00:00",
+          "start": "2026-09-04T23:43:01.959183+00:00",
+          "end": "2026-09-04T23:43:01.959183+00:00",
           "attributes": {
-            "maos.artifact.id": "art_63958ee8608f",
+            "maos.artifact.id": "art_a9813d566c38",
             "maos.artifact.kind": "refund_payment_receipt",
             "maos.artifact.version": 1,
             "maos.task_id": "task-s6-payment",
@@ -1033,17 +1033,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "bd4c263dd1e4d447",
           "parent_span_id": "548563d9fd280cdb",
           "name": "state:RUNNING->AWAITING_REVIEW",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.750933+00:00",
-          "end": "2026-09-02T01:07:29.750933+00:00",
+          "start": "2026-09-04T23:43:01.959858+00:00",
+          "end": "2026-09-04T23:43:01.959858+00:00",
           "attributes": {
             "maos.event.seq": 34,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_769fcb7d537d",
+            "maos.event.id": "evt_584423f217b9",
             "maos.task_id": "task-s6-payment",
             "maos.reason": "submit_result",
             "maos.detail": {
@@ -1052,17 +1052,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "035ac1e9db19e590",
           "parent_span_id": "548563d9fd280cdb",
           "name": "state:AWAITING_REVIEW->DONE",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.752497+00:00",
-          "end": "2026-09-02T01:07:29.752497+00:00",
+          "start": "2026-09-04T23:43:01.961397+00:00",
+          "end": "2026-09-04T23:43:01.961397+00:00",
           "attributes": {
             "maos.event.seq": 35,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_c0864414eeb7",
+            "maos.event.id": "evt_8c484a54e3f6",
             "maos.task_id": "task-s6-payment",
             "maos.reason": "gate_pass",
             "maos.detail": {
@@ -1079,13 +1079,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "9488c10a48061fc5",
           "parent_span_id": "af2727baa10cb022",
           "name": "state:PENDING->DISPATCHED",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.753184+00:00",
-          "end": "2026-09-02T01:07:29.753184+00:00",
+          "start": "2026-09-04T23:43:01.962087+00:00",
+          "end": "2026-09-04T23:43:01.962087+00:00",
           "attributes": {
             "maos.event.seq": 36,
             "maos.event.type": "StateTransition",
@@ -1096,13 +1096,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "a0c7c0a86cf1b8d6",
           "parent_span_id": "af2727baa10cb022",
           "name": "state:DISPATCHED->RUNNING",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.754495+00:00",
-          "end": "2026-09-02T01:07:29.754495+00:00",
+          "start": "2026-09-04T23:43:01.963310+00:00",
+          "end": "2026-09-04T23:43:01.963310+00:00",
           "attributes": {
             "maos.event.seq": 37,
             "maos.event.type": "StateTransition",
@@ -1113,13 +1113,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "1fdddfb96d040b25",
           "parent_span_id": "af2727baa10cb022",
           "name": "skill:notify.customer",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.755552+00:00",
-          "end": "2026-09-02T01:07:29.755552+00:00",
+          "start": "2026-09-04T23:43:01.964332+00:00",
+          "end": "2026-09-04T23:43:01.964332+00:00",
           "attributes": {
             "maos.event.seq": 38,
             "maos.event.type": "SkillInvoked",
@@ -1132,22 +1132,22 @@
               "status": "ok",
               "duration_ms": 0,
               "input_digest": "fc20bebed75b9deed83fc8606e7c50bc7991f5ed55b36e5dbb18d975b55b90c1",
-              "output_hash": "1697f4fef921e6d6bb78f0b730c1869ae42cb50763b7b5d82264f170248b0ba9",
+              "output_hash": "dc55d93242d6d9ab1a4a4f6265ca38cd3e51a1dedc7d9538d9cacbb40560280d",
               "usage": null,
-              "invocation_id": "1d2431b2085143d1972bf4cce8822a95"
+              "invocation_id": "6021cfd2df7b4ef1864ec0776f5404b2"
             }
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
-          "span_id": "dc4153269dee9aec",
+          "trace_id": "trace_6c2a50fbd642",
+          "span_id": "98eae746e3c23253",
           "parent_span_id": "9b5085a8e44ac438",
           "name": "artifact:refund_notification",
           "kind": "artifact",
-          "start": "2026-09-02T01:07:29.756392+00:00",
-          "end": "2026-09-02T01:07:29.756392+00:00",
+          "start": "2026-09-04T23:43:01.965344+00:00",
+          "end": "2026-09-04T23:43:01.965344+00:00",
           "attributes": {
-            "maos.artifact.id": "art_1c88d9d498a7",
+            "maos.artifact.id": "art_333a9b6457dc",
             "maos.artifact.kind": "refund_notification",
             "maos.artifact.version": 1,
             "maos.task_id": "task-s6-notify",
@@ -1161,17 +1161,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "9b5085a8e44ac438",
           "parent_span_id": "af2727baa10cb022",
           "name": "state:RUNNING->AWAITING_REVIEW",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.757067+00:00",
-          "end": "2026-09-02T01:07:29.757067+00:00",
+          "start": "2026-09-04T23:43:01.966096+00:00",
+          "end": "2026-09-04T23:43:01.966096+00:00",
           "attributes": {
             "maos.event.seq": 39,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_3aea43825214",
+            "maos.event.id": "evt_44ef3c9c22f4",
             "maos.task_id": "task-s6-notify",
             "maos.reason": "submit_result",
             "maos.detail": {
@@ -1180,17 +1180,17 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "9cad331aad248d79",
           "parent_span_id": "af2727baa10cb022",
           "name": "state:AWAITING_REVIEW->DONE",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.762761+00:00",
-          "end": "2026-09-02T01:07:29.762761+00:00",
+          "start": "2026-09-04T23:43:01.967946+00:00",
+          "end": "2026-09-04T23:43:01.967946+00:00",
           "attributes": {
             "maos.event.seq": 40,
             "maos.event.type": "StateTransition",
-            "maos.event.id": "evt_aa43d599b7d3",
+            "maos.event.id": "evt_0e4e32cd71be",
             "maos.task_id": "task-s6-notify",
             "maos.reason": "gate_pass",
             "maos.detail": {
@@ -1207,13 +1207,13 @@
           }
         },
         {
-          "trace_id": "trace_c689609a0446",
+          "trace_id": "trace_6c2a50fbd642",
           "span_id": "33ee6bbcb9ffd671",
-          "parent_span_id": "89e7f079b505a704",
+          "parent_span_id": "0d30e83ef8d5258f",
           "name": "plan-state:RUNNING->DONE",
           "kind": "event",
-          "start": "2026-09-02T01:07:29.763565+00:00",
-          "end": "2026-09-02T01:07:29.763565+00:00",
+          "start": "2026-09-04T23:43:01.968757+00:00",
+          "end": "2026-09-04T23:43:01.968757+00:00",
           "attributes": {
             "maos.event.seq": 41,
             "maos.event.type": "PlanTransition",

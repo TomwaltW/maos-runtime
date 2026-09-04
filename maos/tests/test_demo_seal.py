@@ -5,10 +5,8 @@
   · **缺省序列漏场景**（§1）。`DEFAULT_SCENARIOS` 与「已落地的场景」漂开过两次：
     先是 `(1,2,3,4)` 漏了 5/6，改完之后 `scenario_7.py` 落地又漏了 7。两次的症状
     完全一样 —— `python3 run.py` 少跑一场，**不报错、不提示**，演示现场没人看得出
-    评委漏看了什么。所以这里不断言「等于某个字面元组」（那样下次加场景照样漂），
-    而是断言 `DEFAULT_SCENARIOS` == 「`ALL_SCENARIOS` 里模块真的存在的那些」——
-    把 main.py 自己写的那条口径（排除标准是「模块不存在」，不是「谁负责」）
-    变成机器判定。下一场景落地后忘了进缺省序列，这条会红。
+    评委漏看了什么。C1 将两份清单有意分开：DEFAULT_SCENARIOS 冻结为 1-7，
+    ALL_SCENARIOS 包含显式可达的新域 8/9/10；默认八束（含 R5）不随新增域扩张。
 
   · **接了线却没真检索**（§2）。场景 6 曾用 `ManagerAgent(model)` 老写法构造，
     `SkillInvoker.store is None` 让规划期检索恒返回空 —— `MAOS_KB_ENABLED` 开关
@@ -34,7 +32,7 @@ from maos.flows import scenario_6 as s6
 from maos.skills.builtin.refund import _common as C
 
 # --------------------------------------------------------------------------
-# §1 缺省序列 = 全部已落地的场景
+# §1 缺省序列冻结，所有显式入口必须已落地
 # --------------------------------------------------------------------------
 
 
@@ -47,14 +45,10 @@ def _landed_scenarios() -> tuple[int, ...]:
     )
 
 
-def test_default_sequence_equals_landed_scenarios():
-    """缺省序列必须等于「已落地的场景」—— 这是 main.py 自己写的排除口径。"""
-    assert maos_main.DEFAULT_SCENARIOS == _landed_scenarios(), (
-        "DEFAULT_SCENARIOS 与已落地场景漂开了：\n"
-        f"  缺省序列   = {maos_main.DEFAULT_SCENARIOS}\n"
-        f"  已落地场景 = {_landed_scenarios()}\n"
-        "排除标准是「模块不存在」，不是「谁负责」——"
-        "新场景落地就该自动进来，漏了的话 run.py 会少跑一场且不报错。")
+def test_default_sequence_is_frozen_and_all_explicit_scenarios_have_landed():
+    """C1：冻结复赛默认口径，同时防止显式入口指向不存在的模块。"""
+    assert maos_main.DEFAULT_SCENARIOS == (1, 2, 3, 4, 5, 6, 7)
+    assert maos_main.ALL_SCENARIOS == _landed_scenarios() == tuple(range(1, 11))
 
 
 def test_scenario_7_is_in_default_sequence():

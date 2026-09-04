@@ -1,0 +1,84 @@
+# generated at 2026-09-04T23:45:29.711102+00:00 from 6086dfcb33454aea486e08632797eeed70731b24-dirty
+{
+  "scenario": 10,
+  "exit_code": 0,
+  "wall_ms": 382,
+  "plan_count": 1,
+  "plans": [
+    {
+      "plan_id": "plan_118faf3b3870",
+      "goal": "支付华东紧固件密封件货款：三单无异议，但银行回单迟迟问不出来",
+      "state": "FAILED",
+      "trace_id": "trace_4739c0e7644c",
+      "tasks": [
+        {
+          "task_id": "task-s10b-intake",
+          "role": "ap_intake",
+          "title": "收供应商发票并确认三单齐备",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s10b-match",
+          "role": "ap_match",
+          "title": "三单匹配：数量、单价、税额各自容差",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s10b-plan",
+          "role": "ap_control",
+          "title": "出付款计划，交主管审批",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s10b-pay",
+          "role": "ap_treasury",
+          "title": "发出付款指令并观察银行回单",
+          "state": "FAILED",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 35,
+        "event_count": 34,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 18,
+          "SkillInvoked": 6,
+          "ApBizStatusChanged": 3,
+          "ToolInvoked": 4,
+          "CompensationExecuted": 1
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 6,
+        "tool_invocations": 4
+      },
+      "business_outcome": {
+        "status": "failed",
+        "basis": "plan_failed",
+        "plan_state": "FAILED",
+        "external_evidence": [],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    }
+  ],
+  "totals": {
+    "event_count": 34,
+    "rework_count": 0,
+    "replan_count": 0
+  }
+}

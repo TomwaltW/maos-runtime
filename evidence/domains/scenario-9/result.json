@@ -1,0 +1,169 @@
+# generated at 2026-09-04T23:45:29.320366+00:00 from 6086dfcb33454aea486e08632797eeed70731b24-dirty
+{
+  "scenario": 9,
+  "exit_code": 0,
+  "wall_ms": 359,
+  "plan_count": 2,
+  "plans": [
+    {
+      "plan_id": "plan_ff082f4c4690",
+      "goal": "处理一笔跨行重复支付差错：向清算方发起撤销并确认资金退回",
+      "state": "DONE",
+      "trace_id": "trace_fbdca4cb666c",
+      "tasks": [
+        {
+          "task_id": "task-s9-file",
+          "role": "investigation_intake",
+          "title": "受理跨行支付差错并核对原始报文快照",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s9-classify",
+          "role": "investigation_classify",
+          "title": "差错定性并申请人工调账授权",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s9-cancel",
+          "role": "investigation_cancel",
+          "title": "向清算方发出 camt.056 撤销请求",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s9-observe",
+          "role": "investigation_observe",
+          "title": "问询清算方决议并确认资金下落",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 36,
+        "event_count": 31,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 18,
+          "SkillInvoked": 4,
+          "InvestigationBizStatusChanged": 3,
+          "ToolInvoked": 4
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 4,
+        "tool_invocations": 4
+      },
+      "business_outcome": {
+        "status": "succeeded",
+        "basis": "external_evidence",
+        "plan_state": "DONE",
+        "external_evidence": [
+          {
+            "kind": "resolution_observation",
+            "case_id": "case-s9-0001",
+            "tenant_id": "tnt-bank-001",
+            "request_id": "clr_a43164c61c56424d",
+            "poll_seq": 3,
+            "message_type": "pacs.004.001.09",
+            "confirmation_code": "",
+            "rejection_code": "",
+            "return_reason_code": "CUST",
+            "returned_amount": 12500.0,
+            "observed_state": "returned",
+            "actor_invocation_id": "d89b97bbac6244a49c52ae5c0d38a319",
+            "provenance": "resolution_observation"
+          }
+        ],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    },
+    {
+      "plan_id": "plan_231fbe8d576a",
+      "goal": "处理第二笔跨行重复支付差错：清算方确认撤销但资金未退回",
+      "state": "FAILED",
+      "trace_id": "trace_10dd2bd9ed18",
+      "tasks": [
+        {
+          "task_id": "task-s9b-file",
+          "role": "investigation_intake",
+          "title": "受理跨行支付差错并核对原始报文快照",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s9b-classify",
+          "role": "investigation_classify",
+          "title": "差错定性并申请人工调账授权",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s9b-cancel",
+          "role": "investigation_cancel",
+          "title": "向清算方发出 camt.056 撤销请求",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s9b-observe",
+          "role": "investigation_observe",
+          "title": "问询清算方决议并确认资金下落",
+          "state": "FAILED",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 38,
+        "event_count": 35,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 18,
+          "SkillInvoked": 5,
+          "InvestigationBizStatusChanged": 3,
+          "ToolInvoked": 6,
+          "CompensationExecuted": 1
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 5,
+        "tool_invocations": 6
+      },
+      "business_outcome": {
+        "status": "failed",
+        "basis": "plan_failed",
+        "plan_state": "FAILED",
+        "external_evidence": [],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    }
+  ],
+  "totals": {
+    "event_count": 66,
+    "rework_count": 0,
+    "replan_count": 0
+  }
+}

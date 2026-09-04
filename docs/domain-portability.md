@@ -1,34 +1,98 @@
 # 领域可移植性 —— 换域只换 Skill / ToolPort / 业务对象
 
-MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内核**。本仓库在两个完全
-不同的领域上给出可运行实证：
+MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内核**。本仓库在软件交付域
+和四个业务域上给出可运行实证：
 
 - **软件交付域**：外部权威判据 = 沙箱里真跑出来的 `pytest` 结果（场景 1–5）
 - **制造售后退款域**：外部权威判据 = 支付网关的到账回执（场景 6–7）
+- **保险理赔域**：外部权威判据 = 赔付方的到账回执（场景 8）
+- **银行差错处理域**：外部权威判据 = 清算方的 `pacs.004` 资金退回报文；
+  `camt.029/CNCL` 只确认撤销指令，不能证明钱已退回（场景 9）
+- **应付账款域**：外部权威判据 = 银行的已付款回单及 `bank_reference` 流水号（场景 10）
+
+场景 8–10 使用各域的 Mock ToolPort，证明的是观察、审批与失败收口的编排边界，
+尚不代表真实赔付方、清算方或银行已接通。缺省 CLI 仍只跑 1–7，新增域需显式指定
+`python3 run.py --scenario 8`（或 9、10）；缺省证据仍是 1–7 + R5 的 8 束冻结口径。
+扩展证据与核验显式运行，默认另存到 `evidence/domains/`：
+
+```bash
+python3 scripts/make_evidence.py --domains
+python3 scripts/verify.py --evidence evidence/domains --domains
+```
+
+扩展根目录含 11 个场景。场景 8、10 的失败路径各自另建运行时，完整证据另存于
+对应场景的 `runtime-2/` 子束；核验器同时读取父束和子束，保留每个原始库的隔离。
 
 这句话如果只是写在 PPT 上，评委没有理由信。所以本文件只做一件事：**把它拆成
 可以逐条去查的断言**，每条都给出代码位置、可复现命令、以及数字。
 
 ---
 
-## 1. 对照表：同一个内核，两个域
+## 1. 对照表：同一个内核，四个业务域 + 软件交付域
 
-| 层 | 软件交付域 | 制造售后退款域 | 是否共用 |
-| :-- | :-- | :-- | :-- |
-| **事件契约** | `Envelope` / `EventType` / `Topic` | 同左，**一个字段都没加** | ✅ 同一份 `maos/contracts/events.py` |
-| **Task 状态机** | `PENDING → DISPATCHED → RUNNING → AWAITING_REVIEW → DONE/BLOCKED/FAILED` | 同左，**没加新状态、没加新迁移** | ✅ 同一份 `maos/contracts/states.py` |
-| **Control Plane** | 唯一的状态迁移持有者、幂等去重、版本冲突拒绝 | 同左 | ✅ 同一份 `maos/core/control_plane.py` |
-| **Worker Runtime** | 按 role 从 `AGENT_POOL` 取执行者，跑 Identity 三查 | 同左 | ✅ 同一份 `maos/runtime/worker.py` |
-| **Gate** | 七道闸；代码类任务看 `test_report` | 七道闸；退款任务在第六道闸看财务凭据、第七道闸看网关回执 | ✅ 同一份 `maos/runtime/gate.py`（两道新闸分属两个区间，见下方脚注★） |
-| **replan** | 单轮 blocker ≥ 2 / 同一任务第 2 次 rework，上限 `MAOS_MAX_REPLAN`（默认 2） | 同左，同一份实现 | ✅ 判据 `maos/core/control_plane.py:380`（`_should_replan`）／上限 `:423`（`_max_replan`） |
-| **HITL 审批** | `effect_risk=H` 停 `BLOCKED`，等 `/approve`｜`/reject` | 同左，审批人换成退款主管 | ✅ 同一份 `HumanApprovalQueue` |
-| **补偿** | 逆补丁：`sandbox.git_apply(reverse=True)` | 域内补偿：撤销 `refund_request` + 开人工工单 | ⚠️ **机制共用**（`_gate_compensation` 干跑闸 + `CompensationExecuted` 事件），**手段按域实现** |
-| **Skill** | `req.normalize` / `code.repo-patch` / `test.verify` / `issue.aggregate` / `kb.*` | `refund.intake` / `policy.match` / `finance.settle` / `payment.execute` / `payment.observe` / `refund.compensate` / `notify.customer` | ❌ **按域实现**（同一个 `SkillContract` 九要素契约） |
-| **ToolPort** | `sandbox.git_apply` / `sandbox.pytest_run` | `gateway.refund` / `gateway.query` | ❌ **按域实现**（同一个 `ToolPort` 九要素契约） |
-| **业务对象** | 补丁集 / 测试报告 / 架构契约（`maos/artifacts.py`） | `refund_case` / `refund_request` / `payment_observation` / `finance_entry`（`maos/domain/refund/objects.py`） | ❌ **按域实现**（都经 `business_ref` 挂到同一个 DAG 上） |
-| **Agent 角色** | requirement / architecture / coding / testing / reviewer | refund-intake / refund-policy / refund-finance / refund-payment | ❌ **按域实现**（同一个 `AgentIdentity`；manager 两域共用） |
+| 层 | 软件交付域 | 制造售后退款域 | 保险理赔域 | 银行差错处理域 | 应付账款域 | 共用范围与证据 |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| **事件契约** | `Envelope` / `EventType` / `Topic` | 同一事件契约 | 同一事件契约 | 同一事件契约 | 同一事件契约 | ✅ 同一份 `maos/contracts/events.py`，三新域未增加字段或枚举 |
+| **Task 状态机** | 既有 Task 状态与迁移 | 业务状态留在 `refund_case` | `paid` 留在 `claim_case` | `returned` 留在 `investigation_case` | `settled` 留在 `ap_case` | ✅ 同一份 `maos/contracts/states.py`；场景 8–10 逐条校验 `TASK_TRANSITIONS` |
+| **Control Plane** | 状态迁移、幂等去重、版本冲突拒绝 | 同一 `ControlPlane` | 同一 `ControlPlane` | 同一 `ControlPlane` | 同一 `ControlPlane` | ✅ 五域均由 `maos/flows/common.py::build` 装配，无域分支 |
+| **Worker Runtime** | 从 `AGENT_POOL` 按 role 执行 | 同一 Worker，退款角色 | 同一 Worker，理赔角色 | 同一 Worker，差错角色 | 同一 Worker，AP 角色 | ✅ 同一份 `maos/runtime/worker.py`，域 Agent 经既有发现机制注册 |
+| **Gate** | 七道闸；代码验收认 `test_report` | 第六道认财务凭据，第七道认网关码 | ⚠️ 复用七闸框架，理赔回执不进网关码闸 | ⚠️ 复用七闸框架，清算报文不进网关码闸 | ⚠️ 复用七闸框架，银行回单不进网关码闸 | ⚠️ `maos/runtime/gate.py` 未改，但三新域也不触发财务闸；业务判据由域 Skill / guard / 收口断言负责，详见 §1.1 |
+| **replan** | blocker / rework 触发，`MAOS_MAX_REPLAN` 封顶 | 场景 7 演示换渠道 | ⚠️ 未注入 replanner，未演练 | ⚠️ 未注入 replanner，未演练 | ⚠️ 未注入 replanner，未演练 | ⚠️ 共用实现仍在 `maos/core/control_plane.py`，场景 8–10 没有接入或证明重规划 |
+| **HITL 审批** | `effect_risk=H` 停 `BLOCKED` 等人决定 | 退款主管批准 / 驳回 | 核算与付款收口审批 | 调账授权与观察收口审批 | 付款计划与付款收口审批 | ✅ 同一份 `HumanApprovalQueue` 与控制面人工决策入口；各域审批记录另行落库 |
+| **补偿** | 逆补丁与补偿干跑 | 撤销退款请求 + 人工工单 | 作废赔付指令 + 人工工单 | 留档最后观察 + 人工对账工单 | 作废本地付款指令 + 对账工单 | ⚠️ 复用 `SkillInvoker` / `CompensationExecuted` 审计口径；三新域的域内补偿不经过逆补丁干跑闸，也不证明外部资金已撤回 |
+| **Skill** | `req.normalize` / `code.repo-patch` / `test.verify` / `issue.aggregate` / `kb.*` | `refund.intake` / `policy.match` / `finance.settle` / `payment.*` / `refund.compensate` / `notify.customer` | `claim.intake` / `claim.adjudicate` / `claim.settle` / `claim.pay` / `claim.observe` / `claim.compensate` | `investigation.file` / `investigation.classify` / `investigation.cancel` / `investigation.observe` / `investigation.compensate` | `ap.intake` / `ap.match` / `ap.plan-payment` / `ap.execute` / `ap.observe` / `ap.compensate` | ❌ 按域实现，同一份 `SkillContract` 九要素契约 |
+| **ToolPort** | `sandbox.git_apply` / `sandbox.pytest_run` | `gateway.refund` / `gateway.query` | `payer.submit` / `payer.query` | `clearing.cancel` / `clearing.resolution` | `bank.pay` / `bank.query` | ❌ 按域实现，同一份 `ToolPort` 九要素契约 |
+| **业务对象** | 补丁集 / 测试报告 / 架构契约 | `refund_case` / `payment_observation` | `claim_case` / `claim_payment_observation` | `investigation_case` / `resolution_observation` | `ap_case` / `ap_payment_observation` | ❌ 按域定义；业务表以 `plan_id` 关联编排，退款 / 理赔 / AP 另有各自的 business-ref 表 |
+| **Agent 角色** | requirement / architecture / coding / testing / reviewer | refund-intake / refund-policy / refund-finance / refund-payment | claim_intake / claim_adjudicator / claim_settlement / claim_payment | investigation_intake / investigation_classify / investigation_cancel / investigation_observe | ap_intake / ap_match / ap_control / ap_treasury | ❌ 按域实现，共用 `AgentIdentity` 与 `AGENT_POOL`；场景 9–10 直接创建 DAG，未演示 Manager 规划 |
 
-一句话：**表格里 ✅ 的那些一行都没改，❌ 的那些是新增文件**。下面是数字。
+✅ 表示已核实三新域复用既有实现且接域提交没有修改该内核面；⚠️ 表示代码虽共用，
+但判据范围或场景覆盖不足以宣称同等能力；❌ 表示按域新增实现。退款首次上线时
+增加财务闸的历史代价仍按 §2 单列，不能读成所有历史区间都零改动。
+
+### 1.1 三个新域：逐行核验的落点与限制
+
+**事件、状态机、Control Plane、Worker、Gate 的代码复用**有两层证据。
+首先，场景 8 的 `drive_happy` / `drive_failure`、场景 9 的 `drive_success`、
+场景 10 的两条 `drive_*` 都调用 `maos/flows/common.py::build`；它直接构造同一个
+`ControlPlane`、`WorkerRuntime`、`ReviewerGate`，不按业务域分支。
+Worker 经 `maos/contracts/events.py` 校验派单并构造结果事件；三个 Agent 子包的
+`__init__.py` 均以 import 触发既有 `@register`，没有另建 Worker。
+三个场景的 `run` 收口还把实际 `StateTransition` 与冻结 `TASK_TRANSITIONS` 比对，
+确认 `paid` / `returned` / `settled` / `compensated` 没进入 Task 状态机。
+
+其次，分别对接入理赔的提交、接入调查与 AP 的合并提交相对第一父提交核过以下差异，
+三条命令输出均为空；这项历史证据覆盖事件契约、Task 状态机、控制面与整个运行时：
+
+```bash
+git diff --stat 242117a^ 242117a -- maos/contracts/ maos/core/ maos/runtime/
+git diff --stat a2639b1^ a2639b1 -- maos/contracts/ maos/core/ maos/runtime/
+git diff --stat b36e043^ b36e043 -- maos/contracts/ maos/core/ maos/runtime/
+```
+
+**Gate 标 ⚠️**：`maos/runtime/gate.py::_review` 仍逐个调用七道闸，
+但 `_gate_finance_task` / `_gate_finance_plan` 都只接受 `FINANCE_BIZ_TYPE = "refund"`。
+新域分别使用 `claim` / `investigation` / `ap`，因此不能宣称财务闸已替它们验收。
+`_gate_gateway` 又只认 `content.receipt.code` 并查支付网关码表：理赔使用
+`payer_receipt`（`maos/agents/claim/_base.py`），AP 使用 `bank_advice`
+（`maos/agents/ap/treasury_agent.py`）；调查虽使用 `receipt`，却是
+`confirmation_code` / `return_reason_code` 等清算字段，没有通用 `code`
+（`maos/tools/investigation.py::ResolutionReceipt.to_dict`）。三新域的业务回执
+由各自的观察 Skill 与 guard 核验，七道闸的框架复用不等于其业务判据已泛化。
+
+**replan 标 ⚠️**：`maos/core/control_plane.py::ControlPlane` 的 replanner 缺省为
+`None`，`build` 不注入；场景 8–10 也没有调用 `set_replanner`。保留同一份
+`_should_replan` / `_max_replan`，并不能证明这些场景已经演练过重规划。
+
+**HITL 标 ✅**：三个场景均给关键任务设置 `effect_risk="H"`，通过
+`HumanApprovalQueue.pending` / `decide` 批准或驳回；真正的 `BLOCKED` 路由在
+`maos/core/control_plane.py::on_review_verdict`，人工处置经 `human_decision`，
+均无新域分支。理赔阈值、调账授权和 AP 付款批准记录仍在域层处理。
+
+**补偿标 ⚠️**：三个场景的 `compensate` 函数经最小授权 Identity 的 `SkillInvoker`
+调用各域的补偿 Skill，后者都记录 `CompensationExecuted`。
+但 `maos/runtime/gate.py::_gate_compensation` 只干跑带 `patch_ref` 的补偿产物，
+三新域没有产出这种逆补丁，不能宣称共用的干跑闸验证过这些域内补偿。
+`compensated` 仅表示本地停止推进、留档并交人工，不等于外部资金已退回。
 
 > ★ **Gate 行的数字注脚。** 「七道闸」是**当前主干的事实**，但这两道新闸不是一起
 > 落的，别把它们算成同一笔账：
@@ -119,7 +183,7 @@ git diff --shortstat 90251b3 4a70cb0 -- maos/contracts/ maos/core/
 ```
 
 `maos/runtime/` **不是零**，是 `gate.py` 的 +126 / −4：第六道闸 `_gate_finance`。
-这不是反例，理由是它**领域无关**：
+它没有依赖退款域模块或业务表，但触发口径仍限定退款：
 
 - 它的判据只落在两个数据形状上：`task["inputs"]` 里的 `biz_type` + `amount_claimed`，
   和 artifact `content` 里的 `finance_entry` 键。**不查退款域的任何一张表**。
@@ -134,8 +198,9 @@ git diff --shortstat 90251b3 4a70cb0 -- maos/contracts/ maos/core/
   `maos.domain.refund`」，按子串扫会把这句自我说明判成违例（这个坑真踩过，
   见 `maos/tests/test_refund_flow.py:461` 的注释）。
 
-- 换第三个域（比如保修、换货）时，这道闸**一行都不用改**：任何域只要把「申报金额」
-  放进 `task["inputs"]`、把「核算凭据」放进 artifact content，闸就照样成立。
+- ⚠️ 仅把申报金额放进 `task["inputs"]`、把核算凭据放进 artifact content，
+  **不足以让新域触发此闸**；还必须满足 `biz_type == FINANCE_BIZ_TYPE`（当前为
+  `refund`）。场景 8–10 没有冒用这个值，实际覆盖范围见 §1.1。
 
 可复现：
 
@@ -175,8 +240,8 @@ for p in contracts core runtime agents skills tools domain flows kb; do \
   `flows/scenario_7.py`）：Y-4 让场景 7 演换渠道重试，**这些本来就是按域实现的面**
   （见 §1 表里标 ❌ 的那几行），落在这里完全合规。
 
-关键是**内核三个子包（`contracts/` / `core/` / `runtime/`）里一行退款域知识都没有**：
-区间 B 对它们的改动是下面**五块通用能力**，且 §3 的两条守卫对区间 B 新增的每一行同样
+关键是**内核三个子包（`contracts/` / `core/` / `runtime/`）不 import 业务域模块**：
+区间 B 的改动归为下面五块能力，且 §3 的两条守卫对区间 B 新增的每一行同样
 生效、复跑仍 **2 passed**（整合轮 6 合入 D-1 + D-2 后复跑，见文末台账）。
 这五块都**不是**上退款域的代价：
 
@@ -191,13 +256,13 @@ for p in contracts core runtime agents skills tools domain flows kb; do \
   `HumanApprovalQueue.pending()` 随之放宽成「H **或** 控制面声明在等人决定」。
   任何有「机器已经没有别的招」这一档的域都用得上。
 - **第六道闸的 plan 级判据**（D-2，`runtime/` 的主体）判的是「计划里排没排财务复核这一步」。
-  它按 `FINANCE_AMOUNT_FIELD` **一个常量**在任务树里任意深度扫，换域时要动的也只有
-  这一个常量 —— 与任务级判据同一个。它是这五块里唯一带域词汇的，而域词汇集中在一个
-  常量上、且两条 AST 守卫仍绿，正是「领域无关」这句话在这里的确切含义。
+  它按 `FINANCE_AMOUNT_FIELD` 在任务 inputs 树里扫描，另有
+  `FINANCE_BIZ_TYPE = "refund"` 的触发限制。AST 守卫证明没有 import 业务域，
+  不能证明换域只改金额字段就能触发；三新域当前均未触发，见 §1.1。
 
 关键在于：**它们同样被 §3 的两条守卫钉着** —— `core/` 与 `runtime/` 不许 import
-`maos.domain.**` 这条约束，对区间 B 新增的每一行同样生效。所以「换第三个域这道闸
-一行都不用改」这句话，现在覆盖**第六和第七两道闸**。
+`maos.domain.**` 这条约束，对区间 B 新增的每一行同样生效。
+这证明模块依赖隔离；第六道闸的业务类型限制、第七道闸的码表适用范围仍须分别核验。
 
 ### 2.4 两个区间的合计（≠ 两段简单相加）
 
@@ -230,7 +295,7 @@ for p in contracts core runtime agents tools flows kb; do \
 | :-- | :-- | :-- | :-- |
 | 1 | 契约指纹锁 | `maos/tests/test_contracts_frozen.py` + `.contracts.lock` | `contracts/events.py` 与 `contracts/states.py` 的 sha256，加上 Phase 0 那 5 张既有表的 DDL。退款域新增了 **14 张表**（`maos/domain/refund/schema.sql`），**指纹一个字节没变** —— 只新增、不改既有 |
 | 2 | 内核不识域 | `test_gate.py:561`、`test_refund_flow.py:454` | 内核三个子包不许 import `maos.domain.**`，**区间 A 与区间 B 新增的行一视同仁** |
-| 3 | 权威事实边界 | `test_refund_flow.py::test_no_bypass_writes_settled` + `scripts/verify.py` 第 3 项 | 全仓只有 `payment.observe` 写得进 `settled`。详见 [`authoritative-facts.md`](authoritative-facts.md) |
+| 3 | 权威事实边界 | `test_refund_flow.py::test_no_bypass_writes_settled` + `scripts/verify.py` 第 3 项 | 退款的 `settled` 只能由 `payment.observe` 写入；其他域各自的权威写入者与状态由 `maos/domain/__init__.py` 注册并核验。详见 [`authoritative-facts.md`](authoritative-facts.md) |
 
 那 14 张表自己数：
 
@@ -248,7 +313,7 @@ grep -c 'CREATE TABLE' maos/domain/refund/schema.sql
 
 ## 4. 换一个新域要做什么（照着抄的清单）
 
-按当前代码结构，新增一个业务域**只需要新增文件**，不需要改任何既有内核文件：
+按场景 8–10 的接入方式，领域实现可通过新增文件接入既有内核：
 
 1. `maos/domain/<域>/objects.py`：业务对象与它们的表（**新增表，不改既有表**）。
 2. `maos/skills/builtin/<域>/*.py`：每个 skill 一个模块，类上打 `@register_skill`
@@ -258,22 +323,24 @@ grep -c 'CREATE TABLE' maos/domain/refund/schema.sql
    —— 同样是投放即注册（冻结契约 C-2）。
 5. `maos/flows/scenario_<N>.py`：演示流程。
 
-**不需要动**：`contracts/`、`core/`、`runtime/`、`artifacts.py`、`main.py`。
+**三新域接入没有动**：`contracts/`、`core/`、`runtime/`、`artifacts.py`。
+对外运行与证据还需接入 `maos/main.py` 的显式场景列表、证据生成脚本和域核验注册表；
+这正是 C1 补齐的部分。`DEFAULT_SCENARIOS` 保持 1–7，不能为了展示新域改动冻结缺省口径。
 
 退款域就是照这份清单落的，实测：**区间 A 下 `contracts/` 与 `core/` 的 diff 都是空的**
-（见 §2.1 与 §2.2）。`runtime/` 那一处 +126 是第六道闸，按 §2.2 的三条理由，
-它是领域无关的通用判据，不是「为退款域改内核」。
+（见 §2.1 与 §2.2）。`runtime/` 那一处 +126 是首次上线退款域时增加的第六道闸，
+历史代价必须保留，不能与三新域零改动的区间混算。
 
 ---
 
 ## 5. 这份论证的边界（不吹的部分）
 
-- **两个域，不是 N 个域。** 两个不同领域跑通不等于「任意领域可移植」，它证明的是
-  「内核里没有软件交付域的特化」这件否定式的事 —— 而这恰好是靠 §3 的机器守卫钉住的，
-  不是靠两个域的样本量说话。
+- **软件交付 + 四个业务域，不等于任意领域都已验证。** 三新域证明了既有内核可承载
+  各自的业务对象、观察与人工收口；Gate、replan 与补偿干跑的覆盖限制见 §1.1。
+  §3 的机器守卫证明模块依赖隔离，不能替代每个域的业务验收。
 - **`runtime/` 不是零。** 区间 A 下 `contracts/` 与 `core/` 是真零，但 `gate.py`
-  实实在在多了 126 行。本文件的主张是「这 126 行领域无关」，不是「一行都没加」——
-  前者靠 §2.2 的三条理由 + §3 的两条守卫支撑，后者本仓库给不出。
+  实实在在多了 126 行。它没有 import 退款业务模块，但带有退款触发口径；
+  §2.2 与 §3 支撑依赖隔离，不能据此宣称首次上退款域时运行时零改动。
 - ~~**第六道闸的注释与实际拦点不完全一致。**~~ **已修（task-D2，2026-08-29）。**
   原坑：`gate.py` 的注释写「没检索到历史案例 → 计划里漏排财务复核 → 在这里被拦下」，
   而实测漏排时闸没有可判的对象（没有任何任务带申报金额），真实拦点在 `payment.execute`
@@ -299,6 +366,9 @@ grep -c 'CREATE TABLE' maos/domain/refund/schema.sql
 ---
 
 ## 整合轮 5 收口台账（2026-08-29）
+
+以下台账保留当时的端点、数字与结论措辞。涉及「一行领域知识都没有」或
+「换域只动一个字段」的历史表述，当前应按 §1.1 的触发条件与覆盖限制解读。
 
 **区间 A（`90251b3..4a70cb0`）一个数字都没动** —— 两个端点都在过去，钉死了。
 合并 Y-1/Y-2/Y-3 后复跑逐条对上：`contracts/` 空、`core/` 空、`runtime/` +126 / −4。

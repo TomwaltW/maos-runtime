@@ -4,6 +4,12 @@
     python3 scripts/make_evidence.py                    # 全部场景 + scenario-R5
     python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景（不含 R5）
     python3 scripts/make_evidence.py --contrast         # 只产 contrast-R3/R4/R6
+    python3 scripts/make_evidence.py --domains          # 1-10 + R5，缺省落到 evidence/domains/
+
+``--domains`` 显式扩展到四个业务域，默认使用独立的 ``evidence/domains/`` 根目录，
+可用 ``--out`` 覆盖。无参仍只产 ``scenario-1..7 + scenario-R5`` 八束。
+场景 8/10 的失败路径原本另建运行时，分别保存在各场景的 ``runtime-2/`` 子束；
+原 ``run()`` 的全部断言执行成功后才导出，原始库不合并，索引列出子束出处。
 
 ``--contrast`` 是**另一条路**，不是第 9、10、11 束：缺省证据束恒为 8 束
 （``scenario-1..7`` + ``scenario-R5``）是跨轨冻结口径，``scripts/demo_preflight.sh``
@@ -40,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import glob
 import json
 import os
 import re
@@ -53,6 +60,8 @@ from datetime import datetime, timezone
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+from maos.domain import DOMAIN_REGISTRY
 
 HEADER_PREFIX = "# generated at "
 
@@ -239,7 +248,25 @@ def run_child(scenario: int, db_path: str) -> int:
     import maos.flows.common as common
     from maos.core.store import SqliteStore
 
-    common.SqliteStore = functools.partial(SqliteStore, db_path)
+    if scenario in (8, 9, 10):
+        # 新域 run() 自己决定运行时隔离：8/10 的成功、失败路径各有一个库，
+        # 9 则有意共库。每次 build 的库都单独保留，不能把不同路径强行混在一起，
+        # 否则失败路径的「全库无到账观察」断言会读到成功路径的数据。
+        runtime_count = 0
+
+        def runtime_store():
+            nonlocal runtime_count
+            runtime_count += 1
+            path = db_path
+            if runtime_count > 1:
+                directory = os.path.join(os.path.dirname(db_path), f"runtime-{runtime_count}")
+                os.makedirs(directory)
+                path = os.path.join(directory, "maos.db")
+            return SqliteStore(path)
+
+        common.SqliteStore = runtime_store
+    else:
+        common.SqliteStore = functools.partial(SqliteStore, db_path)
     from maos.main import main as maos_main
 
     return maos_main(["--scenario", str(scenario)])
@@ -401,25 +428,30 @@ def derive_business_outcome(conn, plan_id: str, plan_state: str, tables: set[str
                 "provenance": provenance.get(a["artifact_id"], "unknown"),
             })
 
-    # 判据二：退款到账。settled 只有 payment.observe 写得进去（R-1 的 guard），
-    # 所以带回执的 settled 是真正的外部判据。表不在就跳过，不臆造。
-    if {"refund_case", "payment_observation"} <= tables:
+    # 判据二：各域权威终态的外部观察。状态口径来自 guard，表不在就跳过。
+    # 退款字段和排列保持原样；其他域保留自己的主键与回执字段，不改业务对象。
+    for domain in DOMAIN_REGISTRY.values():
+        if not {domain.case_table, domain.observation_table} <= tables:
+            continue
+        states = sorted(domain.authoritative_states)
+        placeholders = ",".join("?" for _ in states)
         for c in conn.execute(
-                "SELECT tenant_id, case_id, biz_status FROM refund_case"
-                " WHERE plan_id=? AND biz_status='settled'", (plan_id,)):
+                f"SELECT tenant_id, {domain.case_id_column}, biz_status FROM {domain.case_table}"
+                f" WHERE plan_id=? AND biz_status IN ({placeholders})", (plan_id, *states)):
             for o in conn.execute(
-                    "SELECT request_id, gateway_code, observed_state, actor_invocation_id"
-                    " FROM payment_observation WHERE tenant_id=? AND case_id=?",
-                    (c["tenant_id"], c["case_id"])):
+                    f"SELECT {', '.join(domain.observation_fields)}"
+                    f" FROM {domain.observation_table} WHERE tenant_id=? AND {domain.case_id_column}=?",
+                    (c["tenant_id"], c[domain.case_id_column])):
+                if domain.name != "refund" and domain.observation_error(c["biz_status"], dict(o)):
+                    # 轮询中的 pending/CNCL 仍保留在原库与 trace，
+                    # 只有确实支持权威终态的观察才能列作业务成功判据。
+                    continue
                 evidence.append({
-                    "kind": "payment_observation",
-                    "case_id": c["case_id"],
+                    "kind": domain.observation_table,
+                    domain.case_id_column: c[domain.case_id_column],
                     "tenant_id": c["tenant_id"],
-                    "request_id": o["request_id"],
-                    "gateway_code": o["gateway_code"],
-                    "observed_state": o["observed_state"],
-                    "actor_invocation_id": o["actor_invocation_id"],
-                    "provenance": "payment_observation",
+                    **{field: o[field] for field in domain.observation_fields},
+                    "provenance": domain.observation_table,
                 })
 
     if plan_state == "FAILED":
@@ -600,6 +632,13 @@ def build_scenario(n: int, out_root: str, *, sha: str, secrets: dict[str, str],
 
         bundle = write_bundle(db_path, tmp, scenario=n, exit_code=proc.returncode,
                               wall_ms=wall_ms, log=log, sha=sha, secrets=secrets)
+        runtime_infos = []
+        for directory in sorted(glob.glob(os.path.join(tmp, "runtime-*"))):
+            runtime_bundle = write_bundle(
+                os.path.join(directory, "maos.db"), directory, scenario=n,
+                exit_code=proc.returncode, wall_ms=wall_ms, log=log, sha=sha, secrets=secrets)
+            runtime_infos.append(_bundle_info(
+                n, os.path.join(final, os.path.basename(directory)), runtime_bundle))
 
         leaks = scan_for_secrets(tmp, secrets)
         if leaks:
@@ -612,7 +651,10 @@ def build_scenario(n: int, out_root: str, *, sha: str, secrets: dict[str, str],
         shutil.rmtree(tmp, ignore_errors=True)
         raise
 
-    return _bundle_info(n, final, bundle)
+    info = _bundle_info(n, final, bundle)
+    if runtime_infos:
+        info["runtimes"] = runtime_infos
+    return info
 
 
 def _bundle_info(scenario, final: str, bundle: dict) -> dict:
@@ -805,10 +847,12 @@ def main_contrast(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="make_evidence", description="生成 evidence/scenario-<N>/ 证据束")
-    parser.add_argument("--out", default=os.path.join(ROOT, "evidence"),
-                        help="输出根目录，缺省 evidence/")
+    parser.add_argument("--out", default=None,
+                        help="输出根目录，缺省 evidence/；--domains 时缺省 evidence/domains/")
     parser.add_argument("--scenarios", default=None,
-                        help="逗号分隔的场景号；缺省取 maos.main.ALL_SCENARIOS")
+                        help="逗号分隔的场景号；缺省取 maos.main.DEFAULT_SCENARIOS（1-7）")
+    parser.add_argument("--domains", action="store_true",
+                        help="显式生成 1-10 + R5 的多域证据；不改变冻结的缺省八束")
     parser.add_argument("--timeout", type=int, default=600, help="单场景超时秒数")
     parser.add_argument("--strict-scenarios", action="store_true",
                         help="ALL_SCENARIOS 里声明了但模块还没有的场景，视为错误而不是跳过")
@@ -822,6 +866,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--_contrast", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_db", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.domains and (args.scenarios or args.contrast):
+        parser.error("--domains 不能与 --scenarios / --contrast 同用")
+    if args.out is None:
+        args.out = os.path.join(ROOT, "evidence", "domains") if args.domains else os.path.join(ROOT, "evidence")
 
     if args._child is not None:
         if not args._db:
@@ -838,12 +886,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.contrast:
         return main_contrast(args)
 
-    from maos.main import ALL_SCENARIOS
+    from maos.main import ALL_SCENARIOS, DEFAULT_SCENARIOS
 
     if args.scenarios:
         wanted = [int(x) for x in args.scenarios.split(",") if x.strip()]
     else:
-        wanted = list(ALL_SCENARIOS)
+        wanted = list(ALL_SCENARIOS if args.domains else DEFAULT_SCENARIOS)
     # 指定了 --scenarios 就是奔着某几场去的，别拖上 R5；全量跑则缺省带上。
     want_r5 = args.r5 if args.r5 is not None else not args.scenarios
 

@@ -536,17 +536,12 @@ def test_payment_observation_evidence_with_doctored_receipt_is_caught(outcome_ca
 
 
 def test_evidence_kinds_match_the_generator_side():
-    """取值域在 verify 与 make_evidence 各存一份（核验器不 import 生成脚本），
-    那就得有人守着它们别分叉 —— 与 E-1 那条 `test_criterion_matches_the_guard_side_table`
-    同一个套路。生成侧新增一类判据而这里没跟上，新那类会被一律判负。
-    """
-    source = (ROOT / "scripts" / "make_evidence.py").read_text(encoding="utf-8")
-    body = source.split("def derive_business_outcome")[1].split("\ndef ")[0]
-    appended = set(re.findall(r'"kind":\s*"([a-z_]+)"', body))
-
-    assert appended == set(verify.EXTERNAL_EVIDENCE_KINDS), (
-        f"两边的外部判据取值域分叉了：生成侧装 {sorted(appended)}，"
-        f"核验侧认 {sorted(verify.EXTERNAL_EVIDENCE_KINDS)}")
+    """导出器与核验器使用同一张注册表，新增观察类型无需另抄字面量。"""
+    from maos.domain import DOMAIN_REGISTRY
+    make_evidence = _load_script("make_evidence")
+    assert make_evidence.DOMAIN_REGISTRY is DOMAIN_REGISTRY
+    expected = {"test_report"} | {spec.observation_table for spec in DOMAIN_REGISTRY.values()}
+    assert expected == set(verify.EXTERNAL_EVIDENCE_KINDS)
 
 
 # ===========================================================================

@@ -1,0 +1,168 @@
+# generated at 2026-09-04T23:45:29.316294+00:00 from 6086dfcb33454aea486e08632797eeed70731b24-dirty
+场景 9：银行差错处理（顺利路径），无 key 确定性复现
+
+[1] 待人工调账审批: 差错定性并申请人工调账授权（effect_risk=H —— 动别人的钱必须有人批，监管要求）
+    @boss-bank:maos.local 放行 → 已落 adjustment_approval，investigation.cancel 这才读得到授权
+
+[2] 已发出 camt.056，问询清算方 3 次，逐次观察如下：
+    第1次  camt.029.001.08  code=PDCR  退回金额=         -  -> pending
+    第2次  camt.029.001.08  code=CNCL  退回金额=         -  -> cancellation_confirmed
+    第3次  pacs.004.001.09  code=CUST  退回金额=  12500.00  -> returned
+
+    ↑ 第 2 次就问到了 CNCL（官方定义：清算方确认撤销成功）——**系统那时一个状态都没推**
+      因为 CNCL 证明的是「撤销指令照办了」，不是「钱回来了」；资金证据只有 pacs.004 给得出
+
+[3] 待主管收口: 问询清算方决议并确认资金下落 —— 资金已退回=True，可放行
+
+====================================================================
+场景 9：银行差错处理（顺利路径）
+====================================================================
+Plan: DONE  |  处理一笔跨行重复支付差错：向清算方发起撤销并确认资金退回
+  · 受理跨行支付差错并核对原始报文快照                    DONE             attempt=1 risk=L
+  · 差错定性并申请人工调账授权                        DONE             attempt=1 risk=M
+  · 向清算方发出 camt.056 撤销请求                 DONE             attempt=1 risk=M
+  · 问询清算方决议并确认资金下落                       DONE             attempt=1 risk=M
+  状态迁移轨迹:
+    task-s9-file  PENDING          -> DISPATCHED       [dispatch]
+    task-s9-file  DISPATCHED       -> RUNNING          [claim]
+    task-s9-file  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9-file  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s9-classify  PENDING          -> DISPATCHED       [dispatch]
+    task-s9-classify  DISPATCHED       -> RUNNING          [claim]
+    task-s9-classify  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9-classify  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s9-classify  BLOCKED          -> DONE             [human_approve]
+    task-s9-cancel  PENDING          -> DISPATCHED       [dispatch]
+    task-s9-cancel  DISPATCHED       -> RUNNING          [claim]
+    task-s9-cancel  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9-cancel  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s9-observe  PENDING          -> DISPATCHED       [dispatch]
+    task-s9-observe  DISPATCHED       -> RUNNING          [claim]
+    task-s9-observe  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9-observe  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s9-observe  BLOCKED          -> DONE             [human_approve]
+
+  业务状态    : returned
+  观察共      : 3 条（['pending', 'cancellation_confirmed', 'returned']）
+  returned 观察: 1 条，来自 ['pacs.004.001.09']
+  Plan 终态   : DONE
+
+------------------------------------------------------------------------
+第二笔差错：清算方确认撤销（CNCL），但退款报文（pacs.004）永远不来
+------------------------------------------------------------------------
+
+[4] 待人工调账审批: 差错定性并申请人工调账授权（既有的 effect_risk=H 入口，未改动）
+
+[5] 问询清算方 5 次（上限 5），逐次观察如下：
+    第1次  camt.029.001.08  code=PDCR  退回金额=         -  -> pending
+    第2次  camt.029.001.08  code=CNCL  退回金额=         -  -> cancellation_confirmed
+    第3次  camt.029.001.08  code=CNCL  退回金额=         -  -> cancellation_confirmed
+    第4次  camt.029.001.08  code=CNCL  退回金额=         -  -> cancellation_confirmed
+    第5次  camt.029.001.08  code=CNCL  退回金额=         -  -> cancellation_confirmed
+
+    最后一次: camt.029.001.08 confirmation_code=CNCL
+    官方定义: Used when a requested cancellation is successful.
+    出处    : https://www.iso20022.org/sites/default/files/media/file/ExternalCodeSets_3Q2022_v2.xlsx
+    撤销请求有结论了吗 request_resolved=True
+    钱回来了吗         funds_returned  =False   ← **业务成功与否看这个**
+
+[6] 四个 Agent 的任务状态: {'file': 'DONE', 'classify': 'DONE', 'cancel': 'DONE', 'observe': 'BLOCKED'}
+    没有一个 Agent 报 failed —— 它们都如实完成了自己那一步。业务没成功这件事，不在任何一个 Agent 的返回值里
+
+[7] 待主管处置: 问询清算方决议并确认资金下落
+    主管看到的产物写着「清算方已确认撤销」，但 funds_returned=False —— 不能当成功放行
+
+[8] 域内补偿: 撤回 1 份请求，最后观察到的下落 = cancellation_confirmed
+    （**不是 rejected** —— 清算方明明确认撤销了，写成被拒会让对账的人从错误方向查起）
+    人工对账工单: INV-case-s9-0002 -> @boss-bank:maos.local
+      · 清算方已回 camt.029/CNCL 确认撤销，但未收到 pacs.004 退款报文 ——先到清算系统按 end-to-end 参考号查该笔资金是否已在退回途中
+      · 已在途：等待 pacs.004 到达后按正常流程收口，不要重发 camt.056
+
+====================================================================
+场景 9：银行差错处理（失败路径）
+====================================================================
+Plan: FAILED  |  处理第二笔跨行重复支付差错：清算方确认撤销但资金未退回
+  · 受理跨行支付差错并核对原始报文快照                    DONE             attempt=1 risk=L
+  · 差错定性并申请人工调账授权                        DONE             attempt=1 risk=M
+  · 向清算方发出 camt.056 撤销请求                 DONE             attempt=1 risk=M
+  · 问询清算方决议并确认资金下落                       FAILED           attempt=1 risk=M
+  状态迁移轨迹:
+    task-s9b-file  PENDING          -> DISPATCHED       [dispatch]
+    task-s9b-file  DISPATCHED       -> RUNNING          [claim]
+    task-s9b-file  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9b-file  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s9b-classify  PENDING          -> DISPATCHED       [dispatch]
+    task-s9b-classify  DISPATCHED       -> RUNNING          [claim]
+    task-s9b-classify  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9b-classify  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s9b-classify  BLOCKED          -> DONE             [human_approve]
+    task-s9b-cancel  PENDING          -> DISPATCHED       [dispatch]
+    task-s9b-cancel  DISPATCHED       -> RUNNING          [claim]
+    task-s9b-cancel  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9b-cancel  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s9b-observe  PENDING          -> DISPATCHED       [dispatch]
+    task-s9b-observe  DISPATCHED       -> RUNNING          [claim]
+    task-s9b-observe  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s9b-observe  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s9b-observe  BLOCKED          -> FAILED           [human_reject]
+
+  业务状态  : compensated（全程没有经过 returned）
+  returned 观察: 0 条 —— 没问出资金证据就一条都不该有
+  真实观察  : 5 条 {'cancellation_confirmed': 4, 'pending': 1}
+  补偿记录  : 2 行 ['cancellation_withdrawn', 'manual_reconciliation_ticket']
+  补偿事件  : 1 条 CompensationExecuted
+  Plan 终态 : FAILED（主管驳回，业务确实没成功）
+
+========================================================================
+场景 9 收口：两条路径共用同一句 CNCL，一条拿到 pacs.004 收口 returned，
+            另一条拿不到就一个字都不写 —— 差别不在 Agent 说了什么，
+            在于外部权威到底给没给出资金证据。
+========================================================================
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_ff082f4c4690，共 4 个任务
+INFO  maos.cp      [task-s9-file] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9-file] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9-file] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9-file] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9-file] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s9-classify] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9-classify] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9-classify] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9-classify] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9-classify] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s9-classify] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s9-cancel] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9-cancel] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9-cancel] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9-cancel] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9-cancel] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s9-observe] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9-observe] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9-observe] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9-observe] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9-observe] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s9-observe] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      创建计划 plan_231fbe8d576a，共 4 个任务
+INFO  maos.cp      [task-s9b-file] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9b-file] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9b-file] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9b-file] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9b-file] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s9b-classify] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9b-classify] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9b-classify] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9b-classify] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9b-classify] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s9b-classify] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s9b-cancel] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9b-cancel] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9b-cancel] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9b-cancel] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9b-cancel] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s9b-observe] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s9b-observe] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s9b-observe] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s9b-observe] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s9b-observe] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s9b-observe] 无补偿引用，跳过回滚
+INFO  maos.cp      [task-s9b-observe] BLOCKED -> FAILED (human_reject)

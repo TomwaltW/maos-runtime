@@ -1,0 +1,223 @@
+# generated at 2026-09-04T23:45:28.947874+00:00 from 6086dfcb33454aea486e08632797eeed70731b24-dirty
+场景 8：保险理赔（顺利路径），无 key 确定性复现
+
+[1] 待主管审批: 核算赔款并逐行分摊（赔款 9900.00 > 阈值 5000）
+    语义审查: 赔款按保单锁定的条款 v1 核算，依据 CL-01@v1；赔付尚未发起，可放行
+
+[2] 赔付方回执: observed_state=paid（问了 2 次问出来的，不是发出去就算数）
+    biz_status=paid —— 全系统只有 claim.observe 写得进 paid
+
+[3] 待主管收口: 发起赔付并观察赔付方终态 —— 回执已到账，可放行
+
+====================================================================
+场景 8：保险理赔（顺利路径）
+====================================================================
+Plan: DONE  |  处理住院医疗费用理赔：三源报案聚合，按投保当时锁定的条款版本裁定并赔付
+  · 受理三源报案并聚合证据                          DONE             attempt=1 risk=L
+  · 按投保当时锁定的条款版本裁定赔付责任                   DONE             attempt=1 risk=L
+  · 核算赔款并逐行分摊                            DONE             attempt=1 risk=M
+  · 发起赔付并观察赔付方终态                         DONE             attempt=1 risk=M
+  状态迁移轨迹:
+    task-s8-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s8-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s8-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s8-adjudicate  PENDING          -> DISPATCHED       [dispatch]
+    task-s8-adjudicate  DISPATCHED       -> RUNNING          [claim]
+    task-s8-adjudicate  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8-adjudicate  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s8-settle  PENDING          -> DISPATCHED       [dispatch]
+    task-s8-settle  DISPATCHED       -> RUNNING          [claim]
+    task-s8-settle  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8-settle  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s8-settle  BLOCKED          -> DONE             [human_approve]
+    task-s8-pay  PENDING          -> DISPATCHED       [dispatch]
+    task-s8-pay  DISPATCHED       -> RUNNING          [claim]
+    task-s8-pay  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8-pay  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s8-pay  BLOCKED          -> DONE             [human_approve]
+
+====================================================================
+场景 8：保险理赔（失败路径）—— 赔付方没说到账，系统就一个字都不写
+====================================================================
+
+--------------------------------------------------------------------
+第一段：赔付方返 CARC 96 而不是到账
+--------------------------------------------------------------------
+
+[a] 待主管审批: 核算赔款并逐行分摊（既有的 effect_risk=H 入口，未改动）
+
+[b] 赔付方回执: observed_state=denied（问了 0 次）
+    X12 判据: CARC 96 / 组码 PI / 备注码 ['N130']
+    官方描述: Non-covered charge(s). At least one Remark Code must be provided (may be comprised of either the NCPDP Reject Reason Code, or Remittance Advice Remark Code that is not an ALERT.) Usage: Refer to the 835 Healthcare Policy Identification Segment (loop 2110 Service Payment Information REF), if present.
+    处置口径: recourse=none（MAOS 侧口径，非 X12 原文）
+    出处    : https://x12.org/codes/claim-adjustment-reason-codes（核对于 2026-08-31）
+
+[c] 待主管处置: 发起赔付并观察赔付方终态 —— 回执不是到账，不能当成功放行
+
+[d] 域内补偿: 作废 1 条赔付指令，最后观察到的下落 = denied（CARC=96）
+    人工工单: CT-clm-s8-0002 -> 沈思锴
+      · 到赔付方后台按 idempotency_key 核对这笔赔款的真实下落（MAOS 最后观察到：denied）
+      · 赔付方给出的调整码：CARC 96
+      · 该码属终态拒赔，重报无意义；按拒赔口径向被保险人解释并结案
+      · 对被保险人回访并关闭本案
+
+  业务状态  : compensated（全程没有经过 paid）
+  paid 观察: 0 条 —— 没问出终态就一条都不该有
+  补偿记录  : 2 行 ['claim_payment_revoked', 'manual_ticket']
+  Plan 终态 : FAILED（主管驳回，业务确实没成功）
+  本案观察  : 1 条 [('denied', '96')]
+  Agent 自述: 4/4 个任务回报 ok —— 「都说完成了」和「业务成功了」是两件事
+
+====================================================================
+场景 8 失败路径 · 第一段：赔付方返 CARC 96 而不是到账
+====================================================================
+Plan: FAILED  |  处理第二笔住院医疗理赔：条款与金额均无异议，但赔付方判定该项不在保障范围
+  · 受理三源报案并聚合证据                          DONE             attempt=1 risk=L
+  · 按投保当时锁定的条款版本裁定赔付责任                   DONE             attempt=1 risk=L
+  · 核算赔款并逐行分摊                            DONE             attempt=1 risk=M
+  · 发起赔付并观察赔付方终态                         FAILED           attempt=1 risk=M
+  状态迁移轨迹:
+    task-s8b-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s8b-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s8b-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8b-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s8b-adjudicate  PENDING          -> DISPATCHED       [dispatch]
+    task-s8b-adjudicate  DISPATCHED       -> RUNNING          [claim]
+    task-s8b-adjudicate  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8b-adjudicate  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s8b-settle  PENDING          -> DISPATCHED       [dispatch]
+    task-s8b-settle  DISPATCHED       -> RUNNING          [claim]
+    task-s8b-settle  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8b-settle  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s8b-settle  BLOCKED          -> DONE             [human_approve]
+    task-s8b-pay  PENDING          -> DISPATCHED       [dispatch]
+    task-s8b-pay  DISPATCHED       -> RUNNING          [claim]
+    task-s8b-pay  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8b-pay  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s8b-pay  BLOCKED          -> FAILED           [human_reject]
+
+--------------------------------------------------------------------
+第二段：轮询 3 次仍问不出终态
+--------------------------------------------------------------------
+
+[a] 待主管审批: 核算赔款并逐行分摊（既有的 effect_risk=H 入口，未改动）
+
+[b] 赔付方回执: observed_state=processing（问了 3 次）
+    赔付方一个调整码都没给 —— 纯粹是还没问出终态，**不是拒付**，所以一行观察都不写
+
+[c] 待主管处置: 发起赔付并观察赔付方终态 —— 回执不是到账，不能当成功放行
+
+[d] 域内补偿: 作废 1 条赔付指令，最后观察到的下落 = unobserved（CARC=无）
+    人工工单: CT-clm-s8-0003 -> 沈思锴
+      · 到赔付方后台按 idempotency_key 核对这笔赔款的真实下落（MAOS 最后观察到：unobserved）
+      · 下落为已赔付则补记账；未赔付则按人工流程重新发起或改单
+      · 对被保险人回访并关闭本案
+
+  业务状态  : compensated（全程没有经过 paid）
+  paid 观察: 0 条 —— 没问出终态就一条都不该有
+  补偿记录  : 2 行 ['claim_payment_revoked', 'manual_ticket']
+  Plan 终态 : FAILED（主管驳回，业务确实没成功）
+  本案观察  : 0 条 []
+  Agent 自述: 4/4 个任务回报 ok —— 「都说完成了」和「业务成功了」是两件事
+
+====================================================================
+场景 8 失败路径 · 第二段：轮询 3 次仍问不出终态
+====================================================================
+Plan: FAILED  |  处理第三笔住院医疗理赔：赔付方受理后迟迟不给终态
+  · 受理三源报案并聚合证据                          DONE             attempt=1 risk=L
+  · 按投保当时锁定的条款版本裁定赔付责任                   DONE             attempt=1 risk=L
+  · 核算赔款并逐行分摊                            DONE             attempt=1 risk=M
+  · 发起赔付并观察赔付方终态                         FAILED           attempt=1 risk=M
+  状态迁移轨迹:
+    task-s8c-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s8c-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s8c-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8c-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s8c-adjudicate  PENDING          -> DISPATCHED       [dispatch]
+    task-s8c-adjudicate  DISPATCHED       -> RUNNING          [claim]
+    task-s8c-adjudicate  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8c-adjudicate  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s8c-settle  PENDING          -> DISPATCHED       [dispatch]
+    task-s8c-settle  DISPATCHED       -> RUNNING          [claim]
+    task-s8c-settle  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8c-settle  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s8c-settle  BLOCKED          -> DONE             [human_approve]
+    task-s8c-pay  PENDING          -> DISPATCHED       [dispatch]
+    task-s8c-pay  DISPATCHED       -> RUNNING          [claim]
+    task-s8c-pay  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s8c-pay  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s8c-pay  BLOCKED          -> FAILED           [human_reject]
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_45b1203e310f，共 4 个任务
+INFO  maos.cp      [task-s8-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s8-adjudicate] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8-adjudicate] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8-adjudicate] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8-adjudicate] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8-adjudicate] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s8-settle] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8-settle] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8-settle] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8-settle] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8-settle] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s8-settle] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s8-pay] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8-pay] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8-pay] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s8-pay] BLOCKED -> DONE (human_approve)
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_00e1c9f4f739，共 4 个任务
+INFO  maos.cp      [task-s8b-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8b-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8b-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8b-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8b-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s8b-adjudicate] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8b-adjudicate] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8b-adjudicate] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8b-adjudicate] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8b-adjudicate] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s8b-settle] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8b-settle] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8b-settle] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8b-settle] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8b-settle] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s8b-settle] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s8b-pay] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8b-pay] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8b-pay] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8b-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8b-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s8b-pay] 无补偿引用，跳过回滚
+INFO  maos.cp      [task-s8b-pay] BLOCKED -> FAILED (human_reject)
+INFO  maos.cp      创建计划 plan_e097aa6777ba，共 4 个任务
+INFO  maos.cp      [task-s8c-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8c-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8c-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8c-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8c-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s8c-adjudicate] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8c-adjudicate] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8c-adjudicate] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8c-adjudicate] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8c-adjudicate] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s8c-settle] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8c-settle] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8c-settle] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8c-settle] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8c-settle] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s8c-settle] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s8c-pay] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s8c-pay] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s8c-pay] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s8c-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s8c-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s8c-pay] 无补偿引用，跳过回滚
+INFO  maos.cp      [task-s8c-pay] BLOCKED -> FAILED (human_reject)

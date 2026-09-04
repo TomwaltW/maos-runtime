@@ -23,9 +23,8 @@ import sys
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)-12s %(message)s")
 log = logging.getLogger("maos.main")
 
-ALL_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)   # D-05：退款域用整数 6=顺利路径 / 7=失败路径
-# 缺省序列 = 全部已落地的场景。排除标准是「模块不存在」，不是「谁负责」——
-# scenario_7.py 已落地，按这条口径自己进来，故当前与 ALL_SCENARIOS 重合。
+ALL_SCENARIOS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)  # 8=理赔 / 9=银行差错 / 10=应付账款
+# 与 ALL_SCENARIOS 有意不对称：1-7 + R5 是跨轨冻结口径，改缺省序列会打破复赛材料。
 DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)
 
 

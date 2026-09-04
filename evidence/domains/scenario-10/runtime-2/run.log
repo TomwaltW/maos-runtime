@@ -1,0 +1,153 @@
+# generated at 2026-09-04T23:45:29.708248+00:00 from 6086dfcb33454aea486e08632797eeed70731b24-dirty
+场景 10（顺利路径）：应付账款三单匹配与付款 —— 银行给了流水号才算付掉
+
+[1] 三单匹配: 通过（跑了 11 条判据）
+    容差    : 数量 0.5 件 / 单价 0.01 元 / 税额 0.02 元 —— 三个量纲不同，不合并成一个
+    差异    : 第 1 行单价差 0.01（容差内）、第 2 行收货多 0.4 件（容差内）
+    应付    : 3934.66（按 BR-CO-16 算出，不取发票自称的 3934.66）
+
+[2] 待主管审批: 出付款计划，交主管审批（effect_risk=H，出账不可逆）
+    付款计划: 3934.66 CNY -> 华东紧固件，方式 30 Credit transfer
+    依据    : ['BR-CO-16', 'BR-CL-16', 'BR-CL-17']
+
+[3] 付款指令: 3934.66 CNY，受理回单 accepted（**非终态**）
+    幂等键  : ap:tnt-mfg-ap:case-ap-0001 —— 由 (租户, 案子) 唯一确定，一张发票只允许有一笔付款
+
+[4] 银行回单: settled（问了 2 次）
+    流水号  : bkref-a515b73b7250  起息 2026-08-31
+    —— settled 是**问出来的**：把银行换成一步返回 settled 的桩，ap.observe 就没有存在理由了
+
+====================================================================
+场景 10 顺利路径：应付账款三单匹配与付款
+====================================================================
+Plan: DONE  |  支付华东紧固件 2026-08 月结货款：三单匹配后按 BR-CO-16 出账
+  · 收供应商发票并确认三单齐备                        DONE             attempt=1 risk=L
+  · 三单匹配：数量、单价、税额各自容差                    DONE             attempt=1 risk=M
+  · 出付款计划，交主管审批                          DONE             attempt=1 risk=L
+  · 发出付款指令并观察银行回单                        DONE             attempt=1 risk=M
+  状态迁移轨迹:
+    task-s10-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s10-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s10-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s10-match  PENDING          -> DISPATCHED       [dispatch]
+    task-s10-match  DISPATCHED       -> RUNNING          [claim]
+    task-s10-match  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10-match  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s10-plan  PENDING          -> DISPATCHED       [dispatch]
+    task-s10-plan  DISPATCHED       -> RUNNING          [claim]
+    task-s10-plan  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10-plan  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s10-plan  BLOCKED          -> DONE             [human_approve]
+    task-s10-pay  PENDING          -> DISPATCHED       [dispatch]
+    task-s10-pay  DISPATCHED       -> RUNNING          [claim]
+    task-s10-pay  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10-pay  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s10-pay  BLOCKED          -> DONE             [human_approve]
+
+  业务状态  : settled
+  settled 观察: 1 条，流水号 ['bkref-a515b73b7250']
+  Plan 终态 : DONE
+
+场景 10（失败路径）：三单无异议、四个 Agent 全回 ok —— 而这笔钱付没付出去，系统说不知道
+
+[1] 三单匹配: 通过 —— 应付 3898.50。**本场景的失败不在匹配**
+
+[2] 待主管审批: 出付款计划，交主管审批
+
+[3] 银行回单: pending（问了 3 次仍非终态）
+    清算中（第 3 次查询）
+    观察行  : 0 条 —— 「我问累了」和「银行说没付成」是两回事，问不出来就一个字都不写
+
+[4] 四个 Agent 的自述: {'task-s10b-intake': 'ok', 'task-s10b-match': 'ok', 'task-s10b-plan': 'ok', 'task-s10b-pay': 'ok'}
+    全部 ok。而 ap_case.biz_status = payment_requested —— 「Agent 说完成了」不等于业务成功了
+
+[5] 待主管处置: 发出付款指令并观察银行回单 —— 回单非终态，不能当成功放行
+
+[6] 域内补偿: 作废 1 笔付款指令，最后观察到的下落 = unobserved（**不是 failed** —— 银行自己都没给出结论）
+    对账工单: recon-tnt-mfg-ap-case-ap-0002 -> @boss-ap:maos.local
+    工单待办: 去银行流水里核这几笔指令到底有没有出账；出账了就在外部系统补记账，没出账就重开付款流程。**不要**凭本记录断定钱没付出去
+
+====================================================================
+场景 10 失败路径：应付账款付款回单问不出来
+====================================================================
+Plan: FAILED  |  支付华东紧固件密封件货款：三单无异议，但银行回单迟迟问不出来
+  · 收供应商发票并确认三单齐备                        DONE             attempt=1 risk=L
+  · 三单匹配：数量、单价、税额各自容差                    DONE             attempt=1 risk=M
+  · 出付款计划，交主管审批                          DONE             attempt=1 risk=L
+  · 发出付款指令并观察银行回单                        FAILED           attempt=1 risk=M
+  状态迁移轨迹:
+    task-s10b-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s10b-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s10b-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10b-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s10b-match  PENDING          -> DISPATCHED       [dispatch]
+    task-s10b-match  DISPATCHED       -> RUNNING          [claim]
+    task-s10b-match  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10b-match  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s10b-plan  PENDING          -> DISPATCHED       [dispatch]
+    task-s10b-plan  DISPATCHED       -> RUNNING          [claim]
+    task-s10b-plan  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10b-plan  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s10b-plan  BLOCKED          -> DONE             [human_approve]
+    task-s10b-pay  PENDING          -> DISPATCHED       [dispatch]
+    task-s10b-pay  DISPATCHED       -> RUNNING          [claim]
+    task-s10b-pay  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s10b-pay  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s10b-pay  BLOCKED          -> FAILED           [human_reject]
+
+  业务状态  : compensated（全程没有经过 settled）
+  settled 观察: 0 条 —— 没问出终态就一条都不该有
+  补偿记录  : 2 行 ['payment_instruction_revoked', 'reconciliation_ticket']
+  补偿事件  : 1 条 CompensationExecuted
+  Plan 终态 : FAILED（主管驳回，业务确实没成功）
+  Agent 自述 : {'task-s10b-intake': 'ok', 'task-s10b-match': 'ok', 'task-s10b-plan': 'ok', 'task-s10b-pay': 'ok'} —— 四个全 ok，而案子没成
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_9998bcf5159e，共 4 个任务
+INFO  maos.cp      [task-s10-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s10-match] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10-match] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10-match] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10-match] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10-match] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s10-plan] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10-plan] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10-plan] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10-plan] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10-plan] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s10-plan] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s10-pay] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10-pay] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10-pay] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s10-pay] BLOCKED -> DONE (human_approve)
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_118faf3b3870，共 4 个任务
+INFO  maos.cp      [task-s10b-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10b-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10b-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10b-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10b-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s10b-match] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10b-match] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10b-match] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10b-match] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10b-match] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s10b-plan] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10b-plan] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10b-plan] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10b-plan] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10b-plan] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s10b-plan] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s10b-pay] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s10b-pay] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s10b-pay] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s10b-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s10b-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s10b-pay] 无补偿引用，跳过回滚
+INFO  maos.cp      [task-s10b-pay] BLOCKED -> FAILED (human_reject)

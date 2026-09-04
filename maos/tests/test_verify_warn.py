@@ -236,7 +236,7 @@ def test_orphan_receipt_in_transit_still_warns(make_case, mid_state):
     assert len(warns) == 1, f"中间态 {mid_state} 的孤儿回执必须报出来，实际 notes={chk.notes}"
     assert "case-mid" in warns[0] and mid_state in warns[0], \
         f"报出来得说清是哪个 case、停在哪一态，实际：{warns[0]}"
-    assert chk.status == verify.PASS, "这是 warn 不是判负 —— 观察到了但没收口，不是造假"
+    assert chk.status == verify.SKIP and chk.total == 0, "warn 保留；没有权威终态可核时分母为 0，必须 SKIP"
 
 
 @pytest.mark.parametrize("terminal_state", ["compensated", "rejected"])

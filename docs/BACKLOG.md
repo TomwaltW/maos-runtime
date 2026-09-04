@@ -1334,7 +1334,7 @@ exit=0，`gen_docs.py --check` exit=0，`demo_preflight.sh` 5 步全过 exit=0�
 | :-- | :-- | :-- | :-- |
 | `scripts/verify.py:1110` | **只有 `trace.json` / `result.json` 过 provenance 校验**，`run.log` / `kb-hits.json` / `kb-dump.json` / `dag-diff.json` 可以手写。铁律 3 的「每个 evidence 文件首行必须是 generated at」在**交付束上没有被强制** | 把 `kb-hits.json` 首行改成任意散文、`run.log` 重写成伪造的 `from deadbeef…` → 仍 `RESULT: 8/8 PASS`, exit 0。测试读起来像全束锚定，实则 `test_verify_receipt.py` 的伪造头测试**恰好只打那两个被检查的文件**，`test_trace_evidence.py` 那条跑在 tmp 新产物上、钉的是生成器不是交付束 | T36 |
 | `scripts/verify.py:1096` | **整束删掉不可见**：`load_cases` 只按 `os.listdir` 建集合，`evidence_sha()` 除 `git_sha` 外不读 `INDEX.json` 任何东西 | 把 `evidence/scenario-7`（唯一的失败路径束，带 FAILED plan 与 compensated 业务结局）移走 → `8/8 PASS`, exit 0，而 `INDEX.json` 的 `produced` 里还列着它。表头数字数的是 check 不是 bundle | T36 |
-| `scripts/verify.py:373` | `check_business_ref` 只走 DB→JSON 单向，**JSON 里多出来的条目永远不被访问**，文件自己的 resolved/dangling 合计也不重算 | 往 `scenario-6/business-objects.json` 塞一条伪造 case 并把 `resolved` +1 → `[PASS] business-ref 35/35`。`check_hash_integrity` 有反向那一遍，`check_business_ref` 没有 | T36 |
+| `scripts/verify.py:373` | `check_business_ref` 只走 DB→JSON 单向，**JSON 里多出来的条目永远不被访问**，文件自己的 resolved/dangling 合计也不重算 | 往 `evidence/scenario-6/business-objects.json` 塞一条伪造 case 并把 `resolved` +1 → `[PASS] business-ref 35/35`。`check_hash_integrity` 有反向那一遍，`check_business_ref` 没有 | T36 |
 | `scripts/verify.py:1090` | `resolve_db` 在 `--db` 既不是文件也不是含该场景的目录时**静默回落**到仓库自己的 `evidence/<scenario>/maos.db` | `--db /tmp/does-not-exist.db` → `8/8 PASS`。评委指向解压出来的发布副本却打错路径，拿到的是给在库内那份背书的绿屏，且没有任何警告 | T36 |
 | `scripts/verify.py:109` | **provenance 锚定完全自指**：两侧都先剥 `-dirty` 再比；sha 从不与仓库真实 HEAD 比对（`verify.py` 里没有任何 git/subprocess 调用）；`MAOS_EVIDENCE_PINNED_SHA` 原样接受、不校验、且不打 dirty | (a) 把 50 个文件加 `INDEX.json` 全改成 `<sha>-dirty` → `8/8 PASS` 且全输出 `grep -ci dirty` = 0；(b) evidence 自称 `0df1596` 而 HEAD 是 `784aad7`，今天照样 8/8；(c) `MAOS_EVIDENCE_PINNED_SHA=deadbeef-totally-not-a-sha` 会被盖进每个头**和** `INDEX.json`，然后两份伪造互相比对 | T36 |
 | `scripts/verify.py:834` | 文件自己的规则「**分母为 0 的项一律不判 PASS**」只在 8 个 check 里实现了 3 个 | 用**未修改的**交付证据即可复现：只放 `scenario-4` → `[PASS] business-outcome 0/0` 计进 `RESULT: 4/4 PASS`；只放 `scenario-7` → `[PASS] authoritative-fact 0/0`。docstring 自己称 0/0 PASS 是「这个核验器能犯的最坏的错」 | T36 |
@@ -1734,3 +1734,12 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-03 | P9 | **四种结局的收口卡本轮只在冒烟脚本里验过形态，真房间一次都没看到过** —— 合议引擎（`maos.roundtable.verdict`）归 T90，本轨基线上不存在 | 本轨回执里那四行 `headline` 的**数据**（金额、风险档、缺口、驳回理由）来自实跑，措辞来自跨轨契约 §2.2 的逐字模板，但没有任何一行是 `decide()` 真吐出来的。措辞若与 T90 的实现有出入，runbook §10.5 那四张卡就要跟着刷 | 整合轮并完 T90/T91 的第一件事：跑一次 `python3 scripts/room_team_smoke.py --evidence scenarios/custom/evidence`，把四张真卡与 runbook §10.5 逐字比对，对不上就刷文档 |
 | 2026-09-03 | P9 | **`ORD-2026-0006` 那两行（剧情③大额、剧情④重复退款）的收口结论完全相同**（都是 `escalate` / 风险 high / 核准预演 88000.00），两行的差别只体现在 blockers 多一条「申报金额 92000.00 高于订单实付」 | 演示时连着出现两张几乎一样的收口卡，boss 看不出这两行在演不同的东西；而它们本来分别要拎的是金额面与历史面 | 语料面（`refund-requests-team.csv` 本轮可改，但四种结局已经齐了，不为这个再动数据）。真房间演示时口头点明，或下一轮把剧情③换成一张风险 low 的大额单，让「大额」单独成一格 |
 | 2026-09-03 | P9 | **`var/attachments/` 被冒烟脚本写入，而它只写不删、没有清理机制**（`docs/ingress-setup.md` §5 已记过这条，本轨给它添了一个新的写入方） | 每跑一次 `--evidence` 就往库里落一次；内容寻址下同一张图只落一份，所以演示语料不变时目录不会长大 —— 但换一批演示图就会留下旧的 | 沿用原条建议（一条按 mtime 的运维清理）。本轨不新增清理逻辑：能删证据的代码路径越少越好 |
+
+
+## task-C1（多域证据核实的范围外缺口，2026-09-05）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-05 | C1 | 场景 8–10 均未注入 replanner，域内补偿没有逆补丁产物，不经过 `_gate_compensation` 干跑；财务闸仍限定 refund | 内核实现可共用，但三新域的重规划、补偿预验证及通用财务闸尚无端到端证据；网关码闸限制已见 task-T37 / task-T39 | 后续由域流程与运行时负责轨补覆盖；本轮仅如实标 ⚠️，不改内核 |
+| 2026-09-05 | C1 | `collect_business_objects` / `check_business_ref` 仍只认退款 `business_ref`，未接理赔 `claim_business_ref` 与 AP `ap_business_ref`；调查本来没有引用表（已见 task-T38） | 本次三项核心核验覆盖新域，但第 2 项及 business-objects.json 尚不核验理赔/AP 的业务引用，不能把聚合 PASS 当作该项已跨域覆盖 | 下一次扩展第 2 项时接各域现有 resolver 与引用表；本轮派单只要求第 3/6/7 项，不顺手扩大 |
+| 2026-09-05 | C1 | `scripts/demo_preflight.sh` 的 EXPECT_TESTS_NOPG 仍为 1476，已落后于本轮实测的 1986；默认束数仍正确固定为 8 | 直接运行完整预检会因测试数量旧值报错，独立执行本派单逐条验收可通过 | 后续整合轮刷新测试数量；当前可显式设置 MAOS_EXPECT_TESTS=1986，C1 不改预检脚本及冻结束数 |

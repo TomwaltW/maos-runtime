@@ -346,7 +346,7 @@ def test_full_bundle_needs_only_make_evidence_then_verify(tmp_path, monkeypatch)
 
     make_evidence.main(["--out", str(tmp_path)])
 
-    from maos.main import ALL_SCENARIOS
+    from maos.main import DEFAULT_SCENARIOS
     index = make_evidence.load_evidence_json(str(tmp_path / "INDEX.json"))
-    assert index["requested"] == [*ALL_SCENARIOS, "R5"]
+    assert index["requested"] == [*DEFAULT_SCENARIOS, "R5"] == [*range(1, 8), "R5"]
     assert recorder == [str(tmp_path)]

@@ -1,0 +1,156 @@
+# generated at 2026-09-04T23:45:28.955826+00:00 from 6086dfcb33454aea486e08632797eeed70731b24-dirty
+{
+  "scenario": 8,
+  "exit_code": 0,
+  "wall_ms": 443,
+  "plan_count": 2,
+  "plans": [
+    {
+      "plan_id": "plan_00e1c9f4f739",
+      "goal": "处理第二笔住院医疗理赔：条款与金额均无异议，但赔付方判定该项不在保障范围",
+      "state": "FAILED",
+      "trace_id": "trace_ff4b6502b5ee",
+      "tasks": [
+        {
+          "task_id": "task-s8b-intake",
+          "role": "claim_intake",
+          "title": "受理三源报案并聚合证据",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s8b-adjudicate",
+          "role": "claim_adjudicator",
+          "title": "按投保当时锁定的条款版本裁定赔付责任",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s8b-settle",
+          "role": "claim_settlement",
+          "title": "核算赔款并逐行分摊",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s8b-pay",
+          "role": "claim_payment",
+          "title": "发起赔付并观察赔付方终态",
+          "state": "FAILED",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 42,
+        "event_count": 34,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 18,
+          "SkillInvoked": 7,
+          "ClaimBizStatusChanged": 3,
+          "ArtifactSeeded": 1,
+          "ToolInvoked": 2,
+          "CompensationExecuted": 1
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 7,
+        "tool_invocations": 2
+      },
+      "business_outcome": {
+        "status": "failed",
+        "basis": "plan_failed",
+        "plan_state": "FAILED",
+        "external_evidence": [],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    },
+    {
+      "plan_id": "plan_e097aa6777ba",
+      "goal": "处理第三笔住院医疗理赔：赔付方受理后迟迟不给终态",
+      "state": "FAILED",
+      "trace_id": "trace_d072f9612069",
+      "tasks": [
+        {
+          "task_id": "task-s8c-intake",
+          "role": "claim_intake",
+          "title": "受理三源报案并聚合证据",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s8c-adjudicate",
+          "role": "claim_adjudicator",
+          "title": "按投保当时锁定的条款版本裁定赔付责任",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s8c-settle",
+          "role": "claim_settlement",
+          "title": "核算赔款并逐行分摊",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s8c-pay",
+          "role": "claim_payment",
+          "title": "发起赔付并观察赔付方终态",
+          "state": "FAILED",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 49,
+        "event_count": 36,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 18,
+          "SkillInvoked": 7,
+          "ClaimBizStatusChanged": 3,
+          "ArtifactSeeded": 1,
+          "ToolInvoked": 4,
+          "CompensationExecuted": 1
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 7,
+        "tool_invocations": 4
+      },
+      "business_outcome": {
+        "status": "failed",
+        "basis": "plan_failed",
+        "plan_state": "FAILED",
+        "external_evidence": [],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    }
+  ],
+  "totals": {
+    "event_count": 70,
+    "rework_count": 0,
+    "replan_count": 0
+  }
+}

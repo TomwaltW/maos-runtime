@@ -363,11 +363,11 @@ def test_contrast_never_enters_the_default_eight_bundle_set():
 
     缺省证据束恒为 8 束是跨轨冻结口径（`scripts/demo_preflight.sh` 与复赛材料
     都写死了 8），而 `verify.py` 按 `scenario-` 前缀挑核验对象。两条都由这里守着：
-    往 `ALL_SCENARIOS` 里加一个数、或者把对照目录改名成 `scenario-*`，本条即红。
+    往 `DEFAULT_SCENARIOS` 里加一个数、或者把对照目录改名成 `scenario-*`，本条即红。
     """
     from maos.main import ALL_SCENARIOS, DEFAULT_SCENARIOS
 
-    assert len(ALL_SCENARIOS) == 7 and len(DEFAULT_SCENARIOS) == 7
+    assert DEFAULT_SCENARIOS == (1, 2, 3, 4, 5, 6, 7)
     for group, _dim, _title in contrast.GROUPS:
         assert group not in {str(n) for n in ALL_SCENARIOS}
         assert not f"contrast-{group}".startswith("scenario-")

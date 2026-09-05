@@ -158,7 +158,7 @@ AgentTeams 承担的是第 3 项的「可见性镜像」和人机介入。
 | **角色编排** | `maos/agents/base.py:221-225` `AGENT_POOL` + `@register`；`maos/runtime/worker.py:17` 按 role 取执行者 | `AGENT_POOL[cls.identity.role] = cls` |
 | **任务分解** | `maos/agents/manager.py:33-73` `ManagerAgent.plan()` → Plan DAG（`depends_on`） | `t.setdefault("depends_on", [])` |
 | **上下文传递** | `maos/runtime/worker.py:54-58` 组 `TaskContext`；`maos/agents/base.py:73` `TaskContext` | `inputs=env.payload["inputs"], rework_findings=env.payload.get("rework_findings", [])` |
-| **协同执行** | `maos/core/control_plane.py:285-305` `dispatch_ready()` 按 DAG 依赖闸门派发 | `if not set(t["depends_on"]).issubset(done): continue` |
+| **协同执行** | `maos/core/control_plane.py:296-316` `dispatch_ready()` 按 DAG 依赖闸门派发 | `if not set(t["depends_on"]).issubset(done): continue` |
 | **状态追踪** | `maos/contracts/states.py:26` `TASK_TRANSITIONS` 迁移表 + `:69` `assert_transition`；`event_log` 表（`maos/core/store.py:160`）；`maos/obs/trace.py` 转 OTel span 树 | 迁移非法当场抛 |
 
 **证据 —— AgentTeams(HiClaw) 侧落点**
@@ -707,7 +707,7 @@ class SqliteStore(Store):
   ```
   没有「启动时从 event_log 重建内存状态」的代码，没有 checkpoint，没有 WAL 回放。
 
-**设计上留的口子是真的**：`maos/core/control_plane.py:568-570` 明说计数不落内存变量：
+**设计上留的口子是真的**：`maos/core/control_plane.py:579-581` 明说计数不落内存变量：
 > 「『第几次 rework』从 event_log 数，不另存计数器：event_log 是 Trace 与审计的唯一来源，
 > 再维护一个内存计数器就有了第二份事实，**进程重启即失真**。」
 
@@ -763,12 +763,12 @@ class SqliteStore(Store):
 锁只保护同进程内的 connection 复用。
 
 三条链路各有幂等键：
-- `maos/core/control_plane.py:333` `claim:{task_id}:{attempt}`
+- `maos/core/control_plane.py:344` `claim:{task_id}:{attempt}`
 - `:340` `on_task_result` 用 `env.idempotency_key`
 - `:441` `on_review_verdict` 用 `env.idempotency_key`
 - `:749` `human:{task_id}`
 
-**证据 —— 顺序也是判定的一部分**（`maos/core/control_plane.py:309-331`，含红字回归守卫）
+**证据 —— 顺序也是判定的一部分**（`maos/core/control_plane.py:320-342`，含红字回归守卫）
 ```
 🔴 **回归守卫：这个顺序看起来违反铁律 3，它不违反 —— 理由就在上面两段。**
 下一个读到这里的人很可能「顺手把幂等闸挪回最前面」，那是本模块最常见的写法，
@@ -798,7 +798,9 @@ class SqliteStore(Store):
 
 ## D3　补偿本身失败了怎么办？有没有测试覆盖？
 
-**一句话回答**：如实落 `ok=False` 事件，但**任务照样落 FAILED，不升级、不重试**；测试覆盖有。
+**一句话回答**：如实落 `ok=False` 事件，**并开一张人工工单**（`MT-<task_id>`，挂在任务落
+FAILED 那一跳的 `detail` 上，`HumanApprovalQueue.compensation_tickets()` 捞得到，日志里同时
+喊一声）；任务仍落 FAILED，**不重试、不加状态、不加事件类型**；测试覆盖有。
 
 **证据 —— 两段补偿，先说干跑闸**
 
@@ -811,7 +813,7 @@ class SqliteStore(Store):
             return [{"gate": "compensation", "severity": "blocker", ...}]
 ```
 
-**证据 —— 真执行路径**（`maos/core/control_plane.py:768-845`）
+**证据 —— 真执行路径**（`maos/core/control_plane.py:844-923`）
 
 三条硬失败（都是 `raise ValueError`，绝不静默跳过）：
 1. 补偿产物形状不合契约 → 抛
@@ -826,24 +828,76 @@ class SqliteStore(Store):
                        "ok": bool(result.get("ok")), "error": result.get("error"), ...},
 ```
 
-分界写得很清楚（`:788-790`）：
+分界写得很清楚（`:863-865`）：
 > 「env 没设 = 配置缺失，**连试都试不了**，抛；env 设了但目录不可用 = 试过了、
 > 工具如实报错，走 `ok=False` 落进 event_log。前者没有可记的事实，后者有 ——
 > 混为一谈会让『没人配』和『回滚失败』看起来一样。」
 
-**关键缺口 —— 补偿失败后什么都不会发生**
+**证据 —— 失败之后的处置**（2026-09-05 补上，`maos/core/control_plane.py:765-778`）
 
-`maos/core/control_plane.py:754-763`
+改造前 `_execute_compensation` 的**返回值被整个丢弃**：`ok=False` 之后任务照样 `FAILED`、
+plan 照样 `_fail_plan`，没有告警、没有转人工，「补丁没还原」只活在 `event_log` 的一行里。
+现在返回值被接住了：
+
 ```python
+        ticket = None
         if not approved:
-            # 先回滚再改状态
-            self._execute_compensation(task, operator=operator, note=note)
-        self._transit(task, dst, detail={"operator": operator, "note": note})
+            # 先回滚再改状态（phase-4.md:20 的顺序）
+            outcome = self._execute_compensation(task, operator=operator, note=note)
+            ticket = self._open_compensation_ticket(
+                task, outcome, operator=operator, note=note)
+        detail = {"operator": operator, "note": note}
+        if ticket is not None:
+            detail[COMPENSATION_TICKET] = ticket
+        self._transit(task, dst, detail=detail)
 ```
 
-`_execute_compensation` 的**返回值被丢弃**。补偿 `ok=False` 之后：任务照样 `FAILED`，
-plan 照样 `_fail_plan`，**没有告警、没有转人工、没有重试、没有任何状态区别**。
-「补丁没还原」这件事只存在于 `event_log` 的一行里，要靠人事后翻。
+三种返回对应三种处置（`_open_compensation_ticket`，`:786-839`）：
+
+| 返回 | 含义 | 处置 |
+| --- | --- | --- |
+| `None` | 这个任务没有补偿引用，本就无物可还原（退款 / 理赔 / 应付账款那几个域全走这条） | 什么都不做。**开单会把队列灌成噪音** —— 低风险任务占绝大多数，真有事的那张反而被淹掉 |
+| `ok=True` | 反向应用真做成了，产物已经不在外面 | 什么都不做，与改造前逐字节一致 |
+| `ok=False` | 补丁对不上 / 目录不对 / 沙箱不可用，**产物还在外面** | 开一张人工工单 |
+
+工单的形状沿用退款域 `refund.compensate` 的 `MT-<主键>`，两种补偿开出来的单长一个样：
+
+```json
+{ "ticket_id": "MT-task_57e46a0f15ff", "assignee": "@demo:local",
+  "plan_id": "...", "task_id": "...", "title": "变更生产环境配置",
+  "reason": "演示驳回",
+  "workdir": "/tmp/.../sbwork",
+  "error": { "stage": "apply", "path": "auth/session.py", "hunk": "21",
+             "message": "error: patch failed: auth/session.py:21\nerror: auth/session.py: patch does not apply" },
+  "todo": ["到 <workdir> 核对这个任务的产物是不是还在 —— 反向应用没打上",
+           "手工还原，或确认无需还原",
+           "确认之后关单；本系统不会自己再试一次"],
+  "opened_at": "2026-09-05T00:19:21.815978+00:00" }
+```
+
+**而且屏幕上说得出来** —— 真跑一次驳回（`python3 -m hiclaw.room_demo --case reject
+--auto-approve --allow-degraded`，`MAOS_SANDBOX_WORKDIR` 指向一个真 git 仓库、
+正向补丁没打进去过）的原始输出：
+
+```text
+ERROR maos.cp      [task_57e46a0f15ff] 回滚没成功（apply：error: patch failed: auth/session.py:21
+error: auth/session.py: patch does not apply）—— 产物可能还留在 /tmp/.../sbwork，已开人工工单 MT-task_57e46a0f15ff，等人处理
+INFO  maos.cp      [task_57e46a0f15ff] BLOCKED -> FAILED (human_reject)
+```
+
+**捞单的入口**（`maos/runtime/gate.py:877-896`，与 `pending()` 同一个类）：
+```python
+    def compensation_tickets(self, plan_id: str) -> list[dict]:
+        return [e["detail"][COMPENSATION_TICKET]
+                for e in self.store.list_event_log(plan_id)
+                if isinstance(e.get("detail"), dict)
+                and COMPENSATION_TICKET in e["detail"]]
+```
+
+**明确没有做的四件**：不重试（`git apply -R` 打不上的几个原因，没有一个会因为再打一遍
+就变了）、不加事件类型（`CompensationExecuted.detail` 里本来就有 `ok` 与 `error`）、
+不加 Task 状态（铁律 9）、不改「先回滚再改状态」的顺序。任务照样 FAILED、Plan 照样
+`_fail_plan` —— 变的只有一件事：这件事**有人认领**。
 
 **证据 —— 测试覆盖（有，且钉得细）**
 
@@ -866,17 +920,19 @@ plan 照样 `_fail_plan`，**没有告警、没有转人工、没有重试、没
 - `:450-453` 缺 workdir → **断言不许留下 `CompensationExecuted` 事件**
   （「那是『试过了但失败』才有的事实」）
 
-**实现程度**：部分（记录完整、测试完整；**失败后的处置未实现**）
+处置那一半另有 `maos/tests/test_compensation_failure.py`（6 条，全程真沙箱、真 `git apply -R`）：
+`ok=False` 开单且从队列捞得到、屏幕上那句话喊且只喊一次、返回 `None` 时**不许**开单、
+`ok=True` 时迁移 detail 与改造前逐字节一致、补偿仍在状态迁移之前跑、重复投递同一条驳回
+工单不许开两张。造失败的手法是真的：真 git 仓库 + 真补丁，只是那份正向补丁从没打进去过，
+于是 `git apply -R` 被 git 自己在 apply 阶段拒掉。
 
-**最狠的追问**：「补偿失败 = 补丁还留在生产环境里，而你的系统把任务标成 FAILED 就完事了。
-谁去收拾？」——**没有人，代码里没有这一步**。诚实答：当前只保证「补偿失败这件事被如实
-记录、不会被谎报成成功」，不保证「有人被叫醒」。
+**实现程度**：完整（记录 + 处置 + 测试三样齐；**不含自动重试**，那是刻意不做）
 
-**48h 补救**：可做 —— 补偿 `ok=False` 时改走 `_escalate_to_human`（已存在，
-`control_plane.py:218`），复用现成的转人工路径。成本约 2 小时 + 重跑证据束。
-**不建议赛前做**：它改的是 `human_decision` 的终态语义，会影响场景 7 的 FAILED 收口，
-8 束证据全要重跑重验，48 小时内的回归风险大于收益。承认它，并说明「已有 `_escalate_to_human`
-这个现成出口，接线是 20 行」——这句话有代码支撑，不是空话。
+**最狠的追问**：「补偿失败 = 补丁还留在生产环境里，你的系统把任务标成 FAILED 就完事了，
+谁去收拾？」—— 现在有一张单，单上写着去哪个目录、哪个文件、git 原话报了什么，
+屏幕上也喊了一声。**但收拾的仍然是人**：MAOS 不会自己再打一遍，也没接任何外部工单系统 ——
+那张单活在 `event_log` 里，靠 `HumanApprovalQueue.compensation_tickets()` 捞。
+说「有人管」到此为止，再往前一步就是吹。
 
 ---
 
@@ -884,7 +940,7 @@ plan 照样 `_fail_plan`，**没有告警、没有转人工、没有重试、没
 
 **一句话回答**：三条触发线 + 一条一票否决；**有硬上限**（默认 2 次），到顶转人工，绝不自旋。
 
-**证据 —— 触发条件**（`maos/core/control_plane.py:555-599`）
+**证据 —— 触发条件**（`maos/core/control_plane.py:566-610`）
 
 ```python
     def _should_replan(self, task: dict, findings: list[dict]) -> bool:
@@ -907,14 +963,14 @@ plan 照样 `_fail_plan`，**没有告警、没有转人工、没有重试、没
         return False
 ```
 
-一票否决的四象限（`control_plane.py:55-69`）：只有 `replan_channel`
+一票否决的四象限（`control_plane.py:56-70`）：只有 `replan_channel`
 （`retriable=True` 且 `outcome=failed`）允许换渠道重试；`query_first` /
 `human_terminal` / `query_or_human` 三格一律否决。理由（原文）：
 > 「retriable 与 outcome 正交：前者答『能不能再发一次』，后者答『这一笔到底执行了没有』
 > （铁律 8）。重规划会把任务重新派发，等价于重发 —— outcome=unknown 时那可能造出
 > **第二笔退款**。」
 
-**证据 —— 死循环防护，四道止损按固定顺序**（`control_plane.py:436-503`，含红字回归守卫）
+**证据 —— 死循环防护，四道止损按固定顺序**（`control_plane.py:447-514`，含红字回归守卫）
 
 ```python
     # 🔴 回归守卫：下面 rework 分支里四条止损（第三出口 `_human_exit` / `max_attempts` /
@@ -934,7 +990,7 @@ plan 照样 `_fail_plan`，**没有告警、没有转人工、没有重试、没
                     self._escalate_to_human(task, ..., reason="replan_limit_exceeded", ...)
 ```
 
-**次数上限**（`control_plane.py:41-42, 598-612`）
+**次数上限**（`control_plane.py:42-43, 609-623`）
 ```python
 ENV_MAX_REPLAN = "MAOS_MAX_REPLAN"
 DEFAULT_MAX_REPLAN = 2
@@ -1766,9 +1822,15 @@ R5 的差异只是『规划时多排了一步』。」——**在当前 R5 这�
   写了就是假话）、HNSW 的 117x 有没有放在「MAOS 能力」页（应在「技术选型」页）。
   仓库内这两处都已正确，我改不到仓库外的文件。
 
-**明确不做的**：D1 持久化改造、D3 补偿升级接线、F2 第二个 MCP、B1 安全闸重写、
-C2 守卫加固、C4-3 的 lock 指纹。前五条统一理由：都会触发证据束全量重跑，
-48 小时内的回归风险大于收益。最后一条另有理由：改 `.contracts.lock` 必须先设授权变量，
+**明确不做的**：D1 持久化改造、F2 第二个 MCP、B1 安全闸重写、C2 守卫加固、
+C4-3 的 lock 指纹。前四条统一理由：都会触发证据束全量重跑，
+48 小时内的回归风险大于收益。
+
+> **D3 补偿升级接线已于 2026-09-05 做掉**（复赛前 17 天，不是 48 小时内）。原先与上面
+> 四条同一个理由被判不做，但实测那个理由不成立：补偿只出现在 `evidence/scenario-3` 与
+> `scenario-7`，整条证据链重跑 5 秒，跑完 `verify.py` 仍 8/8 PASS。落地形态是
+> **开人工工单**，不是原计划的 `_escalate_to_human`（那要改终态语义，才是真有回归风险的
+> 那条路）。见 D3 一节。最后一条另有理由：改 `.contracts.lock` 必须先设授权变量，
 而那一设整套守卫当次全部早退放行 —— 这个口子由你自己开，不由 agent 代开。
 
 ---
@@ -1801,12 +1863,17 @@ C2 守卫加固、C4-3 的 lock 指纹。前五条统一理由：都会触发证
 
 ### 3. 「补偿失败了谁管」
 
-> 「没有人管 —— 代码里没有这一步。补偿失败会如实落一条 `ok=False` 的
-> `CompensationExecuted` 事件，有测试钉住它不许被谎报成成功
-> （`test_governance.py:387`），但任务照样落 FAILED，不升级、不重试、不叫人。
-> 好消息是出口是现成的：`_escalate_to_human` 已经在
-> `control_plane.py:218`，被另外两条止损路径用着，接过来大约 20 行。
-> 我赛前不接，因为它改的是终态语义，8 束证据全要重跑。」
+> 「叫人。补偿失败会如实落一条 `ok=False` 的 `CompensationExecuted` 事件，有测试钉住
+> 它不许被谎报成成功（`test_governance.py:387`）；在那之上会**开一张人工工单** ——
+> 单号 `MT-<task_id>`，写清去哪个工作目录、哪个文件、git 原话报了什么，挂在任务落
+> FAILED 那一跳的 `detail` 上，`HumanApprovalQueue.compensation_tickets()` 捞得到，
+> 同时在屏幕上喊一句『回滚没成功……已开人工工单 MT-xxx，等人处理』。
+> 边界说清楚：**叫的是人，不是别的系统**。MAOS 不会自己重试 —— `git apply -R` 打不上
+> 的几个原因，没有一个会因为再打一遍就变；也没接任何外部工单系统，那张单活在
+> `event_log` 里。任务状态照样 FAILED，没为它新加状态或事件类型，两个冻结契约面一个字
+> 没动。」
+
+**不要说**：「补偿失败会自动重试」「已接入工单系统」——都不是真的。
 
 ### 4. 「守卫能被绕过」
 
@@ -1893,7 +1960,7 @@ task 的返工触发 replan，plan 的 replan 次数触发转人工。它们不�
 
 ```mermaid
 flowchart TD
-    V["ReviewVerdict = rework<br/>(control_plane.py:463)"] --> S1
+    V["ReviewVerdict = rework<br/>(control_plane.py:474)"] --> S1
 
     S1{"① 第三出口<br/>_human_exit(findings)<br/>:512"}
     S1 -- "网关判机器修不好" --> H1["AWAITING_REVIEW → BLOCKED<br/>转人工，不再重发"]
@@ -1915,7 +1982,7 @@ flowchart TD
     RP --> V
 ```
 
-**顺序为什么不能动**（`control_plane.py:422-435` 有红字回归守卫）：
+**顺序为什么不能动**（`control_plane.py:433-446` 有红字回归守卫）：
 
 - ① 必须在 ② 前面 —— 排在后面的话最后一轮仍然 FAILED，等于白改；而这一单买的正是「少重发那两次」。
 - ④ 必须在 ③ 后面且用 `AWAITING_REVIEW → BLOCKED` —— 此刻任务还在 AWAITING_REVIEW，

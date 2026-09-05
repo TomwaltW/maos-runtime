@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Callable
 
 from maos.artifacts import (
@@ -117,6 +118,16 @@ FROZEN_BY_REPLAN = "frozen_by_replan"
 
 # -- 补偿 ----------------------------------------------------------------
 ENV_SANDBOX_WORKDIR = "MAOS_SANDBOX_WORKDIR"
+
+#: 补偿没做成时开出来的人工工单，挂在 FAILED 那一跳的 ``detail`` 上。
+#: 键名收成一个常量：下游按它捞单（``HumanApprovalQueue.compensation_tickets()``），
+#: 字面量各写一套就是同一条保证有两份实现 —— 改一处漏一处不会报错，只会静默漏捞
+#: （理由同 ``AWAIT_HUMAN_DECISION`` 那一段）。
+COMPENSATION_TICKET = "compensation_ticket"
+
+#: 单号前缀，沿用退款域 ``refund.compensate`` 的 ``MT-<主键>`` 形状。逆补丁补偿与
+#: 域内补偿开出来的工单长同一个样，人不用为两种补偿各记一套看法。
+TICKET_PREFIX = "MT-"
 
 # compensation artifact 的 version 恒为 0，**不跟 attempt 走**。
 # 它是引用不是产物：指向哪一次 attempt 的信息已经在 patch_ref.attempt 里了，
@@ -751,16 +762,81 @@ class ControlPlane:
             log.info("[%s] 重复人工决策，短路", task_id)
             return
 
+        ticket = None
         if not approved:
             # 先回滚再改状态（phase-4.md:20 的顺序）：状态一旦落 FAILED，
             # 「这个任务的产物还在外面」这件事就没人记得了。
-            self._execute_compensation(task, operator=operator, note=note)
-        self._transit(task, dst, detail={"operator": operator, "note": note})
+            outcome = self._execute_compensation(task, operator=operator, note=note)
+            # 回滚**没做成**时不许就这么过去。返回值原先被整个丢弃：事件里那句
+            # ``ok=false`` 如实记着，却没有任何人读它 —— 状态照样落 FAILED，
+            # 屏幕上一片正常，而产物还在外面。这一支把它变成有人认领的一件事。
+            ticket = self._open_compensation_ticket(
+                task, outcome, operator=operator, note=note)
+        detail = {"operator": operator, "note": note}
+        if ticket is not None:
+            detail[COMPENSATION_TICKET] = ticket
+        self._transit(task, dst, detail=detail)
         self.store.finish_idempotency(key, {"approved": approved, "operator": operator})
         if approved:
             self._advance(task["plan_id"])
         else:
             self._fail_plan(task["plan_id"])
+
+    # ------------------------------------------------------------------
+    def _open_compensation_ticket(self, task: dict, outcome: dict | None, *,
+                                  operator: str, note: str) -> dict | None:
+        """回滚没做成 -> 开一张人工工单。返回 None 表示这一次不该开单。
+
+        三种入参对应三种处置，**只有第三种开单**：
+
+          · ``None`` —— 这个任务压根没有补偿引用（低风险产物，没有要还原的东西）。
+            绝不能在这里开单：每一次驳回都会走到这里，而低风险任务占绝大多数，
+            开了就是给工单队列灌噪音，真有事的那一条反而被淹掉。
+          · ``ok=True`` —— 反向应用真做成了，产物已经不在外面，没有要人做的事。
+          · ``ok=False`` —— 补丁对不上 / workdir 不是仓库 / 沙箱不可用：
+            **产物还在外面**，而本系统已经没有别的招了。
+
+        **不加新事件类型**（events.py 是冻结契约，铁律 1）：失败这件事早就留痕了，
+        ``CompensationExecuted.detail`` 里本来就有 ``ok`` 和 ``error``。这里补的不是
+        留痕，是**处置**。工单因此挂在 FAILED 那一跳的 ``detail`` 上，与状态迁移
+        同一条记录 —— 问「这个任务为什么完了」时一眼就看见「还有一次回滚没成功」。
+
+        **不加新状态**（铁律 9）：补偿失败不是 Task 的一个状态，它是外部世界里
+        一件没收干净的事。任务该落 FAILED 还是落 FAILED。
+
+        **不重试**：``git apply -R`` 打不上的几个原因（补丁对不上、目录不对、沙箱
+        不可用）没有一个会因为再打一遍就变了，重试只会让人晚知道。所以这里只叫人，
+        并且在日志里用人话说一遍 —— 只落进库里没人看得见，那和没人管差别不大。
+        """
+        if outcome is None or outcome.get("ok"):
+            return None
+
+        error = outcome.get("error") or {}
+        workdir = outcome.get("workdir")
+        ticket = {
+            "ticket_id": f"{TICKET_PREFIX}{task['task_id']}",
+            # 驳回的人就是此刻最清楚上下文的人，缺省派给他；换人是人自己的事。
+            "assignee": operator,
+            "plan_id": task["plan_id"],
+            "task_id": task["task_id"],
+            "title": task["title"],
+            "reason": note,
+            "workdir": workdir,
+            # error 原样抄进来，不改写、不归纳：stage/path/hunk/message 是沙箱
+            # 如实报的，人工对账要的就是这四格（同 refund.compensate 的口径）。
+            "error": error,
+            "todo": [
+                f"到 {workdir} 核对这个任务的产物是不是还在 —— 反向应用没打上",
+                "手工还原，或确认无需还原",
+                "确认之后关单；本系统不会自己再试一次",
+            ],
+            "opened_at": datetime.now(timezone.utc).isoformat(),
+        }
+        log.error("[%s] 回滚没成功（%s：%s）—— 产物可能还留在 %s，"
+                  "已开人工工单 %s，等人处理",
+                  task["task_id"], error.get("stage"), error.get("message"),
+                  workdir, ticket["ticket_id"])
+        return ticket
 
     # ------------------------------------------------------------------
     # 补偿执行器：零模型 —— 逆补丁不生成，只把正向补丁反着打一遍
@@ -769,7 +845,9 @@ class ControlPlane:
         """读补偿引用 -> 取回正向补丁 -> 沙箱反向应用 -> 落 CompensationExecuted。
 
         返回 None 表示这个任务压根没有补偿引用（低风险产物，没有要还原的东西）；
-        否则返回 sandbox_git_apply 的结果。
+        否则返回 sandbox_git_apply 的结果，另附一个 ``workdir``：失败时要人去哪儿
+        看产物是工单上最要紧的一格，而调用方读不到这里的 env —— 让它自己再读一遍
+        就有了第二份事实，env 中途被改过时两处会指向两个目录。
 
         **缺 patch_ref 一律硬失败**（C-5 反例原文）：这里绝不写
         ``content.get("patch_ref", {})``。兜底的后果不是报错，是补偿**静默不执行** ——
@@ -839,7 +917,7 @@ class ControlPlane:
                 "files": len(patch_art["content"].get("files", [])),
             },
         })
-        return result
+        return {**result, "workdir": workdir}
 
     # ------------------------------------------------------------------
     def _advance(self, plan_id: str) -> None:

@@ -1,0 +1,145 @@
+# generated at 2026-09-05T01:31:04.467969+00:00 from 4be02ec281f1fbe50525485078f43d2e0e58ade3-dirty
+场景 11：跨域协同 —— 应付账款付出去之后，供应商报来重复支付
+
+[1] 三单匹配: 通过（跑了 11 条判据）
+    应付    : 91978.84（按 BR-CO-16 从三单现算，与发票自称的 91978.84 勾稽上了 —— 相等是勾稽的结果，不是抄来的）
+
+[2] 待主管审批: 出付款计划，交主管审批（effect_risk=H，出账不可逆）
+    付款计划: 91978.84 CNY -> 长三角精密传动
+
+[3] 付款指令: 91978.84 CNY，受理回单 accepted（**非终态**）
+
+[4] 银行回单: settled（问了 2 次）
+    流水号  : bkref-376523646e1a  起息 2026-08-31
+    —— ap 域到此收口: 钱确实付出去了，settled 是**问出来的**
+
+[5] 待主管收口: 发出付款指令并观察银行回单
+    人工申报: 供应商 长三角精密传动（SUP-8812）应付会计
+      「供应商来函：INV-2026-0915 与 8 月已付的同批次发票为同一批货重复开票，本次货款系重复支付，请向付款行发起撤销」
+    —— 「这笔重复了」的权威在供应商，不在 MAOS；ap 域没有、也不该有重复发票检测器（铁律 8）
+
+[6] 编排层翻译: ap 观察 -> investigation 原始支付快照
+    original_msg_id   = bkref-376523646e1a       ← ap_payment_observation.bank_reference
+    end_to_end_id     = bkins-376523646e1a       ← payment_instruction.instruction_id
+    interbank_amount  = 91978.84                 ← payment_instruction.amount
+    currency          = CNY                      ← payment_instruction.currency
+    value_date        = 2026-08-31               ← ap_payment_observation.value_date
+    debtor_agent      = ICBKCNBJXXX              ← payment_instruction.bank
+    creditor_agent    = BKCHCNBJ300              ← maos.flows.scenario_11.CREDITOR_BIC（编排层路由表，两个域都不持有）
+    —— 读的是 ap **观察到的**那一版（actor 2ca1e646b64d…），没有重新去问银行
+
+[7] 差错案受理: case-s11-inv-0001（原报文 bkref-376523646e1a，CNY 91978.84）
+    —— 金额币种取自翻译层写的快照，不是任务入参自称的
+
+[8] 待人工调账审批: 差错定性并申请人工调账授权（动别人的钱必须有人批，监管要求）
+
+[9] 已发出 camt.056，问询清算方 3 次：
+    第1次  camt.029.001.08  code=PDCR  退回金额=         -  -> pending
+    第2次  camt.029.001.08  code=CNCL  退回金额=         -  -> cancellation_confirmed
+    第3次  pacs.004.001.09  code=CUST  退回金额=  91978.84  -> returned
+    ↑ 第 2 次问到 CNCL（清算方确认撤销成功）—— **那时一个状态都没推**；资金证据只有 pacs.004 给得出
+
+[10] 待主管收口: 资金已退回=True，可放行
+
+====================================================================
+场景 11：跨域协同 —— 付款差错闭环
+====================================================================
+Plan: DONE  |  支付长三角精密传动 2026-09 月结货款；付出后供应商申报重复支付，向付款行发起差错撤销并确认资金退回
+  · 收供应商发票并确认三单齐备                        DONE             attempt=1 risk=L
+  · 三单匹配：数量、单价、税额各自容差                    DONE             attempt=1 risk=M
+  · 出付款计划，交主管审批                          DONE             attempt=1 risk=L
+  · 发出付款指令并观察银行回单                        DONE             attempt=1 risk=M
+  · 受理付款差错并核对原始支付快照                      DONE             attempt=1 risk=L
+  · 差错定性并申请人工调账授权                        DONE             attempt=1 risk=M
+  · 向清算方发出 camt.056 撤销请求                 DONE             attempt=1 risk=M
+  · 问询清算方决议并确认资金下落                       DONE             attempt=1 risk=M
+  状态迁移轨迹:
+    task-s11-ap-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-ap-intake  DISPATCHED       -> RUNNING          [claim]
+    task-s11-ap-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-ap-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s11-ap-match  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-ap-match  DISPATCHED       -> RUNNING          [claim]
+    task-s11-ap-match  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-ap-match  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s11-ap-plan  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-ap-plan  DISPATCHED       -> RUNNING          [claim]
+    task-s11-ap-plan  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-ap-plan  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s11-ap-plan  BLOCKED          -> DONE             [human_approve]
+    task-s11-ap-pay  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-ap-pay  DISPATCHED       -> RUNNING          [claim]
+    task-s11-ap-pay  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-ap-pay  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s11-ap-pay  BLOCKED          -> DONE             [human_approve]
+    task-s11-inv-file  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-inv-file  DISPATCHED       -> RUNNING          [claim]
+    task-s11-inv-file  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-inv-file  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s11-inv-classify  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-inv-classify  DISPATCHED       -> RUNNING          [claim]
+    task-s11-inv-classify  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-inv-classify  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s11-inv-classify  BLOCKED          -> DONE             [human_approve]
+    task-s11-inv-cancel  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-inv-cancel  DISPATCHED       -> RUNNING          [claim]
+    task-s11-inv-cancel  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-inv-cancel  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-s11-inv-observe  PENDING          -> DISPATCHED       [dispatch]
+    task-s11-inv-observe  DISPATCHED       -> RUNNING          [claim]
+    task-s11-inv-observe  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-s11-inv-observe  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-s11-inv-observe  BLOCKED          -> DONE             [human_approve]
+
+  ap 业务状态        : settled（plan=plan_1d7533012281）
+  investigation 状态 : returned（plan=plan_1d7533012281）
+  ap settled 观察    : 1 条，流水号 ['bkref-376523646e1a']
+  差错观察           : 3 条 ['pending', 'cancellation_confirmed', 'returned']
+  returned 观察      : 1 条，来自 ['pacs.004.001.09']
+  Plan 终态          : DONE
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'testing']
+INFO  maos.cp      创建计划 plan_1d7533012281，共 8 个任务
+INFO  maos.cp      [task-s11-ap-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-ap-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-ap-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-ap-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-ap-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s11-ap-match] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-ap-match] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-ap-match] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-ap-match] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-ap-match] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s11-ap-plan] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-ap-plan] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-ap-plan] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-ap-plan] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-ap-plan] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s11-ap-plan] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s11-ap-pay] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-ap-pay] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-ap-pay] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-ap-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-ap-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s11-ap-pay] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s11-inv-file] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-inv-file] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-inv-file] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-inv-file] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-inv-file] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s11-inv-classify] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-inv-classify] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-inv-classify] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-inv-classify] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-inv-classify] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s11-inv-classify] BLOCKED -> DONE (human_approve)
+INFO  maos.cp      [task-s11-inv-cancel] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-inv-cancel] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-inv-cancel] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-inv-cancel] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-inv-cancel] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-s11-inv-observe] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-s11-inv-observe] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-s11-inv-observe] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-s11-inv-observe] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-s11-inv-observe] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-s11-inv-observe] BLOCKED -> DONE (human_approve)

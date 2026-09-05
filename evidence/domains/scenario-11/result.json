@@ -1,0 +1,148 @@
+# generated at 2026-09-05T01:31:04.472355+00:00 from 4be02ec281f1fbe50525485078f43d2e0e58ade3-dirty
+{
+  "scenario": 11,
+  "exit_code": 0,
+  "wall_ms": 340,
+  "plan_count": 1,
+  "plans": [
+    {
+      "plan_id": "plan_1d7533012281",
+      "goal": "支付长三角精密传动 2026-09 月结货款；付出后供应商申报重复支付，向付款行发起差错撤销并确认资金退回",
+      "state": "DONE",
+      "trace_id": "trace_11fe04aa10da",
+      "tasks": [
+        {
+          "task_id": "task-s11-ap-intake",
+          "role": "ap_intake",
+          "title": "收供应商发票并确认三单齐备",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s11-ap-match",
+          "role": "ap_match",
+          "title": "三单匹配：数量、单价、税额各自容差",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s11-ap-plan",
+          "role": "ap_control",
+          "title": "出付款计划，交主管审批",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s11-ap-pay",
+          "role": "ap_treasury",
+          "title": "发出付款指令并观察银行回单",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s11-inv-file",
+          "role": "investigation_intake",
+          "title": "受理付款差错并核对原始支付快照",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "L",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s11-inv-classify",
+          "role": "investigation_classify",
+          "title": "差错定性并申请人工调账授权",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        },
+        {
+          "task_id": "task-s11-inv-cancel",
+          "role": "investigation_cancel",
+          "title": "向清算方发出 camt.056 撤销请求",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "L"
+        },
+        {
+          "task_id": "task-s11-inv-observe",
+          "role": "investigation_observe",
+          "title": "问询清算方决议并确认资金下落",
+          "state": "DONE",
+          "attempt": 1,
+          "risk_level": "M",
+          "effect_risk": "H"
+        }
+      ],
+      "metrics": {
+        "duration_ms": 68,
+        "event_count": 61,
+        "event_types": {
+          "PlanTransition": 2,
+          "StateTransition": 36,
+          "SkillInvoked": 9,
+          "ApBizStatusChanged": 3,
+          "ToolInvoked": 7,
+          "ArtifactSeeded": 1,
+          "InvestigationBizStatusChanged": 3
+        },
+        "rework_count": 0,
+        "replan_count": 0,
+        "compensation_count": 0,
+        "skill_invocations": 9,
+        "tool_invocations": 7
+      },
+      "business_outcome": {
+        "status": "succeeded",
+        "basis": "external_evidence",
+        "plan_state": "DONE",
+        "external_evidence": [
+          {
+            "kind": "resolution_observation",
+            "case_id": "case-s11-inv-0001",
+            "tenant_id": "tnt-mfg-x9",
+            "request_id": "clr_371569dd0ce44843",
+            "poll_seq": 3,
+            "message_type": "pacs.004.001.09",
+            "confirmation_code": "",
+            "rejection_code": "",
+            "return_reason_code": "CUST",
+            "returned_amount": 91978.84,
+            "observed_state": "returned",
+            "actor_invocation_id": "0babb1cd92b847ce9352b8b292200137",
+            "provenance": "resolution_observation"
+          },
+          {
+            "kind": "ap_payment_observation",
+            "case_id": "case-s11-ap-0001",
+            "tenant_id": "tnt-mfg-x9",
+            "instruction_id": "bkins-376523646e1a",
+            "observed_state": "settled",
+            "bank_reference": "bkref-376523646e1a",
+            "value_date": "2026-08-31",
+            "actor_invocation_id": "2ca1e646b64d4f6db1979bb9ef25322a",
+            "provenance": "ap_payment_observation"
+          }
+        ],
+        "unaudited_evidence_count": 0,
+        "source": "derived-from-db-at-export-time",
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+      }
+    }
+  ],
+  "totals": {
+    "event_count": 61,
+    "rework_count": 0,
+    "replan_count": 0
+  }
+}

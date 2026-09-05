@@ -56,7 +56,7 @@ cd "$REPO_ROOT"
 # 所以 PG_GATED_TESTS=29 这个不变量没被动，有库档由算式得 1370+29=1399（未实测，
 # 上一次实测的 1098 对应 1069 那一档）。
 #
-# 2026-09-01（T47–T54 整合轮，本行是**当前生效的那个数**）：合并态 51715e5 实测
+# 2026-09-01（T47–T54 整合轮）：合并态 51715e5 实测
 # **1476 passed / 39 skipped（无库）**。T51 并入后 1370 -> T47–T53 六轨并入后 1456
 # -> T54 再加 20 条（失败调用留账 12 + usage 两家口径 8）得 1476。skipped 仍是 39，
 # PG_GATED_TESTS=29 依旧没被动，有库档由算式得 1476+29=1505（未实测）。
@@ -66,8 +66,15 @@ cd "$REPO_ROOT"
 # 而当时代码是全绿的。录制前唯一的机器判据自己变成了假警报，是最坏的一种失效：
 # 下一次它真的红了，人会先怀疑是这个数又没刷。**加测试的那一轨改这个数，
 # 不要留给录制那天的人。**
+# 2026-09-05（T94–T96 整合轮，**本行是当前生效的那个数**）：合并态实测
+# **2042 passed / 41 skipped（无库）**。1476 -> C1 接三个新域证据链 -> 申请表表头缺列
+# -> T94 跨域场景 11（+21）/ T95 证据可视化（+29）/ T96 补偿失败开工单（+6）。
+# skipped 从 39 涨到 **41**：PG 门控仍是 29（22 live + 7 parity，**不变量没被动**），
+# 非 PG 门控从 10 涨到 12 —— RocketMQ 8 + Nacos 2 之外，多了 ingress 渠道 2 条
+#（test_ingress_channels.py，缺 cryptography 时 skip）。有库档由算式得 2042+29=2071（未实测）。
+#
 PG_GATED_TESTS=29
-EXPECT_TESTS_NOPG=1476
+EXPECT_TESTS_NOPG=2042
 EXPECT_TESTS_PG=$((EXPECT_TESTS_NOPG + PG_GATED_TESTS))
 EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
 EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 8/8 PASS}"

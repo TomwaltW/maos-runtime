@@ -55,6 +55,7 @@ from maos.contracts import events as E
 from maos.contracts.events import Topic
 from maos.contracts.states import Risk, TaskState
 from maos.core.control_plane import (
+    COMPENSATION_TICKET,
     GATEWAY_GATE,
     GW_HUMAN_TERMINAL,
     GW_QUERY_FIRST,
@@ -872,6 +873,27 @@ class HumanApprovalQueue:
         return [t for t in self.store.list_tasks(plan_id)
                 if t["state"] == TaskState.BLOCKED
                 and (t["effect_risk"] == Risk.HIGH or t["task_id"] in awaiting)]
+
+    def compensation_tickets(self, plan_id: str) -> list[dict]:
+        """捞出这个 Plan 里所有**回滚没做成**开出来的人工工单。
+
+        与 ``pending()`` 是同一件事的两半：那边捞「还没决定的」，这边捞「决定完了、
+        但机器没能把产物收回来的」。后者**捞不到的话就是没人知道** —— 任务已经落
+        FAILED（补偿失败不是一个新 Task 状态，铁律 9），只按 BLOCKED 捞永远看不见它，
+        而它恰恰是最需要人的一类：产物还在外面。
+
+        判据取自 FAILED 那一跳 ``detail`` 里的 ``compensation_ticket``，与 ``pending()``
+        同源 —— event_log 是 Trace 与审计的唯一来源（control_plane 铁律 4）。为它在
+        任务行上另开一个字段，就有了第二份事实。
+
+        没有补偿引用的任务被驳回时**不会**出现在这里：控制面那一层就判掉了
+        （``_open_compensation_ticket`` 对 ``None`` 返回 None）。低风险任务占绝大多数，
+        每次驳回都刷一条的话，这个队列立刻失去信噪比。
+        """
+        return [e["detail"][COMPENSATION_TICKET]
+                for e in self.store.list_event_log(plan_id)
+                if isinstance(e.get("detail"), dict)
+                and COMPENSATION_TICKET in e["detail"]]
 
     def decide(self, task_id: str, approved: bool, operator: str, note: str = "") -> None:
         self.cp.human_decision(task_id, approved, operator, note)

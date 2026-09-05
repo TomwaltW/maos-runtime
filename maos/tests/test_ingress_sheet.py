@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from maos.core.store import SqliteStore
@@ -16,6 +18,17 @@ from maos.ingress.attachments import AttachmentBuffer, AttachmentStore
 from maos.ingress.contracts import CHANNEL_FEISHU, Attachment, InboundMessage
 from maos.ingress.router import IngressRouter
 from maos.tests.test_ingress_router import Runs
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+#: 群里真会被拖进来的那张照片（`scripts/room_team_smoke.py` 配给 ORD-2026-0004 的证据）。
+#: 用真文件而不是伪造的头几个字节：认表判据是**按内容**判的，伪字节测不到它。
+RUST_PNG = REPO_ROOT / "scenarios" / "custom" / "evidence" / "ORD-2026-0004-rust.png"
+
+#: 结构完整的最小 PDF。PDF 在附件白名单里（扫描件、面单），所以它会被收下 ——
+#: 「收下了」与「是申请表」是两件事，后者由 `looks_like_sheet` 单独判。
+MINIMAL_PDF = (b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+               b"trailer\n<< /Root 1 0 R >>\n%%EOF\n")
 
 HEADER = "订单号,诉求类型,申报金额,申请日期,说明\n"
 
@@ -97,6 +110,48 @@ def test_renamed_binary_is_not_a_sheet_and_still_hits_the_whitelist(tmp_path):
     reply = router.handle(_inbound("k", "申请表.csv"))
     assert "未收下 1 份" in reply and "不收这个类型" in reply
     assert "申请表" not in reply.split("未收下")[0]
+
+
+def test_binaries_are_not_sheets_by_a_written_rule_not_a_side_effect():
+    """PNG 与 PDF 不是申请表 —— 判据是**内容类型**，不是「解不出文本」这个副作用。
+
+    这两条是 :data:`sheet.ENCODINGS` 的守门人。往里加一个 latin-1（那类编码吃下
+    任何字节、从不抛 UnicodeDecodeError）的那天，一张 PNG 会立刻开始被当成申请表
+    送进 `handle_sheet`，而症状只是群里回一句「看着像表，但表头里没有订单号」——
+    在这两条写下来之前，没有任何一条测试会红。
+    """
+    assert sheet.looks_like_sheet(RUST_PNG.read_bytes()) is False
+    assert sheet.looks_like_sheet(MINIMAL_PDF) is False
+
+
+def test_a_png_renamed_to_csv_is_still_not_a_sheet():
+    """判据是内容不是扩展名：这一层的输入来自公网回调，扩展名可以随便改。
+
+    与上面那条 ELF 的区别在于 PNG **在白名单里**：它会被好好收下当证据，
+    只是不该被当成一张表去逐行读。
+    """
+    with pytest.raises(sheet.NotASheet):
+        sheet.parse(RUST_PNG.read_bytes(), "退款申请表.csv", _ledger())
+
+
+@pytest.mark.parametrize("magic", [b"%PDF-1.4", b"GIF89a"])
+def test_the_type_rule_runs_before_decoding_not_after(magic):
+    """魔数开头、后面跟着一张合法表头的字节，仍然不是表。
+
+    人为构造的对抗样本，钉的是判据**本身**而不是行为：上面两条在这条判据写下来
+    之前就已经是绿的 —— PNG 里有 NUL、PDF 第一行没有订单号那一列，它们各自被
+    别的闸顺带挡住了。把类型闸删掉、或挪到解码之后，只有这条会红。
+    """
+    assert sheet.looks_like_sheet(magic + b"," + HEADER.encode("utf-8")) is False
+
+
+def test_the_binary_rule_does_not_swallow_real_sheets():
+    """回归闸：真表照旧认得出 —— Excel 存的 BOM 与中文 Windows 的 gbk 各一条。
+
+    类型闸加在解码**之前**，手滑写成「判不出类型就不是表」的话先红的是这里。
+    """
+    assert sheet.looks_like_sheet(GOOD.encode("utf-8-sig")) is True
+    assert sheet.looks_like_sheet(GOOD.encode("gbk")) is True
 
 
 # --------------------------------------------------------------------------

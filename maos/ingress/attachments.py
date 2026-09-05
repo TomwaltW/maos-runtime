@@ -288,13 +288,39 @@ class AttachmentBuffer:
             self._by_chat[key] = alive
             return list(alive)
 
+    def take(self, channel: str, chat_id: str, *,
+             digests: set[str] | None = None) -> list[StoredAttachment]:
+        """取走指定 digest 的附件（``digests=None`` 等价于 :meth:`claim`：全部取走并清空）。
+
+        挑着取是为「拖一张图 -> 立刻复检」那条路留的：那一轮只该认领**刚进来的那几张**，
+        而不是把三分钟前拖进来、还没决定挂给哪一单的另外五张一起卷走。全取的症状与
+        本类抬头写的那条同源 ——「A 单的图挂到了 B 单的案子上」，而这种错不报错。
+
+        取走即从暂存移除；给定的 digest 不在暂存里就**静默跳过**，不抛：暂存有 TTL
+        也有 cap，调用方手上那份 digest 与暂存对不上是常态，不是故障。
+        返回顺序是暂存里的顺序（先进先出），不是 ``digests`` 的迭代顺序 —— 集合无序，
+        按它排会让同一条消息里的三张图每次在案子里换一个次序。
+
+        ``digests=set()`` 是**取走 0 份**，只有 ``None`` 才是全取。写成 ``if not digests``
+        会把两者混成一个，而那时的症状最坏：「定位到单了、但一张证据都没挂上」的那一轮，
+        反而把整个会话的暂存全卷走，挂到别人的单子上。
+
+        取走与清掉过期项是**一个**原子动作，全程在 `self._lock` 里 —— 分两步的话，
+        两条消息并发进来会让同一张图被两个案子各认领一次。
+        """
+        key = self._key(channel, chat_id)
+        with self._lock:
+            alive = [a for a in self._by_chat.get(key, []) if not self._expired(a)]
+            if digests is None:
+                self._by_chat.pop(key, None)
+                return alive
+            self._by_chat[key] = [a for a in alive if a.digest not in digests]
+            return [a for a in alive if a.digest in digests]
+
     def claim(self, channel: str, chat_id: str) -> list[StoredAttachment]:
         """取走这个会话暂存的全部附件。**取走即清空**。
 
         清空是刻意的：不清的话，下一句 `/refund ORD-B` 会把上一单的照片再挂一遍，
         而两个案子引用同一张图这件事，事后没有任何一条记录能解释清楚。
         """
-        key = self._key(channel, chat_id)
-        with self._lock:
-            alive = [a for a in self._by_chat.pop(key, []) if not self._expired(a)]
-            return alive
+        return self.take(channel, chat_id)

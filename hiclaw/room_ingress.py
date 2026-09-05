@@ -348,14 +348,37 @@ class _ChairTeam:
             log.warning("收口卡没进房间（%s），五岗发言与回帖不受影响",
                         describe_exc(exc))
 
+    def _preflight_notice(self, round_no) -> str:
+        """预告的措辞：首检与复检读起来必须不一样。
+
+        房间里那句预告是十几秒模型调用期间**唯一**能证明「机器人没挂」的东西。
+        复检那一轮如果还是同一句话，boss 分不出「它在重新过这一单」和
+        「刚才那条又刷了一遍」—— 而这两件事该做的反应完全不同。
+
+        `round_no` 从 router 那侧来，所以这里按**外部输入**待它：`None`、`"2"`、
+        `"第二轮"` 都不许把预告炸掉。炸了不是少一句话 —— 异常会一路抛出这个
+        钩子、落进 router 的 except，五岗**整轮**哑掉，房间里只剩一条
+        指不到原因的 WARNING。
+        """
+        try:
+            n = int(round_no or 1)
+        except (TypeError, ValueError):                 # 不是数字：按首检待它
+            n = 1
+        if n >= 2:
+            return (f"收到新证据，五岗正在复检这一单（第 {n} 轮）"
+                    f"{self._seats}，请稍候")
+        return f"五岗正在过这一单{self._seats}，请稍候"
+
     # -- TeamObserver 的两个钩子（其余走 __getattr__ 原样转交）-------------
     def on_preflight(self, **kw):
         """一单预检：预告 -> 五岗 -> 收口卡。
 
         `**kw` 转发而不是逐个列参数：签名由 router 那侧定，列一遍就是把两处
         绑死，而对不上时是 `TypeError` 落进 router 的 except，房间里一片安静。
+        `round_no` 同样**只从 `kw` 里读、不进签名**，理由一模一样：它的形状
+        归 router 那侧定，这里只拿它换一句预告的措辞。
         """
-        self._notice(f"五岗正在过这一单{self._seats}，请稍候")
+        self._notice(self._preflight_notice(kw.get("round_no")))
         reports = self._team.on_preflight(**kw)
         self._chair(reports, kw.get("checked") or {}, kw.get("requested_by") or "")
         return reports
@@ -520,6 +543,9 @@ def main(argv: list[str] | None = None) -> int:
               + (f"{ms}ms（每岗说完停一下）" if ms else "0（不等，缺省）"))
         print("圆桌岗位与技能：")
         print(render_roster(roster))
+        print("拖图片 / PDF 进来补证据：认得出是哪一单就自动复检、五岗重说一轮"
+              "（只读复检，放行仍要 /approve）；认不出订单号就先存着，"
+              "等下一句 /refund 认领")
     print(f"附件落盘：{os.environ.get('MAOS_ATTACHMENT_DIR') or 'var/attachments'}（不进 git）")
     print("在 Element 里说话、拖申请表 / 照片、或打 /help。Ctrl-C 退出。")
     print(BAR, flush=True)
@@ -533,7 +559,11 @@ def main(argv: list[str] | None = None) -> int:
                                    for s in roster)
                 announce(channel,
                          f"MAOS 退款圆桌已上线（5 岗：{seats}）。"
-                         "/refund 或拖申请表起单，五岗依次发言；/team 看岗位与 skill")
+                         "/refund 或拖申请表起单，五岗依次发言；"
+                         "拖图片 / PDF 进来补证据，认得出是哪一单就自动复检、"
+                         "五岗重说一轮（只读复检，放行仍要 /approve），"
+                         "认不出订单号就先存着、等下一句 /refund 认领；"
+                         "/team 看岗位与 skill")
             else:
                 model = getattr(chat.model, "model", "") if chat.live else ""
                 announce(channel,

@@ -1757,3 +1757,15 @@ router 侧的 @岗位点名分流与待办里的合议建议。以下六处是�
 | 2026-09-05 | C1 | 新域文档核查发现旧正文“两域”、财务闸可直接跨域和无需接 CLI 的口径失真 | 同步更正直接矛盾，历史端点和数字保留；Gate、replan、补偿标 ⚠️ | 同一实现与已覆盖业务能力必须分别证明，避免新对照表与旧正文互相矛盾 |
 | 2026-09-05 | C1 | 调查成功案保留 pending、camt.029/CNCL 与 pacs.004 三次真实观察，前两者不能证明 returned | 新域导出只把满足 guard 权威终态判据的观察列入成功依据，数据库和 trace 保留完整观察历史；退款导出保持原样 | 避免把过程观察当成成功凭据，也不删除真实轮询事实 |
 | 2026-09-05 | C1 | 扩展证据新增同名文件后，文档守卫无法唯一解析 BACKLOG 既有短路径 scenario-6/business-objects.json，新增 E-missing 阻断 | 仅给该处历史引用补全 evidence/ 前缀，其余旧内容保持不变 | 修复本次新增目录直接造成的路径歧义，恢复文档检查原有 0 阻断口径；不修改守卫规则 |
+
+## task-T95（证据束的可视化出口，2026-09-05）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-05 | T95 | 铁律 3 要求 evidence 文件首行写 `generated at <ISO8601> from <sha>`，而 `--check` 要拿产物逐字节比对 | 首行出处照写，`--check` 只比对**第 2 行起的正文**；另加一条断言钉死「只换首行、正文不变时 `--check` 必须绿」 | 时间戳与可能带 `-dirty` 的 sha 进比对会让 `--check` 恒红，那就成了一个永远在响的警报，跟没有守卫一样（同 `scripts/gen_docs.py` 自我约束 3 的理由） |
+| 2026-09-05 | T95 | 派单 §3.4 给了二选一：把 HTML 生成挂进 `make_evidence.py`，或另给一条独立命令 | 选独立命令 `python3 scripts/render_trace.py`，`make_evidence.py` 一个字节不改 | 缺省的「8 场景落盘」输出不许变是硬约束；且 `make_evidence.py` 有 `--contrast` / `--domains` / `--scenarios` 三种**不产全八束**的模式，挂进去要么污染缺省输出，要么在这三种模式下产出半份页面 |
+| 2026-09-05 | T95 | 派单 §3.2 要求复用 `cost_view` / `failure_view` / `stray_events` / `unattributed_usage` 四个接口 | 消费它们**已内嵌在 `trace.json` 里的产物**（`traces[].cost`、`cost.failures`、`stray_events`、`unattributed_usage` 四个键），不重跑函数；只有 `check_span_tree` 在渲染时真重跑一遍 | 那四个函数都要开库，而 `evidence/*.db` 不入库 —— 重算等于要求评委先跑一遍 `make_evidence.py`，正好废掉本轨「不跑任何命令就能看」的唯一目的。`check_span_tree` 是纯函数只吃 spans，所以它重跑，并与导出时记录的 `tree_errors` 对账，不一致就在页面上说出来 |
+| 2026-09-05 | T95 | 验收链跑完后 `evidence/` 有 50 份重生成的 json（内容等价，只是 id 与时间戳换了一批） | 提交前 `git checkout -- evidence/`，只提交新增的 `evidence/report.html`（按 HEAD 快照渲染，`--check` 绿） | T94 / T96 与本轨并行，`evidence/*.json` 是三轨都可能重生成的面。带 50 份等价改动进来，整合时全是无意义冲突。HTML 是 `evidence/` 的投影，投影哪一份快照都真 |
+| 2026-09-05 | T95 | 派单 §3.3 没点名要印 `result.json` 的 `metrics` 与 `wall_ms` | 加了：每条 plan 一行指标（墙钟 / 事件 / skill / tool / 返工 / 重规划 / 补偿），场景抬头印端到端墙钟与 exit code | 一是这些数本身就是链路走得顺不顺的直接读数；二是派单 §6 的回归判据要求「改 `result.json` 里一个数字 `--check` 就红」，而在此之前页面只吃 `tasks` 与 `business_outcome` 两处，改 `wall_ms` 不会红 —— 守卫覆盖不到的证据面等于没被守 |
+| 2026-09-05 | T95 | 派单 §4 的 OTLP 导出是可选项 | 做了，`--otlp` 开关，缺省不产。`trace_id` 用 `sha256(<原值>)[:32]` 映射成 32 hex，原值原样留在每条 span 的 `maos.trace_id` 属性上；`span_id` 本来就是 16 hex，原样使用。不引 SDK、无网络调用，渲染器里连 `urllib` / `socket` 都被测试禁掉 | 生成格式一个字不许改（改了所有既有证据束当场失效），所以映射只发生在导出这一层且随时可反查。范围严格锁死在「产一个文件」，不越界到 collector |
+| 2026-09-05 | T95 | OTLP 产物落在 `evidence/` 下，要么守铁律 3 的 `# generated at` 头、要么直接可喂 collector，二者不可兼得 | 守铁律 3，喂 collector 前 `tail -n +2` 剥掉首行 | 铁律 3 是硬约束，且 `make_evidence.py::load_evidence_json` 早已把「首行注释 + 严格 JSON」定成本仓库所有 evidence 文件的共同形状，不为这一个出口破例。代价是一次 `tail`，写在脚本 docstring 与 BACKLOG 里 |

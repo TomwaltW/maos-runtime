@@ -1743,3 +1743,12 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-05 | C1 | 场景 8–10 均未注入 replanner，域内补偿没有逆补丁产物，不经过 `_gate_compensation` 干跑；财务闸仍限定 refund | 内核实现可共用，但三新域的重规划、补偿预验证及通用财务闸尚无端到端证据；网关码闸限制已见 task-T37 / task-T39 | 后续由域流程与运行时负责轨补覆盖；本轮仅如实标 ⚠️，不改内核 |
 | 2026-09-05 | C1 | `collect_business_objects` / `check_business_ref` 仍只认退款 `business_ref`，未接理赔 `claim_business_ref` 与 AP `ap_business_ref`；调查本来没有引用表（已见 task-T38） | 本次三项核心核验覆盖新域，但第 2 项及 business-objects.json 尚不核验理赔/AP 的业务引用，不能把聚合 PASS 当作该项已跨域覆盖 | 下一次扩展第 2 项时接各域现有 resolver 与引用表；本轮派单只要求第 3/6/7 项，不顺手扩大 |
 | 2026-09-05 | C1 | `scripts/demo_preflight.sh` 的 EXPECT_TESTS_NOPG 仍为 1476，已落后于本轮实测的 1986；默认束数仍正确固定为 8 | 直接运行完整预检会因测试数量旧值报错，独立执行本派单逐条验收可通过 | 后续整合轮刷新测试数量；当前可显式设置 MAOS_EXPECT_TESTS=1986，C1 不改预检脚本及冻结束数 |
+
+## task-T95（可视化出口的范围外缺口，2026-09-05）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-05 | T95 | **`make_evidence.py` 与 `render_trace.py` 之间没有机器绑定**：单跑前者不会带出 HTML，`evidence/report.html` 当场变陈旧 | 表现是 `python3 scripts/render_trace.py --check` 与 `maos/tests/test_render_trace.py::test_committed_report_is_in_sync` 一起变红。这是**正确的红**（证据变了投影没跟），但它出现在一条谁都会走的日常路径上：跑一次证据束就红一次，两条命令的先后关系只写在文档里 | 整合轮把 `python3 scripts/render_trace.py` 接进 `scripts/demo_preflight.sh` 与 `scripts/make_release.sh` 的证据环节（跑完证据束顺手渲染）。本轨按派单 §3.4 选了独立命令，不动 `make_evidence.py` 的缺省输出，所以这条绑定留在脚本外 |
+| 2026-09-05 | T95 | **OTLP 产物不能直接喂 collector**：`python3 scripts/render_trace.py --otlp` 产出的那份 JSON，首行是铁律 3 的 `# generated at …` 注释，不是合法 JSON（该文件缺省不产、也不入库，所以这里不写死路径） | 「这是标准格式，可以喂给任何 collector」这句话要跟一句「先 `tail -n +2`」。真接 collector 时还有第二道：`trace_id` 的 32 hex 是本脚本 sha256 映射出来的，collector 侧看到的 id 与库里、与 `verify.py` 报告里的 `trace_b81e77f2522c` 对不上，要靠 span 属性 `maos.trace_id` 反查 | 真要接 collector 的那一轮再定：要么给这一个出口破铁律 3 的例，要么在导出侧再产一份无头副本。本轨不预先破例（`docs/gateway-rationale.md` 已记过 `trace_id` 格式这条硬阻塞） |
+| 2026-09-05 | T95 | **`artifacts/` 下那两份手写 HTML（183K / 223K）仍然是手写的**，本轨没有取代它们 | 它们仍然是「跑完场景要有人回来改、于是没人改」的那一类材料，与新产的 `evidence/report.html` 讲同一批事实却各自维护，有对不上的风险 | 范围外，不当场改（铁律 4）。下一轮决定：要么把这两份也变成脚本产物并纳入 `--check`，要么明确它们只讲静态叙事、动态数字一律指向 `evidence/report.html` |
+| 2026-09-05 | T95 | **页面把八束里 13 条 trace 全量摊开成一页 304 KB**，`scenario-R5`（3 条 trace / 117 span）与 `scenario-7`（2 条 / 103 span）是大头 | 现在还很轻快（浏览器打开无卡顿，`<details>` 默认收起了结构树与完整事件序列）。但域扩展到 8–10 之后束数会翻倍，单页会到 MB 级 | 到那一步再拆：按束分页、或把结构树与完整事件序列改成点开才渲染的内联数据。现在拆是过早优化，且会破掉「一个文件、双击就能看」这条最值钱的性质 |

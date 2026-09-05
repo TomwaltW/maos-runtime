@@ -23,7 +23,7 @@ import sys
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)-12s %(message)s")
 log = logging.getLogger("maos.main")
 
-ALL_SCENARIOS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)  # 8=理赔 / 9=银行差错 / 10=应付账款
+ALL_SCENARIOS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)  # 8=理赔 / 9=银行差错 / 10=应付账款 / 11=跨域协同(10->9)
 # 与 ALL_SCENARIOS 有意不对称：1-7 + R5 是跨轨冻结口径，改缺省序列会打破复赛材料。
 DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)
 

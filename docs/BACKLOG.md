@@ -1743,3 +1743,12 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-05 | C1 | 场景 8–10 均未注入 replanner，域内补偿没有逆补丁产物，不经过 `_gate_compensation` 干跑；财务闸仍限定 refund | 内核实现可共用，但三新域的重规划、补偿预验证及通用财务闸尚无端到端证据；网关码闸限制已见 task-T37 / task-T39 | 后续由域流程与运行时负责轨补覆盖；本轮仅如实标 ⚠️，不改内核 |
 | 2026-09-05 | C1 | `collect_business_objects` / `check_business_ref` 仍只认退款 `business_ref`，未接理赔 `claim_business_ref` 与 AP `ap_business_ref`；调查本来没有引用表（已见 task-T38） | 本次三项核心核验覆盖新域，但第 2 项及 business-objects.json 尚不核验理赔/AP 的业务引用，不能把聚合 PASS 当作该项已跨域覆盖 | 下一次扩展第 2 项时接各域现有 resolver 与引用表；本轮派单只要求第 3/6/7 项，不顺手扩大 |
 | 2026-09-05 | C1 | `scripts/demo_preflight.sh` 的 EXPECT_TESTS_NOPG 仍为 1476，已落后于本轮实测的 1986；默认束数仍正确固定为 8 | 直接运行完整预检会因测试数量旧值报错，独立执行本派单逐条验收可通过 | 后续整合轮刷新测试数量；当前可显式设置 MAOS_EXPECT_TESTS=1986，C1 不改预检脚本及冻结束数 |
+
+## task-T94（跨域协同场景 11 的范围外发现，2026-09-05）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-05 | T94 | 一个 plan 同时挂两个域的业务对象时，`verify.py --domains` 会把**同一条** business-outcome 失败在两个域的检查项里各报一次 | 实测（把 scenario-11 的 returned 观察篡改成 `camt.029` 之后）`investigation/business-outcome` 与 `ap/business-outcome` 打印的是同一条理由，读起来像两处独立缺陷，实际是一个 plan 的一份 `business_outcome` 坏了。判定本身是**对的**也更严（跨域那份结论装着两个域的判据，坏一条整份不成立），只是措辞没说清「这条是从哪个域看过去的」 | 下次动 `check_business_outcome` 时给理由前缀加上「按 X 域核验」；本轨不改 —— verify.py 是四个域共用的判据面，为措辞动它风险不划算 |
+| 2026-09-05 | T94 | 跨域场景的 DAG 与前面四个业务域一样，是**直接交给 `create_plan` 的规格列表**，不走 `ManagerAgent` 规划（`scenario_9.py:231` 已就单域说明过这一点） | 于是「Manager 能不能**规划出**一条跨域 DAG」这件事一次都没被证明过 —— 现在证明的是「跨域 DAG 交给内核能跑通」。这两句话的差距，正是评委最可能追问的一处：方案是人写死的，还是系统排出来的 | 真要证明得先解决 `ScriptedModelClient` 按关键字查表的确定性问题（塞两份方案 JSON 就得靠提示词关键字分派）。建议留到接真模型客户端的那一轮，与「跨域 replan」一并做 |
+| 2026-09-05 | T94 | task-C1 记的「`collect_business_objects` / `check_business_ref` 只认退款 `business_ref`」在跨域这一束同样成立：scenario-11 的库里 `ap_business_ref` 有 **4 行**，而 `business-ref` 检查项的计数在有无 scenario-11 时都是 `35/35` | 补一个实测数据点：跨域没有改善这个缺口，也没有让它变坏。第 2 项对新域业务引用的覆盖仍然是零，不能把聚合 PASS 读成「业务引用已跨域核验」 | 与 task-C1 那条同批处理；本轨派单只要求第 3/6/7 项，不顺手扩大 |
+| 2026-09-05 | T94 | `scripts/demo_preflight.sh` 的 `EXPECT_TESTS_NOPG` 仍是 1476（task-C1 已记落后于 1986），本轨再增 21 条后实测为 **1992** | 直接跑完整预检会因测试条数旧值报错；逐条执行派单验收不受影响 | 与 task-C1 那条同批刷新。当前可显式 `MAOS_EXPECT_TESTS=1992`；本轨不改预检脚本，也不动冻结的默认八束 |

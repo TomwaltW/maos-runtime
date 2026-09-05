@@ -46,10 +46,13 @@ REASONS: dict[str, str] = {
     "发错货": "wrong_item", "发错型号": "wrong_item", "错发": "wrong_item",
 }
 
-#: 表头别名。CSV 是人手填的，列名叫法不会统一。
+#: 表头别名。CSV 是人手填的，列名叫法不会统一。**全等**匹配（见 `_pick`）：
+#: 「退货原因」不会因为含「原因」二字就命中「原因」那条，差一个字就是整列取不到。
+#: 所以老板真会写的说法要逐个列进来 —— 「退款/退货」「原因/理由」是同一件事。
 COLUMNS: dict[str, tuple[str, ...]] = {
     "order_id": ("订单号", "订单编号", "order_id", "order"),
-    "reason": ("诉求类型", "退款原因", "原因", "reason", "reason_code"),
+    "reason": ("诉求类型", "退款原因", "退货原因", "退款理由", "退货理由",
+               "原因", "理由", "reason", "reason_code"),
     "amount": ("申报金额", "退款金额", "金额", "amount", "amount_claimed"),
     "date": ("申请日期", "申请时间", "日期", "date", "requested_at"),
     "note": ("说明", "备注", "note", "remark"),
@@ -68,12 +71,37 @@ class RequestSheetError(ValueError):
     """申请表里有填不对的地方。消息直接给人看。"""
 
 
+#: 必需列：``key -> 给人看的标准列名``。整列一个别名都没命中时，这一列每行都取到
+#: 空串，逐行报「不能空」等于把表头的一处错说成 N 行数据的错 —— 人会照着去改那 N 行，
+#: 而那 N 行本来就是填好的。订单号不列在这里：它另有一句更准的话（见 `read_sheet`）。
+REQUIRED_COLUMNS: dict[str, str] = {"reason": "诉求类型"}
+
+
 def _pick(row: dict, key: str) -> str:
     for name in COLUMNS[key]:
         for raw_key, value in row.items():
             if raw_key and raw_key.strip().lstrip("﻿") == name:
                 return (value or "").strip()
     return ""
+
+
+def scan_header(header) -> tuple[list[str], list[str]]:  # noqa: ANN001
+    """看表头认出了什么：返回 ``(缺的必需列 key, 没认出来的列名)``。
+
+    判据与 `_pick` 同一套（strip + 去 BOM 后**全等**）—— 两边不一致的话，症状是
+    「说缺了这一列，可行里又取到了值」，比不报还难查。申请表进群那条入口
+    （`maos.ingress.sheet`）复用本函数，不另抄一份。
+    """
+    names = {h.strip().lstrip("﻿") for h in header if h}
+    known = {alias for aliases in COLUMNS.values() for alias in aliases}
+    missing = [key for key in REQUIRED_COLUMNS if not (set(COLUMNS[key]) & names)]
+    return missing, [h.strip().lstrip("﻿") for h in header
+                     if h and h.strip().lstrip("﻿") not in known]
+
+
+def missing_column_message(key: str) -> str:
+    """整列缺失时那句话。两条入口逐字同一句，改措辞只改这里。"""
+    return f"表头里没有「{REQUIRED_COLUMNS[key]}」这一列"
 
 
 def _reason_code(raw: str) -> str:
@@ -124,9 +152,20 @@ def read_sheet(path: str | Path) -> list[dict]:
     if not p.exists():
         raise RequestSheetError(f"找不到申请表：{p}")
     with p.open(encoding="utf-8-sig", newline="") as fh:
-        rows = list(csv.DictReader(fh))
+        reader = csv.DictReader(fh)
+        rows = list(reader)
+        header = list(reader.fieldnames or ())
     if not rows:
         raise RequestSheetError(f"{p} 里一行申请都没有")
+
+    # 表头先判：整列缺失时下面每一行都会在 `_reason_code` 上报「不能空」，那句把人
+    # 指向一堆本来没填错的行。错在表头一处，就在表头一处说。
+    missing, unknown = scan_header(header)
+    for key in missing:
+        aliases = "、".join(a for a in COLUMNS[key] if not a.isascii())
+        note = f"；表里没认出来的列：{'、'.join(unknown)}" if unknown else ""
+        raise RequestSheetError(
+            f"{missing_column_message(key)} —— 这一列写成这些名字都认：{aliases}{note}")
 
     out: list[dict] = []
     for lineno, row in enumerate(rows, start=2):     # 第 1 行是表头

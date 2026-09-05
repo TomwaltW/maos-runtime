@@ -40,6 +40,7 @@ import io
 import logging
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -57,6 +58,11 @@ MAX_ROWS = 50
 #: 回显字段的字符上限。字段是人填的、会原样刷回群里 —— 一个粘了聊天记录的「说明」
 #: 或一个上百 KB 的「订单号」都不该把回帖撑爆。截断只影响回显，不影响校验。
 FIELD_MAX = 40
+
+#: 必需列、表头扫描、缺列那句话，一律用 `run_requests` 的
+#: ``REQUIRED_COLUMNS`` / ``scan_header`` / ``missing_column_message``（见模块开头
+#: 「与 run_requests 的分工」）。订单号不在必需列里：它缺了连表都认不出来
+#: （:func:`looks_like_sheet`），走 :class:`NotASheet`，措辞另说。
 
 _SNIFF_BYTES = 4096
 _LINE_BREAK = re.compile(rb"\r\n|\n|\r")
@@ -94,6 +100,12 @@ class Sheet:
     skipped_blank: int = 0
     #: 超出 MAX_ROWS 没看的行数（**约数**：按剩余物理行估，多行单元格会让它偏大）。
     truncated: int = 0
+    #: :data:`REQUIRED_COLUMNS` 里表头一个别名都没命中的（key）。非空 = 错在表头，
+    #: 不在行里；每行仍各记一条同样的 problem，由 `render` 折叠成表头那段说一次。
+    missing: list[str] = field(default_factory=list)
+    #: 表头里既不是别名、也不是空的列名。用来告诉人「你写的那列我没认出来」——
+    #: 缺列时光说「没有诉求类型」不够，人得知道自己写的哪个词落空了。
+    unknown: list[str] = field(default_factory=list)
 
     @property
     def valid(self) -> list[SheetRow]:
@@ -171,7 +183,8 @@ def _find_order(ledger: dict, order_id: str) -> dict | None:
     return max(orders, key=lambda o: int(o["version"])) if orders else None
 
 
-def _parse_row(rr, ledger: dict, lineno: int, raw: dict) -> SheetRow:  # noqa: ANN001
+def _parse_row(rr, ledger: dict, lineno: int, raw: dict,  # noqa: ANN001
+               missing: Sequence[str] = ()) -> SheetRow:
     """校验一行，**收集**所有问题而不是停在第一个。
 
     人改表是一次改完再发，所以一行里的三个错要一次说完。金额与日期都要在
@@ -197,10 +210,15 @@ def _parse_row(rr, ledger: dict, lineno: int, raw: dict) -> SheetRow:  # noqa: A
         row.problems.append(f"底账里没有订单 {row.order_id}")
 
     reason = ""
-    try:
-        reason = rr._reason_code(row.reason_raw)
-    except rr.RequestSheetError as exc:
-        row.problems.append(str(exc))
+    if "reason" in missing:
+        # 整列没认出来：这一行的诉求栏也许写得好好的，错的是表头。说「不能空」会
+        # 让人去改一堆本来没错的行 —— 那是把人指向一个不存在的问题。
+        row.problems.append(rr.missing_column_message("reason"))
+    else:
+        try:
+            reason = rr._reason_code(row.reason_raw)
+        except rr.RequestSheetError as exc:
+            row.problems.append(str(exc))
 
     amount: float | None = None
     if row.amount_raw:
@@ -271,6 +289,8 @@ def parse(data: bytes, filename: str, ledger: dict) -> Sheet:
     total_lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
 
     header: list[str] = []
+    missing: list[str] = []
+    unknown: list[str] = []
     rows: list[SheetRow] = []
     skipped = truncated = 0
     try:
@@ -278,6 +298,7 @@ def parse(data: bytes, filename: str, ledger: dict) -> Sheet:
             if not header:
                 if rec and any(c.strip() for c in rec):
                     header = [h.strip().lstrip("﻿") for h in rec]
+                    missing, unknown = rr.scan_header(header)
                 continue
             if not rec or not any(c.strip() for c in rec):
                 skipped += 1
@@ -290,7 +311,7 @@ def parse(data: bytes, filename: str, ledger: dict) -> Sheet:
                 raw[name] = None                      # 列少了：与 DictReader 的 restval 一致
             if len(rec) > len(header):
                 raw[None] = rec[len(header):]         # 列多了：与 DictReader 的 restkey 一致
-            rows.append(_parse_row(rr, ledger, rowno, raw))
+            rows.append(_parse_row(rr, ledger, rowno, raw, missing))
     except csv.Error as exc:
         # 超长单元格（> csv.field_size_limit）、引号没闭合到文件尾之类。
         # 不是取件问题，措辞要把人指向表本身。
@@ -305,7 +326,8 @@ def parse(data: bytes, filename: str, ledger: dict) -> Sheet:
             row.warnings.append("同一订单在本表出现多次，待办以最后一行为准")
 
     return Sheet(filename=_clip(filename), encoding=encoding, header=header, rows=rows,
-                 skipped_blank=skipped, truncated=truncated)
+                 skipped_blank=skipped, truncated=truncated,
+                 missing=missing, unknown=[_clip(h) for h in unknown])
 
 
 def render(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str], *,
@@ -325,12 +347,34 @@ def render(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str], *,
     if sheet.truncated:
         lines.append(f"（一次只看前 {MAX_ROWS} 行，其余约 {sheet.truncated} 行未看，请拆表再发）")
 
-    if sheet.invalid:
+    #: 缺列那句每一行都有，逐行刷 N 遍等于把人指向 N 个不存在的问题 —— 提到表头
+    #: 那段说一次，行级清单里折叠掉；那一行**别的**问题照列。
+    folded: set[str] = set()
+    if sheet.missing:
+        rr = _run_requests()
         lines.append("")
-        lines.append("有问题的行（改好后整张表再发一次）：")
+        for key in sheet.missing:
+            folded.add(rr.missing_column_message(key))
+            aliases = "、".join(a for a in rr.COLUMNS[key] if not a.isascii())
+            lines.append(f"表头对不上：没有「{rr.REQUIRED_COLUMNS[key]}」这一列 —— "
+                         f"{total} 行全卡在这里，不是行里填错了。")
+            lines.append(f"  这一列写成这些名字都认：{aliases}")
+        if sheet.unknown:
+            lines.append(f"  表里没认出来的列：{'、'.join(sheet.unknown)}")
+        lines.append("  改好表头，整张表再发一次。")
+
+    if sheet.invalid:
+        body = []
         for row in sheet.invalid:
+            rest = [p for p in row.problems if p not in folded]
+            if not rest:
+                continue
             head = f"  · 第 {row.line} 行 {row.order_id or '（无订单号）'}"
-            lines.append(f"{head}：{'；'.join(row.problems)}")
+            body.append(f"{head}：{'；'.join(rest)}")
+        if body:
+            lines.append("")
+            lines.append("有问题的行（改好后整张表再发一次）：")
+            lines.extend(body)
 
     if verdicts or errors:
         lines.append("")
@@ -360,7 +404,16 @@ def render(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str], *,
 
 
 def summary(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str]) -> str:
-    """一行摘要，给闲聊回话的【事实】用 —— 让模型知道刚才那张表长什么样。"""
+    """一行摘要，给闲聊回话的【事实】用 —— 让模型知道刚才那张表长什么样。
+
+    缺列要**说成缺列**：那时每一行都不合法，按「N 行填错」报出去，模型回话时会
+    跟着劝人去改那 N 行 —— 而那 N 行没错，错的是表头一处。
+    """
+    if sheet.missing:
+        rr = _run_requests()
+        cols = "、".join(rr.REQUIRED_COLUMNS[k] for k in sheet.missing)
+        return (f"{sheet.filename or '（未命名）'}：{len(sheet.rows)} 行，"
+                f"表头缺「{cols}」这一列 —— 整表未预检，要改的是表头不是行")
     approve = sum(1 for c in verdicts.values() if c.get("decision") == "approve")
     return (f"{sheet.filename or '（未命名）'}：{len(sheet.rows)} 行，"
             f"{len(sheet.invalid)} 行填错，{len(verdicts)} 行预检完成"

@@ -54,6 +54,38 @@ def test_sheet_reads_chinese_reasons_and_blank_amount():
     assert rows[0]["requested_at"].endswith("+00:00")
 
 
+def test_missing_reason_column_is_reported_as_a_header_problem(tmp_path):
+    """整列没认出来 -> 说表头，别说「第 2 行不能空」。
+
+    两条入口同一句话（申请表进群那条复用 `scan_header` / `missing_column_message`）：
+    错在表头一处，报到表头一处。逐行喊「不能空」会让人去改一堆本来填好的行。
+    """
+    csv_path = tmp_path / "退货订单.csv"
+    csv_path.write_text("订单号,退货说明,申报金额,申请日期,备注\n"
+                        "ORD-2026-0001,质量问题,6800,2026-07-10,\n", encoding="utf-8")
+
+    with pytest.raises(rr.RequestSheetError) as exc:
+        rr.read_sheet(csv_path)
+
+    assert "表头里没有「诉求类型」这一列" in str(exc.value)
+    assert "退货说明" in str(exc.value)                  # 你写的哪一列落空了
+    assert "不能空" not in str(exc.value)
+
+
+@pytest.mark.parametrize("name", ["诉求类型", "退货原因", "退款原因", "原因", "理由"])
+def test_the_reason_column_is_recognised_by_the_names_a_boss_writes(name, tmp_path):
+    """别名是**全等**匹配：「退货原因」不会因为含「原因」二字就命中「原因」那条。
+
+    真房间里撞到过 —— 老板的表写「退货原因」，五行全被判成「诉求类型不能空」。
+    """
+    csv_path = tmp_path / "退货订单.csv"
+    csv_path.write_text(f"订单号,{name},申报金额,申请日期,备注\n"
+                        "ORD-2026-0001,质量问题,6800,2026-07-10,\n", encoding="utf-8")
+
+    row, = rr.read_sheet(csv_path)
+    assert row["reason"] == "quality_defect" and row["reason_raw"] == "质量问题"
+
+
 def test_unknown_reason_is_refused_not_guessed():
     with pytest.raises(rr.RequestSheetError, match="看不懂的诉求类型"):
         rr._reason_code("客户心情不好")

@@ -100,6 +100,56 @@ def test_renamed_binary_is_not_a_sheet_and_still_hits_the_whitelist(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# 表头
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("name", ["诉求类型", "退货原因", "退款原因",
+                                  "退货理由", "退款理由", "原因", "理由"])
+def test_the_reason_column_is_recognised_by_the_names_a_boss_writes(name):
+    """老板写「退货原因」，系统只认「退款原因」—— 真房间里撞到过，5 行全废。
+
+    别名是**全等**匹配：「退货原因」不会因为含「原因」二字就命中「原因」那条。
+    所以「退款/退货」「原因/理由」这几种写法要逐个认，不能指望包含匹配兜住。
+    """
+    data = (f"订单号,{name},申报金额,申请日期,备注\n"
+            "ORD-2026-0001,质量问题,6800,2026-07-10,轴承锈蚀\n").encode()
+    parsed = sheet.parse(data, "退货订单.csv", _ledger())
+    row, = parsed.rows
+    assert parsed.missing == [] and row.ok
+    assert row.reason_raw == "质量问题" and row.req["reason"] == "quality_defect"
+
+
+def test_missing_reason_column_is_said_once_at_the_header_not_once_per_row():
+    """整列没认出来时，错在表头一处，不是 N 行各填错一次。
+
+    逐行喊「诉求类型不能空」的话，人会去改一堆本来填得好好的行 —— 那是把他指向
+    一个不存在的问题。回帖要提到表头说**一次**，并说出没认出来的是哪个列名；
+    行里**别的**问题（这里第 2 行订单不存在）照列。
+    """
+    data = ("订单号,退货说明,申报金额,申请日期,备注\n"
+            "ORD-9999-9999,质量问题,500,2026-09-01,底账里没有这个订单\n"
+            "ORD-2026-0001,质量问题,6800,2026-07-10,\n").encode()
+    parsed = sheet.parse(data, "x.csv", _ledger())
+
+    assert parsed.missing == ["reason"] and parsed.unknown == ["退货说明"]
+    assert not parsed.valid                          # 不知道为什么退，一行都套不上政策
+    reply = sheet.render(parsed, {}, {}, decision_cn={})
+    assert reply.count("没有「诉求类型」这一列") == 1
+    assert "不能空" not in reply                      # 那是行的错法，不是这里的
+    assert "退货说明" in reply and "退货原因" in reply  # 你写的哪列落空了 + 该写成什么
+    assert "底账里没有订单 ORD-9999-9999" in reply
+    assert "第 3 行" not in reply                     # 那行只有缺列这一条，已折叠
+
+
+def test_missing_column_summary_does_not_blame_the_rows():
+    """闲聊那条【事实】同样不许把表头的错念成「N 行填错」—— 模型会跟着劝人改行。"""
+    data = ("订单号,退货说明,申报金额,申请日期,备注\n"
+            "ORD-2026-0001,质量问题,6800,2026-07-10,\n").encode()
+    parsed = sheet.parse(data, "退货订单.csv", _ledger())
+    fact = sheet.summary(parsed, {}, {})
+    assert "表头缺「诉求类型」" in fact and "行填错" not in fact
+
+
+# --------------------------------------------------------------------------
 # 逐行收错
 # --------------------------------------------------------------------------
 def test_every_bad_row_is_reported_and_good_rows_still_run():

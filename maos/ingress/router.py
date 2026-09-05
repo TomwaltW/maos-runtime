@@ -50,11 +50,28 @@
 
 这条回帖**仍由主通道发出**（本层只有 `_reply` 这一条出口），靠 `【岗位 · agent_id】`
 名牌区分是谁在说 —— 岗位账号自己发声是发声面的事，不在这一层。
+
+## 拖一张图为什么能激活五岗
+
+一张照片自己不带订单号，所以从前它只能落进暂存、等一句 ``/refund`` 来认领 ——
+房间里的观感是「甩了张图，五岗一言不发」。`locate_order` 补的就是这一段：
+按**文件名 -> 正文 -> 本会话最近的待办**三级去认这批证据配给哪一单，认出来就把它
+叠加到那一单的随案证据上、再跑一次只读预检（`_recheck`），五岗照常发言。
+
+三条边界，每条都是铁律 8 的直接后果：
+
+  · **认不出就不触发。** 随便挑一单挂上去 = 凭空造一条「这张图属于这一单」的事实，
+    而挂错之后没有任何一条记录能解释清楚。认不出时这一层的行为与从前逐字一致。
+  · **诉求类型只从正文认，不从底账猜。** 「为什么要退」是人的诉求、不是订单属性，
+    底账里根本查不出来。认不出诉求类型的新单宁可不触发。
+  · **一条消息只触发一轮。** 三张图是一次复检、五岗各说一次，不是三轮 15 条；
+    带命令的消息更不走这条 —— ``/refund`` 自己会认领暂存并触发一次预检。
 """
 
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import logging
 import math
@@ -93,6 +110,11 @@ CMD_TEAM = "team"
 #: 审批命令词与 `hiclaw/matrix_bus.py` 的 `_COMMANDS` 同一份口径 —— 那边已经跑绿，
 #: 这里只负责把消息**转过去**，不重新实现判定。
 CMD_APPROVAL = ("approve", "reject")
+
+#: 本 router 认领的全部命令词。与 `_dispatch` 那串 if **必须同源**：少列一个词，
+#: 那条命令带着图进来时会多触发一轮证据复检（`_is_command`，跨轨契约 §4）。
+#: `test_ingress_evidence_recheck.py::test_known_verbs_covers_dispatch` 钉着两处一致。
+KNOWN_VERBS = frozenset({CMD_REFUND, CMD_HELP, CMD_PENDING, CMD_TEAM, *CMD_APPROVAL})
 
 #: 待办的有效期（秒）。过期的待办**不许放行**：预检结论是按当时的政策与日期算的，
 #: 隔一天再批，窗口天数已经变了，而放行时不会重算 —— 那就是拿旧结论退新钱。
@@ -143,6 +165,28 @@ def _load_run_requests():
     return mod
 
 
+def _load_room_smoke():
+    """加载 `scripts/room_team_smoke.py`，借它的 `order_of`（文件名 -> 订单号）。
+
+    与 `_load_run_requests` 同一个范式、同一个理由：那份口径（按长度从长到短匹配、
+    前缀之后必须紧跟 ``-`` 或 ``.``）已经跑绿、已经写进
+    `scenarios/custom/evidence/README.md`、也已经被冒烟脚本用着。这里再抄一份的话
+    两处会慢慢长歪 —— 而症状是「冒烟里配得上、真房间里配不上」，两边都不报错。
+
+    那个文件顶层只有 stdlib import 与常量（活儿全在 ``if __name__ == "__main__"``
+    后面），所以 import 它不会起任何东西，也不读一个环境变量。
+    """
+    key = "_ingress_room_team_smoke"
+    if key in sys.modules:
+        return sys.modules[key]
+    spec = importlib.util.spec_from_file_location(
+        key, ROOT / "scripts" / "room_team_smoke.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[key] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @dataclass
 class Ticket:
     """一条预检出来的待办。**只活在内存里**，进程重启即失效。
@@ -171,6 +215,10 @@ class Ticket:
     #: 还没装合议引擎时它一直是 None，`/pending` 那一行随之整条不出现 ——
     #: 不打「建议：None」，也不在这一层自己编一句（那就是第二套裁定口径）。
     verdict: Any = None
+    #: 这一单被预检到第几轮。第 1 轮是 ``/refund`` 起单那次，之后每补一批证据触发
+    #: 一次复检就 +1（`_recheck`）。只用来告诉圆桌「这不是第一次看这一单」
+    #: （跨轨契约 §3），**不参与任何裁定** —— 轮次多不代表更该批。
+    round_no: int = 1
 
     def expired(self, ttl: int = TICKET_TTL, now: float | None = None) -> bool:
         return (time.time() if now is None else now) - self.created_at > ttl
@@ -333,10 +381,15 @@ class IngressRouter:
             try:
                 if kind == "preflight":
                     ticket = event[1]
+                    # 复检那一路多登记一个 dict（轮次与本轮新增证据数，契约 §3）。
+                    # 起单那一路仍是两元组 —— 那两个参都有默认值，第 1 轮传不传
+                    # 一个样，而不传就不会碰 `on_preflight` 的老签名。
+                    extra = event[2] if len(event) > 2 else {}
                     reports = self.team.on_preflight(
                         payload=ticket.payload, checked=ticket.checked,
                         ledger=self.ledger(), evidence=list(ticket.evidence),
-                        requested_by=ticket.requested_by)
+                        requested_by=ticket.requested_by,
+                        **_accepted_extra(self.team, extra))
                     self._attach_verdict(ticket, reports)
                 elif kind == "sheet":
                     self.team.on_sheet(rows=event[1], ledger=self.ledger(),
@@ -438,8 +491,187 @@ class IngressRouter:
             self.pending_evidence.add(item)
             stored.append(item)
 
-        notes = [*sheets, self._render_evidence(msg, stored, rejected)]
+        # 这批新证据配得上某一单就当场复检（判单四级见 `locate_order`）。
+        # **带命令的消息不走这条**：``/refund`` 自己会认领暂存并触发一次预检，
+        # 在这里再触发一次，就是同一条消息两轮五岗发言（契约 §4）。
+        attached, card = ("", "")
+        if stored and not _is_command(msg.text):
+            attached, card = self._recheck(msg, stored)
+        notes = [*sheets,
+                 self._render_evidence(msg, stored, rejected, attached=attached),
+                 card]
         return "\n\n".join(n for n in notes if n)
+
+    # -- 判单与复检 ---------------------------------------------------------
+    def locate_order(self, msg: InboundMessage,
+                     stored: list[StoredAttachment]) -> tuple[str, str]:
+        """这批新证据配给哪一单。返回 ``(order_id, 依据说明)``；定位不到返回 ``("", "")``。
+
+        四级优先，先命中先返回，**顺序不可调换**（跨轨契约 §1）：
+
+          1. 附件文件名前缀是底账里的订单号   -> ``按文件名 <filename>``
+          2. 消息正文里出现的订单号（底账里查得到才算） -> ``按消息里的订单号``
+          3. 本会话最近一条未过期待办         -> ``按本会话最近的待办 <case_id>``
+          4. 都不命中                         -> ``("", "")``
+
+        第 4 级返回空**不是失败**。五岗里有三岗（规则审核 / 风险反欺诈 / 财务执行）
+        的事实全部来自 `checked`，而 `checked` 来自一个具体订单 —— 没有订单，
+        那三岗只能各说一句「本岗这一轮没有结论」，房间里就是五个人排队说废话。
+        更不能随便挑一单挂上去：那是凭空造了一条「这张图属于这一单」的事实，
+        而 MAOS 不持有权威事实（铁律 8），挂错之后没有任何一条记录能解释清楚。
+        """
+        known = {str(o["order_id"]) for o in self.ledger().get("order_snapshot", [])
+                 if o.get("order_id")}
+        if not known:
+            return ("", "")
+
+        # 1) 文件名。口径**借** `scripts/room_team_smoke.py::order_of`，不另抄一份，
+        # 理由见 `_load_room_smoke`。
+        order_of = _load_room_smoke().order_of
+        for item in stored:
+            hit = order_of(item.filename, known)
+            if hit:
+                return (hit, f"按文件名 {item.filename}")
+
+        # 2) 正文。**必须回底账校验**：正则从正文里刮出一个 ORD-xxxx-xxxx 只说明
+        # 「长得像订单号」，底账里没有这一单的话 `build_case` 会当场抛，而群里看到的
+        # 会是「处理失败：RequestSheetError」。所以反过来做 —— 拿底账里的订单号去
+        # 正文里找，查得到才算，校验与匹配是同一步，不可能漏。
+        # 从长到短与 `order_of` 同一个理由：`ORD-1` 会先命中 `ORD-10` 的正文。
+        text = msg.text or ""
+        for order_id in sorted(known, key=len, reverse=True):
+            if order_id in text:
+                return (order_id, "按消息里的订单号")
+
+        # 3) 本会话最近一条未过期待办。**这一级是这条链路的价值所在**：人的真实动作
+        # 是「/refund 起单 -> 看到证据不齐 -> 拖一张图」，中间不会再打一遍订单号。
+        latest = self._latest_ticket(msg)
+        if latest is not None:
+            order_id = str(latest.checked.get("order_id") or "")
+            if order_id in known:
+                return (order_id, f"按本会话最近的待办 {latest.case_id}")
+        return ("", "")
+
+    def _latest_ticket(self, msg: InboundMessage, order_id: str = "") -> "Ticket | None":
+        """本会话最近一条未过期待办；给了 ``order_id`` 就只找那一单。
+
+        先取快照再挑，不在锁里做判断：`expired()` 与比较都只读，而 `self._tickets`
+        会被别的线程改 —— 边迭代边被改的症状是一次随机的 RuntimeError，
+        且只在真房间的并发下才出现。
+        """
+        with self._lock:
+            tickets = list(self._tickets.values())
+        alive = [t for t in tickets
+                 if t.channel == msg.channel and t.chat_id == msg.chat_id
+                 and not t.expired(self.ticket_ttl)
+                 and (not order_id or str(t.checked.get("order_id") or "") == order_id)]
+        return max(alive, key=lambda t: t.created_at, default=None)
+
+    def _recheck(self, msg: InboundMessage,
+                 stored: list[StoredAttachment]) -> tuple[str, str]:
+        """把这批新证据挂到定位出来的那一单上，再跑一次只读预检。
+
+        返回 ``(挂载行, 复检卡)``；定位不到、或案子建不出来时两者都是 ``""`` ——
+        此时这一层的行为与从前**逐字一致**（暂存 + 「等一条 /refund 认领」），
+        一个岗都不叫。
+
+        **逐条复用既有路径**：`build_case` / `preflight` / `Ticket` / `_record`
+        与 `handle_refund` 是同一批，不另写一套。另写一套的症状是
+        「/refund 说批 6800、拖张图复检说批 5390」，而两条路各自都不报错。
+        """
+        order_id, why = self.locate_order(msg, stored)
+        if not order_id:
+            return ("", "")
+        try:
+            ticket, added, before = self._build_recheck(msg, order_id, stored)
+        except CommandError as exc:
+            # 认不出诉求类型、或底账里没这一单：**退回不触发**，不是回「处理失败」。
+            # 人刚甩了一张图，得到一句异常名对他没有任何用处，而暂存那条老路
+            # （「等一条 /refund 认领」）恰好就是他该走的下一步。
+            log.info("证据复检没起来（%s），按未定位处理：%s", exc, order_id)
+            return ("", "")
+        except Exception as exc:                        # noqa: BLE001
+            # 预检本身炸了也一样降级 —— 复检是给房间加戏的，不该把「已收下 N 份
+            # 证据」这句唯一的回执一起带走（红线 R4 的同一条取向）。
+            log.exception("证据复检失败 order=%s channel=%s（%s）",
+                          order_id, msg.channel, type(exc).__name__)
+            return ("", "")
+
+        with self._lock:
+            # 同一 case_id 覆盖而不是新增，与 `handle_refund` 的既有语义一致 ——
+            # 待办是「当前想退这一单」的意思，留着两条会让 /approve 不知道批哪一条。
+            self._tickets[ticket.case_id] = ticket
+        self._claim_stored(msg, stored)
+        # 锁外登记，`handle` 末尾才 fire —— 与 `handle_refund` 同一条规矩。
+        self._record(("preflight", ticket,
+                      {"round_no": ticket.round_no, "added_evidence": added}))
+        line = (f"已挂到 {order_id}（{why}），随案证据 "
+                f"{before} → {len(ticket.evidence)} 份")
+        return (line, self._render_preflight(ticket.checked, ticket, recheck=True))
+
+    def _build_recheck(self, msg: InboundMessage, order_id: str,
+                       stored: list[StoredAttachment]) -> tuple["Ticket", int, int]:
+        """建复检那条待办。返回 ``(ticket, 本轮新增几份, 原先几份)``。
+
+        建不出来一律抛 `CommandError` —— 由 `_recheck` 翻成「按未定位处理」。
+        """
+        rr = _load_run_requests()
+        old = self._latest_ticket(msg, order_id)
+        if old is not None:
+            # 浅拷贝：复检中途抛了，老待办的 payload 不该已经被改过一半。
+            payload = dict(old.payload)
+            base: tuple[StoredAttachment, ...] = old.evidence
+            summary, round_no = old.summary, old.round_no + 1
+            # 待办的归属不因为别人补了张图就转移：`requested_by` 是「谁想退这一单」，
+            # 收口卡按它 @ 人，而该看结论的是起单的那个人。
+            requested_by = old.requested_by
+        else:
+            # 没有待办时 `reason` 从哪来？**从底账查不出来** —— 它是人的诉求，
+            # 不是订单属性。所以只认消息正文里写着的诉求类型，认不出就整条不触发：
+            # 编一个「质量问题」出来 = 编一条权威事实（铁律 8）。
+            reason_raw = _reason_in(msg.text or "")
+            if not reason_raw:
+                raise CommandError(f"{order_id} 没有在办的待办，正文里也认不出诉求类型")
+            try:
+                payload = rr.build_case(self.ledger(), {
+                    "order_id": order_id, "reason": rr._reason_code(reason_raw),
+                    "amount": None, "requested_at": rr._iso(""),
+                })
+            except rr.RequestSheetError as exc:
+                raise CommandError(str(exc)) from exc
+            base, summary, round_no = (), f"{order_id}（{reason_raw}）", 1
+            requested_by = msg.sender
+
+        merged = _merge_evidence(base, stored)
+        payload["customer_evidence"] = [
+            item.as_evidence(f"ev-{i:02d}") for i, item in enumerate(merged, 1)
+        ]
+        checked = preflight(payload)
+        ticket = Ticket(
+            case_id=checked["case_id"], payload=payload, summary=summary,
+            channel=msg.channel, chat_id=msg.chat_id, requested_by=requested_by,
+            created_at=time.time(), evidence=tuple(merged), checked=checked,
+            round_no=round_no,
+        )
+        return ticket, len(merged) - len(base), len(base)
+
+    def _claim_stored(self, msg: InboundMessage,
+                      stored: list[StoredAttachment]) -> None:
+        """把已经挂上案子的那几份从暂存里移走。
+
+        **不移走的症状**：下一句 ``/refund ORD-B`` 会把它们再挂一遍，而两个案子
+        引用同一张图这件事，事后没有任何一条记录能解释清楚（与
+        `AttachmentBuffer.claim` 的清空是同一条理由）。
+
+        `take` 是跨轨契约 §2 的件。取不到就退回 `claim()` 全取 —— 代价是这个会话里
+        **别的**还没认领的图也一起被清掉。那是已知降级，但方向是对的：宁可多清，
+        也不能留下来让它挂到下一单上。
+        """
+        take = getattr(self.pending_evidence, "take", None)
+        if take is None:
+            self.pending_evidence.claim(msg.channel, msg.chat_id)
+            return
+        take(msg.channel, msg.chat_id, digests={item.digest for item in stored})
 
     # -- 申请表 -------------------------------------------------------------
     def handle_sheet(self, msg: InboundMessage, att: Attachment, data: bytes) -> str:
@@ -617,12 +849,21 @@ class IngressRouter:
         return "\n".join(lines)
 
     def _render_evidence(self, msg: InboundMessage, stored: list[StoredAttachment],
-                         rejected: list[str]) -> str:
+                         rejected: list[str], *, attached: str = "") -> str:
+        """``attached`` 非空 = 这批证据当场就挂上某一单了（`_recheck`）。
+
+        那时暂存里已经没有它们，再说「暂存 30 分钟，等一条 /refund 认领」
+        与「这个会话现有 N 份待认领证据」就都是假话 —— 人照着它再打一句
+        ``/refund``，得到的会是一单没有证据的预检。
+        """
         if not stored and not rejected:
             return ""
         lines: list[str] = []
         if stored:
-            lines.append(f"已收下 {len(stored)} 份证据（暂存 "
+            # 挂上案子的那一批不能再说「暂存、等一条 /refund 认领」—— 暂存里已经
+            # 没有它们了，人照着这句再打一句 /refund，得到的是一单没有证据的预检。
+            lines.append(f"已收下 {len(stored)} 份证据：" if attached else
+                         f"已收下 {len(stored)} 份证据（暂存 "
                          f"{self.pending_evidence.ttl // 60} 分钟，等一条 /refund 认领）：")
             for item in stored:
                 # 只报 digest 前 12 位：全长 64 位在手机上要折三行，而 12 位
@@ -632,7 +873,9 @@ class IngressRouter:
         if rejected:
             lines.append(f"未收下 {len(rejected)} 份：")
             lines.extend(f"  · {r}" for r in rejected)
-        if stored:
+        if stored and attached:
+            lines.append(attached)
+        elif stored:
             waiting = len(self.pending_evidence.peek(msg.channel, msg.chat_id))
             lines.append(f"这个会话现有 {waiting} 份待认领证据。"
                          f"接着发：/refund <订单号> <诉求类型>")
@@ -728,11 +971,17 @@ class IngressRouter:
         self._record(("preflight", ticket))             # 锁外登记，`handle` 末尾才 fire
         return self._render_preflight(checked, ticket)
 
-    def _render_preflight(self, c: dict, ticket: Ticket) -> str:
+    def _render_preflight(self, c: dict, ticket: Ticket, *,
+                          recheck: bool = False) -> str:
+        """``recheck=True`` 只换抬头那两个字与末尾那句预告。
+
+        中间四行（裁定 / 依据 / 金额 / 下一步）**一个字都不许因为轮次而变** ——
+        补一张图不会让政策变松，复检卡与预检卡说的必须是同一套话。
+        """
         rr = _load_run_requests()
         decision = rr.DECISION_CN.get(c["decision"], c["decision"])
         lines = [
-            f"预检 · {ticket.summary} · 案子 {c['case_id']}",
+            f"{'复检' if recheck else '预检'} · {ticket.summary} · 案子 {c['case_id']}",
             f"裁定：{decision} —— {c['why']}",
             # `deciding_rule` 为 None 表示「没有适用的时限规则，按基线裁定」——
             # 直接打 None 会让群里以为程序出错了，而它其实是个正常结论。
@@ -757,7 +1006,10 @@ class IngressRouter:
         if self.team is not None:
             # 只预告、不写结论：此刻一岗都还没发言（钩子在 `_reply` 之后才 fire），
             # 在这里写一句「建议批复」就是凭空捏一个裁定（红线 R1/R2）。
-            lines.append("五岗正在合议，稍后给出批复建议")
+            # 「复检」与「合议」的区别只是告诉房间这不是第一次看这一单 ——
+            # 措辞里同样一个结论都不许有，齐不齐是证据核验岗的事。
+            lines.append("五岗正在复检，稍后给出批复建议" if recheck
+                         else "五岗正在合议，稍后给出批复建议")
         return "\n".join(lines)
 
     # -- 执行 ---------------------------------------------------------------
@@ -916,6 +1168,97 @@ class IngressRouter:
             log.error("回帖失败（%s -> %s）：%s\n原文：%s",
                       msg.channel, msg.chat_id, exc, text)
         return text
+
+
+def _is_command(text: str) -> bool:
+    """这条消息是不是本 router 认领的命令。
+
+    带命令的消息**不走证据复检**：``/refund`` 自己会认领暂存并触发一次预检，
+    在附件那一步再触发一次，就是同一条消息两轮五岗发言（契约 §4）。其余命令
+    （``/approve`` 之类）也不该被一张图带出一轮复检 —— 那时人在放行，不在补证据。
+    """
+    cmd = Command.parse(text)
+    return cmd is not None and cmd.verb in KNOWN_VERBS
+
+
+def _merge_evidence(old, new) -> list[StoredAttachment]:
+    """老证据 + 新证据，按 digest 去重、顺序稳定（老的在前）。
+
+    **叠加不是替换**：人的动作是「起单 -> 发现证据不齐 -> 再补一张」，补的那张
+    替掉前面的，等于每补一次就丢一次，而案子里少了哪张没有任何一处会报出来。
+    去重按 digest 不按文件名：内容寻址下 digest 相同就是同一份证据，重拖一遍
+    不该在案子里变成 ev-01 / ev-02 两条一模一样的 uri。
+    """
+    merged: list[StoredAttachment] = []
+    seen: set[str] = set()
+    for item in (*old, *new):
+        if item.digest in seen:
+            continue
+        seen.add(item.digest)
+        merged.append(item)
+    return merged
+
+
+def _reason_in(text: str) -> str:
+    """正文里写着的诉求类型（原话）；认不出返回 ``""``。
+
+    词表**借** `run_requests.REASONS`，不另列一份中文说法：另列一份的症状是
+    「CSV 里写『坏了』能跑、群里写『坏了』不认」，而两边都不报错。
+
+    按长度从长到短扫：「七天无理由」含「无理由」—— 这两个恰好同一个 code，
+    但「买错型号」与「买错了」不是，短的先命中就认错了诉求，而这种错不报错。
+    """
+    rr = _load_run_requests()
+    for word in sorted(set(rr.REASONS) | set(rr.REASONS.values()),
+                       key=len, reverse=True):
+        if word in text:
+            return word
+    return ""
+
+
+def _accepted_extra(team: Any, extra: dict) -> dict:
+    """``extra`` 里圆桌**显式收得下**的那几个参；问不出来就一个都不传。
+
+    不传是安全的降级：`on_preflight` 的两个新参（``round_no`` / ``added_evidence``，
+    跨轨契约 §3）都带默认值，不传只是这一轮不带轮次信息，复检照样发生。
+    传错了才是灾难 —— 不认的关键字会当场 TypeError，落进 `_fire` 的 except，
+    症状是**房间里一片安静**、五岗一句话没有，而日志里只有一行「钩子失败」。
+
+    要穿一层壳：真房间里坐在 router 对面的是 `hiclaw/room_ingress.py::RoomTeam`，
+    它的 ``on_preflight(**kw)`` 原样转发给真圆桌。只问它，问到的永远是「什么都收」，
+    而收不收得下由它包着的那一层说了算 —— 那正是 TypeError 会从里面抛出来的地方。
+    """
+    if not extra or team is None:
+        return {}
+    node: Any = team
+    for _ in range(3):                                  # 壳最多穿三层，防成环
+        names = _keyword_params(getattr(node, "on_preflight", None))
+        if names is not None:
+            return {k: v for k, v in extra.items() if k in names}
+        node = getattr(node, "_team", None)
+        if node is None:
+            break
+    return {}
+
+
+def _keyword_params(fn: Any) -> set[str] | None:
+    """``fn`` 显式列出的关键字参名；只有 ``**kw``（或问不出签名）时返回 ``None``。
+
+    ``None`` 与空集合是两件事：空集合 = 问清楚了，它一个新参都不收；
+    ``None`` = 没问出来，得再往里问一层。混成一个值就会把转发壳当成
+    「什么都不收」，T99 并进来之后真房间永远拿不到轮次信息。
+    """
+    if fn is None:
+        return None
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return None
+    names = {n for n, prm in params.items()
+             if prm.kind in (prm.POSITIONAL_OR_KEYWORD, prm.KEYWORD_ONLY)}
+    if not names and any(prm.kind is prm.VAR_KEYWORD for prm in params.values()):
+        return None
+    return names
 
 
 def render_roster(roster: list[dict]) -> str:

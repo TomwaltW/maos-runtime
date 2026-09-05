@@ -4,6 +4,7 @@
     python3 scripts/room_team_smoke.py
     python3 scripts/room_team_smoke.py scenarios/custom/refund-requests-team.csv --json
     python3 scripts/room_team_smoke.py --evidence scenarios/custom/evidence --pace 400
+    python3 scripts/room_team_smoke.py --evidence scenarios/custom/evidence --recheck
 
 ## 它替代不了什么
 
@@ -38,6 +39,23 @@
 `StoredAttachment.as_evidence()` 翻成 `customer_evidence` 行 -> 塞进 payload。
 所以白名单校验（只收图与 PDF）、digest、去重全部免费获得，也不会出现
 「冒烟里配得上、真房间里配不上」这种两套口径。目录不存在或为空只报一行、照常跑完。
+
+## `--recheck`：把「补了证据之后结论会不会变」演出来
+
+`--evidence` 单独用演的是**一开始就带着证据**。复检演的是**另一件事**：同一单
+先无证据过一轮，再补上证据过第二轮，看收口卡会不会改口 —— 房间里那条路是
+「boss 拖一张图进来」，这里是它的离线形态。
+
+    python3 scripts/room_team_smoke.py --evidence scenarios/custom/evidence --recheck
+
+只有**配得上证据的那几单**跑两轮（演示语料里是 0004 / 0006），其余单照旧一轮。
+第 2 轮多传 `round_no=2` / `added_evidence=<份数>`；引擎不认这两个参时**不传**、
+报一行说明、两轮照跑 —— 口径与 `--pace` 那段逐字相同（探得到走正路，探不到退化
+并说明白），不发明第二种探法。
+
+末尾那行 `第 1 轮 X → 第 2 轮 Y` 的两个结论**都来自 `decide()`**，不是脚本自己
+下的判断。任一轮算不出来（合议引擎没装载）整行不打 —— 「None → None」看着像
+「两轮都没结论」，实际是「引擎不在」，两件事该做的反应完全不同。
 
 ## 退出码
 
@@ -92,6 +110,14 @@ EVIDENCE_CHANNEL = "smoke"
 
 NO_ROUNDTABLE = "圆桌引擎未装载（maos.roundtable 不存在），T87 并入后重跑"
 NO_VERDICT = "合议引擎未装载（maos.roundtable.verdict 不存在），T90 并入后重跑"
+NO_ROUND_NO = "引擎还没有 round_no 入参，本轮不报轮次"
+NO_RECHECK_TARGET = ("--recheck 没有一单配得上证据（它要配合 --evidence <目录> 用），"
+                     "没有哪一单演得出复检，本轮按单轮跑")
+
+#: 复检两轮的抬头后缀。不带 `--recheck` 时一个字都不加 —— 那条路的输出
+#: **逐字节不变**是硬判据（`maos/tests/test_room_team_recheck.py` 钉着）。
+TAG_ROUND_1 = " ｜ 第 1 轮 · 随案无证据"
+TAG_ROUND_2 = " ｜ 第 2 轮 · 新增 {n} 份证据"
 
 #: 证据文件名与订单号之间的分隔符。`ORD-2026-0004-rust.png` 与
 #: `ORD-2026-0004.png` 两种写法都认，`ORD-2026-00041.png` 则**不**算 0004 的证据。
@@ -345,6 +371,52 @@ def make_roundtable(team, model, voices, ledger, pace_ms: int, *, out):
     return team.RefundRoundtable(model, voices, **kwargs)
 
 
+def accepts_round_no(roundtable) -> bool:
+    """圆桌引擎的 `on_preflight` 认不认 `round_no`（跨轨契约 §3，T99 的面）。
+
+    探法与 `make_roundtable` 里 `pace` 那段**同一个范式**：签名读不到就当不支持。
+    两处各发明一种探法的症状是「一个探得到、一个探不到」，而两边都不报错。
+
+    不探就传的后果不是少一句话：引擎那侧是 keyword-only 具名参数、没有 `**kw`
+    兜底，多一个键当场 `TypeError` 炸在第一单上。
+    """
+    try:
+        params = inspect.signature(roundtable.on_preflight).parameters
+    except (AttributeError, TypeError, ValueError):     # 签名读不到就当不支持
+        return False
+    return "round_no" in params
+
+
+def play_round(roundtable, *, payload: dict, checked: dict, ledger: dict,
+               evidence: list, round_no=None, added_evidence: int = 0):
+    """让圆桌过一轮。`round_no=None` = 两个新参一个都不传（引擎不认时的退化）。
+
+    两个参**一起给或一起不给**：只给 `round_no` 而漏了 `added_evidence`，
+    证据核验岗按缺省 0 说「本轮新增 0 份」—— 而屏幕上明明配了图，
+    那是一句看着像事实的假话。
+    """
+    kwargs = {"payload": payload, "checked": checked, "ledger": ledger,
+              "evidence": evidence, "requested_by": REQUESTED_BY}
+    if round_no is not None:
+        kwargs["round_no"] = round_no
+        kwargs["added_evidence"] = added_evidence
+    return roundtable.on_preflight(**kwargs)
+
+
+def print_flip(order_id: str, first, second, *, out) -> None:
+    """两轮的收口卡结论并排一行 —— 「补这张图值不值」看的就是它。
+
+    两个结论都取自 `decide()` 算出来的那张卡，脚本自己不下判断。
+    **任一轮取不到就整行不打**：「None → None」看着像「两轮都没结论」，
+    实际是「合议引擎没装载」，两件事该做的反应完全不同。
+    """
+    before = str(getattr(first, "recommend", "") or "")
+    after = str(getattr(second, "recommend", "") or "")
+    if not before or not after:
+        return
+    print(f"\n  {order_id}：第 1 轮 {before} → 第 2 轮 {after}", file=out)
+
+
 def check_said(reports: list, said: list) -> list:
     """核对每段发言真的经 Voice 发出去过。返回没发出去的岗位名，空 = 全发出去了。
 
@@ -357,7 +429,7 @@ def check_said(reports: list, said: list) -> list:
 
 # ------------------------------------------------------------------ 主流程
 def run(sheet, ledger_path, *, as_json: bool = False, out=None,
-        evidence_dir=None, pace_ms: int = 0) -> int:
+        evidence_dir=None, pace_ms: int = 0, recheck: bool = False) -> int:
     out = out or sys.stdout
     from maos.flows.custom_case import CaseFileError, load
     from maos.model.client import select_model_client
@@ -401,39 +473,77 @@ def run(sheet, ledger_path, *, as_json: bool = False, out=None,
         if decide is None:
             print(NO_VERDICT, file=out)
 
+    # 复检开跑前把两件事说清楚：有没有单能演、引擎认不认轮次。两句都进 `notes`，
+    # 静默降级与「参数打错了」在屏幕上长得一模一样，而后者是人能自己修的。
+    accepts_round = False
+    if recheck and not evidence:
+        print(NO_RECHECK_TARGET, file=notes)
+        recheck = False
+    elif recheck:
+        accepts_round = accepts_round_no(roundtable)
+        if not accepts_round:
+            print(NO_ROUND_NO, file=notes)
+
     dumped: list = []
+
+    def play(req, items, *, round_no=None, tag=""):
+        """跑一单一轮（建 case -> 配证据 -> 预检 -> 五岗 -> 收口卡），返回收口卡。
+
+        单轮与复检两轮走的是**同一个** `play`。抄一份出来演复检的症状是
+        「第 2 轮与第 1 轮不同源」，而两边各自都自洽、都不报错。
+
+        `round_no` 是**本脚本的轮次概念**（只影响排版与 JSON 的 `round` 键）；
+        传不传给引擎另看 `accepts_round` —— 引擎不认那个参数时轮次照打，
+        因为那是屏幕上「这是第几遍」的唯一出处。
+        """
+        payload = rr.build_case(ledger, req)
+        attached = attach_evidence(payload, items)
+        checked = preflight(payload)
+        before = len(voices.said)
+        reports = play_round(roundtable, payload=payload, checked=checked,
+                             ledger=ledger, evidence=attached,
+                             round_no=round_no if accepts_round else None,
+                             added_evidence=len(attached))
+        verdict = verdict_of(decide, reports, str(checked.get("case_id") or ""),
+                             out=notes)
+        if as_json:
+            row = {
+                "line": req["line"], "order_id": req["order_id"],
+                "reports": [{"agent_id": r.agent_id, "title": r.title, "data": r.data}
+                            for r in order_reports(reports, team_order)],
+            }
+            # 取不到就**不加这个键**，而不是给 null：读 JSON 的人分得清
+            # 「合议引擎没装」和「装了但这一单没结论」，后者是 bug。
+            if verdict is not None:
+                row["verdict"] = verdict_json(verdict)
+            if round_no is not None:                    # 单轮那条路一个键都不多
+                row["round"] = round_no
+            dumped.append(row)
+            return verdict
+        print(f"\n{'=' * 78}\n第 {req['line']} 行 · {req['order_id']}"
+              f"（{req['reason_raw'] or req['reason']}）："
+              f"预检裁定 {checked['decision']}{tag}\n{'=' * 78}", file=out)
+        _print_reports(reports, team_order, out)
+        missing = check_said(reports, voices.said[before:])
+        if missing:
+            print(f"\n  ⚠ 这几岗的发言没经 Voice 发出：{'、'.join(missing)}", file=out)
+        if verdict is not None:
+            _print_verdict(verdict, out)
+        return verdict
+
     try:
         for req in requests:
-            payload = rr.build_case(ledger, req)
-            attached = attach_evidence(payload, evidence.get(req["order_id"]) or [])
-            checked = preflight(payload)
-            before = len(voices.said)
-            reports = roundtable.on_preflight(
-                payload=payload, checked=checked, ledger=ledger,
-                evidence=attached, requested_by=REQUESTED_BY)
-            verdict = verdict_of(decide, reports, str(checked.get("case_id") or ""),
-                                 out=notes)
-            if as_json:
-                row = {
-                    "line": req["line"], "order_id": req["order_id"],
-                    "reports": [{"agent_id": r.agent_id, "title": r.title, "data": r.data}
-                                for r in order_reports(reports, team_order)],
-                }
-                # 取不到就**不加这个键**，而不是给 null：读 JSON 的人分得清
-                # 「合议引擎没装」和「装了但这一单没结论」，后者是 bug。
-                if verdict is not None:
-                    row["verdict"] = verdict_json(verdict)
-                dumped.append(row)
+            items = evidence.get(req["order_id"]) or []
+            if not recheck or not items:
+                play(req, items)
                 continue
-            print(f"\n{'=' * 78}\n第 {req['line']} 行 · {req['order_id']}"
-                  f"（{req['reason_raw'] or req['reason']}）："
-                  f"预检裁定 {checked['decision']}\n{'=' * 78}", file=out)
-            _print_reports(reports, team_order, out)
-            missing = check_said(reports, voices.said[before:])
-            if missing:
-                print(f"\n  ⚠ 这几岗的发言没经 Voice 发出：{'、'.join(missing)}", file=out)
-            if verdict is not None:
-                _print_verdict(verdict, out)
+            # 复检：先无证据过一轮，再补上证据过第二轮。第 1 轮**不是**把第 2 轮
+            # 的证据藏起来 —— 它就是「这一单刚进来时」的样子，两轮各自重新建 case。
+            first = play(req, [], round_no=1, tag=TAG_ROUND_1)
+            second = play(req, items, round_no=2,
+                          tag=TAG_ROUND_2.format(n=len(items)))
+            if not as_json:
+                print_flip(req["order_id"], first, second, out=out)
     except (rr.RequestSheetError, CaseFileError) as exc:
         print(f"读不到数据：{exc}", file=sys.stderr)
         return EXIT_DATA
@@ -489,6 +599,9 @@ def main(argv: list | None = None) -> int:
                              f"（ORD-xxxx-*.png 配给 ORD-xxxx）。演示语料在 "
                              f"{DEFAULT_EVIDENCE.relative_to(ROOT)}。"
                              "目录不存在或为空只报一行、照常跑完")
+    parser.add_argument("--recheck", action="store_true",
+                        help="配得上证据的那几单跑两轮：先不带证据、再带证据，"
+                             "末尾并排给出两轮收口卡结论的对比（配合 --evidence 用）")
     parser.add_argument("--pace", metavar="毫秒", type=int, default=0,
                         help="五岗发言之间停一停，给真房间演示与录屏用；缺省 0 = 不停")
     parser.add_argument("--evidence-out", metavar="文件", default=None,
@@ -504,7 +617,8 @@ def main(argv: list | None = None) -> int:
 
     if not args.evidence_out:
         return run(args.sheet, args.ledger, as_json=args.as_json,
-                   evidence_dir=args.evidence, pace_ms=args.pace)
+                   evidence_dir=args.evidence, pace_ms=args.pace,
+                   recheck=args.recheck)
 
     target = Path(args.evidence_out)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -512,7 +626,8 @@ def main(argv: list | None = None) -> int:
         print(header_line(), file=handle)
         code = run(args.sheet, args.ledger, as_json=args.as_json,
                    out=_Tee(sys.stdout, handle),
-                   evidence_dir=args.evidence, pace_ms=args.pace)
+                   evidence_dir=args.evidence, pace_ms=args.pace,
+                   recheck=args.recheck)
     print(f"\n证据已落盘：{target}", file=sys.stderr)
     return code
 

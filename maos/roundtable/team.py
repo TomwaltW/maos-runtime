@@ -195,21 +195,39 @@ class RefundRoundtable:
 
     # -- TeamObserver -------------------------------------------------------
     def on_preflight(self, *, payload: dict, checked: dict, ledger: dict,
-                     evidence: list, requested_by: str) -> list[StageReport]:
+                     evidence: list, requested_by: str,
+                     round_no: int = 1, added_evidence: int = 0) -> list[StageReport]:
         """一单预检：五岗依次发言。`requested_by` 只进日志，不进事实卡 ——
         发起人是谁不影响任何裁定，写进 facts 只会给 R1 的数字白名单添一串
-        与本单无关的字符。"""
+        与本单无关的字符。
+
+        `round_no`（本会话里这是第几轮）与 `added_evidence`（本轮新增几份随案证据）
+        是复检那一轮的口径，只影响受理岗与证据岗多说的那一行，不影响任何裁定。
+
+        🔴 **两个都必须留默认值。** 理由不是风格：`maos/ingress/router.py::_fire`
+        与 `scripts/room_team_smoke.py` 仍按五参调用，少一个默认值就是 `TypeError`
+        落进 `_fire` 的 except —— 那条 except 只记 WARNING，症状是整个圆桌静默哑掉、
+        回帖照发，没有任何测试会红。
+
+        两个数都不在这里算：`evidence` 是**合并后**的全量，减不出「本轮新增几份」
+        （老 ticket 可能本来就带着几份）。谁触发复检谁数，这里只负责排进事实卡。
+        """
         try:
             book = self._ledger(ledger)
             count = len(evidence or [])
             builders = {
-                "refund-intake": lambda: stages.facts_intake(payload, checked, count),
+                # 两个新参靠闭包捕获进零参 builder，**不改 `_round` 的签名** ——
+                # `on_sheet` / `on_execute` 也在用它，改签名要连着改三处调用。
+                "refund-intake":
+                    lambda: stages.facts_intake(payload, checked, count, round_no),
                 "refund-policy": lambda: stages.facts_policy(checked),
-                "refund-evidence": lambda: stages.facts_evidence(payload, checked, book),
+                "refund-evidence":
+                    lambda: stages.facts_evidence(payload, checked, book, added_evidence),
                 "refund-risk": lambda: stages.facts_risk(payload, checked, book),
                 "refund-finance": lambda: stages.facts_finance_preview(payload, checked),
             }
-            log.info("圆桌预检 case=%s 发起人=%s", checked.get("case_id"), requested_by)
+            log.info("圆桌预检 case=%s 发起人=%s 第 %s 轮（本轮新增 %s 份证据）",
+                     checked.get("case_id"), requested_by, round_no, added_evidence)
             return self._round(builders, TEAM_ORDER)
         except Exception as exc:                        # noqa: BLE001
             log.warning("圆桌预检整轮失败（%s: %s），本轮不发言", type(exc).__name__, exc)

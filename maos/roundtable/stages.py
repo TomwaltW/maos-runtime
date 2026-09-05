@@ -159,8 +159,22 @@ def _rules_of(payload: dict) -> list[dict]:
 # --------------------------------------------------------------------------
 # 逐单预检：五岗各一条
 # --------------------------------------------------------------------------
-def facts_intake(payload: dict, checked: dict, evidence_count: int) -> tuple[str, dict]:
-    """申请受理岗：这一单是谁的、要退多少、材料齐不齐。"""
+def facts_intake(payload: dict, checked: dict, evidence_count: int,
+                 round_no: int = 1) -> tuple[str, dict]:
+    """申请受理岗：这一单是谁的、要退多少、材料齐不齐。
+
+    `round_no` 是这一单在本会话里的第几轮，由触发侧数出来传进来（缺省 `1` = 首次
+    预检，也是今天全部调用点的形态）。`>= 2` 才多说一行：复检那一轮如果与第一轮
+    逐字相同、只有数字变了，房间里的人看不出发生过什么 —— 他会以为机器人把同一单
+    重放了一遍。
+
+    **只报轮次，不提上一轮的结论**：上一轮判成什么根本不在入参里，说「证据补齐了」
+    「比上一轮更充分」就是编（R1 / 铁律 8）。
+
+    `0`、负数、超大值一律不抛：`>= 2` 判不过就当首轮、一个字都不多说，判得过就照
+    给的数字排版。这个数是触发侧数出来的真数字，本函数不校验也不改写 —— 在这里夹
+    一层「看着不对就改成 1」，症状是房间里的轮次和触发侧的账对不上，且两边都不报错。
+    """
     case = dict(payload.get("case") or {})
     order_id = str(case.get("order_id") or checked.get("order_id") or "")
     row = _order_row(payload.get("order_snapshot"), order_id)
@@ -184,12 +198,15 @@ def facts_intake(payload: dict, checked: dict, evidence_count: int) -> tuple[str
         f"申请日期：{requested_at or '日期未填，按今天'}",
         f"随案证据：{evidence_count} 份",
     ]
+    if round_no >= 2:
+        lines.append(f"本单第 {round_no} 轮（上一轮之后有新证据进来，按当前材料重新过一遍）")
     if over_paid:
         lines.append("申报金额高于订单实付，核算会封顶到实付")
     return "\n".join(lines), {
         "order_id": order_id, "sku": case.get("sku"),
         "amount_paid": amount_paid, "amount_claimed": amount_claimed,
         "over_paid": over_paid, "evidence_count": evidence_count,
+        "round_no": round_no,
     }
 
 
@@ -211,12 +228,24 @@ def facts_policy(checked: dict) -> tuple[str, dict]:
     return "\n".join(lines), data
 
 
-def facts_evidence(payload: dict, checked: dict, ledger: dict) -> tuple[str, dict]:
+def facts_evidence(payload: dict, checked: dict, ledger: dict,
+                   added: int = 0) -> tuple[str, dict]:
     """证据核验岗：随案材料够不够、与订单事实自不自洽。
 
     skill 没装载是**主路径而不是边角**：整合前 `refund.evidence_check` 根本不在
     注册表里。没装载就照实说没装载，仍然发一条言 —— 一个岗位在房间里凭空消失，
     比它说「我这儿装备还没到」更难排查。
+
+    `added` 是本轮**新增**几份随案证据，由触发侧数出来传进来（缺省 `0` = 没有新增，
+    首次预检恒为 0）。`<= 0` 时一行都不加，输出与不带这个参数时逐字相同；负数、
+    超大值同样不抛，口径同 `facts_intake` 的 `round_no`。
+
+    「合计」取的是 `payload["customer_evidence"]` 的长度，**不取调用方另传的那个
+    份数**：那两个值在触发侧同源，但这一层能看见的权威只有 payload（本函数本来读的
+    就是它）。两处各取一个来源的症状是「受理岗说 2 份、证据岗说 3 份」，而两边都不报错。
+
+    这一行还必须落在两条早返回之后 —— skill 没装载、或核验调用失败时连份数都核不了，
+    那种时候报一句「本轮新增 1 份」只会让人以为核过了。
     """
     from maos.skills import registry
 
@@ -248,8 +277,11 @@ def facts_evidence(payload: dict, checked: dict, ledger: dict) -> tuple[str, dic
     out = dict(res.output)
     items = list(out.get("items") or [])
     gaps = list(out.get("gaps") or [])
-    lines = [
-        f"证据核验结论：{out.get('verdict')}",
+    lines = [f"证据核验结论：{out.get('verdict')}"]
+    if added >= 1:
+        lines.append(f"本轮新增 {added} 份材料，"
+                     f"随案证据合计 {len(payload.get('customer_evidence') or [])} 份")
+    lines += [
         f"逐份核验：{len(items)} 份材料，其中通过 {sum(1 for i in items if i.get('ok'))} 份",
         f"规则要求的证据类型：{'、'.join(out.get('required_kinds') or []) or '无明确要求'}"
         f"，最少份数 {out.get('min_count')}",
@@ -260,6 +292,7 @@ def facts_evidence(payload: dict, checked: dict, ledger: dict) -> tuple[str, dic
         bad = [c.get("check") for c in checks if not c.get("ok")]
         lines.append(f"交叉核对：{len(checks)} 项，未通过 {len(bad)} 项"
                      f"（{'、'.join(str(b) for b in bad) or '无'}）")
+    out["added_evidence"] = added
     return "\n".join(lines), out
 
 

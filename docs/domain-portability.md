@@ -9,10 +9,13 @@ MAOS 不是为某个行业写的工作流引擎，是**领域无关的编排内�
 - **银行差错处理域**：外部权威判据 = 清算方的 `pacs.004` 资金退回报文；
   `camt.029/CNCL` 只确认撤销指令，不能证明钱已退回（场景 9）
 - **应付账款域**：外部权威判据 = 银行的已付款回单及 `bank_reference` 流水号（场景 10）
+- **跨域协同**：应付账款付出去之后，供应商申报重复支付 → 向付款行发起差错撤销。
+  一条业务链跨两个域、挂在同一个 Plan 上（场景 11）。它证明的是**编排**，
+  与上面五条证明的**可移植**是两个命题，见 §1.2
 
-场景 8–10 使用各域的 Mock ToolPort，证明的是观察、审批与失败收口的编排边界，
+场景 8–11 使用各域的 Mock ToolPort，证明的是观察、审批与失败收口的编排边界，
 尚不代表真实赔付方、清算方或银行已接通。缺省 CLI 仍只跑 1–7，新增域需显式指定
-`python3 run.py --scenario 8`（或 9、10）；缺省证据仍是 1–7 + R5 的 8 束冻结口径。
+`python3 run.py --scenario 8`（或 9、10、11）；缺省证据仍是 1–7 + R5 的 8 束冻结口径。
 扩展证据与核验显式运行，默认另存到 `evidence/domains/`：
 
 ```bash
@@ -20,7 +23,7 @@ python3 scripts/make_evidence.py --domains
 python3 scripts/verify.py --evidence evidence/domains --domains
 ```
 
-扩展根目录含 11 个场景。场景 8、10 的失败路径各自另建运行时，完整证据另存于
+扩展根目录含 12 个场景。场景 8、10 的失败路径各自另建运行时，完整证据另存于
 对应场景的 `runtime-2/` 子束；核验器同时读取父束和子束，保留每个原始库的隔离。
 
 这句话如果只是写在 PPT 上，评委没有理由信。所以本文件只做一件事：**把它拆成
@@ -114,6 +117,104 @@ git diff --stat b36e043^ b36e043 -- maos/contracts/ maos/core/ maos/runtime/
 > #               （F-1 原文一字未动）+ _gate_finance_plan（新增的 plan 级判据）三个函数。
 > #               判据表 `_review` 里仍是七个条目 —— 要数闸就数那张表，别数 def。
 > ```
+
+---
+
+## 1.2 跨域协同（场景 11）：这一节证明的**不是**可移植性
+
+上面整张表证明的是**可移植**：同一套内核，换四次域，每次只换 Skill / ToolPort /
+业务对象。但它有一个自己说不出口的边界 —— 逐个数过
+`maos/flows/scenario_*.py` 里的 `maos.domain.*` 引用，**十个场景，每个只碰一个域**。
+换句话说，§1 那张表的横向对比，证的是「同一套内核复制着跑了四遍」，
+而不是「一条业务链跨两个域，编排内核负责协调」。
+
+场景 11 是唯一一条跨域链路，它买的是后面那句话：
+
+```bash
+python3 run.py --scenario 11
+```
+
+    ap 域（应付账款）                       investigation 域（银行差错处理）
+    收票 → 三单匹配 → 付款计划(人批)
+    → 发指令 → 观察到 settled
+            └─ 人：供应商报来「这笔是重复支付」
+               编排层翻译 ──────────────→ 受理差错案 → 定性(人批) → camt.056
+                                          → PDCR → CNCL → pacs.004 → returned
+
+### 与前面四个域在证明什么上的区别
+
+| | §1 的四个域 | §1.2 的场景 11 |
+| :-- | :-- | :-- |
+| 命题 | **可移植**：换域只换三层，内核一行不改 | **可编排**：一条业务链跨两个域，由内核协调 |
+| 证据形状 | 四个场景横向对比，每个各跑各的 | 一个 `plan_id` 同时挂 `ap_case` 与 `investigation_case` |
+| 域之间的关系 | 互不相干（各自独立的库、Plan、租户） | 互不**认识**，但被编排层接在一条链上 |
+| 会被什么推翻 | 内核里出现按域分支 | 两个域出现互相 import；或两个域各挂一个 Plan |
+
+第三行是关键，也是这一轨最容易做歪的地方：把接缝代码塞进任一个域，链路照样跑通，
+而「可编排」这个命题当场塌回「一个域顺手调了另一个域」。所以设计判断写成了机器判据：
+
+```bash
+grep -rn 'investigation' maos/domain/ap/ --include='*.py'        # 期望零命中
+grep -rn 'from maos.domain.ap' maos/domain/investigation/        # 期望零命中
+```
+
+两条 grep 是 `maos/tests/test_cross_domain_flow.py` 里的用例
+（`test_ap_domain_never_mentions_investigation` 及其反向那条），
+不是提交前靠人记得跑一次的自查。翻译代码只此一处：
+`maos/flows/scenario_11.py::handoff_to_investigation`（约 100 行，含注释）。
+
+### 接缝上搬了哪几个字段
+
+字段对齐是**天然存在**的，不是为了演示凑出来的 —— 两个域的 schema 各自按 ISO 20022
+与 EN 16931 写，说的本来就是同一笔钱：
+
+| ap 域读到的行 | → investigation 域写入的字段 |
+| :-- | :-- |
+| `ap_payment_observation.bank_reference` | `original_payment_snapshot.original_msg_id` |
+| `ap_payment_observation.value_date` | `value_date`（起息日） |
+| `payment_instruction.instruction_id` | `end_to_end_id`（端到端参考号） |
+| `payment_instruction.amount` / `currency` | `interbank_amount` / `currency` |
+| `payment_instruction.bank` | `debtor_agent`（付款行 BIC） |
+| —— 两个域都不持有 —— | `creditor_agent`（收款行 BIC，编排层路由表） |
+
+最后一行是这张表里最说明问题的一格：收款行 BIC ap 域没有（它存的是账号），
+investigation 域也没有（它要别人告诉它）。它属于编排层 —— **翻译层因此不是可以
+省掉的胶水，是这条链路上唯一有地方放它的地方**。
+
+### 三条不许松的边界
+
+1. **触发点是人发起，不是系统自动发现**。ap 域没有重复发票检测器
+   （`grep duplicate maos/domain/ap/` 零命中），本轨**也没有给它加一个**：
+   「这张发票重复了」的权威在财务与供应商，不在 MAOS（铁律 8）。差错申报是人递进来的
+   一份输入，走既有 `HumanApprovalQueue`。没有申报，翻译层当场抛、快照一行不写
+   —— 用例 `test_no_filing_no_handoff` 钉的就是这条。
+2. **权威边界一格没放宽**。`settled` 仍然只有 `ap.observe` 写得进，`returned` 仍然
+   只有 `investigation.observe` 写得进，且仍然只认 `pacs.004`。链路中间那句
+   `camt.029/CNCL`（清算方确认撤销成功）照旧**一个字都不写**。
+3. **跨域不是新的 Task 状态**（铁律 9）。八个任务的状态与迁移全部落在既有
+   `TaskState` / `TASK_TRANSITIONS` 里，`maos/contracts/states.py` 一个字没改。
+
+### 核验器：一个 Plan 挂两个域
+
+`maos/domain/__init__.py::DOMAIN_REGISTRY` 是**一个域一份 spec**，而
+`scripts/verify.py` 的三条域级判据都按「该域的 case 表在不在这个库里」选核验对象。
+于是场景 11 那一束被**两个域各核验一次**，实测计数从 `1/1` 涨到 `2/2`
+（`ap/authoritative-fact`、`investigation/authoritative-fact` 同此），
+`business-outcome` 从 `17/17` 涨到 `18/18` —— 多出来的正是跨域那一条，不是空转。
+`verify.py` 因此**一行未改**；四个域各自的旧核验结果逐字节不变（明细逐条 diff 过）。
+
+这个行为容易被"优化"掉（给判据加一句「找到第一个匹配的域就 break」），
+而少核验一遍不会变红、只会变松，所以它被
+`test_one_plan_two_domains_is_verified_once_per_domain` 与
+`test_one_plan_two_domains_fails_loud_when_either_side_is_forged` 两条用例钉住。
+
+### 这一节不吹的部分
+
+- 场景 11 用的仍是 Mock ToolPort（`MockBank` / `MockClearingHouse`），
+  它证明的是**编排边界**，不是真实银行与清算方已接通。
+- 两个域跑在**同一个进程、同一个库**里。跨进程、跨库、跨组织的协同（真实场景里
+  应付账款系统与银行差错处理系统多半不在一处）本轨没有证明。
+- 只有一条跨域链路。「任意两个域都能这样接起来」是推论，不是实证。
 
 ---
 

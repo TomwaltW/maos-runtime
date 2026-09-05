@@ -6,7 +6,8 @@
     先是 `(1,2,3,4)` 漏了 5/6，改完之后 `scenario_7.py` 落地又漏了 7。两次的症状
     完全一样 —— `python3 run.py` 少跑一场，**不报错、不提示**，演示现场没人看得出
     评委漏看了什么。C1 将两份清单有意分开：DEFAULT_SCENARIOS 冻结为 1-7，
-    ALL_SCENARIOS 包含显式可达的新域 8/9/10；默认八束（含 R5）不随新增域扩张。
+    ALL_SCENARIOS 包含显式可达的新域 8/9/10 与跨域协同 11；
+    默认八束（含 R5）不随新增域扩张。
 
   · **接了线却没真检索**（§2）。场景 6 曾用 `ManagerAgent(model)` 老写法构造，
     `SkillInvoker.store is None` 让规划期检索恒返回空 —— `MAOS_KB_ENABLED` 开关
@@ -48,7 +49,7 @@ def _landed_scenarios() -> tuple[int, ...]:
 def test_default_sequence_is_frozen_and_all_explicit_scenarios_have_landed():
     """C1：冻结复赛默认口径，同时防止显式入口指向不存在的模块。"""
     assert maos_main.DEFAULT_SCENARIOS == (1, 2, 3, 4, 5, 6, 7)
-    assert maos_main.ALL_SCENARIOS == _landed_scenarios() == tuple(range(1, 11))
+    assert maos_main.ALL_SCENARIOS == _landed_scenarios() == tuple(range(1, 12))
 
 
 def test_scenario_7_is_in_default_sequence():

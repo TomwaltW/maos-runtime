@@ -16,7 +16,7 @@ from scripts import make_evidence
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("scenario", [8, 9, 10])
+@pytest.mark.parametrize("scenario", [8, 9, 10, 11])
 def test_cli_dispatches_new_domains(scenario, monkeypatch):
     called = []
 
@@ -42,8 +42,8 @@ def domain_bundles(tmp_path_factory):
 
 def test_expanded_bundle_is_explicit_and_complete(domain_bundles):
     index = make_evidence.load_evidence_json(str(domain_bundles / "INDEX.json"))
-    assert index["requested"] == [*range(1, 11), "R5"]
-    assert len(index["produced"]) == 11
+    assert index["requested"] == [*range(1, 12), "R5"]
+    assert len(index["produced"]) == 12
     for info in index["produced"]:
         bundle = ROOT / info["dir"]
         for path in bundle.rglob("*"):

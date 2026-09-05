@@ -122,10 +122,16 @@ class Shell:
 
 
 class TakeBuffer(AttachmentBuffer):
-    """带 `take` 的暂存假件（跨轨契约 §2，T98 的件）。
+    """记录每次 `take` 拿走了哪几个 digest 的**探针**（跨轨契约 §2）。
 
-    T98 并进来之前，产品代码走 ``getattr(buf, "take", None)`` 退回 `claim()` 全取；
-    这个假件让「T98 到位之后只取走用掉的那几份」这条也现在就有测试守着。
+    T98 并进来之前这里自带一份挑着取的实现 —— 那时 `claim` 还是独立的一段代码。
+    T98 到位之后 `claim` 成了 `take` 的薄壳，假件再回调 `claim` 就是
+    `claim -> take -> claim` 无限递归（整合轮实测 RecursionError，而症状是
+    `/refund` 那条路整条被 `handle` 的 except 吞成「处理失败」，测试里看到的
+    却是「复检没发生」——离真正的原因隔着两层）。
+
+    所以现在只记调用、实现一律交给 `super()`：契约件到位之后，假件的职责从
+    「替身」退成「探针」。两份挑着取的实现并存，本来就是长歪的开始。
     """
 
     def __init__(self) -> None:
@@ -134,14 +140,7 @@ class TakeBuffer(AttachmentBuffer):
 
     def take(self, channel: str, chat_id: str, *, digests=None):
         self.taken.append(set(digests) if digests is not None else set())
-        if digests is None:
-            return self.claim(channel, chat_id)
-        key = self._key(channel, chat_id)
-        with self._lock:
-            bucket = self._by_chat.get(key, [])
-            got = [a for a in bucket if a.digest in digests]
-            self._by_chat[key] = [a for a in bucket if a.digest not in digests]
-            return got
+        return super().take(channel, chat_id, digests=digests)
 
 
 # --------------------------------------------------------------------------

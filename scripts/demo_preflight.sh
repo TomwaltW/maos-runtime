@@ -219,6 +219,19 @@ if [ "$bundles" != "$EXPECT_BUNDLES" ]; then
 fi
 ok "${bundles} 束（$(grep -o 'scenario-[0-9R]*' "$LOG_DIR/evidence.log" | sort -u | tr '\n' ' ')）"
 
+# 证据变了投影就得跟：make_evidence 不产 HTML，单跑它就让 evidence/report.html 当场陈旧，
+# maos/tests/test_render_trace.py::test_committed_report_is_in_sync 随即变红。那是**正确的红**
+# （证据变了投影没跟），但它出现在一条谁都会走的日常路径上 —— 跑一次证据束就红一次。
+# T95 把这条绑定缺口记进了 BACKLOG 并建议整合轮补上；本行就是补上的那一处。
+# **并进本步而不另开一步**：步骤编号是分镜与 docs/ 里引用的锚，为一条绑定挪编号不划算。
+# 只保证「跑完本脚本之后自洽」。**进来之前**就陈旧的话（上一次手跑过 make_evidence
+# 没重渲），第 1 步的全量测试会先把它拦下来，根本走不到这里 —— 那也是对的，门禁就该拦，
+# 只是报错指向那条测试而不是这一行。实测踩过：先手跑一次 render_trace 再进本脚本。
+if ! python3 scripts/render_trace.py > "$LOG_DIR/render.log" 2>&1; then
+    die 'render_trace.py 非 0 退出' "exit=$?" 'exit=0' "$LOG_DIR/render.log"
+fi
+ok "$(grep -F '[WROTE]' "$LOG_DIR/render.log" | tail -1)"
+
 # --- 第 5 步：一条命令核验 ----------------------------------------------------
 banner '核验　python3 scripts/verify.py'
 if ! python3 scripts/verify.py > "$LOG_DIR/verify.log" 2>&1; then

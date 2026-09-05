@@ -1,4 +1,4 @@
-# generated at 2026-09-05T01:35:29.818667+00:00 from 4be02ec281f1fbe50525485078f43d2e0e58ade3-dirty
+# generated at 2026-09-05T02:02:43.116421+00:00 from 006b1d82e5038a6c647e7cf5dd8327da286af89f-dirty
 场景 7：制造企业售后退款（失败路径），无 key 确定性复现
 
 [1] 待主管审批: 核算退款金额并写财务分录
@@ -105,7 +105,7 @@ Plan: FAILED  |  处理第二笔轴承退款诉求：政策与金额均无异议
     task-s7b-payment  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
     task-s7b-payment  BLOCKED          -> FAILED           [human_reject]
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'testing']
-INFO  maos.cp      创建计划 plan_c078768e3568，共 4 个任务
+INFO  maos.cp      创建计划 plan_fe28bd7c75e1，共 4 个任务
 INFO  maos.cp      [task-s7-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -136,7 +136,7 @@ INFO  maos.gate    [task-s7-payment] Gate {'schema': 'pass', 'acceptance': 'pass
 INFO  maos.cp      [task-s7-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s7-payment] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s7-payment] BLOCKED -> FAILED (human_reject)
-INFO  maos.cp      创建计划 plan_2c4fe01ba53d，共 4 个任务
+INFO  maos.cp      创建计划 plan_1864b1147cc2，共 4 个任务
 INFO  maos.cp      [task-s7b-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7b-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7b-intake] RUNNING -> AWAITING_REVIEW (submit_result)

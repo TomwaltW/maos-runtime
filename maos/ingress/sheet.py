@@ -17,7 +17,9 @@ CSV（订单号 / 诉求类型 / 申报金额 / 申请日期）。但那条入�
 ## 认表按内容，不按扩展名
 
 与 `attachments.sniff_mime` 同一取向：这一层的输入来自公网回调，扩展名可以随便改。
-判据是「能按文本解码、表头里有订单号那一列」。判不出的一律交回附件白名单去拒 ——
+判据是「不是已知的二进制类型、能按文本解码、表头里有订单号那一列」—— 头一条直接
+复用 `sniff_mime` 那张 magic 表，不另抄（:func:`looks_like_sheet` 写着为什么它必须
+是明写的一条，而不是「解不出文本」这个副作用）。判不出的一律交回附件白名单去拒 ——
 一个改名成 .csv 的 ELF 到不了这里。
 
 ## 回帖必须装得进一条消息
@@ -43,6 +45,8 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from maos.ingress.attachments import sniff_mime
 
 log = logging.getLogger("maos.ingress.sheet")
 
@@ -153,14 +157,27 @@ def decode(data: bytes) -> tuple[str, str]:
 
 
 def looks_like_sheet(data: bytes) -> bool:
-    """这份字节是不是一张申请表：能解码成文本，且表头里有订单号那一列。
+    """这份字节是不是一张申请表：**不是已知的二进制类型**、能解码成文本、表头里有订单号那一列。
+
+    头一条判据是明写的，不是顺带成立的：先用 `attachments.sniff_mime` 排掉
+    JPEG / PNG / GIF / WebP / HEIC / PDF —— **复用**附件层那张 magic 表，不另抄一份
+    （抄了之后两处会各长各的，而两边都不报错）。在这条写下来之前，「PNG 不是表」
+    靠的是「二进制解不出文本」这个**副作用**，没有任何一条规则明写着它。
+
+    所以：**不许往 :data:`ENCODINGS` 里加 latin-1**，或任何单字节全映射的编码。
+    那类编码**吃下任何字节**、从不抛 UnicodeDecodeError；加进去的那天，一张 PNG 会
+    立刻开始被当成申请表送进 handle_sheet，症状是「拖一张照片，机器人回一句
+    『看着像表，但表头里没有订单号』」—— 没有一条测试会红。判据显式化之后这条路
+    被头一句挡住了，但理由留在这里，拦住下一个人。
 
     只看第一行：判据全在表头，读完整个文件只会让一张大表在这里多花一次解码；
     整段切片还可能切在一个多字节字符中间，把合法的表误判成「解码失败」。
     行尾认 ``\\r\\n`` / ``\\n`` / ``\\r`` 三种 —— Excel for Mac 的「CSV (Macintosh)」
-    只用 ``\\r``。二进制（PNG / PDF / ELF）解码就失败，直接 False，交回白名单。
+    只用 ``\\r``。判不出的一律交回附件白名单去拒（一个改名成 .csv 的 ELF 到不了这里）。
     """
     if not data or b"\x00" in data[:_SNIFF_BYTES]:
+        return False
+    if sniff_mime(data):
         return False
     first_bytes = _LINE_BREAK.split(data[:_SNIFF_BYTES], maxsplit=1)[0]
     try:

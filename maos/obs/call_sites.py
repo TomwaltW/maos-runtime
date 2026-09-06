@@ -13,9 +13,10 @@
 不好看」。
 
 **为什么是字面量，不是 import 过来的常量**（这一条是本模块最容易被"顺手优化"掉的
-地方）：各处源头分别在 ``maos/agents/base.py``、``maos/skills/builtin/
+地方）：这几个值的源头分别在 ``maos/agents/base.py``、``maos/skills/builtin/
 req_normalize.py``、``maos/skills/builtin/code_repo_patch.py``、
-``maos/skills/builtin/refund/reason_classify.py``。而 ``maos/obs``
+``maos/skills/builtin/refund/reason_classify.py``、
+``maos/skills/builtin/sheet_header_map.py``。而 ``maos/obs``
 只许 import ``maos.core.store``，不 import 任何业务域与上层模块（规矩立在
 ``obs/trace.py`` 的模块 docstring 末行）。从 agents / skills 里 import 常量会当场
 破掉那条边界，把可观测层变成上层模块的下游。
@@ -46,6 +47,14 @@ CALL_SITE_CODE_REPO_PATCH = (
 #: 于是这一处的账**天生稀疏**：某天它的行数突然和受理单数一样多，说明快路径被绕过了。
 CALL_SITE_REFUND_REASON_CLASSIFY = (
     "maos/skills/builtin/refund/reason_classify.py::RefundReasonClassifySkill.run"
+
+)
+
+#: 表头映射 skill（``maos/skills/builtin/sheet_header_map.py`` 的 ``CALL_SITE``）。
+#: 只在别名全等匹配**没认全**时才烧 token：常规表一次都不调，异常表也只有那一两列。
+#: 所以这一行在 cost_view 里长期为 0 是正常的，不为 0 才说明进了一张脏表。
+CALL_SITE_SHEET_HEADER_MAP = (
+    "maos/skills/builtin/sheet_header_map.py::SheetHeaderMapSkill.run"
 )
 
 #: 已登记的全部 ``call_site``。**穷举**：库里出现集合外的值即视为漏登记。
@@ -54,6 +63,7 @@ REGISTERED_CALL_SITES: frozenset[str] = frozenset({
     CALL_SITE_REQ_NORMALIZE,
     CALL_SITE_CODE_REPO_PATCH,
     CALL_SITE_REFUND_REASON_CLASSIFY,
+    CALL_SITE_SHEET_HEADER_MAP,
 })
 
 #: 报错正文里统一带上这一句 —— 红灯要给出下一步动作，不然它只是一次打扰。

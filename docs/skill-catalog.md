@@ -46,6 +46,7 @@
 | `refund.reason_classify` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤1 次） | （空） | `maos/skills/builtin/refund/reason_classify.py:141` |
 | `refund.risk_screen` | `1.0.0` | 制造售后退款域 | `refund_risk` | escalate | （空） | `maos/skills/builtin/refund/risk_screen.py:46` |
 | `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:51` |
+| `sheet.header_map` | `1.0.0` | 软件交付域 | `refund_intake` | retry（≤1 次） | （空） | `maos/skills/builtin/sheet_header_map.py:193` |
 | `test.verify` | `1.0.0` | 软件交付域 | `testing` | escalate | `sandbox` | `maos/skills/builtin/test_verify.py:30` |
 
 ## 逐个 skill × 九要素
@@ -593,6 +594,23 @@
 | `security_boundary` | ⑦ 安全边界 | 只读入参，不写任何资源、不调用任何工具；context 原样透传给模型，不落盘 |
 | `reuse_note` | ⑧ 复用说明 | Manager 规划前的统一入口；任何角色要澄清目标都复用它，不要各写一份归一逻辑 |
 | `owner_roles` | ⑨ 归属角色 | `manager` |
+
+### sheet.header_map @ 1.0.0
+
+实现：`SheetHeaderMapSkill` @ `maos/skills/builtin/sheet_header_map.py:193`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 把人手填的 CSV 表头映射到标准字段名，附置信度与理由 |
+| `input_schema` | ② 输入 | `header`: list[str]<br>`required`: list[str]?<br>`optional`: list[str]? |
+| `output_schema` | ③ 输出 | `mapping`: dict<br>`confidence`: dict<br>`why`: dict<br>`source`: dict<br>`unmapped`: list[str]<br>`missing`: list[str]<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `header` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | retry |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 1 |
+| `security_boundary` | ⑦ 安全边界 | 只读入参，不写业务表；别名命中不调模型，模型只看没认出来的那几列 |
+| `reuse_note` | ⑧ 复用说明 | 任何吃人手填表格的入口都复用它认列；别各写一份别名表，更别各自发明一套模糊匹配 |
+| `owner_roles` | ⑨ 归属角色 | `refund_intake` |
 
 ### test.verify @ 1.0.0
 

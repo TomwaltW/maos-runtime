@@ -32,8 +32,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maos.flows.custom_case import CaseFileError, load, run_payload  # noqa: E402
-from maos.domain.refund.annotation import needs_human  # noqa: E402
-from maos.skills.builtin.refund.reason_classify import LEXICON, UNKNOWN  # noqa: E402
+# 诉求类型的判定搬进了包里（`maos/ingress/classify.py`）——  房间那条入口也要用
+# 同一套判据，而包不该 import scripts/。这里反过来从包里取，判据仍只有一处。
+from maos.ingress.classify import (  # noqa: E402
+    RequestSheetError, classify_reason, make_classifier)
+from maos.skills.builtin.refund.reason_classify import LEXICON  # noqa: E402
 from maos.skills.builtin.sheet_header_map import COLUMNS as SHEET_COLUMNS  # noqa: E402
 
 DEFAULT_LEDGER = Path(__file__).resolve().parents[1] / "scenarios" / "custom" / "ledger.json"
@@ -55,10 +58,6 @@ STATUS_CN = {
     "rejected": "已驳回",
 }
 DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M", "%Y.%m.%d")
-
-
-class RequestSheetError(ValueError):
-    """申请表里有填不对的地方。消息直接给人看。"""
 
 
 #: 必需列：``key -> 给人看的标准列名``。整列一个别名都没命中时，这一列每行都取到
@@ -121,85 +120,6 @@ def _reason_code(raw: str) -> str:
     raise RequestSheetError(
         f"看不懂的诉求类型 {text!r}。可以写：{'、'.join(sorted(set(REASONS)))}；"
         f"或直接写 {'、'.join(sorted(set(REASONS.values())))}")
-
-
-def make_classifier():
-    """词表/别名认不出时的模型兜底。**拿不到真模型就返回 None，这不是故障。**
-
-    只在三个环境变量齐备、`select_model_client()` 真给出 `GatewayModelClient`
-    时才接线。理由是 `ScriptedModelClient.complete()` 恒返 `"{}"`，喂给 skill 只会
-    抛 ValueError —— 而本脚本对外的承诺是「无 key、零出网」，不能因为接了模型就
-    在没配 key 的机器上开始报错。没接上的后果是词表外的词落 `unknown` 挑去人工，
-    其余行照常跑完，这正是「判不准就别猜」该有的结果。
-
-    `store` 传 None：本脚本每单一个 `:memory:` 库，成本账落进去跑完就没了。
-    `record_model_usage` 见 None 直接跳过（`core/store.py:572`），不抛。
-    """
-    from maos.agents.refund.intake_agent import RefundIntakeAgent
-    from maos.model.client import GatewayModelClient, select_model_client
-    from maos.skills.invoker import SkillInvoker
-
-    model = select_model_client()
-    if not isinstance(model, GatewayModelClient):
-        return None
-    identity = RefundIntakeAgent.identity
-    invoker = SkillInvoker(identity, None)
-    extras = {"model": model, "tier": identity.model_tier}
-
-    def call(name: str, payload: dict) -> dict | None:
-        """调一次 skill。**任何失败都返回 None**，由调用方落回 fallback。
-
-        模型挂了、超时了、输出不合契约（invoker 已按 failure_policy 重试过一次），
-        都不该让一张表读不下去 —— 那一列的结果是「这单要人看」，本来就是安全出口。
-        """
-        try:
-            res = invoker.invoke(name, payload, extras=dict(extras))
-        except Exception as exc:                       # noqa: BLE001
-            logging.getLogger("run_requests").warning("%s 调用失败：%s", name, exc)
-            return None
-        if res.status != "ok" or not isinstance(res.output, dict):
-            logging.getLogger("run_requests").warning("%s 未产出结果：%s", name, res.error)
-            return None
-        return res.output
-
-    return call
-
-
-def classify_reason(raw: str, classifier=None) -> dict:  # noqa: ANN001
-    """判诉求类型。返回 ``{reason, source, confidence, why, needs_human}``。
-
-    三段，顺序不能反：词表命中直接用（**一次模型都不调**）；认不出才问模型；
-    没模型就落 `unknown`。
-
-    **判不出来不抛**：那是「这一单要人看」，不是「这张表填错了」，两者的处置
-    完全相反 —— 前者其余行照跑，后者才该让人回去改表。空的诉求类型仍然抛，
-    它确实是填错了（一格都没填，模型也无从判起）。
-    """
-    text = raw.strip()
-    if not text:
-        raise RequestSheetError("诉求类型不能空 —— 不知道为什么退，就套不上任何一条政策")
-
-    if text in REASONS:
-        return _verdict(REASONS[text], 1.0, "词表直接命中", "lexicon")
-    if text in set(REASONS.values()):
-        return _verdict(text, 1.0, "原文就是一个合法 code", "lexicon")
-
-    if classifier is None:
-        return _verdict(UNKNOWN, 0.0, "词表未命中，且没有可用的模型（未配 key）", "fallback")
-
-    out = classifier("refund.reason_classify", {"text": text})
-    if out is None:
-        return _verdict(UNKNOWN, 0.0, "词表未命中，模型调用没有产出结果", "fallback")
-    return _verdict(str(out.get("reason_code") or UNKNOWN),
-                    float(out.get("confidence") or 0.0),
-                    str(out.get("why") or ""), str(out.get("source") or "model"))
-
-
-def _verdict(code: str, confidence: float, why: str, source: str) -> dict:
-    """一条诉求类型判据。`needs_human` 走 `annotation.needs_human` —— **整仓唯一定义**，
-    这里不自己比阈值，否则命令行与房间会各有一套「算不算低置信度」。"""
-    return {"reason": code, "source": source, "confidence": confidence, "why": why,
-            "needs_human": needs_human(confidence, source, code)}
 
 
 def _parse_date(text: str) -> datetime | None:

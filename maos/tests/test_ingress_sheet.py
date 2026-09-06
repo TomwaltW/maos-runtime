@@ -210,12 +210,16 @@ def test_missing_column_summary_does_not_blame_the_rows():
 def test_every_bad_row_is_reported_and_good_rows_still_run():
     parsed = sheet.parse(BAD.encode("utf-8"), "bad-requests.csv", _ledger())
 
-    assert [r.line for r in parsed.invalid] == [2, 3, 4, 5]
+    assert [r.line for r in parsed.invalid] == [2, 4, 5]
     assert [r.line for r in parsed.valid] == [7, 8]
     assert parsed.skipped_blank == 1                       # 第 6 行是空行
     by_line = {r.line: r for r in parsed.rows}
     assert "底账里没有订单 ORD-9999-9999" in by_line[2].problems[0]
-    assert "看不懂的诉求类型" in by_line[3].problems[0]
+    # 第 3 行「天上掉馅饼」：词表外的词是**判不准**，不是填错了。它进 pending 等人工，
+    # 不进 problems —— 让人回去改一张没填错的表，是把人指向一个不存在的问题。
+    assert [r.line for r in parsed.pending] == [3]
+    assert by_line[3].pending and not by_line[3].problems
+    assert by_line[3].verdict["source"] == "fallback"       # 没配 key，模型没兜上
     assert "负数" in by_line[4].problems[0]
     assert "看不懂的日期" in by_line[5].problems[0]
     # 不阻断的提醒：超实付会封顶、多余列被忽略、同一订单出现多次
@@ -231,10 +235,16 @@ def test_amount_is_shown_as_money_not_scientific_notation():
 
 
 def test_one_row_collects_all_its_problems_at_once():
-    """一行里三处错要一次说完 —— 人是改完整张表再发，不是改一处发一次。"""
+    """一行里三处错要一次说完 —— 人是改完整张表再发，不是改一处发一次。
+
+    诉求类型「天上掉馅饼」判不准**不算**这三处之一，但这一行确实还填错了别的，
+    所以它按填错报（`SheetRow.pending` 要求没有别的 problem）：那张表本来就要改，
+    改完再发一次时这个词也许就判得出来了。两边都报会让人以为是两件事。
+    """
     data = (HEADER + "ORD-9999-9999,天上掉馅饼,-1,2026-13-45,\n").encode()
     row, = sheet.parse(data, "x.csv", _ledger()).rows
-    assert len(row.problems) == 4
+    assert len(row.problems) == 3
+    assert row.needs_human_intake and not row.pending
     assert row.req is None
 
 
@@ -358,9 +368,14 @@ def test_echoed_fields_are_clipped():
     """字段是人填的、会原样刷回群里 —— 一个粘了聊天记录的单元格不该把回帖撑爆。"""
     long_reason = "天上掉馅饼" * 200
     data = (HEADER + f"ORD-2026-0001,{long_reason},6800,2026-07-10,\n").encode()
-    row, = sheet.parse(data, "x.csv", _ledger()).rows
+    parsed = sheet.parse(data, "x.csv", _ledger())
+    row, = parsed.rows
     assert len(row.reason_raw) == sheet.FIELD_MAX and row.reason_raw.endswith("…")
-    assert len(row.problems[0]) < 400
+    # 这一行现在走「判不准」那条出口，回帖里回显的仍然是截断后的那一格：
+    # 撑爆回帖的是**回显**，与它算 problem 还是 pending 无关。
+    held = [ln for ln in sheet.render(parsed, {}, {}, decision_cn={}).splitlines()
+            if ln.startswith("  · 第 2 行")]
+    assert len(held) == 1 and len(held[0]) < 400
 
 
 def test_field_over_csv_limit_is_a_parse_error_not_fetch_failure(tmp_path):
@@ -439,7 +454,8 @@ def test_sheet_preflights_valid_rows_without_moving_money(tmp_path):
     reply = router.handle(_inbound("k", "bad-requests.csv"))
 
     assert runs == [], "一张表进群不许直接跑处置"
-    assert "共 6 行，可预检 2 行，有问题 4 行" in reply
+    assert "共 6 行，可预检 2 行，有问题 3 行，判不准 1 行" in reply
+    assert "诉求类型判不准，已挑出等人工确认，未进入处置：" in reply
     assert "未动任何资金" in reply
     assert "/approve RC-ORD-2026-0001" in reply
     assert "RC-ORD-2026-0001" in router._tickets          # 待办挂上了
@@ -503,4 +519,6 @@ def test_sheet_summary_is_remembered_per_chat(tmp_path):
     router = _router(tmp_path, adapter)
     router.handle(_inbound("k", "bad-requests.csv"))
     note = router._last_sheet[(CHANNEL_FEISHU, "oc_1")]
-    assert "bad-requests.csv" in note and "4 行填错" in note and "2 行预检完成" in note
+    assert "bad-requests.csv" in note and "3 行填错" in note and "2 行预检完成" in note
+    # 判不准要**说成判不准**：混进「填错」里，回话器会跟着劝人去改一张没填错的表。
+    assert "1 行诉求类型判不准" in note

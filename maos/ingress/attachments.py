@@ -129,6 +129,33 @@ def sniff_mime(data: bytes) -> str:
     return ""
 
 
+#: ZIP 容器的头四个字节（本体 / 空归档 / 跨卷）。**这不是白名单的一员**，
+#: 只用来把拒收那句话说得能行动。
+#:
+#: `.xlsx` 是个 zip 容器，魔数与 `.docx` / `.pptx` / `.jar` / 任意 zip **完全相同** ——
+#: 把 `PK` 放进 :data:`ALLOWED_MIME` 等于收下任意 zip，白名单当场退化成
+#: 「凡是我认得出的都收」，而这一层的输入来自公网回调（取向见 :func:`sniff_mime`）。
+#: 真解析 xlsx 要 `openpyxl`，那是另一件事，不在这里做。
+_ZIP_MAGIC = (b"\x03\x04", b"\x05\x06", b"\x07\x08")
+
+#: 判出 zip 时那句话。**仍然是拒收**，只是从「认不出」换成「认出来了，
+#: 但要你做一件 10 秒的事」—— 老板日常存的就是 .xlsx，拖进群撞类型闸，
+#: 看完一句「只收 application/pdf、image/gif、…」不知道下一步该干什么。
+ZIP_REJECT_HINT = (
+    "看着像 Excel/Word 文件（.xlsx/.docx 这类都是 zip 容器）。"
+    "本系统只收 CSV —— 在 Excel 里「另存为 → CSV UTF-8」再拖进来就行。"
+)
+
+
+def zip_hint(data: bytes) -> str:
+    """看着像 zip 容器就返回 :data:`ZIP_REJECT_HINT`，否则 ``""``。
+
+    刻意**不**做成 `sniff_mime` 的一个返回值：那个函数的返回值是「允许落盘的类型」
+    的判据，多一个取值就多一个有人顺手把它加进白名单的机会。这里只影响措辞。
+    """
+    return ZIP_REJECT_HINT if data[:2] == b"PK" and data[2:4] in _ZIP_MAGIC else ""
+
+
 def digest_of(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -221,6 +248,10 @@ class AttachmentStore:
 
         mime = sniff_mime(data)
         if mime not in ALLOWED_MIME:
+            # 认得出是 zip 容器就说人话，别让人对着一串 MIME 名猜下一步（见 `zip_hint`）。
+            hint = zip_hint(data)
+            if hint:
+                raise AttachmentTypeRejected(hint)
             # 报里带上对方自报的那个：「你说是 image/png，我看着不像」比
             # 单说「未知类型」更容易让人判断是发错了文件还是我方漏了格式。
             declared = (att.mime or "").split(";")[0].strip() or "未声明"

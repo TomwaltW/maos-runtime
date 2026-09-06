@@ -135,3 +135,49 @@ def test_sample_sheet_end_to_end():
 
     assert "批准 2、驳回 1" in rr.summarize(rows)
     assert "订单号" in rr.as_table(rows)
+
+
+# --------------------------------------------------------------- 判不准的行
+# 这三条守的是一次真实发生过的回归（见 docs/DECISIONS.md 整合修复那节）：
+# read_sheet 原先对词表外的诉求当场抛，改成「返回一行带 needs_human_intake 的记录」
+# 之后，同文件的 run_sheet 跟着挑走了它们，而 scripts/room_team_smoke.py 这个
+# 跨文件调用方没跟着改 —— 它拿到行就直接送进预检，于是一个诉求类型判不出来的单子
+# 在房间演示里被基线规则**批准**了。unknown 套不上任何一条政策，
+# evaluate_eligibility 走基线就是放行，而漏检查那个标记不会有任何报错。
+def _sheet_with_an_unknown_reason(tmp_path):
+    csv_path = tmp_path / "混着判不准的.csv"
+    csv_path.write_text("订单号,诉求类型,申报金额,申请日期,说明\n"
+                        "ORD-2026-0001,质量问题,6800,2026-07-10,词表内\n"
+                        "ORD-2026-0002,漏发了两个,1280,2026-08-15,词表外\n",
+                        encoding="utf-8")
+    return csv_path
+
+
+def test_pending_rows_are_not_returned_unless_asked(tmp_path):
+    """缺省不返回判不准的行 —— 新调用方即使什么都不知道也是安全的。"""
+    rows = rr.read_sheet(_sheet_with_an_unknown_reason(tmp_path))
+
+    assert [r["order_id"] for r in rows] == ["ORD-2026-0001"], (
+        "判不准的行漏进了缺省返回值 —— 调用方一旦不检查 needs_human_intake，"
+        "它就会被送进预检并按基线规则批准")
+    assert all(not r["needs_human_intake"] for r in rows)
+
+
+def test_pending_rows_come_back_when_explicitly_asked(tmp_path):
+    """显式要才给 —— run_sheet 要把它们印进结果表并在收口行点名。"""
+    rows = rr.read_sheet(_sheet_with_an_unknown_reason(tmp_path), include_pending=True)
+
+    assert [r["order_id"] for r in rows] == ["ORD-2026-0001", "ORD-2026-0002"]
+    pending = [r for r in rows if r["needs_human_intake"]]
+    assert [r["order_id"] for r in pending] == ["ORD-2026-0002"]
+    assert pending[0]["reason"] == "unknown", "判不出来就是 unknown，不许猜一个 code"
+
+
+def test_a_sheet_with_no_pending_rows_is_unaffected(tmp_path):
+    """全在词表内时，两种调用逐字同一份结果 —— 这条守的是缺省值没有顺手改掉别的行为。"""
+    csv_path = tmp_path / "全在词表内.csv"
+    csv_path.write_text("订单号,诉求类型,申报金额,申请日期,说明\n"
+                        "ORD-2026-0001,质量问题,6800,2026-07-10,\n",
+                        encoding="utf-8")
+
+    assert rr.read_sheet(csv_path) == rr.read_sheet(csv_path, include_pending=True)

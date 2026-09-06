@@ -41,6 +41,8 @@ from maos.skills.builtin.sheet_header_map import COLUMNS as SHEET_COLUMNS  # noq
 
 DEFAULT_LEDGER = Path(__file__).resolve().parents[1] / "scenarios" / "custom" / "ledger.json"
 
+log = logging.getLogger("run_requests")
+
 #: 老板会写的说法 -> 系统里的诉求类型。**权威定义在 skill 里**，这里只取过来用：
 #: 两份词表并存的症状是它们会各自长大，然后同一个词在命令行与房间里判成两个 code。
 #: 词表未命中时不再当场报错 —— 交给 `refund.reason_classify` 的模型兜底（见 `_reason_code`）。
@@ -151,13 +153,23 @@ def _iso(raw: str) -> str:
     return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).isoformat()
 
 
-def read_sheet(path: str | Path, *, classifier=None) -> list[dict]:  # noqa: ANN001
+def read_sheet(path: str | Path, *, classifier=None,
+               include_pending: bool = False) -> list[dict]:  # noqa: ANN001
     """读申请表。每行返回 `{order_id, reason, amount, requested_at, note}` 加一组判据。
 
     `classifier` 是词表认不出时的模型兜底（`make_classifier()`），不给就只走词表 ——
-    认不出的行不再让整张表读不下去，而是带着 `needs_human_intake=True` 返回，
-    由 `run_sheet` 挑出来不送进流程。**判不准与填错是两回事**：前者其余行照跑，
+    认不出的行不再让整张表读不下去。**判不准与填错是两回事**：前者其余行照跑，
     后者（没订单号、金额不是数字、日期看不懂）仍然当场抛。
+
+    `include_pending` **缺省 False，判不准的行根本不返回**。这个默认值是刻意的，
+    它挡的是一类真实发生过的回归：本函数原先对词表外的诉求当场抛，改成「返回一行
+    带 `needs_human_intake=True` 的记录」之后，同文件的 `run_sheet` 跟着挑走了它们，
+    而 `scripts/room_team_smoke.py` 这个跨文件调用方没跟着改 —— 它拿到行就直接送进
+    预检，于是一个诉求类型判不出来的单子在房间演示里**被基线规则批准**了
+    （`unknown` 套不上任何一条政策，`evaluate_eligibility` 走基线就是放行）。
+
+    所以判据不能是「调用方记得检查那个标记」：漏检查的代价是自动批款，而漏检查
+    不会有任何报错。默认不给，想要的显式说 —— 新调用方即使什么都不知道也是安全的。
     """
     p = Path(path)
     if not p.exists():
@@ -211,7 +223,15 @@ def read_sheet(path: str | Path, *, classifier=None) -> list[dict]:  # noqa: ANN
         except ValueError as exc:
             raise RequestSheetError(
                 f"第 {lineno} 行（订单 {order_id}）金额 {amount!r} 不是数字：{exc}") from exc
-    return out
+
+    pending = [r for r in out if r["needs_human_intake"]]
+    if pending and not include_pending:
+        # 留声但不阻断：调用方没要这些行，可它们确实存在，静默丢掉会让
+        # 「这张表明明有 5 行，怎么只处理了 3 行」变成一个查不出来的问题。
+        log.warning("%s：%d 行诉求类型判不准，已挑出不返回（订单 %s）；"
+                    "要拿到它们传 include_pending=True",
+                    p.name, len(pending), "、".join(r["order_id"] for r in pending))
+    return out if include_pending else [r for r in out if not r["needs_human_intake"]]
 
 
 def reason_basis(req: dict) -> str:
@@ -322,7 +342,8 @@ def run_sheet(sheet: str | Path, ledger_path: str | Path, *, approve: bool = Tru
     # 没配 key 时这里是 None，词表外的诉求一律落 unknown 挑去人工（见 make_classifier）。
     classifier = make_classifier()
     results: list[dict] = []
-    for req in read_sheet(sheet, classifier=classifier):
+    # 显式要 pending：本函数要把它们印进结果表并在收口行点名，不是要送进流程。
+    for req in read_sheet(sheet, classifier=classifier, include_pending=True):
         if req["needs_human_intake"]:
             # 不送进流程：`unknown` 套不上任何一条政策，硬跑会走基线裁定
             # 直接批准 —— 一个判不出诉求类型的单子被自动批款，是这里最坏的失败。

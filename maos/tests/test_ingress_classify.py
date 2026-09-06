@@ -468,7 +468,9 @@ def test_the_command_line_entry_still_holds_the_off_lexicon_row(tmp_path):
     csv_path = tmp_path / "one.csv"
     csv_path.write_text(HEADER + f"ORD-2026-0001,{OFF_LEXICON},,2026-07-10,\n",
                         encoding="utf-8")
-    req, = rr.read_sheet(csv_path)
+    # include_pending：本条要检查的正是那一行的内容，而 read_sheet 缺省不返回它
+    # （整合修复：调用方漏检查标记的代价是自动批款，所以默认不给，想要的显式说）。
+    req, = rr.read_sheet(csv_path, include_pending=True)
     assert req["needs_human_intake"] is True and req["reason"] == "unknown"
     assert rr.reason_basis(req) == "待人工"
     assert "诉求类型判不准，已挑出等人工确认，未进入处置" in rr.summarize([rr.pending_row(req)])

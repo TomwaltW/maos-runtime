@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from maos.ingress.attachments import sniff_mime
+from maos.ingress.classify import classify_reason
 
 log = logging.getLogger("maos.ingress.sheet")
 
@@ -77,8 +78,11 @@ class SheetRow:
     """表里的一行：要么合法（``req`` 非空、``problems`` 为空），要么说清哪里不对。
 
     ``warnings`` 与 ``problems`` 分开：前者不阻断（金额超实付会被封顶、多余列被忽略），
-    后者阻断（订单不存在、诉求看不懂、日期非法、金额为负）。混成一列的话，
+    后者阻断（订单不存在、日期非法、金额为负）。混成一列的话，
     人分不清「这行还能跑吗」。四个原文字段已按 :data:`FIELD_MAX` 截断，只供回显。
+
+    「诉求类型判不准」是**第三类**，既不是 problem 也不是 warning ——
+    见 :attr:`needs_human_intake`。
     """
 
     line: int
@@ -89,10 +93,26 @@ class SheetRow:
     req: dict | None = None
     problems: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: 诉求类型那一格的判据（`classify.classify_reason` 的返回）。**不传 classifier
+    #: 时一样有**：词表命中那条路也出判据，只是 source 恒 ``lexicon``。
+    verdict: dict | None = None
+    #: 词表与模型都没能判出诉求类型。**不进 `problems`**：`problems` 的语义是
+    #: 「这一行填错了，人回去改了再拖一次」，而判不准是「填得没错，是机器认不出」——
+    #: 让人回去改一张没填错的表，是把人指向一个不存在的问题。
+    needs_human_intake: bool = False
 
     @property
     def ok(self) -> bool:
         return self.req is not None and not self.problems
+
+    @property
+    def pending(self) -> bool:
+        """判不准，且**没有别的填写错误** -> 挑出来等人工确认，不进入处置。
+
+        同时还填错了别的（订单不存在、日期非法）时按填错处理：那张表确实要改，
+        改完再发一次时这个词也许就判得出来了。两边都报会让人以为是两件事。
+        """
+        return self.needs_human_intake and not self.problems
 
 
 @dataclass
@@ -117,7 +137,13 @@ class Sheet:
 
     @property
     def invalid(self) -> list[SheetRow]:
-        return [r for r in self.rows if not r.ok]
+        """填错了的行。**判不准的不算在内** —— 那些行没填错，见 :attr:`pending`。"""
+        return [r for r in self.rows if not r.ok and not r.pending]
+
+    @property
+    def pending(self) -> list[SheetRow]:
+        """诉求类型判不准、挑出来等人工确认的行。既不预检、也不催人改表。"""
+        return [r for r in self.rows if r.pending]
 
 
 class NotASheet(ValueError):
@@ -201,13 +227,17 @@ def _find_order(ledger: dict, order_id: str) -> dict | None:
 
 
 def _parse_row(rr, ledger: dict, lineno: int, raw: dict,  # noqa: ANN001
-               missing: Sequence[str] = ()) -> SheetRow:
+               missing: Sequence[str] = (), classifier=None) -> SheetRow:
     """校验一行，**收集**所有问题而不是停在第一个。
 
     人改表是一次改完再发，所以一行里的三个错要一次说完。金额与日期都要在
     订单查到之后再比（超实付、早于付款日），所以订单查询放在前面。
     校验用原值，回显用截断值：一个 100 KB 的「订单号」查不到底账是对的结论，
     但不该被原样刷回群里。
+
+    ``classifier`` 是词表认不出诉求类型时的模型兜底（`classify.make_classifier()`），
+    不给就只走词表 —— 两种情形下认不出的行都**不再报错**，而是标成
+    :attr:`SheetRow.needs_human_intake` 挑去人工（见那条注释）。
     """
     order_id = rr._pick(raw, "order_id")
     row = SheetRow(line=lineno, order_id=_clip(order_id),
@@ -233,9 +263,15 @@ def _parse_row(rr, ledger: dict, lineno: int, raw: dict,  # noqa: ANN001
         row.problems.append(rr.missing_column_message("reason"))
     else:
         try:
-            reason = rr._reason_code(row.reason_raw)
+            # 与命令行那条入口**同一个函数**（`classify.classify_reason`）：
+            # 两套判据的症状是「CSV 里写『漏发了两个』能跑、群里发同一张表不认」。
+            row.verdict = classify_reason(row.reason_raw, classifier)
         except rr.RequestSheetError as exc:
+            # 空的诉求类型仍然是填错了 —— 一格都没填，模型也无从判起。
             row.problems.append(str(exc))
+        else:
+            reason = row.verdict["reason"]
+            row.needs_human_intake = bool(row.verdict["needs_human"])
 
     amount: float | None = None
     if row.amount_raw:
@@ -272,7 +308,10 @@ def _parse_row(rr, ledger: dict, lineno: int, raw: dict,  # noqa: ANN001
             except (ValueError, TypeError):
                 pass                                  # 底账日期形状不对不是这行的错
 
-    if row.problems:
+    if row.problems or row.needs_human_intake:
+        # 判不准的行**不建 req**，于是进不了 `Sheet.valid`，也就不会被送去预检。
+        # 硬送的话 `unknown` 套不上任何一条政策，会走基线裁定直接批准 ——
+        # 「一个判不出诉求类型的单子被自动批款」是这条链路上最坏的失败。
         return row
     row.req = {"order_id": order_id, "reason": reason, "amount": amount,
                "requested_at": requested_at}
@@ -292,12 +331,16 @@ def _records(text: str):
         yield rowno, rec, reader.line_num
 
 
-def parse(data: bytes, filename: str, ledger: dict) -> Sheet:
+def parse(data: bytes, filename: str, ledger: dict, *, classifier=None) -> Sheet:
     """把一份 CSV 字节解析成 :class:`Sheet`。不是表就抛 :class:`NotASheet`。
 
     空行跳过并计数（Excel 常在表尾留几行空的）；同一订单出现多次要提醒 ——
     待办按 case_id 存，后一行会覆盖前一行，人得知道是哪一行算数。
     到 :data:`MAX_ROWS` 就**停**，不再把余下几十万行一条条建成 dict；余量按物理行估。
+
+    ``classifier``（`classify.make_classifier()`）是词表认不出诉求类型时的模型兜底。
+    **不给也不是故障**：词表外的词落 ``unknown`` 挑去人工，其余行照跑 ——
+    房间演示常在没配 key 的机器上跑，那时这个参数就是 None。
     """
     if not looks_like_sheet(data):
         raise NotASheet("表头里没有订单号那一列")
@@ -328,7 +371,7 @@ def parse(data: bytes, filename: str, ledger: dict) -> Sheet:
                 raw[name] = None                      # 列少了：与 DictReader 的 restval 一致
             if len(rec) > len(header):
                 raw[None] = rec[len(header):]         # 列多了：与 DictReader 的 restkey 一致
-            rows.append(_parse_row(rr, ledger, rowno, raw, missing))
+            rows.append(_parse_row(rr, ledger, rowno, raw, missing, classifier))
     except csv.Error as exc:
         # 超长单元格（> csv.field_size_limit）、引号没闭合到文件尾之类。
         # 不是取件问题，措辞要把人指向表本身。
@@ -355,8 +398,11 @@ def render(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str], *,
     两者由 router 跑出来（预检那条函数在 router 里，本模块不反向 import 它）。
     """
     total = len(sheet.rows)
+    #: 判不准那一档只在**真有**的时候出现在抬头里：没有的表逐字保持从前的措辞，
+    #: 否则每张干净的表都会多出一句「判不准 0 行」，读的人得先确认它是 0。
+    held = f"，判不准 {len(sheet.pending)} 行" if sheet.pending else ""
     lines = [f"申请表 {sheet.filename or '（未命名）'}：共 {total} 行，"
-             f"可预检 {len(sheet.valid)} 行，有问题 {len(sheet.invalid)} 行"]
+             f"可预检 {len(sheet.valid)} 行，有问题 {len(sheet.invalid)} 行{held}"]
     if sheet.encoding != ENCODINGS[0]:
         lines.append(f"（按 {sheet.encoding} 解码；建议另存为 UTF-8）")
     if sheet.skipped_blank:
@@ -393,6 +439,17 @@ def render(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str], *,
             lines.append("有问题的行（改好后整张表再发一次）：")
             lines.extend(body)
 
+    if sheet.pending:
+        # 措辞与命令行那条入口逐字同一句（`run_requests.py::summarize`）：
+        # 同一件事在两条入口说成两句话，人会以为是两种处置。
+        # **刻意不说「改好后再发一次」** —— 这些行没填错，催人改表是把人指向
+        # 一个不存在的问题；这里等的是人对这个词拿个主意。
+        lines.append("")
+        lines.append("诉求类型判不准，已挑出等人工确认，未进入处置：")
+        for row in sheet.pending:
+            why = (row.verdict or {}).get("why") or "词表与模型都没能判出诉求类型"
+            lines.append(f"  · 第 {row.line} 行 {row.order_id}（{row.reason_raw}）：{why}")
+
     if verdicts or errors:
         lines.append("")
         lines.append("预检结果（只读，未动任何资金）：")
@@ -415,7 +472,7 @@ def render(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str], *,
         else:
             lines.append("      不予退款，无需执行")
 
-    if not sheet.valid and not sheet.invalid:
+    if not sheet.valid and not sheet.invalid and not sheet.pending:
         lines.append("表里一行申请都没有")
     return "\n".join(lines)
 
@@ -425,6 +482,9 @@ def summary(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str]) -> 
 
     缺列要**说成缺列**：那时每一行都不合法，按「N 行填错」报出去，模型回话时会
     跟着劝人去改那 N 行 —— 而那 N 行没错，错的是表头一处。
+
+    判不准的行同理，要**说成判不准**：混进「填错」里，模型回话时会劝人去改一张
+    没填错的表；漏掉不说，模型就不知道有几单还压在人手上没进处置。
     """
     if sheet.missing:
         rr = _run_requests()
@@ -432,6 +492,8 @@ def summary(sheet: Sheet, verdicts: dict[int, dict], errors: dict[int, str]) -> 
         return (f"{sheet.filename or '（未命名）'}：{len(sheet.rows)} 行，"
                 f"表头缺「{cols}」这一列 —— 整表未预检，要改的是表头不是行")
     approve = sum(1 for c in verdicts.values() if c.get("decision") == "approve")
+    held = (f"，{len(sheet.pending)} 行诉求类型判不准、已挑出等人工确认，未进入处置"
+            if sheet.pending else "")
     return (f"{sheet.filename or '（未命名）'}：{len(sheet.rows)} 行，"
             f"{len(sheet.invalid)} 行填错，{len(verdicts)} 行预检完成"
-            f"（{approve} 行裁定批准），{len(errors)} 行预检失败")
+            f"（{approve} 行裁定批准），{len(errors)} 行预检失败{held}")

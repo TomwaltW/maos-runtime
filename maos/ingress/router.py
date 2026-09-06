@@ -75,6 +75,7 @@ import inspect
 import json
 import logging
 import math
+import os
 import sys
 import threading
 import time
@@ -82,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from maos.domain.refund import annotation, objects as _refund_objects
+from maos.ingress import classify as _classify
 from maos.ingress import sheet as _sheet
 from maos.ingress.attachments import (
     AttachmentBuffer, AttachmentStore, AttachmentTooLarge, AttachmentTypeRejected,
@@ -674,6 +677,68 @@ class IngressRouter:
         take(msg.channel, msg.chat_id, digests={item.digest for item in stored})
 
     # -- 申请表 -------------------------------------------------------------
+    def _record_reason_annotations(self, parsed: Any) -> None:
+        """把这张表里**模型判出来的**每一格诉求类型落进 `intake_annotation`。
+
+        **这条链路上落库第一次真正有用**：`self.store` 是持久库，标注写进去查得回来。
+        命令行那条每单一个 `:memory:` 运行时，落了跑完就没，接线时刻意没落
+        （见 `docs/DECISIONS.md`）。有了这张表，「模型当时把『漏发了两个』认成了什么、
+        多有把握、凭哪一次调用」才回答得出来 —— 模型给的是观察与推断，不是权威事实。
+
+        **只落 source 是 `model` 的那几格。** `annotation.record` 的 `invocation_id`
+        是 actor 锚点、也是主键的一部分，而词表命中与 fallback 压根没有那次调用。
+        给它们编一个合成 id 能过校验，却让审计链指向一条查不到的记录 —— 那正好是
+        这张表存在理由的反面（`annotation.py::_require_invocation_id`）。词表命中是
+        确定性匹配、原样可复现，不留痕也答得出「当时怎么认的」。
+
+        落库失败**不掀掉回帖**：标注是观察的留痕，不是处置的一环。写不进去要出声
+        （WARNING），但群里那份预检结果一个字都不该因此少。
+        """
+        from maos.model.client import ENV_MODEL
+
+        judged = [r for r in parsed.rows
+                  if (r.verdict or {}).get("source") == "model"
+                  and (r.verdict or {}).get("invocation_id")]
+        if not judged:
+            # 一张全靠词表认下来的表不建表、不写库 —— 那是常态（没配 key 时是全部）。
+            return
+        try:
+            # 与写库的 skill 同一个范式（`skills/builtin/ap/_common.py::ensure_schema`）：
+            # 谁写谁先建，幂等。router 的 store 由调用方给，建表不是它的构造职责。
+            _refund_objects.ensure_schema(self.store)
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("建 intake_annotation 表失败，本张表的诉求类型标注没留痕（%s: %s）",
+                        type(exc).__name__, exc)
+            return
+
+        model = os.environ.get(ENV_MODEL, "") or ""
+        for row in judged:
+            verdict = row.verdict or {}
+            order = _sheet._find_order(self.ledger(), row.order_id)
+            if order is None:
+                # 底账里没这一单 -> 推不出 tenant_id。那一行本来也进不了处置
+                # （`_parse_row` 已经把它记成 problem），标注无处可挂。
+                continue
+            try:
+                annotation.record(
+                    self.store,
+                    tenant_id=str(order["tenant_id"]),
+                    # 与 `run_requests.build_case` 同一条口径：case_id = RC-<订单号>。
+                    # 两处不一致的话，受理岗写的标注与房间读的案子对不上号。
+                    case_id=f"RC-{row.order_id}",
+                    field="reason_code",
+                    raw_text=row.reason_raw,
+                    value=str(verdict.get("reason") or ""),
+                    confidence=float(verdict.get("confidence") or 0.0),
+                    why=str(verdict.get("why") or ""),
+                    source="model",
+                    model=model,
+                    invocation_id=str(verdict["invocation_id"]),
+                )
+            except Exception as exc:                    # noqa: BLE001
+                log.warning("第 %d 行（%s）的诉求类型标注没落进库（%s: %s）",
+                            row.line, row.order_id, type(exc).__name__, exc)
+
     def handle_sheet(self, msg: InboundMessage, att: Attachment, data: bytes) -> str:
         """一张申请表：逐行校验 -> 合法的行逐单**只读预检** -> 挂待办 -> 一份回帖。
 
@@ -683,11 +748,16 @@ class IngressRouter:
         要挂证据就单发 ``/refund`` 那一单。
 
         任何一行预检抛错都不许掀掉整张表：那一行记进 ``errors``，其余照跑。
+
+        词表认不出的诉求类型交给 `refund.reason_classify` 兜底（`make_classifier()`，
+        **没配 key 时返回 None，那不是故障**）。判不准的行既不预检也不催人改表，
+        挑出来等人工 —— 房间才是演示主场，一句「看不懂的诉求类型」在群里是死路。
         """
         rr = _load_run_requests()
         name = att.filename or "附件"
+        classifier = _classify.make_classifier()
         try:
-            parsed = _sheet.parse(data, att.filename, self.ledger())
+            parsed = _sheet.parse(data, att.filename, self.ledger(), classifier=classifier)
         except _sheet.NotASheet as exc:
             return f"{name}：看着像表，但{exc}"
         except UnicodeDecodeError:
@@ -695,6 +765,8 @@ class IngressRouter:
                     "请另存为 UTF-8 CSV 再发")
         except _sheet.SheetParseError as exc:
             return f"{name}：表解析失败 —— {exc}。请另存为标准 CSV（UTF-8）再发"
+
+        self._record_reason_annotations(parsed)
 
         verdicts: dict[int, dict] = {}
         errors: dict[int, str] = {}

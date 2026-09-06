@@ -1824,3 +1824,11 @@ router 侧的 @岗位点名分流与待办里的合议建议。以下六处是�
 | 2026-09-05 | T100 | 派单只说 `--recheck` 要「与 `--evidence` 配合使用」，没说单独给会怎样 | 不 `parser.error`，报一行 `NO_RECHECK_TARGET` 并按单轮跑完 | 与同一脚本对「证据目录不存在 / 为空」的既有姿态一致（只报一行、照常跑完）。静默按单轮跑才是要躲的那种失败：参数没生效与生效了在屏幕上长得一模一样，而前者是人自己能修的 |
 | 2026-09-05 | T100 | 派单描述 `--recheck` 的行为全是给人看的排版，没定义 `--json` 下的两轮形态 | JSON 也跑两轮，复检那两行各多一个 `round` 键；单轮的行**一个键都不多** | 拒绝这个组合要新发明一条拒绝规则，而多一个键是这个脚本已有的姿态（`verdict` 取不到就不加那个键）。不带 `--recheck` 时 JSON 逐字不变，这条由「一个键都不多」保证 |
 | 2026-09-05 | T100 | 派单给的预告兜底写法是 `int(kw.get("round_no") or 1)`，它兜得住 `None`，兜不住 `"第二轮"` 这类非数字字符串（`int()` 当场 `ValueError`） | 照派单的意图加一层 `try/except (TypeError, ValueError)`，非数字按首检待它 | 派单红线说的正是「预告炸掉会连累五岗」。这个异常抛在 `_notice` 的 try 之外，会一路抛出 `on_preflight` 落进 router 的 except —— 五岗整轮哑掉，房间里只剩一条指不到原因的 WARNING。形状没改：仍然只从 `**kw` 里读，不进签名 |
+
+## task-T101（诉求类型分类器 refund.reason_classify，2026-09-06）
+
+| 日期 | 任务号 | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-06 | T101 | 派单第 5 节的文件白名单只许动两个新文件，但新增的 `record_model_usage` 调用点会被 `test_cost_metrics.py::test_every_record_call_site_in_the_source_tree_is_registered` 扫到报红（该守卫 `rglob` 整个 `maos/`，子包一样扫得到） | 经人类确认后越界，改 `maos/obs/call_sites.py`（加常量并进 `REGISTERED_CALL_SITES`）与 `maos/tests/test_cost_metrics.py`（那条逐字节对齐测试的 `from_source` 是严格相等，只改登记表会换一条红） | 守卫的报错正文本身就指明了这个动作。另一条路是把 `call_site` 写成静态扫不到的形式，那是绕过守卫 —— 该守卫的 docstring 明确说它拦的是「悄悄多了一个调用点」，绕过去等于让退款域这一处的 token 从此不进任何一本账 |
+| 2026-09-06 | T101 | 派单第 5 节称「放进 `builtin/refund/` 就会被 `discover()` 自动扫到注册，不要改 `__init__.py`（投放即注册，C-1）」。实测不成立：`discover()` 只 `pkgutil.iter_modules` 扫 `builtin/` 顶层，把 `refund` 当**一个模块** import，子包成员由 `refund/__init__.py` 的显式清单决定 —— 不改它，`refund.reason_classify` 不进注册表，是死代码 | 经人类确认后越界，在 `refund/__init__.py` 加一行 `import` 与 `REFUND_SKILLS` 里的一项；同时改掉该文件 docstring 里「本包单轨独占，不存在多轨同改一处的合并冲突」那句 —— P9 起三轨并行往本包加 skill，那句话由本次改动亲手变成假的 | C-1「投放即注册」对 `builtin/` 顶层成立，对子包不成立，派单把两者当成一回事了。不加这两行的失败形态最坏：全仓测试一片绿，skill 也在文件系统上躺着，只有接线时 `SkillInvoker` 按名字取不到 —— 而那时已经不是本轨的现场了 |
+| 2026-09-06 | T101 | 派单第 4 节的词表命中判据是「`text.strip()` 在词表键里，或它本身是一个合法 code」，没说调用方传了自定义 `candidates` 时该怎么办 | 命中的 code 还要落在**当前候选集**里才算 lexicon 命中，否则退回模型/兜底路径 | 内置词表映射的是内置三个 code；调用方换了候选集还照返，等于产出一个它没列出的取值，拿去查自己的类目表会查空。默认候选就是内置三个，这一层在常规路径上不改变任何行为（14 个词逐个走一遍的测试守着） |

@@ -10,25 +10,30 @@
 #    任一条不符立即非 0 退出，退出码 = 出错的步号（1..5），并打印实际值 vs 期望值。
 #    只会打印不会失败的前置脚本等于没写。
 #
-# 2. **期望值可用环境变量覆盖**，不必改文件：
-#      MAOS_EXPECT_TESTS=1069        第 1 步的测试条数
-#      MAOS_EXPECT_BUNDLES=8         第 4 步落盘的证据束个数
-#      MAOS_EXPECT_VERIFY='RESULT: 8/8 PASS'   第 5 步的核验结论行
+# 2. **期望值全部来自唯一真源 `docs/expected-metrics.json`，本脚本一个字面量都不留。**
+#    加了测试的那一轨改真源里的 `pytest_passed_nopg` 一个数即可，不必碰本文件。
+#    这条由 `maos/tests/test_expected_metrics.py` 机器强制：谁再往这里塞一个写死的
+#    条数，那条测试当场变红并点名行号（原委见下面「这个数被漏改过五次」那段）。
+#
+# 3. **期望值仍可用环境变量临时覆盖**，不必改任何文件：
+#      MAOS_EXPECT_TESTS=<条数>       第 1 步的测试条数
+#      MAOS_EXPECT_BUNDLES=<束数>     第 4 步落盘的证据束个数
+#      MAOS_EXPECT_VERIFY=<结论行>    第 5 步的核验结论行
 #    负例自证就靠它：MAOS_EXPECT_TESTS=999 bash scripts/demo_preflight.sh
 #    → 非 0 退出并指出是第 1 步。
 #    第 1 步的条数**自己认环境分两档**（见下面 EXPECT_TESTS_NOPG / _PG），
 #    显式传 MAOS_EXPECT_TESTS 仍然盖过自动判断 —— 覆盖能力是负例自证的地基。
 #
-# 3. **零出网、不依赖任何 API key。** 全程走 ScriptedModelClient 路径，
+# 4. **零出网、不依赖任何 API key。** 全程走 ScriptedModelClient 路径，
 #    评委在没有任何密钥的机器上照样跑得出同一份结果 —— 这是卖点，第 0 步会显式打出来。
 #    唯一一次网络动作是第 1 步的 PG 探测，且**只在人自己配了 MAOS_PG_DSN 时发生**：
 #    没配就一个包都不发，与 API key 无关。
 #
-# 4. **本脚本不替人做决定。** 第 4 步必然把 evidence/ 弄脏（出处头每跑一次都变），
+# 5. **本脚本不替人做决定。** 第 4 步必然把 evidence/ 弄脏（出处头每跑一次都变），
 #    脚本只统计脏行数并给出二选一提示，**绝不自动还原** ——
 #    万一人类正好有未提交的在制品，一条自动还原就把它冲掉了。
 #
-# 5. 本机没有 `python` 命令，全脚本一律 python3。
+# 6. 本机没有 `python` 命令，全脚本一律 python3。
 
 set -euo pipefail
 
@@ -38,10 +43,16 @@ cd "$REPO_ROOT"
 # 第 1 步的测试条数按环境分两档。差的 29 条 = 22（maos/tests/test_pg_store_live.py）
 # + 7（maos/tests/test_pg_rank_parity.py）：没库时它们整个 skip，有库时全部真跑。
 #
-# 有库那档**由无库那档加 29 算出来，不写死**。写死的代价整合轮 13 当场吃到了：
-# 契约 B 把有库钉成 932，而同轮 T24/T25/T26 各自加了 7/13/12 条测试，两个数一起作废——
-# 症状是「配了 DSN 的机器上第 1 步报回归」，恰恰是本档要治的那个病。改成算式之后，
-# 以后谁加测试都只需改 EXPECT_TESTS_NOPG 一个数，29 这个差值才是真正要守的不变量。
+# 有库那档**由无库那档加 29 算出来，不写死**；无库那档**已经不在本文件里**，
+# 它在 docs/expected-metrics.json 的 pytest_passed_nopg。29 这个差值才是真正要守的
+# 不变量，下面那条算式不要动。
+#
+# 下面整段是这个数被漏改的历次。留着，因为它解释了为什么最后要收口到一处。
+# metric:frozen-begin 历次并轨的实测读数，各自钉在当时的基线上，是史料，不随合入刷新
+#
+# 写死有库档的代价整合轮 13 当场吃到了：契约 B 把有库钉成 932，而同轮 T24/T25/T26
+# 各自加了 7/13/12 条测试，两个数一起作废 —— 症状是「配了 DSN 的机器上第 1 步报回归」，
+# 恰恰是本档要治的那个病。改成算式之后，以后谁加测试都只需改一个数。
 # 整合轮 14 实测（合并态 T27–T30）：1069 passed / 39 skipped（无库）。39 = PG 门控 29
 #（22 live + 7 parity）+ 非 PG 门控 10（RocketMQ 8 条 + Nacos 2 条，有库时同样 skip）。
 # 有库档 1069+29=1098 由算式得出。**2026-08-31（T34 轨）已实测**，不再是纸面推算：
@@ -53,31 +64,64 @@ cd "$REPO_ROOT"
 # 🔴 **这个数是并轨的下游产物，每次并入新轨都要重取，不许照抄上一行。**
 # 2026-09-01（T51 整合轮）实测合并态 T37–T39 后：**1370 passed / 39 skipped（无库）**。
 # 三个业务域纵向切片共加 301 条。skipped 仍是 39 —— 新增的三个域一条门控测试都没加，
-# 所以 PG_GATED_TESTS=29 这个不变量没被动，有库档由算式得 1370+29=1399（未实测，
+# 所以 PG 门控 29 这个不变量没被动，有库档由算式得 1370+29=1399（未实测，
 # 上一次实测的 1098 对应 1069 那一档）。
 #
 # 2026-09-01（T47–T54 整合轮）：合并态 51715e5 实测
 # **1476 passed / 39 skipped（无库）**。T51 并入后 1370 -> T47–T53 六轨并入后 1456
 # -> T54 再加 20 条（失败调用留账 12 + usage 两家口径 8）得 1476。skipped 仍是 39，
-# PG_GATED_TESTS=29 依旧没被动，有库档由算式得 1476+29=1505（未实测）。
+# PG 门控 29 依旧没被动，有库档由算式得 1476+29=1505（未实测）。
 #
 # 这条被漏过一次，代价是**门禁在该拦的时候拦错了人**：T46 并完三轨后本脚本第 1 步
 # 报「实际 1370 / 期望 1069」并打出「前置未通过，不要开始录制」，exit=1 ——
 # 而当时代码是全绿的。录制前唯一的机器判据自己变成了假警报，是最坏的一种失效：
 # 下一次它真的红了，人会先怀疑是这个数又没刷。**加测试的那一轨改这个数，
 # 不要留给录制那天的人。**
-# 2026-09-05（T94–T96 整合轮，**本行是当前生效的那个数**）：合并态实测
+# 2026-09-05（T94–T96 整合轮）：合并态实测
 # **2042 passed / 41 skipped（无库）**。1476 -> C1 接三个新域证据链 -> 申请表表头缺列
 # -> T94 跨域场景 11（+21）/ T95 证据可视化（+29）/ T96 补偿失败开工单（+6）。
 # skipped 从 39 涨到 **41**：PG 门控仍是 29（22 live + 7 parity，**不变量没被动**），
 # 非 PG 门控从 10 涨到 12 —— RocketMQ 8 + Nacos 2 之外，多了 ingress 渠道 2 条
 #（test_ingress_channels.py，缺 cryptography 时 skip）。有库档由算式得 2042+29=2071（未实测）。
+# metric:frozen-end
 #
-PG_GATED_TESTS=29
-EXPECT_TESTS_NOPG=2042
+# **上面那句「加测试的那一轨改这个数」，写下之后又被漏了一次** —— T97–T103 加了 150 条，
+# 没人回来改，2042 就地过期，门禁第二次变成假警报。**靠纪律这条路失败五次，
+# 2026-09-06（T104 轨）换机器**：这个数搬去 docs/expected-metrics.json 一处，
+# 本脚本从那里读；maos/tests/test_expected_metrics.py 拿 `pytest --collect-only`
+# 当场比对，加测试的那一轨跑自己的测试就会红，报错里直接写着要改哪个文件的哪个键。
+# 那条守卫**故意不自动取值** —— 自动取值的守卫永远不会红，那就把门禁变成了装饰。
+
+EXPECT_JSON="$REPO_ROOT/docs/expected-metrics.json"
+if [ ! -f "$EXPECT_JSON" ]; then
+    printf '\033[31m[FAIL] 找不到期望值真源 %s\033[0m\n' "$EXPECT_JSON" >&2
+    printf '本脚本全部期望值都从它读。缺了就没有判据 —— 不要在这里补一个写死的数。\n' >&2
+    exit 1
+fi
+
+# 真源是 JSON，而本机不保证装了 jq，就用 python3 读（设计口径第 6 条：一律 python3）。
+# 取不到键时 python 自己往 stderr 说明，set -e 随即把整条脚本带下去。
+read_metric() {
+    python3 - "$EXPECT_JSON" "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    data = json.load(fh)
+key = sys.argv[2]
+if key not in data:
+    sys.stderr.write("docs/expected-metrics.json 缺少键 " + key + "\n")
+    raise SystemExit(1)
+print(data[key])
+PY
+}
+
+# 真源里的 pytest_skipped_nopg 本脚本不用：第 1 步判的是 passed，skipped 那一半由
+# maos/tests/test_expected_metrics.py 用「收集数 = passed + skipped」这条等式守。
+PG_GATED_TESTS="$(read_metric pg_gated_tests)"
+EXPECT_TESTS_NOPG="$(read_metric pytest_passed_nopg)"
 EXPECT_TESTS_PG=$((EXPECT_TESTS_NOPG + PG_GATED_TESTS))
-EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-8}"
-EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-RESULT: 8/8 PASS}"
+EXPECT_BUNDLES="${MAOS_EXPECT_BUNDLES:-$(read_metric evidence_bundles)}"
+EXPECT_VERIFY="${MAOS_EXPECT_VERIFY:-$(read_metric verify_result_line)}"
 
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT

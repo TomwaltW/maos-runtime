@@ -21,7 +21,7 @@
 
 ```bash
 # ①
-python3 -m pytest maos/tests -q          # □ 1069 passed，个位数秒
+python3 -m pytest maos/tests -q          # □ 2198 passed，一分多钟 · metric:pytest_passed_nopg
 # ②
 python3 run.py                           # □ exit=0，个位数秒；跑完 git status 仍空（它不产证据）
 # ③
@@ -52,7 +52,7 @@ git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动
 - [ ] 冒烟用的是**评委最可能敲的那条 clone 命令**（不带 `-b`），而不是自己补了分支的那条。
 
 > ✅ **整合轮 10 已在 `4cfef38` 上重跑**（T8 轨，本地源 + 远端 URL 各一遍）：
-> 两个源逐条对齐 —— `802 passed`、七项 `7/7 PASS`、跑完 50 行脏、八个场景 sha 全干净，
+> 两个源逐条对齐 —— `802 passed`、七项 `7/7 PASS`、跑完 50 行脏、八个场景 sha 全干净，<!-- metric:frozen 整合轮 10（4cfef38）那次冒烟的实测读数，是史料 -->
 > 掐表 **6.97s**（本地）/ **8.69s**（远端），全序列 23.9s / 26.3s。
 > 见 [`docs/clone-smoke-report.md`](clone-smoke-report.md) 的**第五遍**一节。
 >
@@ -205,6 +205,8 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 逐条确认材料里**没有**把下面任何一条说过头。
 **七行已按 `42822fc` 逐条回代码复核**，复核结论写在末列。
 
+<!-- metric:frozen-begin 下表末列是逐次复核当天的实测读数（zhcfg 切换的 39 passed/1 failed、test_replan_gateway.py 的 19 passed），钉在复核那天的基线上，是史料 -->
+
 | 事实 | 只能这么说 | 不许这么说 | 复核 |
 | :-- | :-- | :-- | :-- |
 | 政策数据与历史案例 | 「按行业惯例构造的合成数据」 | 「真实企业政策」 | ✅ 仍成立 |
@@ -215,6 +217,8 @@ settled」一句话报完，把两种正相反的情况说成同一件事。收�
 | replan 换渠道 | 「场景 7 演到了：撞 `40005` 触发一次 replan 换备用渠道，再撞 `ACQ.SYSTEM_ERROR` 一票否决落人工，全程没有自旋」 | 「重试到上限才转人工」（**只重试了一次**，不是打满上限）｜「换了渠道就成功了」 | ✅ 整合轮 5 合入 Y-4 后实测：`run.py --scenario 7` 屏幕上打出 `换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）`，状态轨迹里有 `AWAITING_REVIEW -> REWORK [gate_rework]` → `REWORK -> PENDING [requeue]`；`test_replan_gateway.py` 仍 **19 passed**，一条没少 |
 | 场景覆盖 | 「`run.py` 无参跑全部七个场景，含失败路径」 | 「七个场景都跑成功了」（场景 7 的 Plan 终态是 FAILED，那正是它要演的） | ✅ `maos/main.py:29` 实测 `DEFAULT_SCENARIOS = (1, 2, 3, 4, 5, 6, 7)` |
 | MCP | 「5 个 ToolPort 里 **1 个**（`git-mcp`）的 `entry` 真走 MCP stdio（JSON-RPC 2.0，零依赖自写），审计行与本地工具逐字段同形；其余四个刻意没迁，障碍写在 `docs/BACKLOG.md` 的 `## task-mcp`」 | 「工具层已全面 MCP 化」｜「接入了 MCP 生态/官方 SDK」——**没装 `mcp` 包**，协议是手写的（`pyproject.toml` 的 `dependencies = []` 是硬约束）｜「模型自己选工具」——**没做**，agent 仍是脚本化编排，`ModelClient.complete` 是冻结契约 A-12 | ✅ 2026-09-01 落地实测：`test_mcp_transport.py` 18 条 + `test_mcp_git_tool.py` 13 条全绿；`evidence/scenario-1/trace.json` 有 `tool:git-mcp` 的 `ToolInvoked` span（`params_digest` 64 位 hex）。选型与四条判断记在 `docs/DECISIONS.md` 的 `## task-mcp-2026-09-01` |
+
+<!-- metric:frozen-end -->
 
 > ✅ 整合轮 5 已合入 Y-4，上表 replan 那一行已改口。新的说漏风险反过来了：
 > 屏幕上是 **1 次** replan（撞第二个码就一票否决），**不是「重试到上限」**——
@@ -380,7 +384,7 @@ grep -rh "^# generated at" evidence/room/ | sed 's/.* from //' | sed 's/-dirty//
 > 代码文件差异 **0** —— 证据内容没过期。
 > 只有当 `maos/**` 或 `scripts/**` 再被动过时，才必须重跑证据链并 commit。
 > ②③ 当前是绿的（②**一条都没有**——H-7 修复后八个场景 sha 全干净；③唯一）。
-- [ ] PPT 与视频里出现的**每一个数字**（`802 passed` / `7/7 PASS` / `35/35` / `19 条测试` …），
+- [ ] PPT 与视频里出现的**每一个数字**（`802 passed` / `7/7 PASS` / `35/35` / `19 条测试` …），<!-- metric:frozen 这里是举例说明「什么算一个数字」，不是现行读数；现行值在 docs/expected-metrics.json -->
       都能在 [`docs/ppt-outline.md`](ppt-outline.md) 或 [`docs/demo-script.md`](demo-script.md)
       里找到**产出它的那条命令**。找不到命令的数字就是没有出处的数字，删掉或补命令。
 - [ ] **改了代码就要回来重录那一镜、重生成那三份文档**（`gen_docs.py --check` 会告诉你哪份漂了）。
@@ -410,6 +414,8 @@ echo "exit=$?"                        # □ 0
 > 脚本里有一条正向检查专门守着这件事。
 
 ---
+
+<!-- metric:frozen-begin 以下各收口台账记的是每一轮当时的实测读数与回填动作，钉在各自的基线 sha 上，是史料，不随后续合入刷新；现行值在 docs/expected-metrics.json -->
 
 ## 整合轮 5 收口台账（2026-08-29）
 
@@ -553,3 +559,5 @@ Y 轮与 Z 轮九轨全部合入，**代码面与材料面本轮已对齐**，�
 | :-- | :-- | :-- |
 | 1 | 全文 `OQ-1` / `OQ-2` 指针 | 官方口径到手后，按 [`docs/open-questions.md`](open-questions.md) 的回填点表逐处补，并把该文件对应条目标为「已答」 |
 | 2 | `integrate/round-5` 并回 `goai-restructure` | 纯 FF（28 个提交），**涉及共享分支，等人类点头** |
+
+<!-- metric:frozen-end -->

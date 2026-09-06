@@ -28,9 +28,9 @@ import pytest
 from maos.core.store import SqliteStore
 from maos.domain.refund import objects
 
-#: R-1 定下的业务表张数。**硬编码是刻意的**：从 `schema.sql` 现取一份期望集合的话，
+#: 退款域的业务表张数。R-1 定下 14 张，T103 新增 `intake_annotation` 后是 15 张。**硬编码是刻意的**：从 `schema.sql` 现取一份期望集合的话，
 #: 有人删掉一张表时期望值会跟着缩水，这条断言就永远绿。数字写死才抓得住。
-_BUSINESS_TABLE_COUNT = 14
+_BUSINESS_TABLE_COUNT = 15
 
 #: 剥掉记账表建表语句用的模式 —— 用来造「T26 之前那种库」。
 _VERSION_TABLE_DDL = re.compile(
@@ -61,7 +61,7 @@ def _fresh_store() -> SqliteStore:
 
 
 def _legacy_store() -> SqliteStore:
-    """造一个 **T26 之前形状**的库：14 张业务表都在，就是没有记账表。
+    """造一个 **T26 之前形状**的库：15 张业务表都在，就是没有记账表。
 
     老 schema 从当前 `schema.sql` **剥**出来，而不是另存一份副本：副本会僵化在
     今天的形状上，哪天有人给业务表加了列，这条用例仍在拿一份古董 schema 建库，
@@ -85,14 +85,14 @@ def _legacy_store() -> SqliteStore:
 
 # ----------------------------------------------------------- 1. 全新库
 def test_fresh_db_gets_every_table_and_lands_on_the_current_version() -> None:
-    """新库：14 张业务表 + 记账表都建出来，版本号落在当前值。"""
+    """新库：15 张业务表 + 记账表都建出来，版本号落在当前值。"""
     store = _fresh_store()
     objects.ensure_schema(store)
 
     declared = _declared_tables(_schema_text())
     business = declared - {"refund_schema_version"}
     assert len(business) == _BUSINESS_TABLE_COUNT, (
-        f"schema.sql 声明了 {len(business)} 张业务表，R-1 定的是 {_BUSINESS_TABLE_COUNT} 张")
+        f"schema.sql 声明了 {len(business)} 张业务表，当前定的是 {_BUSINESS_TABLE_COUNT} 张")
 
     present = _tables_in(store)
     assert declared <= present, f"没建出来的表：{sorted(declared - present)}"

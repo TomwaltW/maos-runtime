@@ -210,3 +210,38 @@ CREATE INDEX IF NOT EXISTS idx_refund_case_plan   ON refund_case(plan_id);
 CREATE INDEX IF NOT EXISTS idx_business_ref_obj   ON business_ref(tenant_id, object_type, object_id);
 CREATE INDEX IF NOT EXISTS idx_pay_obs_case       ON payment_observation(tenant_id, case_id);
 CREATE INDEX IF NOT EXISTS idx_policy_rule_no     ON policy_rule(tenant_id, rule_no);
+
+-- ---------------------------------------------------------------- 受理期标注
+-- 模型对受理期原文的**观察与推断**：诉求类型判成了什么（field='reason_code'）、
+-- 表头怎么映射的（field='header_map'）、多有把握、凭什么、哪个模型、哪一次调用。
+-- 这是铁律 8 的直接落地 —— 模型的判断不是权威事实，所以它必须落库留痕，
+-- 有了这张表才谈得上「可回看、可人工推翻、可审计」。
+--
+-- 可复现性因此从「输入 -> 结果」挪到「标注 -> 结果」：标注存下来了，同一份标注
+-- 永远推出同一个裁定；模型换了版本，也查得出当时那一版是怎么认的。
+--
+-- **主键带 invocation_id 是刻意的**：标注是观察，每次观察各留一行。用
+-- (tenant_id, case_id, field) 做主键 + REPLACE 会让复检那一轮把上一轮的观察抹掉，
+-- 而「模型上一轮是怎么认的」正是这张表存在的理由。同一次 invocation 重跑仍是一行
+-- （REPLACE 幂等）；取某字段最新一条用 ORDER BY created_at DESC LIMIT 1。
+--
+-- tenant_id 打头同本域其余各表：跨租户读不到彼此的数据靠**主键前缀**，
+-- 不靠 WHERE 约定。
+--
+-- source 取 lexicon|alias|model|fallback。要不要转人工的判据在
+-- `annotation.py::needs_human()`，**整仓只此一处** —— 两份阈值的症状是
+-- 受理岗说要人工、房间事实卡说不用，两边都不报错。
+CREATE TABLE IF NOT EXISTS intake_annotation (
+    tenant_id     TEXT NOT NULL,
+    case_id       TEXT NOT NULL,
+    field         TEXT NOT NULL,   -- reason_code / header_map / ...
+    raw_text      TEXT NOT NULL,   -- 被标注的原文
+    value         TEXT NOT NULL,   -- 标注成什么
+    confidence    REAL NOT NULL,
+    why           TEXT NOT NULL,
+    source        TEXT NOT NULL,   -- lexicon|alias|model|fallback
+    model         TEXT NOT NULL DEFAULT '',
+    invocation_id TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, case_id, field, invocation_id)
+);

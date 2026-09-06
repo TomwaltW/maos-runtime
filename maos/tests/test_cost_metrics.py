@@ -52,6 +52,7 @@ from maos.obs.call_sites import (REGISTER_HINT, REGISTERED_CALL_SITES, unregiste
                                  unregistered_in_store)
 from maos.skills.builtin import code_repo_patch as code_repo_patch_mod
 from maos.skills.builtin import req_normalize as req_normalize_mod
+from maos.skills.builtin import sheet_header_map as sheet_header_map_mod
 from maos.skills.builtin.code_repo_patch import CodeRepoPatchSkill
 from maos.skills.builtin.req_normalize import ReqNormalizeSkill
 from maos.skills.contract import SkillContext
@@ -545,7 +546,7 @@ def _recorded_call_sites_in_source() -> list[tuple[str, str]]:
 
 
 def test_registered_call_sites_are_byte_for_byte_the_ones_in_the_source():
-    """登记表的字面量与三处源头逐字节相等。
+    """登记表的字面量与每一处源头逐字节相等。
 
     登记表抄字面量而不是 import 常量，是为了守住 `maos/obs` 只 import
     `maos.core.store` 的依赖方向（规矩在 obs/trace.py 的模块 docstring 末行）。
@@ -558,6 +559,7 @@ def test_registered_call_sites_are_byte_for_byte_the_ones_in_the_source():
         CALL_SITE_ASK,
         req_normalize_mod.CALL_SITE,
         code_repo_patch_mod.CALL_SITE,
+        sheet_header_map_mod.CALL_SITE,
     }
     assert set(REGISTERED_CALL_SITES) == from_source, (
         "登记表与源头对不上了（漂了或漏登记）：\n"

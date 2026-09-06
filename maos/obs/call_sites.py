@@ -7,21 +7,22 @@
 ``store=``」就是这类漏接的实证（``flows/scenario_7.py`` 的注释里写着该场景原先
 ``cost.calls`` 恒为 0）。
 
-本模块不改表、不改任何调用点，只把这三个值**登记成穷举集合**，配一条测试
+本模块不改表、不改任何调用点，只把这几个值**登记成穷举集合**，配一条测试
 （``tests/test_cost_metrics.py`` 的「call_site 登记表」一节）扫出未登记的值就报红。
 判据是登记，不是命名规范 —— 登记表拦的是「悄悄多了一个调用点」，不是「名字起得
 不好看」。
 
 **为什么是字面量，不是 import 过来的常量**（这一条是本模块最容易被"顺手优化"掉的
-地方）：三个值的源头分别在 ``maos/agents/base.py``、``maos/skills/builtin/
-req_normalize.py``、``maos/skills/builtin/code_repo_patch.py``。而 ``maos/obs``
+地方）：这几个值的源头分别在 ``maos/agents/base.py``、``maos/skills/builtin/
+req_normalize.py``、``maos/skills/builtin/code_repo_patch.py``、
+``maos/skills/builtin/sheet_header_map.py``。而 ``maos/obs``
 只许 import ``maos.core.store``，不 import 任何业务域与上层模块（规矩立在
 ``obs/trace.py`` 的模块 docstring 末行）。从 agents / skills 里 import 常量会当场
 破掉那条边界，把可观测层变成上层模块的下游。
 
 抄字面量的代价是**可能漂**：源头改了字符串而这里没跟着改。这个代价由
 ``test_registered_call_sites_are_byte_for_byte_the_ones_in_the_source`` 兜住 ——
-它在测试里（测试可以 import 任何东西）把三处源头的常量与这里逐字节对齐，
+它在测试里（测试可以 import 任何东西）把每一处源头的常量与这里逐字节对齐，
 漂一个字符就红。**这条测试不许删**：删了它，登记表就从"穷举"退化成"一份注释"。
 """
 
@@ -40,11 +41,19 @@ CALL_SITE_CODE_REPO_PATCH = (
     "maos/skills/builtin/code_repo_patch.py::CodeRepoPatchSkill.run"
 )
 
+#: 表头映射 skill（``maos/skills/builtin/sheet_header_map.py`` 的 ``CALL_SITE``）。
+#: 只在别名全等匹配**没认全**时才烧 token：常规表一次都不调，异常表也只有那一两列。
+#: 所以这一行在 cost_view 里长期为 0 是正常的，不为 0 才说明进了一张脏表。
+CALL_SITE_SHEET_HEADER_MAP = (
+    "maos/skills/builtin/sheet_header_map.py::SheetHeaderMapSkill.run"
+)
+
 #: 已登记的全部 ``call_site``。**穷举**：库里出现集合外的值即视为漏登记。
 REGISTERED_CALL_SITES: frozenset[str] = frozenset({
     CALL_SITE_AGENT_ASK,
     CALL_SITE_REQ_NORMALIZE,
     CALL_SITE_CODE_REPO_PATCH,
+    CALL_SITE_SHEET_HEADER_MAP,
 })
 
 #: 报错正文里统一带上这一句 —— 红灯要给出下一步动作，不然它只是一次打扰。

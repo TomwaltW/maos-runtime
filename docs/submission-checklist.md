@@ -21,7 +21,7 @@
 
 ```bash
 # ①
-python3 -m pytest maos/tests -q          # □ 2198 passed，一分多钟 · metric:pytest_passed_nopg
+python3 -m pytest maos/tests -q          # □ 2258 passed，一分多钟 · metric:pytest_passed_nopg
 # ②
 python3 run.py                           # □ exit=0，个位数秒；跑完 git status 仍空（它不产证据）
 # ③
@@ -31,7 +31,7 @@ python3 scripts/gen_docs.py --check      # □ exit=0，打印「3 份文档与�
 # ⑤
 python3 scripts/make_evidence.py         # □ 「8 场景落盘，0 场景缺模块」（含 R5）；⚠️ 之后工作区 50 行脏
 # ⑥
-python3 scripts/verify.py                # □ 8/8 PASS，exit=0，另有 1 行 warn（1 类，见 A-2）
+python3 scripts/verify.py                # □ 9/9 PASS，exit=0，另有 1 行 warn（1 类，见 A-2）
 # ⑦
 git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动过）
 ```

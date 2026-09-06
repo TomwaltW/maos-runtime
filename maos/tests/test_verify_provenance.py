@@ -193,14 +193,36 @@ def test_one_stale_bundle_among_three_still_fails_and_is_named(repo):
     是哪一束旧了。不点名的话，人拿到一句「证据过期」还得自己去三个目录里翻。
     """
     verify, root, shas = repo
-    _write_bundle(root / "evidence", shas[-1])            # 新
-    _write_bundle(root / "evidence" / "domains", shas[-1])  # 新
-    _write_bundle(root / "evidence" / "room", shas[0])      # 旧
+    _write_bundle(root / "evidence", shas[-1])              # 新
+    _write_bundle(root / "evidence" / "room", shas[-1])      # 新
+    _write_bundle(root / "evidence" / "domains", shas[0])    # 旧
     chk = _run(verify)
     assert chk.status == verify.FAIL
     assert (chk.passed, chk.total) == (2, 3), "过了的两束照旧进分子，旧的那束单独判负"
     assert len(chk.notes) == 1, chk.notes
-    assert chk.notes[0].startswith("room "), f"没点名是哪一束: {chk.notes[0]}"
+    assert chk.notes[0].startswith("domains "), f"没点名是哪一束: {chk.notes[0]}"
+    assert "make_evidence" in chk.notes[0], "有生成器的束，指引就该印那条命令"
+
+
+def test_a_stale_manual_bundle_warns_instead_of_failing(repo):
+    """人工采集束（room）过期只 warn —— 但**必须仍然点名**。
+
+    判负的前提是「一条命令就能重跑」。room 要起 Synapse、要真 Matrix 账号、
+    要人去拍截图，判负的后果不是有人去重跑，是 verify.py 从此恒红；
+    而永远红的守卫等于噪音，下次真抓到东西时没人会看它。
+
+    降 warn 不是放过：屏幕上照样有它那一行，答辩前该重拍还是要重拍。
+    这一条钉的正是「降了级但没消失」。
+    """
+    verify, root, shas = repo
+    _write_bundle(root / "evidence", shas[-1])            # 新
+    _write_bundle(root / "evidence" / "room", shas[0])     # 旧，但人工采集
+
+    chk = _run(verify)
+
+    assert chk.status == verify.PASS, "人工采集束过期不该把整项判负"
+    assert (chk.passed, chk.total) == (2, 2)
+    assert len(chk.notes) == 1 and chk.notes[0].startswith("warn: room "), chk.notes
     assert "matrix-room-runbook" in chk.notes[0], (
         "room 束没有生成器，指引不许印 make_evidence.py —— 照做的人会发现那条命令不产它")
 
@@ -222,7 +244,9 @@ def test_room_bundle_without_index_is_checked_file_by_file(repo):
     anchors = verify.provenance_anchors(str(root / "evidence"))
     assert [pathlib.Path(p).name for _, p in anchors] == ["README.md", "transcript.md"]
     chk = _run(verify)
-    assert chk.status == verify.FAIL and (chk.passed, chk.total) == (1, 2), chk.notes
+    # 逐文件查这件事没变；旧的那个文件因为属于人工采集束而降 warn（见上一条测试）。
+    assert chk.status == verify.PASS and (chk.passed, chk.total) == (2, 2), chk.notes
+    assert [n for n in chk.notes if n.startswith("warn: room ")], chk.notes
 
 
 def test_scenario_dirs_are_not_anchors(repo):

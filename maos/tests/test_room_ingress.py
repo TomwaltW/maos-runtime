@@ -1,4 +1,4 @@
-"""房间入口的接线：假通道进来，文本 / 附件两个回调都挂上，回帖以 <pre> 进房间。"""
+"""房间入口的接线：假通道进来，文本 / 附件两个回调都挂上，回帖以 HTML 进房间。"""
 
 from __future__ import annotations
 
@@ -46,10 +46,22 @@ class _Model(ModelClient):
         return ModelResponse(text="我是退款助手，把申请表拖进来就行")
 
 
-def test_adapter_sends_plain_and_escaped_pre_html():
+def test_adapter_sends_plain_and_escaped_html():
     ch = _Channel()
     room_ingress.MatrixRoomAdapter(ch).send(OutboundMessage(chat_id=ROOM, text="a <b> & c"))
-    assert ch.sent == [("a <b> & c", "<pre>a &lt;b&gt; &amp; c</pre>")]
+    assert ch.sent == [("a <b> & c", "a &lt;b&gt; &amp; c")]
+
+
+def test_adapter_html_keeps_indent_without_pre():
+    """缩进要留住，但不许再用 <pre> —— 它不折行，长正文会横向溢出到看不见。"""
+    ch = _Channel()
+    room_ingress.MatrixRoomAdapter(ch).send(
+        OutboundMessage(chat_id=ROOM, text="标题：\n  · 第一条\n      提醒：细节"))
+    _, html = ch.sent[0]
+    assert "<pre>" not in html
+    assert html == ("标题：<br/>"
+                    "&nbsp;&nbsp;· 第一条<br/>"
+                    "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;提醒：细节")
 
 
 def test_wire_hooks_both_callbacks_and_answers_text_and_sheet(capsys):
@@ -66,7 +78,7 @@ def test_wire_hooks_both_callbacks_and_answers_text_and_sheet(capsys):
                                       filename="requests.csv", mime="text/csv"))
     plain, html = ch.sent[-1]
     assert "申请表 requests.csv：共 1 行，可预检 1 行" in plain
-    assert html.startswith("<pre>") and "/approve RC-ORD-2026-0001" in plain
+    assert html and "<pre>" not in html and "/approve RC-ORD-2026-0001" in plain
     assert "RC-ORD-2026-0001" in router._tickets
 
     out = capsys.readouterr().out

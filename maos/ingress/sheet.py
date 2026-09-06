@@ -24,8 +24,8 @@ CSV（订单号 / 诉求类型 / 申报金额 / 申请日期）。但那条入�
 
 ## 回帖必须装得进一条消息
 
-Matrix 一条事件上限 64 KB（Synapse 回 413 M_TOO_LARGE），而回帖还要以 ``<pre>`` 再抄
-一遍进 formatted_body。发不出去的症状与「机器人挂了」无法分辨 —— 正是这条链路
+Matrix 一条事件上限 64 KB（Synapse 回 413 M_TOO_LARGE），而回帖还要抄一遍进
+formatted_body（HTML 那份，换行与缩进各占几个字符）。发不出去的症状与「机器人挂了」无法分辨 —— 正是这条链路
 最贵的那种失败。所以：一张表最多处理 :data:`MAX_ROWS` 行（超出的**说出来**），
 回显的每个字段最多 :data:`FIELD_MAX` 个字符（一个 2000 字的「说明」不该原样刷回群里）。
 
@@ -56,7 +56,7 @@ log = logging.getLogger("maos.ingress.sheet")
 ENCODINGS = ("utf-8-sig", "gbk")
 
 #: 一张表最多处理多少行。实测每个合法行的回帖约 400 字节，50 行 ≈ 20 KB，
-#: 加上 ``<pre>`` 那份仍在 Matrix 64 KB 事件上限之内；也让一条回帖能一眼读完。
+#: 加上 HTML 那份仍在 Matrix 64 KB 事件上限之内；也让一条回帖能一眼读完。
 #: 超出的行数**说出来**，不静默截断。
 MAX_ROWS = 50
 

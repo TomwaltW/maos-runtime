@@ -60,14 +60,28 @@ EXIT_NO_ROOM = 4
 BAR = "=" * 68
 
 
-#: 一条房间消息最多带多少字符的正文。Matrix 一条事件上限 64 KB，而正文要以 ``<pre>``
-#: 再抄一遍进 formatted_body，加上转义与 JSON 开销，纯文本留 20 K 字符是安全线。
+#: 一条房间消息最多带多少字符的正文。Matrix 一条事件上限 64 KB，而正文要再抄一遍
+#: 进 formatted_body（HTML 那份），加上转义与 JSON 开销，纯文本留 20 K 字符是安全线。
 #: 超过就拆成几条 —— 发不出去的症状（Synapse 回 413）与「机器人挂了」无法分辨。
 CHUNK_CHARS = 20_000
 
 #: 五岗依次发言的节奏（毫秒）。缺省 0 = 一次都不等。
 #: 🔴 缺省必须是 0：`maos/tests` 与 `scripts/room_team_smoke.py` 一秒都不许变慢。
 ENV_TEAM_PACE_MS = "MAOS_TEAM_PACE_MS"
+
+
+def _html_block(text: str) -> str:
+    """把回帖正文转成 formatted_body：缩进与换行都留住，长行仍能自动折行。
+
+    不用 ``<pre>`` —— 它保住缩进的代价是浏览器一律不折行，于是一段没有换行的
+    长正文（闲聊回话正是这样）会摊成一条横向长条，Element 里左右两头都被裁掉
+    （2026-09-06 实测）。``<br/>`` 负责换行，行首 ``&nbsp;`` 负责缩进，两样都要。
+    """
+    lines = []
+    for line in _esc(text).split("\n"):
+        stripped = line.lstrip(" ")
+        lines.append("&nbsp;" * (len(line) - len(stripped)) + stripped)
+    return "<br/>".join(lines)
 
 
 def split_message(text: str, limit: int = CHUNK_CHARS) -> list[str]:
@@ -108,13 +122,13 @@ class MatrixRoomAdapter:
         self._channel = channel
 
     def send(self, msg: OutboundMessage) -> None:
-        # 回帖是对齐好的多行文本，<pre> 保住缩进；没给 html 的一律走这条。
+        # 回帖是对齐好的多行文本，缩进靠 _html_block 保住；没给 html 的一律走这条。
         # 长回帖拆成几条发：一条 Matrix 事件 64 KB 上限，超了 Synapse 回 413，
         # 而 router 只会把发送失败记进日志 —— 房间里就是一片安静。
         parts = split_message(msg.text)
         for i, part in enumerate(parts, 1):
             head = f"（{i}/{len(parts)}）\n" if len(parts) > 1 else ""
-            self._channel.send(head + part, f"<pre>{_esc(head + part)}</pre>")
+            self._channel.send(head + part, _html_block(head + part))
 
     def fetch(self, att: Attachment) -> bytes:
         return self._channel.fetch(att)

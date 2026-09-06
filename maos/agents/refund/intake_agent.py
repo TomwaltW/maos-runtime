@@ -32,7 +32,12 @@ class RefundIntakeAgent(BaseAgent):
         # issue.aggregate 在白名单里是必需的：refund.intake 经 SkillInvoker 复用它做去重，
         # 而 invoker 校验的是**调用方的 identity**。最小授权就该在这里表达，
         # 不该由被调方自己放行（invoker.py 的越权是抛异常，不是软失败）。
-        allowed_skills=frozenset({"refund.intake", "issue.aggregate", "notify.customer"}),
+        #
+        # reason_classify / header_map 同理：受理期读表那一步由本岗发起，词表与别名
+        # 认不出时才调它们（命中就一次模型都不调）。它们只产标注、判定仍归规则，
+        # 所以本岗的 write_scope 不变。
+        allowed_skills=frozenset({"refund.intake", "issue.aggregate", "notify.customer",
+                                  "refund.reason_classify", "sheet.header_map"}),
         allowed_tools=frozenset(),          # 受理与通知不碰支付网关
         write_scope=frozenset({"artifact"}),
         max_risk="L",

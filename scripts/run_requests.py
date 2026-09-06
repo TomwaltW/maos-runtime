@@ -32,31 +32,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maos.flows.custom_case import CaseFileError, load, run_payload  # noqa: E402
+from maos.domain.refund.annotation import needs_human  # noqa: E402
+from maos.skills.builtin.refund.reason_classify import LEXICON, UNKNOWN  # noqa: E402
+from maos.skills.builtin.sheet_header_map import COLUMNS as SHEET_COLUMNS  # noqa: E402
 
 DEFAULT_LEDGER = Path(__file__).resolve().parents[1] / "scenarios" / "custom" / "ledger.json"
 
-#: 老板会写的说法 -> 系统里的诉求类型。写不在表里的词会当场报错并列出可选项，
-#: **不猜**：猜错一个词，套用的就是另一条政策。
-REASONS: dict[str, str] = {
-    "质量问题": "quality_defect", "质量缺陷": "quality_defect", "有质量问题": "quality_defect",
-    "坏了": "quality_defect", "损坏": "quality_defect",
-    "七天无理由": "no_reason_return", "无理由": "no_reason_return",
-    "无理由退货": "no_reason_return", "不想要了": "no_reason_return",
-    "买错了": "no_reason_return", "买错型号": "no_reason_return",
-    "发错货": "wrong_item", "发错型号": "wrong_item", "错发": "wrong_item",
-}
+#: 老板会写的说法 -> 系统里的诉求类型。**权威定义在 skill 里**，这里只取过来用：
+#: 两份词表并存的症状是它们会各自长大，然后同一个词在命令行与房间里判成两个 code。
+#: 词表未命中时不再当场报错 —— 交给 `refund.reason_classify` 的模型兜底（见 `_reason_code`）。
+REASONS: dict[str, str] = LEXICON
 
 #: 表头别名。CSV 是人手填的，列名叫法不会统一。**全等**匹配（见 `_pick`）：
 #: 「退货原因」不会因为含「原因」二字就命中「原因」那条，差一个字就是整列取不到。
-#: 所以老板真会写的说法要逐个列进来 —— 「退款/退货」「原因/理由」是同一件事。
-COLUMNS: dict[str, tuple[str, ...]] = {
-    "order_id": ("订单号", "订单编号", "order_id", "order"),
-    "reason": ("诉求类型", "退款原因", "退货原因", "退款理由", "退货理由",
-               "原因", "理由", "reason", "reason_code"),
-    "amount": ("申报金额", "退款金额", "金额", "amount", "amount_claimed"),
-    "date": ("申请日期", "申请时间", "日期", "date", "requested_at"),
-    "note": ("说明", "备注", "note", "remark"),
-}
+#: 同样只取 skill 里那份权威定义；全等认不出的列由 `sheet.header_map` 兜底。
+COLUMNS: dict[str, tuple[str, ...]] = SHEET_COLUMNS
 
 DECISION_CN = {"approve": "批准", "reject": "驳回"}
 STATUS_CN = {
@@ -77,10 +67,26 @@ class RequestSheetError(ValueError):
 REQUIRED_COLUMNS: dict[str, str] = {"reason": "诉求类型"}
 
 
-def _pick(row: dict, key: str) -> str:
+def _norm_header(text: str) -> str:
+    """表头归一：strip + 去 BOM。判据只此一处，`scan_header` 与 `_pick` 共用。"""
+    return str(text).strip().lstrip("﻿")
+
+
+def _pick(row: dict, key: str, mapping: dict | None = None) -> str:
+    """取一格。
+
+    `mapping` 是 `sheet.header_map` 补认出来的 `{字段: 表头原文}`，**优先于别名表**：
+    它只在别名那一路已经失败过时才存在，这时再让别名先试一遍只是空转。
+    不给 mapping 时行为与接线前逐字相同（房间那条入口就是这么调的）。
+    """
+    if mapping and key in mapping:
+        target = _norm_header(mapping[key])
+        for raw_key, value in row.items():
+            if raw_key and _norm_header(raw_key) == target:
+                return (value or "").strip()
     for name in COLUMNS[key]:
         for raw_key, value in row.items():
-            if raw_key and raw_key.strip().lstrip("﻿") == name:
+            if raw_key and _norm_header(raw_key) == name:
                 return (value or "").strip()
     return ""
 
@@ -117,6 +123,85 @@ def _reason_code(raw: str) -> str:
         f"或直接写 {'、'.join(sorted(set(REASONS.values())))}")
 
 
+def make_classifier():
+    """词表/别名认不出时的模型兜底。**拿不到真模型就返回 None，这不是故障。**
+
+    只在三个环境变量齐备、`select_model_client()` 真给出 `GatewayModelClient`
+    时才接线。理由是 `ScriptedModelClient.complete()` 恒返 `"{}"`，喂给 skill 只会
+    抛 ValueError —— 而本脚本对外的承诺是「无 key、零出网」，不能因为接了模型就
+    在没配 key 的机器上开始报错。没接上的后果是词表外的词落 `unknown` 挑去人工，
+    其余行照常跑完，这正是「判不准就别猜」该有的结果。
+
+    `store` 传 None：本脚本每单一个 `:memory:` 库，成本账落进去跑完就没了。
+    `record_model_usage` 见 None 直接跳过（`core/store.py:572`），不抛。
+    """
+    from maos.agents.refund.intake_agent import RefundIntakeAgent
+    from maos.model.client import GatewayModelClient, select_model_client
+    from maos.skills.invoker import SkillInvoker
+
+    model = select_model_client()
+    if not isinstance(model, GatewayModelClient):
+        return None
+    identity = RefundIntakeAgent.identity
+    invoker = SkillInvoker(identity, None)
+    extras = {"model": model, "tier": identity.model_tier}
+
+    def call(name: str, payload: dict) -> dict | None:
+        """调一次 skill。**任何失败都返回 None**，由调用方落回 fallback。
+
+        模型挂了、超时了、输出不合契约（invoker 已按 failure_policy 重试过一次），
+        都不该让一张表读不下去 —— 那一列的结果是「这单要人看」，本来就是安全出口。
+        """
+        try:
+            res = invoker.invoke(name, payload, extras=dict(extras))
+        except Exception as exc:                       # noqa: BLE001
+            logging.getLogger("run_requests").warning("%s 调用失败：%s", name, exc)
+            return None
+        if res.status != "ok" or not isinstance(res.output, dict):
+            logging.getLogger("run_requests").warning("%s 未产出结果：%s", name, res.error)
+            return None
+        return res.output
+
+    return call
+
+
+def classify_reason(raw: str, classifier=None) -> dict:  # noqa: ANN001
+    """判诉求类型。返回 ``{reason, source, confidence, why, needs_human}``。
+
+    三段，顺序不能反：词表命中直接用（**一次模型都不调**）；认不出才问模型；
+    没模型就落 `unknown`。
+
+    **判不出来不抛**：那是「这一单要人看」，不是「这张表填错了」，两者的处置
+    完全相反 —— 前者其余行照跑，后者才该让人回去改表。空的诉求类型仍然抛，
+    它确实是填错了（一格都没填，模型也无从判起）。
+    """
+    text = raw.strip()
+    if not text:
+        raise RequestSheetError("诉求类型不能空 —— 不知道为什么退，就套不上任何一条政策")
+
+    if text in REASONS:
+        return _verdict(REASONS[text], 1.0, "词表直接命中", "lexicon")
+    if text in set(REASONS.values()):
+        return _verdict(text, 1.0, "原文就是一个合法 code", "lexicon")
+
+    if classifier is None:
+        return _verdict(UNKNOWN, 0.0, "词表未命中，且没有可用的模型（未配 key）", "fallback")
+
+    out = classifier("refund.reason_classify", {"text": text})
+    if out is None:
+        return _verdict(UNKNOWN, 0.0, "词表未命中，模型调用没有产出结果", "fallback")
+    return _verdict(str(out.get("reason_code") or UNKNOWN),
+                    float(out.get("confidence") or 0.0),
+                    str(out.get("why") or ""), str(out.get("source") or "model"))
+
+
+def _verdict(code: str, confidence: float, why: str, source: str) -> dict:
+    """一条诉求类型判据。`needs_human` 走 `annotation.needs_human` —— **整仓唯一定义**，
+    这里不自己比阈值，否则命令行与房间会各有一套「算不算低置信度」。"""
+    return {"reason": code, "source": source, "confidence": confidence, "why": why,
+            "needs_human": needs_human(confidence, source, code)}
+
+
 def _parse_date(text: str) -> datetime | None:
     try:
         return datetime.fromisoformat(text)
@@ -146,8 +231,14 @@ def _iso(raw: str) -> str:
     return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).isoformat()
 
 
-def read_sheet(path: str | Path) -> list[dict]:
-    """读申请表。每行返回 `{order_id, reason, amount, requested_at, note}`。"""
+def read_sheet(path: str | Path, *, classifier=None) -> list[dict]:  # noqa: ANN001
+    """读申请表。每行返回 `{order_id, reason, amount, requested_at, note}` 加一组判据。
+
+    `classifier` 是词表认不出时的模型兜底（`make_classifier()`），不给就只走词表 ——
+    认不出的行不再让整张表读不下去，而是带着 `needs_human_intake=True` 返回，
+    由 `run_sheet` 挑出来不送进流程。**判不准与填错是两回事**：前者其余行照跑，
+    后者（没订单号、金额不是数字、日期看不懂）仍然当场抛。
+    """
     p = Path(path)
     if not p.exists():
         raise RequestSheetError(f"找不到申请表：{p}")
@@ -158,9 +249,17 @@ def read_sheet(path: str | Path) -> list[dict]:
     if not rows:
         raise RequestSheetError(f"{p} 里一行申请都没有")
 
-    # 表头先判：整列缺失时下面每一行都会在 `_reason_code` 上报「不能空」，那句把人
+    # 表头先判：整列缺失时下面每一行都会在诉求类型那一格报「不能空」，那句把人
     # 指向一堆本来没填错的行。错在表头一处，就在表头一处说。
     missing, unknown = scan_header(header)
+    # 别名全等认不出来的列交给模型补认（`退货原因（必填）` 这类）。补上了就不再是
+    # 「表头缺列」——但**只补别名没认出来的那几列**，已经认出来的不给模型碰。
+    header_map: dict = {}
+    if missing and classifier is not None:
+        out = classifier("sheet.header_map", {"header": list(header)})
+        if out:
+            header_map = dict(out.get("mapping") or {})
+            missing = [key for key in missing if key not in header_map]
     for key in missing:
         aliases = "、".join(a for a in COLUMNS[key] if not a.isascii())
         note = f"；表里没认出来的列：{'、'.join(unknown)}" if unknown else ""
@@ -169,18 +268,23 @@ def read_sheet(path: str | Path) -> list[dict]:
 
     out: list[dict] = []
     for lineno, row in enumerate(rows, start=2):     # 第 1 行是表头
-        order_id = _pick(row, "order_id")
+        order_id = _pick(row, "order_id", header_map)
         if not order_id:
             raise RequestSheetError(f"第 {lineno} 行没有订单号 —— 订单号是查出其余一切的钥匙")
-        amount = _pick(row, "amount").replace(",", "")
+        amount = _pick(row, "amount", header_map).replace(",", "")
         try:
+            verdict = classify_reason(_pick(row, "reason", header_map), classifier)
             out.append({
                 "line": lineno, "order_id": order_id,
-                "reason_raw": _pick(row, "reason"),
-                "reason": _reason_code(_pick(row, "reason")),
+                "reason_raw": _pick(row, "reason", header_map),
+                "reason": verdict["reason"],
+                "reason_source": verdict["source"],
+                "reason_confidence": verdict["confidence"],
+                "reason_why": verdict["why"],
+                "needs_human_intake": verdict["needs_human"],
                 "amount": float(amount) if amount else None,
-                "requested_at": _iso(_pick(row, "date")),
-                "note": _pick(row, "note"),
+                "requested_at": _iso(_pick(row, "date", header_map)),
+                "note": _pick(row, "note", header_map),
             })
         except RequestSheetError as exc:
             raise RequestSheetError(f"第 {lineno} 行（订单 {order_id}）：{exc}") from exc
@@ -188,6 +292,39 @@ def read_sheet(path: str | Path) -> list[dict]:
             raise RequestSheetError(
                 f"第 {lineno} 行（订单 {order_id}）金额 {amount!r} 不是数字：{exc}") from exc
     return out
+
+
+def reason_basis(req: dict) -> str:
+    """诉求类型这一格是怎么定下来的，给结果表用。
+
+    词表命中不写把握度 —— 它恒等于 1.0，印出来只会让人以为那也是模型估的。
+    """
+    source = req.get("reason_source") or "lexicon"
+    if source in ("lexicon", "alias"):
+        return "词表"
+    if source == "model":
+        return f"模型 {float(req.get('reason_confidence') or 0.0):.2f}"
+    return "待人工"
+
+
+def pending_row(req: dict) -> dict:
+    """判不准的那一单在结果表里的样子：**每一格都写"未处置"，不写 0**。
+
+    金额写 0.00 会被当成「算过了，就是零元」；裁定留空会被当成「还没跑完」。
+    这一单的真相是「机器没敢判，等人看」，表里就该逐格这么说。
+    """
+    return {
+        "order_id": req["order_id"], "reason_raw": req["reason_raw"],
+        "reason": req["reason"], "note": req["note"],
+        "reason_basis": reason_basis(req),
+        "decision": "pending", "decision_cn": "待人工",
+        "amount_claimed": "—", "amount_approved": "—",
+        "status": "pending_intake", "status_cn": "未受理",
+        "basis": "诉求类型判不准，未套用任何政策",
+        "why": req["reason_why"] or "词表与模型都没能判出诉求类型",
+        "human_exits": 0, "plan_state": "—",
+        "needs_human_intake": True,
+    }
 
 
 def build_case(ledger: dict, req: dict) -> dict:
@@ -227,12 +364,13 @@ def _pad(text: str, width: int) -> str:
     return str(text) + " " * max(0, width - _w(text))
 
 
-HEADERS = ("订单号", "诉求", "裁定", "核准金额", "退款状态", "依据", "转人工")
+HEADERS = ("订单号", "诉求", "判据", "裁定", "核准金额", "退款状态", "依据", "转人工")
 
 
 def as_table(rows: list[dict]) -> str:
-    body = [[r["order_id"], r["reason_raw"] or r["reason"], r["decision_cn"],
-             r["amount_approved"], r["status_cn"], r["basis"], str(r["human_exits"])]
+    body = [[r["order_id"], r["reason_raw"] or r["reason"], r.get("reason_basis", "词表"),
+             r["decision_cn"], r["amount_approved"], r["status_cn"], r["basis"],
+             str(r["human_exits"])]
             for r in rows]
     widths = [max(_w(h), *(_w(c[i]) for c in body)) for i, h in enumerate(HEADERS)]
     line = "  ".join(_pad(h, w) for h, w in zip(HEADERS, widths)).rstrip()
@@ -242,24 +380,41 @@ def as_table(rows: list[dict]) -> str:
 
 
 def summarize(rows: list[dict]) -> str:
-    ok = [r for r in rows if r["decision"] == "approve"]
-    paid = sum(float(r["amount_approved"]) for r in rows if r["status"] == "settled")
-    settled = sum(1 for r in rows if r["status"] == "settled")
-    humans = sum(r["human_exits"] for r in rows)
-    return (f"共 {len(rows)} 单：批准 {len(ok)}、驳回 {len(rows) - len(ok)}；"
+    """收口行。**没有待人工的单子时逐字不变** —— 这是回归基线断言的那一行，
+    多一句少一句都会被当成行为变了。"""
+    pending = [r for r in rows if r.get("needs_human_intake")]
+    handled = [r for r in rows if not r.get("needs_human_intake")]
+    ok = [r for r in handled if r["decision"] == "approve"]
+    paid = sum(float(r["amount_approved"]) for r in handled if r["status"] == "settled")
+    settled = sum(1 for r in handled if r["status"] == "settled")
+    humans = sum(r["human_exits"] for r in handled)
+    line = (f"共 {len(handled)} 单：批准 {len(ok)}、驳回 {len(handled) - len(ok)}；"
             f"已到账 {settled} 单合计 {paid:.2f} 元；期间 {humans} 次停下来等人放行。")
+    if pending:
+        line += (f"\n另有 {len(pending)} 单诉求类型判不准，已挑出等人工确认，未进入处置："
+                 f"{'、'.join(r['order_id'] for r in pending)}。")
+    return line
 
 
 def run_sheet(sheet: str | Path, ledger_path: str | Path, *, approve: bool = True,
               matrix: bool = False, allow_degraded: bool = False) -> list[dict]:
     ledger = load(ledger_path, require_case=False)
+    # 没配 key 时这里是 None，词表外的诉求一律落 unknown 挑去人工（见 make_classifier）。
+    classifier = make_classifier()
     results: list[dict] = []
-    for req in read_sheet(sheet):
+    for req in read_sheet(sheet, classifier=classifier):
+        if req["needs_human_intake"]:
+            # 不送进流程：`unknown` 套不上任何一条政策，硬跑会走基线裁定
+            # 直接批准 —— 一个判不出诉求类型的单子被自动批款，是这里最坏的失败。
+            print(f"挑出 {req['order_id']}（{req['reason_raw']}）—— 诉求类型判不准，等人工")
+            results.append(pending_row(req))
+            continue
         print(f"处理 {req['order_id']}（{req['reason_raw'] or req['reason']}）…")
         row = run_payload(build_case(ledger, req), approve=approve, verbose=False,
                           matrix=matrix, allow_degraded=allow_degraded)
         results.append({
             "order_id": req["order_id"], "reason_raw": req["reason_raw"],
+            "reason_basis": reason_basis(req), "needs_human_intake": False,
             "reason": row["reason_code"], "note": req["note"],
             "decision": row["decision"], "decision_cn": DECISION_CN.get(row["decision"], "?"),
             "amount_claimed": row["amount_claimed"],

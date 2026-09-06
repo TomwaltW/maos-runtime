@@ -35,11 +35,17 @@ LEDGER = CUSTOM / "ledger.json"
 LEGACY_SHEET = CUSTOM / "refund-requests.csv"
 TEAM_SHEET = CUSTOM / "refund-requests-team.csv"
 
-#: 扩展前 `python3 scripts/run_requests.py scenarios/custom/refund-requests.csv`
-#: 的 stdout 指纹（编排侧 2026-09-03 在基线 cfd43a9 上实跑）。
+#: `python3 scripts/run_requests.py scenarios/custom/refund-requests.csv`
+#: 的 stdout 指纹（2026-09-06 在 T101-T103 接线后实跑）。
 #: 它红了先看下面那条「同一份数据两个底账」的断言：那条给的是可读的 diff，
 #: 这条只说「变了」。两条一起红 = 老链路真的被扩展弄动了。
-LEGACY_STDOUT_MD5 = "d877f7b1ac603b7da68e60ed52ef0aff"
+#:
+#: **改过一次**（原值 d877f7b1ac603b7da68e60ed52ef0aff，编排侧 2026-09-03 在
+#: 基线 cfd43a9 上实跑）：T101 接线给结果表加了「判据」一列（词表 / 模型 0.92 /
+#: 待人工），三行的那一格都是「词表」，其余逐字未变、收口行一字不差。
+#: 这条守卫抓的正是这种「输出变了」，而这次是有意变的 —— 更新期望值是它设计时
+#: 预期的动作，不是绕过它。**只有确认过 diff 只含预期变化才许改这个值。**
+LEGACY_STDOUT_MD5 = "a50ea8b5f4362f770b8f16198f676dd7"
 
 LEGACY_ORDERS = ("ORD-2026-0001", "ORD-2026-0002", "ORD-2026-0003")
 NEW_ORDERS = ("ORD-2026-0004", "ORD-2026-0005", "ORD-2026-0006")

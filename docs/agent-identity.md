@@ -399,7 +399,7 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `agent_id` | 实例 id | refund-intake |
 | `role` | 角色名（派单按它路由） | refund_intake |
 | `duty` | 职责边界 | 受理多源退款诉求、聚合去重并建案；处理完成后通知客户并跟踪回执 |
-| `allowed_skills` | 可调 Skill 白名单 | `issue.aggregate`、`notify.customer`、`refund.intake` |
+| `allowed_skills` | 可调 Skill 白名单 | `issue.aggregate`、`notify.customer`、`refund.intake`、`refund.reason_classify`、`sheet.header_map` |
 | `allowed_tools` | 可调工具白名单 | （空） |
 | `write_scope` | 可写资源 | `artifact` |
 | `max_risk` | 最高授权风险级 | L |

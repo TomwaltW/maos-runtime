@@ -1,0 +1,23 @@
+{
+  "_": [
+    "期望数字的单一真源。加测试、加证据束、改核验项的那一轨，改这里这一个数，不要去改",
+    "scripts/demo_preflight.sh / docs/submission-checklist.md 里的任何一处 —— 那些地方要么",
+    "从本文件读，要么由 maos/tests/test_expected_metrics.py 钉住与本文件一致。",
+    "",
+    "怎么取值（三条命令，都要在仓库根、无可连 PG 的环境下跑）：",
+    "  pytest_passed_nopg / pytest_skipped_nopg : python3 -m pytest maos/tests -q  取末行两个数",
+    "  evidence_bundles                         : python3 scripts/make_evidence.py 数 [OK] 行",
+    "  verify_result_line                       : python3 scripts/verify.py         取 RESULT 行",
+    "",
+    "pg_gated_tests 是不变量，不是读数：22 条 test_pg_store_live.py + 7 条 test_pg_rank_parity.py，",
+    "没库时整组 skip、有库时整组真跑。有库那档由「无库档 + 29」算出，永远不写死 ——",
+    "写死过一次，代价是配了 MAOS_PG_DSN 的机器上门禁误红（scripts/demo_preflight.sh 的注释有原委）。",
+    "",
+    "这些数与环境绑定：无可连的 PG、无任何 API key、依赖装齐。换环境读数会变，那不是回归。"
+  ],
+  "pytest_passed_nopg": 2198,
+  "pytest_skipped_nopg": 41,
+  "pg_gated_tests": 29,
+  "evidence_bundles": 8,
+  "verify_result_line": "RESULT: 8/8 PASS"
+}

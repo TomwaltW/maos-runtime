@@ -1102,6 +1102,41 @@ _PROVENANCE_HINTS = {
             "（本束无生成器，截图与逐字记录靠人工采集）",
 }
 
+#: **人工采集的束**：过期只 warn，不判负。
+#:
+#: 判负的前提是「一条命令就能重跑」—— `make_evidence.py` 十几秒的事，红了立刻能绿。
+#: `room` 不是：它要起 Synapse、要真 Matrix 账号、要人去拍截图和抄逐字记录。
+#: 对它判负的后果不是「有人去重跑」，是 `verify.py` 从此恒红 —— 而一个永远红的
+#: 守卫等于噪音，下次它真的抓到东西时没人会看（口径同本文件头「SKIP 的纪律」：
+#: 红灯要能被消掉才叫红灯）。warn 仍然把它点名在屏幕上，答辩前该重拍还是要重拍。
+_MANUAL_BUNDLES = frozenset({"room"})
+
+
+def touched_outside_evidence(base: str, head: str, root: str | None = None) -> bool:
+    """``base..head`` 之间**动过 evidence/ 以外的东西吗**。算不出就当动过（保守）。
+
+    这一层是让守卫**可满足**的关键。证据入库是交付要求，而提交证据这个动作本身
+    会让 HEAD 前进一格 —— 于是「出处 sha == HEAD」在提交的下一秒就不成立了，
+    守卫从此恒红，与实际代码新旧无关。
+
+    但本项要守的是「证据讲的是不是**当前代码**的事」：那一格只挪了 `evidence/`，
+    代码一个字节没变，证据当然仍然有效。所以判据从「sha 相等」放宽成
+    「sha 之后没动过代码」，语义反而更准了。
+
+    算不出（浅克隆、评委解压 tar 包）就返回 True 让它照旧判负 —— 拿不到证据说明
+    它没过期时，宁可误报也不漏报。
+    """
+    root = ROOT if root is None else root
+    try:
+        proc = subprocess.run(["git", "diff", "--name-only", f"{base}..{head}"],
+                              cwd=root, check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return True
+    paths = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if not paths:
+        return False
+    return any(not p.startswith("evidence/") for p in paths)
+
 
 def provenance_hint(bundle: str) -> str:
     """``bundle`` 这一束过期了该往哪走 —— 出处核查唯一的「下一步动作」。"""
@@ -1243,13 +1278,30 @@ def check_provenance(cases: list[Case]) -> Check:
         raw = match.group("sha")
         if raw.endswith(_SHA_DIRTY_SUFFIX):
             clean = raw[: -len(_SHA_DIRTY_SUFFIX)]
-            chk.bad(f"{where}: 证据出处 {clean[:7]}{_SHA_DIRTY_SUFFIX} 是脏工作区跑的 —— "
+            note = (f"{where}: 证据出处 {clean[:7]}{_SHA_DIRTY_SUFFIX} 是脏工作区跑的 —— "
                     f"按这个 sha checkout 也复现不出来（那份代码不在 git 历史里），"
                     f"{provenance_hint(bundle)}")
+            # 人工采集束同下面那条：判负要以「一条命令能重跑」为前提，见 _MANUAL_BUNDLES。
+            if bundle in _MANUAL_BUNDLES:
+                chk.warn(note)
+                chk.ok()
+                continue
+            chk.bad(note)
             continue
         if raw != head:
-            chk.bad(f"{where}: 证据出处 {raw[:7]} 与 HEAD {head[:7]} 不符"
+            if not touched_outside_evidence(raw, head):
+                # 这中间只提交了证据本身，代码一个字节没动 —— 证据仍然对得上。
+                chk.info(f"{where}: 出处 {raw[:7]} 落在 HEAD {head[:7]} 之前，"
+                         f"但这中间只动过 evidence/ —— 代码未变，证据仍然有效")
+                chk.ok()
+                continue
+            note = (f"{where}: 证据出处 {raw[:7]} 与 HEAD {head[:7]} 不符"
                     f"（{commit_distance(raw, head)}）—— {provenance_hint(bundle)}")
+            if bundle in _MANUAL_BUNDLES:
+                chk.warn(note)
+                chk.ok()          # 人工采集束不进分子的负号，但屏幕上仍点名
+                continue
+            chk.bad(note)
             continue
         chk.ok()
     return chk

@@ -123,7 +123,13 @@ def git_sha() -> str:
     try:
         sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
                              capture_output=True, text=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+        # 排除 evidence/ 自身：**写证据这件事本身会改它**。把它算进「脏」，
+        # 连跑两组（默认八束 + --domains）时第二组必然带 -dirty —— 而那时代码
+        # 一个字节都没变，标记指向的是自己刚写下的文件。`-dirty` 要指示的是
+        # 「跑这批证据的代码与 HEAD 不一致」，evidence/ 不是代码。
+        # 口径与 verify.py::touched_outside_evidence 同源。
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no",
+                                "--", ".", ":(exclude)evidence"],
                                cwd=ROOT, check=True,
                                capture_output=True, text=True).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:

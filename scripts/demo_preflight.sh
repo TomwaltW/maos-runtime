@@ -253,9 +253,15 @@ grep -q '业务状态  : compensated' "$LOG_DIR/run-s7.log" \
 ok 'exit=0，镜 5 换渠道段与镜 6 收口行都在'
 
 # --- 第 4 步：证据束落盘 ------------------------------------------------------
-banner '证据束落盘　python3 scripts/make_evidence.py'
+banner '证据束落盘　python3 scripts/make_evidence.py（+ --domains）'
+# 两组都要跑：verify.py 的 provenance 项扫的是 evidence/ **下的全部束**，含
+# evidence/domains/。只跑默认那 8 束的话，domains 的出处会停在上一次生成时的 sha，
+# 第 5 步当场判负 —— 而人看到的是「我刚跑过证据啊」。谁被核验，谁就要被刷新。
 if ! python3 scripts/make_evidence.py > "$LOG_DIR/evidence.log" 2>&1; then
     die 'make_evidence.py 非 0 退出' "exit=$?" 'exit=0' "$LOG_DIR/evidence.log"
+fi
+if ! python3 scripts/make_evidence.py --domains >> "$LOG_DIR/evidence.log" 2>&1; then
+    die 'make_evidence.py --domains 非 0 退出' "exit=$?" 'exit=0' "$LOG_DIR/evidence.log"
 fi
 bundles="$(grep -c '^  \[OK\] evidence/scenario-' "$LOG_DIR/evidence.log" || true)"
 if [ "$bundles" != "$EXPECT_BUNDLES" ]; then

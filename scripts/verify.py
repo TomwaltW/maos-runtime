@@ -7,7 +7,7 @@
 **这是给评委的答案。** 检索不准顶多说效果一般；无法核验就是零分。所以本文件的
 每一项都必须能被外人独立跑一遍，且失败时说得出「失败意味着什么」。
 
-八项：
+九项：
 
     1 hash-integrity      每个 skill/tool 调用的 input_digest / output_hash 与
                           event_log 一致          -> 失败 = 证据被篡改或事后手写
@@ -30,6 +30,14 @@
                           estimated 标记与 model 列相符，归属不上的逐条点名
                                                   -> 失败 = 成本归因是假的，或估算被
                                                      印成了真实计费
+    9 provenance          每束证据自称的出处 sha == 当前 HEAD，且不带 ``-dirty``
+                                                  -> 失败 = 这束证据不是当前代码跑的，
+                                                     前八项绿得很诚实，只是绿的不是
+                                                     人以为的那件事
+
+前八项校验的是这束证据**内部自洽**；第 9 项校验的是**它是哪份代码产的**。
+两件事分开：一束一年前的证据可以八项全绿，而「可重放的证据链」是这个仓库最硬的
+卖点 —— 出处指向一个复现不出来的地方，那句卖点就不成立（铁律 3）。
 
 **SKIP 的纪律**：上游能力没落地的项输出 ``[SKIP]`` 并在结尾显式列名，
 **不计进 PASS 的分子**。静默跳过等于谎报 —— 一个 7/7 里藏着两个没跑的，
@@ -42,7 +50,7 @@
 
 **依赖方向**：证据装配层读取 ``maos.domain.DOMAIN_REGISTRY`` 与域守卫常量，
 按业务表是否存在选择判据；内核不依赖域注册表（铁律 9）。``--domains`` 额外
-展开新域的三项结果，缺失素材显式 SKIP；默认八项汇总与冻结退款输出保持不变。
+展开新域的三项结果，缺失素材显式 SKIP；默认九项汇总与冻结退款输出保持不变。
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass, field
 
@@ -248,6 +257,9 @@ class Case:
     #: 这一束在 INDEX.json 里自报的 git sha；本目录每个 json 的首行都得与它对上。
     #: None = 没有 INDEX.json，那时只校验首行成形（见 evidence_sha）。
     expect_sha: str | None = None
+    #: 这一束所在的证据根 —— 第 9 项要拿它判「这是不是仓库交付束」，并顺着它找
+    #: 同根下的其余束（room / domains）。逐 case 存是因为 CHECKS 的签名只收 cases。
+    evidence_root: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1087,174 @@ def check_cost_attribution(cases: list[Case]) -> Check:
     return chk
 
 
+# ---------------------------------------------------------------------------
+# 第 9 项：provenance
+# ---------------------------------------------------------------------------
+#: 出处核查里各束「产它的命令」。前八项失败时印的是「证据被改过」，本项失败时印的是
+#: 「该重跑了」—— 所以指引必须指向真能把它产出来的东西，姿态同 ``missing_db_hint``：
+#: 报错正文里就得有下一步动作。``room`` 束**没有生成器**（截图与逐字记录是真房间
+#: 实跑时人工采集的，见 ``evidence/room/README.md`` 开头），对着它印
+#: ``make_evidence.py``，照做的人会发现那条命令根本不产这个目录 —— 提示指向一条
+#: 解决不了它的命令，比没有提示更坏（同 ``_DB_HINTS`` 对 ``scenario-R5`` 的处理）。
+_PROVENANCE_HINT_DEFAULT = "在干净工作区上重跑 python3 scripts/make_evidence.py"
+_PROVENANCE_HINTS = {
+    "room": "在干净工作区上按 docs/matrix-room-runbook.md 重跑真房间"
+            "（本束无生成器，截图与逐字记录靠人工采集）",
+}
+
+
+def provenance_hint(bundle: str) -> str:
+    """``bundle`` 这一束过期了该往哪走 —— 出处核查唯一的「下一步动作」。"""
+    return _PROVENANCE_HINTS.get(bundle, _PROVENANCE_HINT_DEFAULT)
+
+
+def git_head(root: str | None = None) -> str | None:
+    """当前 HEAD 的完整 sha；不在 git 仓库里（评委解压 tar 包跑）就返回 None。
+
+    **不查工作区现在脏不脏。** 本项判的是「这束证据自称出自哪份代码」，那是它生成
+    那一刻的事实，与此刻的工作区无关；把当下的脏也算进来，会让「证据是干净跑出来的、
+    只是之后有人在改代码」这种完全正常的状态被判负。脏不脏的信息已经由生成侧写进了
+    首行的 ``-dirty`` 后缀（``make_evidence.py::git_sha``），本项只读它。
+
+    ``root`` 缺省在**调用时**才解析成 ``ROOT``（不是写进默认参数）—— 默认参数在
+    模块加载那一刻就绑死了，测试换掉 ``verify.ROOT`` 时会指着真仓库跑。
+    """
+    root = ROOT if root is None else root
+    try:
+        proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                              capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return proc.stdout.strip() or None
+
+
+def commit_distance(sha: str, head: str, root: str | None = None) -> str:
+    """``sha`` 相对 ``head`` 差多远，一句人话 —— 差几个 commit 是这一项唯一有用的量纲。
+
+    sha 不在本仓库历史里时要说出来：那比「落后 N 个」更严重，证据自称出自一个这个
+    仓库里根本不存在的 commit，谁也 checkout 不出来。``root`` 的缺省解析同 ``git_head``。
+    """
+    root = ROOT if root is None else root
+    try:
+        subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=root,
+                       check=True, capture_output=True, text=True)
+        proc = subprocess.run(["git", "rev-list", "--left-right", "--count", f"{sha}...{head}"],
+                              cwd=root, check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return "该 sha 不在本仓库历史里，谁也 checkout 不出来"
+    parts = proc.stdout.split()
+    if len(parts) != 2:
+        return "与 HEAD 的距离算不出来"
+    ahead, behind = int(parts[0]), int(parts[1])
+    if behind and ahead:
+        return f"落后 HEAD {behind} 个 commit，另有 {ahead} 个 HEAD 上没有的 commit"
+    if behind:
+        return f"落后 HEAD {behind} 个 commit"
+    if ahead:
+        return f"领先 HEAD {ahead} 个 commit"
+    return "与 HEAD 同一个 commit"
+
+
+def provenance_anchors(evidence_root: str) -> list[tuple[str, str]]:
+    """逐束找出「这一束自称出自哪份代码」的锚点文件，返回 ``(束名, 路径)``。
+
+    **以束为单位，不逐文件。** 束内各文件首行彼此一致与否，已经由
+    ``load_evidence_json(expect_sha=...)`` 逐个对着 ``INDEX.json`` 查过；本项回答的
+    是另一个问题：这一束**整体**是不是当前代码产的。分开还有个硬理由 ——
+    ``scenario-R5`` 的首行**恒带** ``-dirty``（见 ``_SHA_DIRTY_SUFFIX`` 的注释：它在
+    场景 1-7 已经把 ``evidence/`` 改脏之后才自算 sha）。逐文件查 dirty 会让这一项在
+    任何情况下都红，而**只会红不会绿的守卫等于没写**。
+
+    ``evidence/room/`` 没有 ``INDEX.json``（它不由 ``make_evidence.py`` 产，见主
+    ``INDEX.json`` 的 ``aux_bundles``），那就退回到逐文件取首行 —— 少查一层可以，
+    整束不查不行：现状恰恰是它最旧。没有出处首行的文件（截图、纯文本导出）不在
+    判据内，那不是隐瞒：``.png`` 里塞不进注释行，对它判负只会逼人往二进制里写假头。
+    """
+    anchors: list[tuple[str, str]] = []
+    index = os.path.join(evidence_root, "INDEX.json")
+    if os.path.exists(index):
+        anchors.append(("evidence/", index))
+    for name in sorted(os.listdir(evidence_root)):
+        directory = os.path.join(evidence_root, name)
+        if name.startswith("scenario-") or not os.path.isdir(directory):
+            continue
+        aux_index = os.path.join(directory, "INDEX.json")
+        if os.path.exists(aux_index):
+            anchors.append((name, aux_index))
+            continue
+        for child in sorted(os.listdir(directory)):
+            path = os.path.join(directory, child)
+            if os.path.isfile(path) and child.endswith((".json", ".md", ".log")):
+                anchors.append((name, path))
+    return anchors
+
+
+def check_provenance(cases: list[Case]) -> Check:
+    """证据是不是**当前代码**在**干净工作区**上跑出来的。
+
+    前八项校验的是这束证据**内部自洽**（哈希对得上、引用不悬空），它们绿得很诚实，
+    只是绿的不是人以为的那件事 —— 一束一年前的证据可以八项全绿。本项补上那句话：
+    **它是哪份代码产的**。
+
+    三种判负，都不是吹毛求疵：
+
+    - ``-dirty``：**比落后更糟**。评委按那个 sha ``checkout`` 也复现不出来 —— 生成
+      当时工作区有未提交的改动，那份代码在 git 历史里根本不存在。
+    - sha != HEAD：证据讲的是旧代码的事，与评委此刻读到的代码对不上。
+    - 首行拿不到出处：连自称都没有，铁律 3 的第一句就没满足。
+
+    **只对仓库交付束（``ROOT/evidence``）生效**，``--evidence`` 指到别处时 SKIP。
+    出处守的是**交付物**；测试与临时目录里现产的证据束（``tmp_path``、``sha="abc"``）
+    的出处 sha 本来就没有意义，而且「现产」必然发生在脏工作区 —— 把它们也判进来，
+    等于宣布「开发期间不许跑 pytest」。SKIP 不进分子，屏幕上看得出没跑（见文件头
+    「SKIP 的纪律」）。
+    """
+    chk = Check("provenance", "证据出自当前 HEAD 且工作区干净")
+    root = cases[0].evidence_root if cases else os.path.join(ROOT, "evidence")
+    if os.path.realpath(root) != os.path.realpath(os.path.join(ROOT, "evidence")):
+        chk.skip(f"{root} 不是仓库交付束 evidence/ —— 临时目录里现产的证据没有出处可言")
+        return chk
+    if not os.path.isdir(root):
+        chk.skip(f"证据目录不存在: {root}（先跑 {_DB_HINT_DEFAULT}）")
+        return chk
+    head = git_head()
+    if head is None:
+        chk.skip("拿不到 git HEAD（不在 git 仓库里），无从比对出处 —— "
+                 "在仓库里跑 python3 scripts/verify.py 才判得了这一项")
+        return chk
+    anchors = provenance_anchors(root)
+    if not anchors:
+        chk.skip(f"{root} 下没有带出处首行的证据文件（先跑 {_DB_HINT_DEFAULT}）")
+        return chk
+
+    for bundle, path in anchors:
+        where = f"{bundle} ({os.path.relpath(path, ROOT)})"
+        try:
+            with open(path, encoding="utf-8") as fh:
+                first = fh.readline()
+        except OSError as exc:
+            chk.bad(f"{where}: 读不出首行（{exc}）—— 拿不到出处的证据不予采信（铁律 3）")
+            continue
+        match = _HEADER_RE.match(first.rstrip("\n"))
+        if not match:
+            chk.bad(f"{where}: 首行不是出处注释（铁律 3），说不出自己出自哪份代码 —— "
+                    f"{provenance_hint(bundle)}")
+            continue
+        raw = match.group("sha")
+        if raw.endswith(_SHA_DIRTY_SUFFIX):
+            clean = raw[: -len(_SHA_DIRTY_SUFFIX)]
+            chk.bad(f"{where}: 证据出处 {clean[:7]}{_SHA_DIRTY_SUFFIX} 是脏工作区跑的 —— "
+                    f"按这个 sha checkout 也复现不出来（那份代码不在 git 历史里），"
+                    f"{provenance_hint(bundle)}")
+            continue
+        if raw != head:
+            chk.bad(f"{where}: 证据出处 {raw[:7]} 与 HEAD {head[:7]} 不符"
+                    f"（{commit_distance(raw, head)}）—— {provenance_hint(bundle)}")
+            continue
+        chk.ok()
+    return chk
+
+
 CHECKS = [
     check_hash_integrity,
     check_business_ref,
@@ -1084,6 +1264,7 @@ CHECKS = [
     check_business_outcome,
     check_history_case,
     check_cost_attribution,
+    check_provenance,
 ]
 
 
@@ -1125,6 +1306,7 @@ def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
             trace=load_evidence_json(os.path.join(d, "trace.json"), expect_sha=expect_sha),
             result=load_evidence_json(os.path.join(d, "result.json"), expect_sha=expect_sha),
             expect_sha=expect_sha,
+            evidence_root=evidence_root,
         ))
     return cases
 

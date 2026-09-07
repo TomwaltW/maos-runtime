@@ -21,7 +21,7 @@
 
 ```bash
 # ①
-python3 -m pytest maos/tests -q          # □ 2259 passed，一分多钟 · metric:pytest_passed_nopg
+python3 -m pytest maos/tests -q          # □ 2298 passed，一分多钟 · metric:pytest_passed_nopg
 # ②
 python3 run.py                           # □ exit=0，个位数秒；跑完 git status 仍空（它不产证据）
 # ③

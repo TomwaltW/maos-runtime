@@ -1775,3 +1775,11 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 |---|---|---|---|---|
 | 2026-09-05 | T98 | `ALLOWED_MIME` 今天只收 jpeg / png / gif / webp / heic / pdf。老板把退款申请表存成 `.xlsx`（Excel 的默认格式，不是「另存为 CSV」）拖进群，会被类型闸原样拒掉 —— 而 `sheet.py` 那条入口正是给不写代码的人用的 | 拒得出声（回一句「不收这个类型」），不是静默失败，所以不是 bug 只是缺口。但它与 `ENCODINGS` 认 gbk 是同一个取向的两半：认 gbk 是为了迁就中文 Windows 的 Excel，而那个 Excel 默认存出来的其实是 xlsx | 派单 3.3 明写不许在本轨扩白名单（铁律 4），只记不改。真要做的是**两件事**不是一件：白名单加一类，和 `looks_like_sheet` / `parse` 认 xlsx（zip 容器，得解 sheet1.xml，本机没有 openpyxl）。第二件才是主要成本，别把它读成「加一行白名单」 |
 | 2026-09-05 | T98 | `looks_like_sheet` 的 NUL 闸（`b"\x00" in data[:4096]`）与新加的类型闸有重叠：PNG 两条都撞，PDF 只撞后一条 | 没有害处，两条判据各挡各的一类（类型闸只认识六种魔数，NUL 闸兜住其余一切二进制，比如那个改名成 .csv 的 ELF）。记下来是因为读代码的人会问「有了类型闸为什么还留着 NUL 闸」 | 不要删任何一条。真要动的时候先想清楚：删 NUL 闸，ELF 那条测试就得靠附件白名单兜；删类型闸，本轨那条对抗样本会红 |
+
+## task-T108（邮箱：agent 之间第一条点对点通道，2026-09-08）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-08 | T108 | 本轨新增 28 条测试，`docs/expected-metrics.json` 的 `pytest_passed_nopg` 仍是 2259，于是 `test_expected_metrics.py::test_collected_count_matches_source_of_truth` 红（实际收集 2328，真源期望 2300） | 全量 `python3 -m pytest maos/tests -q` 因此 `1 failed`。**这一条失败与收件箱本身无关**：单跑 `maos/tests/test_mailbox.py` 是 28 passed，其余 2286 条一条没动。守卫本身是对的，它就是来拦这件事的 | 整合收口时把 `pytest_passed_nopg` 刷成**五轨合并后的实测值**（只算本轨是 2287 = 2259 + 28），不要各轨各加各的 —— git 历史里这个数一直由整合那一步回填（`557d1cf`） |
+| 2026-09-08 | T108 | 收件箱**尚未接线**：`maos/runtime/worker.py` 没有在执行前调 `deliver_into`，`scripts/verify.py` 也没有对应核验项 | 于是「Agent 不轮询、消息自动到手」这句话目前只有单测证明，真链路上还没跑过。缺省路径因此逐字节不变（这是本轨要的），但也意味着 `run.py` 的七个场景里一条 `AgentMessage` 都不会落 | 派单第 4 节明令接线留给整合期（worker.py 是 T107 的面）。接线只需两处：Worker 执行前 `Mailbox(store).deliver_into(role, now_iso=...)` 塞进 `ctx.inputs["inbox"]`；verify 加一项「`AgentMessage` 事件的 detail 里没有正文」 |
+| 2026-09-08 | T108 | `agent_message` 表没有清理/归档口径：已读消息永久留在库里，也没有 TTL 或按 plan 的级联删除 | 演示期的库都是 `:memory:` 或每次新建，看不出来；PolarDB 那种持久库上，这张表会随消息量单调增长，而 `inbox` 的索引是 `(to_agent, read_at)`，未读扫描不受影响、全量 `unread_only=False` 的查询会越来越慢 | 等这条通道真在长跑环境里用起来再定策略（按 plan 归档还是按时间 TTL），现在定等于凭空猜。定的时候要连带想清楚「已读消息属于审计证据还是运行时状态」—— 前者不能删 |

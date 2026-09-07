@@ -1872,3 +1872,16 @@ router 侧的 @岗位点名分流与待办里的合议建议。以下六处是�
 | 2026-09-06 | T104 | 派单要求「扫一遍仓库，确认没有别处再写死这类条数」，但同类漂移还在 `README.md:183`、`docs/ppt-outline.md:552`、`docs/usage.md:40`、`deploy/polardb.md:155` —— 全在本轨白名单外 | 扫描面只覆盖派单点名的四份文件，其余逐条列进回执交人类派轨 | 把白名单外的文件纳入扫描，守卫会在一批「不许改」的文件上恒红。一条永远红的断言等于没有断言，还会把真正的漂移一起淹掉 —— `scripts/check_docs.py` 的阻断/提示分档注释记的正是这个教训 |
 | 2026-09-06 | T104 | `docs/agentteams-mapping.md:33` 的「1361 条测试仍绿」派单点名要刷，但它是 A1 实验（把 `hiclaw` 从 import 系统抹掉）的读数，权威记录连同原始输出在 `docs/defense-brief.md` 的 `## A1`，那份在白名单外 | 不刷，标 `metric:frozen` 并在理由里写明出处，列进回执问人类 | 只刷引用处而不重跑实验，等于凭空写一个没有产出命令的数字（铁律 3）；连出处一起刷又要越白名单。派单 §3.3 对「分不清的」给的正是「留着并在回执里列出来问我」 |
 | 2026-09-06 | T104 | `docs/submission-checklist.md:24` 同一行除条数外还写着「个位数秒」，而全量实测已是 66 秒 | 一并改成「一分多钟」（不带数字，不会再漂） | 同一行、同一类的过期表述。把条数刷准却留着一句已知为假的耗时，下一个照着核的人会先怀疑是自己机器慢 —— 与这条守卫要治的「假警报」是同一个病。改成不带数字的说法，等于把它移出漂移集合 |
+
+## task-T111（计划审批：批准才许开跑，驳回带反馈退回重提，2026-09-08）
+
+| 日期 | 任务号 | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-08 | T111 | 驳回后要把新规格接管到旧任务上，而「新规格接管旧任务」的口径只存在于 `ControlPlane._apply_replan` 这个私有方法里；本轨不许改 `control_plane.py`（T107/T110 共用的面） | 直接调私有的 `cp._apply_replan(plan_id, open_tasks, specs)` 与 `cp._replanner`，不另写一份 | 它是全仓唯一一份口径（逐位覆写保住 task_id 与 event_log 因果链、findings 保留不清、多的新建、少的冻结）。自己再抄一份必然与它分叉，分叉那天的症状是「重规划之后有的任务用新口径有的用旧口径」，没人看得出来。**整合期可考虑把 `_apply_replan` 提升为公开方法**，那才是干净的收口 |
+| 2026-09-08 | T111 | 驳回后必须重出规格但**不许 start**，而 `ControlPlane._replan` 末尾会 `start_plan` | 不复用 `_replan`，只取它的前半段（调 replanner + `_apply_replan`）后停下 | 重规划完就自己跑起来的话，人的那次驳回等于没发生：他驳的是方案，拿到的却是「方案改了并且已经在跑了」，第二次审批的机会被系统自己吃掉。这是本轨的题眼，由 `test_reject_leaves_the_plan_pending_for_a_second_look` 钉住 |
+| 2026-09-08 | T111 | `pending()` 要列出全部待审批的 plan，但 `Store` 抽象类没有 `list_plans`，而 `maos/core/store.py` 禁改（铁律 2） | `pending(plan_ids=None)`：显式传就用传进来的；缺省借核心 store 的 `_conn` / `_lock` 做一次**只读** `SELECT plan_id FROM plan`。拿不到连接时抛 `TypeError` 并提示「把 plan_ids 传进来」，不静默返回空 | 先例是 `maos/store/sqlite_store.py` 借 `_conn` / `_lock`（另开连接会绕过全仓唯一的写互斥），同一条 SQL 也已写在 `maos/obs/trace.py::list_plan_ids`。为列一个 plan 去动冻结的 store 抽象不值当；显式传 id 的出口让换后端时不必等 store 加方法 |
+| 2026-09-08 | T111 | 幂等键的形状。`ControlPlane.human_decision` 用的是 `human:<task_id>`，不带轮次 | 用 `plan_approval:<plan_id>:<round>`，`round` = 已发生的 `PlanRejected` 条数 | 一个任务只可能被人工决策一次（DONE/FAILED 都是终态），一个 plan 却会被审批**多次**（驳回→重规划→再审批）。键里只有 plan_id 的话，第二轮审批会被当成重复投递当场短路，人再也批不动这个计划而且一声不吭。形状像、语义相反，是这个文件最容易抄错的一处 |
+| 2026-09-08 | T111 | 驳回上限该不该复用 `MAOS_MAX_REPLAN` | 另开 `MAOS_MAX_PLAN_REJECT`（默认 2），非法值回退默认并告警不抛（写法照 `_max_replan`） | 那个旋钮管的是「机器自己触发了几次重规划」，这个管的是「人驳回了几次」。两件事的合理阈值不必相同，共用一个旋钮的后果是调其中一个把另一个也调了，而调的人不会知道 |
+| 2026-09-08 | T111 | 到了驳回上限之后 plan 怎么处置 —— 派单只说「不再重规划」，没说状态 | 只落 `PlanApprovalExhausted`，plan **仍停在 PENDING**，不自动判死 | 口径同 `ControlPlane._escalate_to_human`：闸当场把 plan 判死就是替人做了那个决定。到顶意味着「该改的是目标，不是再改一次方案」，那是人的活。`preview()` 里带 `exhausted` 字段让人看得见它到顶了 |
+| 2026-09-08 | T111 | 未注入 replanner 时驳回怎么办（派单未覆盖） | 意见照样落 `PlanRejected` 留痕、plan 停 PENDING，但**不落** `PlanReplanned` | 什么都没重规划却落一条说重规划过了就是假绿。没接 replanner 不是故障，是「这条链路还没接模型」，反馈留痕仍然有价值 |
+| 2026-09-08 | T111 | `claim_idempotency(key, op, task_id)` 的第三个参数是 `task_id`，而本轨的幂等对象是 plan | 照传 plan_id 进去，不改 store 签名 | 那一列只是给人排查用的旁注，不参与唯一性判定（唯一键是 `idempotency_key` 本身）。为它改冻结的 `store.py` 不值当；已记进 BACKLOG 供整合期考虑改名 |

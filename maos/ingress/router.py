@@ -426,16 +426,48 @@ class IngressRouter:
                         type(exc).__name__, exc)
 
     def handle_team(self, msg: InboundMessage) -> str:
-        """``/team`` —— 报一遍圆桌有哪几岗、各自什么职责、挂着哪些 skill。
+        """``/team`` —— 报一遍这里有哪些成员、各自什么职责、挂着哪些 skill。
 
         **不判渠道、不判名单、不调模型**。三条都是刻意的：这是只读的自我介绍，
         它不碰钱也不碰待办，与 `/approve` 那道渠道闸不是一件事；而名单本来就是
         代码里的常量与 skill 注册表，让模型复述一遍只会多一次编造的机会（铁律 8）。
+
+        **接了圆桌那条路径逐字节不变**（T109）：`render_roster` 排的是五岗
+        「在房间里的样子」—— mxid、代言与否、skill 三元组，这是 `/team` 今天的
+        答案，没有理由因为多了一条兜底路径就动它。
+
+        **没接圆桌时不再只回那一句。** `/team` 问的是「这里有哪些成员」，而这个
+        问题在没接圆桌时**也有答案**：`AGENT_POOL` 里躺着二十几个 Agent。只回
+        「没接圆桌」，是把「圆桌没装」说成了「没有成员」—— 那是答错了，不是没答。
+        「没接圆桌」那半句仍然留着并且排在最前：它是真的，而少了它，人会把下面
+        这份名册当成房间里那五个名牌。
+
+        兜底走 `Roster.from_agent_pool()`，**不叫 `merge_roundtable()`** 补岗位名。
+        这条路径的前提就是「圆桌没装」，为了几个人话名字反过来 import 圆桌那一包，
+        与前提自相矛盾；title 是圆桌给的东西，没装圆桌就没有它，留空是诚实的。
+
+        名册渲染失败退回原来那一句，不让 `/team` 整条打不出来：这条路径要 import
+        `maos.agents` 全包（扫目录触发 `@register`），而只装了命令面的进程未必
+        带得动它。那时该说的是「圆桌没接」，不是把一个 ImportError 甩进群里。
         """
         del msg                                         # 谁问都一样，与会话无关
-        if self.team is None:
-            return "本进程没接圆桌（单机器人模式），命令面与申请表照常可用"
-        return render_roster(self.team.roster())
+        if self.team is not None:
+            return render_roster(self.team.roster())
+
+        lone = "本进程没接圆桌（单机器人模式），命令面与申请表照常可用"
+        try:
+            # 惰性 import，同 `_titles()`：`maos/ingress/` 不在模块级拉 Agent 池。
+            from maos.core.roster import Roster, render_members
+
+            roster = Roster.from_agent_pool()
+            listing = render_members(roster.members())
+        except Exception as exc:                        # noqa: BLE001 —— 见 docstring
+            log.warning("全局名册没排出来（%s: %s），/team 只报没接圆桌",
+                        type(exc).__name__, exc)
+            return lone
+        if not listing:
+            return lone
+        return f"{lone}\n\n本进程装着 {len(roster)} 位成员：\n{listing}"
 
     # -- 附件 ---------------------------------------------------------------
     def _ingest_attachments(self, msg: InboundMessage) -> str:

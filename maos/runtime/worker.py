@@ -74,8 +74,18 @@ class WorkerRuntime:
             # 当成重复投递丢弃。今天不咬人只因为所有 worker 都持全池。
             #
             # 代价说清楚：派了一个**没人**能干的 role，从「立刻失败」变成「没人应答」。
-            # 那正是要的 —— 那种任务该由租约超时接管（`reap_expired_leases`），
-            # 而不是由一个碰巧收到广播的旁观者当场判死。
+            # 那正是要的 —— 那种任务该由超时接管，而不是由一个碰巧收到广播的
+            # 旁观者当场判死。
+            #
+            # 🔴 **接管方是 `reap_expired_leases` 的第二个超时源
+            # （`REAP_SOURCE_DISPATCH`），不是租约。** 别把这里读成「租约会兜住」：
+            # 租约只在 `cp.claim` 成功之后才登记，而这条路径上认领从没发生过，
+            # `claim_lease` 表里是 0 行 —— 只认租约表的话，回收永远捞不到它，
+            # 静默跳过就成了永久静默停摆（无死信、无异常、无告警），比改造前那条
+            # 吵闹的 `status=failed` 更难查。兜底靠的是「进 DISPATCHED 已超过 TTL
+            # 且没有租约行」这一查（`LeaseBook.unclaimed_dispatched`）。
+            # ⚠️ 它要求控制面注入了 `LeaseBook` 且有人周期性调 `reap_expired_leases`；
+            # 两条都没接的话，这里的静默跳过依然是永久停摆。
             log.debug("Worker %s 不承接 role=%s，跳过 task=%s（本 Worker 的池：%s）",
                       self.worker_id, role, env.task_id, sorted(self.agents))
             return

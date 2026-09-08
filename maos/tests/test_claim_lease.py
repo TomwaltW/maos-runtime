@@ -46,10 +46,12 @@ from maos.contracts import events as E
 from maos.contracts.events import Envelope, Topic
 from maos.contracts.states import PlanState, TaskState
 from maos.core.control_plane import (
+    FROZEN_BY_REPLAN,
     LEASE_EXPIRED,
     REAP_CLAIM_TIMEOUT,
     REAP_RETRY,
     REAP_RETRY_EXHAUSTED,
+    REAP_SOURCE_DISPATCH,
     REAP_STALE,
     STALE_RESULT_DROPPED,
     ControlPlane,
@@ -609,8 +611,56 @@ def test_claimable_spans_plans_and_filters_by_role():
     assert {r["plan_id"] for r in rows} == {p1, p2}, (
         "任务板没有跨 plan —— 队友只看得见一个计划里的活")
     assert {r["role"] for r in rows} == {"coding"}
-    assert all(r["state"] == TaskState.DISPATCHED for r in rows)
     assert len(store.list_tasks(p1)) == 2, "前置：p1 里确实有一条 reviewer 任务被滤掉了"
+
+
+def test_claimable_excludes_tasks_that_are_no_longer_dispatched():
+    """RUNNING（有人正在干）与 AWAITING_REVIEW（已交付待评审）不许上任务板。
+
+    这条守的是 `claimable` 的 `t.state = 'DISPATCHED'` 那半个 WHERE 子句。
+    在它之前，那半句**零覆盖**：删掉它全量测试一条都不红 —— 唯一看起来覆盖它的
+    那句 `assert all(r["state"] == DISPATCHED for r in rows)` 在自己的 fixture 里
+    恒真（那个 fixture 造出来的任务全是 DISPATCHED，没有别的状态可选）。
+    所以断言写成「**存在**非 DISPATCHED 的任务，且它没被返回」，不写成
+    「返回的都是 DISPATCHED」—— 后者对着一份全 DISPATCHED 的数据永远为真。
+
+    症状说清楚：漏了这半句，已经有人在做的活、以及已经做完待评审的活，会重新
+    挂上任务板被第二个人领走再做一遍。今天 `cp.claim` 的状态校验兜住了它不落成
+    脏状态，但那是第二道闸 —— 任务板自己的口径必须先对。
+    """
+    store, bus, cp = _boot()
+    plan_id = _plan(cp, roles=("coding", "coding", "coding"))
+    cp.start_plan(plan_id)
+    still, running, reviewed = store.list_tasks(plan_id)
+
+    cp.claim(running["task_id"], "w-busy", 1)                     # -> RUNNING
+    w = _worker(bus, cp, worker_id="w-done")
+    cp.claim(reviewed["task_id"], "w-done", 1)
+    cp.on_task_result(E.task_result(                              # -> AWAITING_REVIEW
+        plan_id=plan_id, task_id=reviewed["task_id"], attempt=1,
+        trace_id=reviewed["trace_id"], status="ok",
+        artifacts=[{"kind": "doc", "content": {}}], worker_id="w-done"))
+
+    states = {t["task_id"]: t["state"] for t in store.list_tasks(plan_id)}
+    assert states[running["task_id"]] == TaskState.RUNNING
+    assert states[reviewed["task_id"]] == TaskState.AWAITING_REVIEW
+    assert states[still["task_id"]] == TaskState.DISPATCHED, "前置：得留一条真的在板上"
+
+    # 🔴 判过期的 now 必须从 _after 取：这两条租约是 cp.claim 用**真实时钟**登记的。
+    #    拿 T_LATER 那种字面量去比，RUNNING 那条会被「租约还没过期」挡住，
+    #    于是这条用例测的就成了租约过滤而不是状态过滤 —— 删掉状态过滤它照样绿。
+    now = _after(TTL + 60)
+    assert {r["task_id"] for r in cp.leases.expired(now)} >= {running["task_id"]}, (
+        "前置不成立：RUNNING 那条的租约还没过期，它会被租约过滤挡住，"
+        "本用例就测不到状态过滤了")
+
+    rows = cp.leases.claimable(w.roles, now)
+
+    leaked = [r["task_id"] for r in rows if r["state"] != TaskState.DISPATCHED]
+    assert leaked == [], (
+        f"非 DISPATCHED 的任务上了任务板：{[(states[t], t) for t in leaked]}"
+        " —— 已经有人在做、或已经做完的活会被第二个人领走再做一遍")
+    assert [r["task_id"] for r in rows] == [still["task_id"]]
 
 
 def test_claimable_hides_live_lease_and_shows_expired_one():
@@ -751,24 +801,44 @@ def test_task_board_snapshot_does_not_grant_the_claim():
     assert len(_transitions(store, plan_id, TaskState.DISPATCHED, TaskState.RUNNING)) == 1
 
 
-def test_two_workers_racing_pull_and_claim_only_one_wins():
-    """并发版：两个线程同时 pull_and_claim 同一条任务，合计只处理一条。
+def test_two_workers_racing_pull_and_claim_only_one_wins(monkeypatch):
+    """并发版：两个线程同时 `pull_and_claim` 同一条任务，合计只处理一条。
 
-    用栅栏而不是直接起线程：不同步的话线程往往被调度成串行，竞争窗口根本没打开，
-    这条用例会退化成一条伪装成并发的顺序用例。
+    🔴 **栅栏卡在 `claimable` 返回之后、`cp.claim` 之前，不是卡在线程入口。**
+    位置差这一步，这条用例的牙齿就掉光了：两者之间隔着 store 那把 RLock，
+    先拿到锁的线程往往在后手取快照之前就已经把任务迁到 RUNNING —— 后手的任务板
+    于是是**空的**，`pull_and_claim` 的 for 循环一次都没进，
+    「抢输了就跳下一条」那条分支（`worker.py` 的 `if claimed is None: continue`）
+    根本没被执行到。实测：栅栏在线程入口时，把那条分支变异成「抢输了也照做」，
+    本用例 60 次里仍有 51 次绿（窗口只有 58% 打开）。
+
+    栅栏靠**包住 `claimable`** 插进去，而不是把 `pull_and_claim` 的逻辑在测试里
+    抄一遍：抄一遍的话这条用例测的是那份抄件，生产代码怎么改它都不会红
+    （第一版就是这么写的，变异实测 40 次 0 红把它照了出来）。生产代码里不留
+    测试钩子，同步点从它的协作者那一侧插入。
     """
     store, bus, cp = _boot()
     plan_id, _task = _dispatched(cp)
     w_a = _worker(bus, cp, worker_id="w-a")
     w_b = _worker(bus, cp, worker_id="w-b")
 
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=10)
     got: list[int] = [0, 0]
     errs: list[BaseException] = []
+    boards: list[int] = [0, 0]
+    real_claimable = cp.leases.claimable
+
+    def claimable_then_wait(roles, now_iso):
+        """真快照照取，取完在栅栏上会合 —— 两个线程于是从同一份非空快照上同时认领。"""
+        rows = real_claimable(roles, now_iso)
+        barrier.wait()
+        return rows
+
+    monkeypatch.setattr(cp.leases, "claimable", claimable_then_wait)
 
     def race(idx: int, w: WorkerRuntime) -> None:
         try:
-            barrier.wait()
+            boards[idx] = len(real_claimable(w.roles, T0))   # 只为记录窗口开没开
             got[idx] = w.pull_and_claim(now_iso=T0)
         except BaseException as exc:              # noqa: BLE001 —— 带回主线程
             errs.append(exc)
@@ -782,10 +852,51 @@ def test_two_workers_racing_pull_and_claim_only_one_wins():
 
     assert not any(t.is_alive() for t in threads), "有线程没在 10 秒内退出，疑似死锁"
     assert not errs, f"拉取过程抛异常：{errs!r}"
+    assert boards == [1, 1], (
+        f"竞争窗口没打开：两个线程各自看到的任务板大小 {boards}，应各有 1 条。"
+        " 有一边是空的就说明它压根没进循环，这条用例什么都没测到")
     assert sum(got) == 1, f"两个 worker 合计领走 {sum(got)} 条，应为 1 条"
     assert len(_transitions(store, plan_id, TaskState.DISPATCHED, TaskState.RUNNING)) == 1
     assert len(w_a.agents["coding"].calls) + len(w_b.agents["coding"].calls) == 1, (
         "同一条任务被执行了两遍")
+
+
+def test_pull_and_claim_losing_the_race_never_invokes_the_agent():
+    """确定性版：任务还挂在板上、但认领必败 —— Agent 一次都不许被调。
+
+    钉的是 `worker.py` 里「抢输了就跳下一条」那条分支
+    （`if claimed is None: continue`）。上面那条并发用例靠线程调度去撞它，
+    本条不靠：变异掉那一行（抢输了也照做执行），本条当场变红。
+
+    **构造的是真实的那半个窗口。** `cp.claim` 的时序是
+    「读状态 → 过幂等闸 → `_transit(RUNNING)`」，三步之间没有跨步的锁。抢先者
+    刚烧掉 `claim:<tid>:<attempt>`、还没迁移完的那一瞬间，任务仍是 DISPATCHED、
+    仍在任务板上，而后手过闸必败 —— 直接烧那个键复刻的就是这一刻。
+    （拿「抢先者已经迁到 RUNNING」去构造是不行的：那样任务已经从板上消失，
+    for 循环一次都不进，这条分支根本没被执行到。第一版就是这么写的。）
+
+    与 `test_task_board_snapshot_does_not_grant_the_claim` 的差别要说清楚：
+    那条直接调 `cp.claim` 两次，覆盖不到 `pull_and_claim` 里「抢输之后怎么办」
+    这一段 —— 而「抢输了还是把活干了」正是「同一条任务被两个 worker 各做一遍」
+    这个症状的唯一入口。
+    """
+    store, bus, cp = _boot()
+    plan_id, task = _dispatched(cp)
+    tid = task["task_id"]
+    w = _worker(bus, cp, worker_id="w-late")
+
+    # 抢先者过了幂等闸，尚未 _transit。
+    assert store.claim_idempotency(f"claim:{tid}:1", "claim", tid) is None
+    assert store.get_task(tid)["state"] == TaskState.DISPATCHED, "前置：任务仍是 DISPATCHED"
+    assert [r["task_id"] for r in cp.leases.claimable(w.roles, T0)] == [tid], (
+        "前置不成立：任务已不在板上，for 循环进不去，这条用例什么都测不到")
+
+    assert w.pull_and_claim(now_iso=T0) == 0, (
+        "认领失败却报告处理了任务 —— 抢输之后它还是把活干了")
+    assert w.agents["coding"].calls == [], (
+        "认领失败却调了 Agent —— 同一条任务会被两个 worker 各做一遍")
+    assert _transitions(store, plan_id, TaskState.DISPATCHED, TaskState.RUNNING) == []
+    assert store.get_task(tid)["state"] == TaskState.DISPATCHED
 
 
 def test_pull_and_claim_without_lease_book_fails_loudly():
@@ -876,3 +987,293 @@ def test_lease_book_refuses_a_store_without_a_connection():
 
     with pytest.raises(TypeError, match="claim_lease"):
         LeaseBook(NoConnStore())
+
+
+# ======================================================================
+# 七、收口（T107 复核）：批量回收、冻结任务、派发超时源
+# ======================================================================
+def test_two_exhausted_leases_in_one_plan_do_not_abort_the_batch():
+    """同一个 plan 里两条租约同时耗尽额度 —— 第二条不许把整批回收打断。
+
+    洞在哪：`_reap_one` 的 retry_exhausted 分支无条件调 `_fail_plan`。第一条把
+    plan 迁到 FAILED 之后，第二条再来一次就是 `FAILED -> FAILED` —— 那不在
+    `PLAN_TRANSITIONS` 里，抛 `IllegalTransition` 打断整批。
+
+    后果比「抛个异常」重得多：**同批里已经合法处置完的任务会静默停摆**。
+    它们的租约在循环里已经销掉了，而 `claim_lease` 表是回收唯一的入口，没有任何
+    机制会再碰它们第二次；循环之后那次 `dispatch_ready` 也没跑到。
+    所以断言分两层 —— 不抛异常，**且**那条无辜的任务真的被重新派出去了。
+    """
+    store, _bus, cp = _boot()
+    plan_id = cp.create_plan(goal="批量回收", trace_id="tr-batch", tasks=[
+        {"role": "coding", "title": f"任务-{i}", "inputs": {}, "acceptance": [],
+         "effect_risk": "L", "max_attempts": 1} for i in range(3)])
+    cp.start_plan(plan_id)
+    doomed_a, doomed_b, bystander = store.list_tasks(plan_id)
+
+    # 甲、乙认领后失联；attempt=1 == max_attempts=1，额度已耗尽。
+    for t in (doomed_a, doomed_b):
+        assert cp.claim(t["task_id"], f"w-{t['title']}", 1) is not None
+    # 丙没人认领，手工 grant 一条会过期的租约 -> 它该走 claim_timeout 回队列。
+    cp.leases.grant(bystander["task_id"], 1, "w-never-showed-up", now_iso=T0)
+
+    assert cp.reap_expired_leases(now_iso=_after(TTL + 60)) == 3, (
+        "有租约没被处置 —— 批量回收在中途断了")
+
+    states = {t["task_id"]: t for t in store.list_tasks(plan_id)}
+    assert states[doomed_a["task_id"]]["state"] == TaskState.FAILED
+    assert states[doomed_b["task_id"]]["state"] == TaskState.FAILED, (
+        "第二条耗尽额度的任务没被判死 —— 回收在它之前就断了")
+    assert store.get_plan(plan_id)["state"] == PlanState.FAILED, "plan 只该被判死一次"
+
+    bys = states[bystander["task_id"]]
+    assert bys["state"] == TaskState.DISPATCHED and bys["attempt"] == 2, (
+        f"无辜的第三条停在 {bys['state']}/attempt={bys['attempt']}：回收把它的租约"
+        " 销掉了却没把它重新派出去 —— 再没有任何机制会碰它，它就此静默停摆")
+    assert cp.leases.holder(bystander["task_id"]) is None
+
+
+def test_plan_is_only_failed_once_even_across_two_reap_rounds():
+    """跨两轮回收也只判死一次：第二轮撞见的是一个已经 FAILED 的 plan。
+
+    上一条守的是同一批之内，这一条守的是跨批 —— 两者共用同一个判据，
+    但只测其一的话，一个「用批内去重表」的实现也能过上一条。
+    """
+    store, _bus, cp = _boot()
+    plan_id = cp.create_plan(goal="跨轮", trace_id="tr-2round", tasks=[
+        {"role": "coding", "title": f"任务-{i}", "inputs": {}, "acceptance": [],
+         "effect_risk": "L", "max_attempts": 1} for i in range(2)])
+    cp.start_plan(plan_id)
+    a, b = store.list_tasks(plan_id)
+
+    cp.claim(a["task_id"], "w-a", 1)
+    # 乙也认领了（-> RUNNING，派发超时源看不见它），但租约续得很长：第一轮不该动它。
+    cp.claim(b["task_id"], "w-b", 1)
+    cp.leases.grant(b["task_id"], 1, "w-b", now_iso=_after(0), ttl_s=86400)
+
+    assert cp.reap_expired_leases(now_iso=_after(TTL + 60)) == 1, "第一轮只该处置甲"
+    assert store.get_plan(plan_id)["state"] == PlanState.FAILED
+
+    # 第二轮：乙此刻才失联，plan 早已是 FAILED。
+    cp.leases.grant(b["task_id"], 1, "w-b", now_iso=T0)      # 租约改成早已到期
+    assert cp.reap_expired_leases(now_iso=_after(TTL + 60)) == 1, (
+        "第二轮回收抛异常或漏处置 —— plan 被判了第二次死")
+    assert store.get_task(b["task_id"])["state"] == TaskState.FAILED
+
+
+def test_reap_does_not_unfreeze_a_task_that_replan_retired():
+    """租约回收不许把被重规划淘汰的任务解冻并重新派出去。
+
+    洞在哪：`_is_frozen(task)` 的**唯一**判据是 `last_error == FROZEN_BY_REPLAN`，
+    而 `_reap_one` 会把 `last_error` 覆写成 `lease_expired: ...`。于是租约一到期，
+    任务当场解冻，`reap_expired_leases` 末尾那次 `dispatch_ready` 立刻把它重新
+    派出去 —— 一个已被新方案明确淘汰的任务复活并再执行一遍（补丁再打一遍）。
+
+    前置成立性：`_apply_replan` 冻结时**只打标**，不动状态、不销租约
+    （`control_plane.py` 里 `update_task(..., last_error=FROZEN_BY_REPLAN)` 一行），
+    所以「RUNNING + 活租约 + 已冻结」是一个真实可达的组合。
+    """
+    store, _bus, cp = _boot()
+    plan_id, task = _dispatched(cp)
+    tid = task["task_id"]
+    cp.claim(tid, "w-yi", 1)
+
+    store.update_task(tid, last_error=FROZEN_BY_REPLAN)   # 与 _apply_replan 同一动作
+    assert cp.leases.holder(tid) is not None, "前置：冻结不销租约"
+    assert cp.dispatch_ready(plan_id) == 0, (
+        "前置不成立：dispatch_ready 本来就该拒绝派发冻结任务，两条入口才有口径可比")
+
+    assert cp.reap_expired_leases(now_iso=_after(TTL + 60)) == 1
+
+    after = store.get_task(tid)
+    assert after["last_error"] == FROZEN_BY_REPLAN, (
+        f"回收把冻结标记覆写成 {after['last_error']!r} —— 任务解冻了")
+    assert after["state"] == TaskState.RUNNING and after["attempt"] == 1, (
+        f"被淘汰的任务复活成 {after['state']}/attempt={after['attempt']}，会再执行一遍")
+    assert _logs(store, plan_id, LEASE_EXPIRED)[0]["reason"] == REAP_STALE, (
+        "冻结任务的处置该是 stale_lease（只销租约不迁移），与「任务已经往前走了」同口径")
+    assert cp.leases.holder(tid) is None, "租约还是要销的 —— 不然每轮都重复回收它"
+
+
+def test_claimable_hides_tasks_that_replan_retired():
+    """被重规划冻结的任务不许出现在任务板上 —— 推、拉两条入口口径必须一致。
+
+    `dispatch_ready` 明确跳过冻结任务；`claimable` 漏了同一条判据的话，
+    队友会从板上把它领走并真的执行一遍。两条入口对「哪些任务可以做」给出
+    相反的答案，而只有一条会被人注意到。
+    """
+    _store, bus, cp = _boot()
+    plan_id = _plan(cp, roles=("coding", "coding"))
+    cp.start_plan(plan_id)
+    frozen, alive = cp.store.list_tasks(plan_id)
+    cp.store.update_task(frozen["task_id"], last_error=FROZEN_BY_REPLAN)
+
+    assert [r["task_id"] for r in cp.leases.claimable(frozenset({"coding"}), T0)] == [
+        alive["task_id"]], "被重规划淘汰的任务还挂在任务板上，会被队友领走再做一遍"
+
+    w = _worker(bus, cp, worker_id="w-puller")
+    assert w.pull_and_claim(now_iso=T0, limit=5) == 1
+    assert w.agents["coding"].calls == [alive["task_id"]], (
+        "拉模式执行了一个已被重规划淘汰的任务")
+
+
+def test_dispatched_task_with_no_lease_is_reaped_after_the_ttl():
+    """派发之后从没人认领 -> 超时后走 claim_timeout 回队列。**它没有租约行。**
+
+    这条守的是回收的第二个超时源（`REAP_SOURCE_DISPATCH`）。租约唯一的登记点是
+    `cp.claim` 成功之后，而 DISPATCHED 的任务按定义还没被认领 —— 只认 claim_lease
+    表的话，`(DISPATCHED, PENDING) -> claim_timeout` 这条冻结迁移在真实链路上
+    **不可达**，只有测试手工 `grant()` 才造得出来。判据因此钉在
+    「claim_lease 表 0 行」上：有租约的那条路径由
+    `test_expired_lease_on_dispatched_task_uses_claim_timeout` 守着。
+    """
+    store, _bus, cp = _boot()
+    plan_id, task = _dispatched(cp)
+    tid = task["task_id"]
+
+    assert store._conn.execute("SELECT COUNT(*) FROM claim_lease").fetchone()[0] == 0, (
+        "前置不成立：这条任务有租约行，那走的是另一个超时源")
+    assert cp.reap_expired_leases(now_iso=_after(1)) == 0, (
+        "刚派发就被回收 —— TTL 没起作用，正常排队的任务会被当成无人认领")
+
+    assert cp.reap_expired_leases(now_iso=_after(TTL + 60)) == 1
+
+    moves = _transitions(store, plan_id, TaskState.DISPATCHED, TaskState.PENDING)
+    assert len(moves) == 1 and moves[0]["reason"] == "claim_timeout"
+    row = _logs(store, plan_id, LEASE_EXPIRED)[0]
+    assert row["reason"] == REAP_CLAIM_TIMEOUT
+    assert row["detail"]["source"] == REAP_SOURCE_DISPATCH, (
+        f"超时源标错了：{row['detail']['source']} —— 下游分不清失联与没人来过")
+    assert row["detail"]["worker_id"] == "", "没有任何 worker 碰过它，这里不该有名字"
+    assert store.get_task(tid)["state"] == TaskState.DISPATCHED, "回收后应重新派发"
+    assert store.get_task(tid)["attempt"] == 2
+
+
+def test_a_role_nobody_can_do_is_rescued_instead_of_stalling_forever():
+    """端到端：派了一个全队伍都不承接的 role —— 不许静默永久停摆。
+
+    `on_assignment` 的静默跳过（不再回假 failed）是对的，但它把「立刻失败」换成了
+    「没人应答」；换来的这个状态必须有人接管，否则就是把一个吵闹的坏换成了一个
+    安静的坏 —— 任务永远 DISPATCHED、plan 永远 RUNNING，无死信、无异常、无告警。
+
+    接管方是派发超时源。判据钉在**可观测**上：处置条数、`LeaseExpired` 那一行、
+    以及 attempt 真的往前走了 —— 三者合起来才叫「响了」。
+    """
+    store, bus, cp = _boot()
+    plan_id = cp.create_plan(goal="没人能干", trace_id="tr-orphan", tasks=[
+        {"role": "devops", "title": "全队伍都不承接", "inputs": {}, "acceptance": [],
+         "effect_risk": "L", "max_attempts": 3}])
+    _worker(bus, cp, worker_id="w-coding", roles=frozenset({"coding"}))
+    cp.start_plan(plan_id)
+    bus.drain()
+
+    tid = store.list_tasks(plan_id)[0]["task_id"]
+    assert store.get_task(tid)["state"] == TaskState.DISPATCHED, (
+        "前置：旁观者静默跳过，任务停在 DISPATCHED（不是 PENDING、不是 FAILED）")
+    assert store._conn.execute("SELECT COUNT(*) FROM claim_lease").fetchone()[0] == 0, (
+        "前置：没有任何租约行 —— 认领从没发生过")
+
+    assert cp.reap_expired_leases(now_iso=_after(TTL + 60)) == 1, (
+        "没人能干的任务永远捞不回来 —— 静默跳过成了永久静默停摆")
+
+    assert _logs(store, plan_id, LEASE_EXPIRED)[0]["reason"] == REAP_CLAIM_TIMEOUT
+    assert store.get_task(tid)["attempt"] == 2, "它得真的往前走一格，才叫响了一声"
+
+
+def test_unclaimed_dispatched_skips_tasks_that_already_have_a_lease():
+    """两个超时源不许重复处置同一条任务。
+
+    有租约行的任务归 `expired()` 管；`unclaimed_dispatched` 必须把它们排除掉，
+    否则一条 DISPATCHED + 活租约的任务会被派发超时源提前处置 —— 那等于把 TTL
+    这件事做了两遍，而其中一遍不认租约。
+    """
+    _store, _bus, cp = _boot()
+    plan_id = _plan(cp, roles=("coding", "coding"))
+    cp.start_plan(plan_id)
+    leased, bare = cp.store.list_tasks(plan_id)
+    cp.leases.grant(leased["task_id"], 1, "w1", now_iso=T0)
+
+    # now 必须从 _after 取：截止时刻算自 task.updated_at（真实时钟），
+    # 拿 T0/T_LATER 那种字面量去比，两条任务都会被判成「还没到期」，
+    # 于是返回空表，这条用例会因为错误的理由变绿。
+    rows = cp.leases.unclaimed_dispatched(_after(TTL + 60))
+    assert [t["task_id"] for t, _deadline in rows] == [bare["task_id"]], (
+        "有租约的任务被派发超时源捞走了 —— 同一条任务会被两个源各处置一次")
+
+
+def test_unclaimed_dispatched_boundary_is_inclusive_and_reads_updated_at():
+    """截止时刻 = 进 DISPATCHED 那一刻 + TTL，边界算到期。
+
+    读的是 `task.updated_at`，它出自 `store._now()`（`datetime.isoformat()`）——
+    **不定宽**，字典序不等于时间序。所以这里的比较必须走 `parse_utc`，
+    不能像 `expires_at` 那样交给 SQL 的字符串比较。
+    """
+    _store, _bus, cp = _boot()
+    _plan_id, task = _dispatched(cp)
+    dispatched_at = parse_utc(cp.store.get_task(task["task_id"])["updated_at"])
+
+    just_before = canon_iso((dispatched_at + timedelta(seconds=TTL - 1)).isoformat())
+    assert cp.leases.unclaimed_dispatched(just_before) == []
+
+    at_boundary = canon_iso((dispatched_at + timedelta(seconds=TTL)).isoformat())
+    assert [t["task_id"] for t, _d in cp.leases.unclaimed_dispatched(at_boundary)] == [
+        task["task_id"]]
+
+
+def test_unclaimed_dispatched_skips_frozen_tasks():
+    """冻结任务不进派发超时源 —— 否则每轮回收都给它落一条处置不完的噪声。"""
+    _store, _bus, cp = _boot()
+    _plan_id, task = _dispatched(cp)
+    now = _after(TTL + 60)                    # 理由同上：截止时刻算自真实时钟
+    assert [t["task_id"] for t, _d in cp.leases.unclaimed_dispatched(now)] == [
+        task["task_id"]], "前置：没冻结时它本来是被捞的，否则这条用例测不到东西"
+
+    cp.store.update_task(task["task_id"], last_error=FROZEN_BY_REPLAN)
+
+    assert cp.leases.unclaimed_dispatched(now) == []
+    assert cp.reap_expired_leases(now_iso=now) == 0
+
+
+def test_a_crash_mid_batch_still_dispatches_what_was_already_reaped(monkeypatch):
+    """回收中途抛异常 —— 异常照旧往外抛，但**已经处置完的任务必须被派出去**。
+
+    为什么不能只靠「别抛异常」了事：租约在循环里是**先销后处置**的，而
+    `claim_lease` 表是回收唯一的入口。一条租约把异常抛出来，同批里已经合法回到
+    PENDING 的任务就再没有任何机制会碰它们第二次 —— 它们的租约没了，`expired()`
+    看不见它们，`unclaimed_dispatched` 也看不见（它们不是 DISPATCHED）。
+    一条坏租约于是变成一整批任务静默停摆。所以那次 `dispatch_ready` 挂在
+    `finally` 上，不是挂在循环之后。
+
+    异常本身**不吞**：非法迁移说明有代码绕过了状态机（`states.py` 的
+    `IllegalTransition` 自陈「不要 catch 掉」），吞了它等于把 bug 变成偶发的。
+    这里用注入的方式造这一刻 —— 具体是哪种异常不重要，重要的是「有异常」时
+    已完成的处置要兑现。
+    """
+    store, _bus, cp = _boot()
+    plan_id = _plan(cp, roles=("coding", "coding"), max_attempts=3)
+    cp.start_plan(plan_id)
+    good, boom = store.list_tasks(plan_id)
+    cp.claim(good["task_id"], "w-good", 1)
+    cp.claim(boom["task_id"], "w-boom", 1)
+
+    # 租约改成字面量时刻，好让 expired() 的顺序确定：good 先、boom 后。
+    cp.leases.grant(good["task_id"], 1, "w-good", now_iso=T0, ttl_s=60)
+    cp.leases.grant(boom["task_id"], 1, "w-boom", now_iso=T0, ttl_s=120)
+
+    real = cp._reap_one
+
+    def exploding(task, lease, **kw):
+        if task["task_id"] == boom["task_id"]:
+            raise RuntimeError("注入：处置第二条租约时炸了")
+        return real(task, lease, **kw)
+
+    monkeypatch.setattr(cp, "_reap_one", exploding)
+
+    with pytest.raises(RuntimeError, match="注入"):
+        cp.reap_expired_leases(now_iso=T_LATER)
+
+    after = store.get_task(good["task_id"])
+    assert after["state"] == TaskState.DISPATCHED and after["attempt"] == 2, (
+        f"已经合法回到队列的任务停在 {after['state']}/attempt={after['attempt']}："
+        " 中途那次异常把它的派发一起带走了，而它的租约已经销掉 ——"
+        " 再没有任何机制会碰它，它就此静默停摆")

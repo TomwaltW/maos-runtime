@@ -110,6 +110,19 @@ def canon_iso(value: str) -> str:
     return parse_utc(value).strftime(_CANON_FMT)
 
 
+def _is_frozen(task: dict) -> bool:
+    """转调 `control_plane._is_frozen` —— **判定只留那一处**。
+
+    为什么不在这里直接比 `last_error == "frozen_by_replan"`：字面量各写一套就是
+    同一条判据有两份实现，改一处漏一处不报错、只会静默走岔。而 import 只能是
+    函数级的 —— `control_plane` 在模块顶部 import 本模块（`LeaseBook` /
+    `canon_iso`），顶部反向 import 会成环，且环的形态是「拿到一个还没定义完的
+    模块」，报的是 ImportError 而不是循环依赖，很难看出真因。
+    """
+    from maos.core.control_plane import _is_frozen as impl
+    return impl(task)
+
+
 def _conn_of(store: Any) -> sqlite3.Connection:
     """取底层连接。只认暴露了 `_conn` 的 Store 实现（当前是 `SqliteStore`）。"""
     conn = getattr(store, "_conn", None)
@@ -213,11 +226,17 @@ class LeaseBook:
     def claimable(self, roles: Iterable[str], now_iso: str) -> list[dict]:
         """**跨 plan 任务板**：现在可以被 `roles` 认领的任务，按 `created_at` 升序。
 
-        判据三条，缺一不可：
+        判据四条，缺一不可：
           1. `task.state == 'DISPATCHED'` —— 只有派发出去还没人认领的才在板上。
              PENDING 的依赖未必满足，派发是 `dispatch_ready` 的职责，不是这里的。
+             漏了这条，RUNNING（有人正在干）与 AWAITING_REVIEW（已经交付待评审）
+             会一起挂上任务板 —— 即「已完成的活重新挂出来让人再做一遍」。
           2. `task.role IN roles` —— 异构队友只看得见自己干得了的活。
           3. 无租约，或租约已过期 —— 有效租约意味着有人正在干，别去抢。
+          4. 未被重规划冻结 —— 与 `dispatch_ready` 同一条判据（`_is_frozen`）。
+             推、拉两条入口对「哪些任务可以做」必须是同一个口径；漏了这条，
+             被新方案淘汰掉的任务会从任务板上被领走并真的执行一遍，
+             而推那一侧明确拒绝派发它。
 
         `store.list_tasks(plan_id)` 是 per-plan 的，跨 plan 这一查没有现成方法，
         而「队友自我认领」要的恰恰是跨 plan 的视野 —— 队友属于团队，不属于某个计划。
@@ -244,4 +263,52 @@ class LeaseBook:
         with self._lock:
             ids = [r[0] for r in self._conn.execute(sql, params).fetchall()]
         tasks = [self._store.get_task(tid) for tid in ids]
-        return [t for t in tasks if t is not None]
+        return [t for t in tasks if t is not None and not _is_frozen(t)]
+
+    def unclaimed_dispatched(self, now_iso: str, *,
+                             ttl_s: int | None = None) -> list[tuple[dict, str]]:
+        """**派发之后从来没人认领**的任务，配上它各自的截止时刻。
+
+        这是 `expired()` 之外的第二个超时源，两者互补且不重叠：
+
+          · `expired()` 只看得见 `claim_lease` 表里的行，而租约唯一的登记点是
+            `ControlPlane.claim` 里 `_transit(RUNNING)` **成功之后**那一行；
+          · 停在 `DISPATCHED` 的任务按定义还没被认领，因此一行租约都没有。
+
+        少了这一支，`(DISPATCHED, PENDING) -> claim_timeout` 那条迁移在真实链路上
+        **不可达**（只有测试手工 `grant()` 才造得出它），而它兜的正是「派了一个
+        当时没有任何 Worker 承接的 role」—— 那种任务会永久停在 DISPATCHED，
+        无死信、无异常、无告警。
+
+        🔴 **时刻比较走 `parse_utc` 而不是 SQL 的字符串比较。** 这里读的是
+        `task.updated_at`，它出自 `store._now()`（`datetime.isoformat()`）——
+        **不定宽**：微秒为 0 时整段省略。字典序对它不等于时间序，正是本模块抬头
+        那段红字说的坑。`claim_lease.expires_at` 能走 SQL 比较，只因为那是本模块
+        自己按 `canon_iso` 写进去的。
+
+        不按 role 过滤：回收是控制面的动作，不是某个 worker 的视角。
+        """
+        ttl = self.ttl_s if ttl_s is None else ttl_s
+        if ttl <= 0:
+            raise ValueError(f"ttl_s 必须为正，收到 {ttl}")
+        sql = (
+            "SELECT t.task_id FROM task t"
+            " LEFT JOIN claim_lease l ON l.task_id = t.task_id"
+            " WHERE t.state = ? AND l.task_id IS NULL"
+            " ORDER BY t.created_at, t.task_id"
+        )
+        with self._lock:
+            ids = [r[0] for r in self._conn.execute(sql, (TaskState.DISPATCHED,)).fetchall()]
+
+        now = parse_utc(now_iso)
+        out: list[tuple[dict, str]] = []
+        for tid in ids:
+            task = self._store.get_task(tid)
+            if task is None or _is_frozen(task):
+                # 冻结的任务不归回收管（它已被重规划淘汰）。放它进来的话，
+                # 每一轮 reap 都会给它落一条 LeaseExpired —— 一条永远处置不完的噪声。
+                continue
+            deadline = parse_utc(task["updated_at"]) + timedelta(seconds=ttl)
+            if deadline <= now:
+                out.append((task, deadline.strftime(_CANON_FMT)))
+        return out

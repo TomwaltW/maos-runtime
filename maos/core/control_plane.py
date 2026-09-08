@@ -33,7 +33,7 @@ from maos.contracts.states import (
     assert_transition,
 )
 from maos.core.eventbus import EventBus
-from maos.core.lease import LeaseBook, utc_now_iso
+from maos.core.lease import LeaseBook, canon_iso, utc_now_iso
 from maos.core.store import Store
 from maos.tools.sandbox import sandbox_git_apply
 
@@ -137,9 +137,21 @@ LEASE_EXPIRED = "LeaseExpired"
 REAP_RETRY = "retry"                      # RUNNING -> PENDING，还有重试额度
 REAP_RETRY_EXHAUSTED = "retry_exhausted"  # RUNNING -> FAILED，额度已耗尽
 REAP_CLAIM_TIMEOUT = "claim_timeout"      # DISPATCHED -> PENDING，没人认领
-#: 任务已经往前走了（AWAITING_REVIEW / DONE / …），租约是没销干净的陈迹。
-#: 只销租约、不迁移 —— 拿一条过期租约去动一个已经进了下一环的任务，是在倒放历史。
+#: 任务已经往前走了（AWAITING_REVIEW / DONE / …），或它已被重规划取代（冻结）。
+#: 只销租约、不迁移 —— 拿一条过期租约去动一个已经不归它管的任务，是在倒放历史。
 REAP_STALE = "stale_lease"
+
+#: 回收的**两个超时源**。租约表只登记「认领成功之后」的时钟
+#: （唯一的登记点是 `claim` 里 `_transit(RUNNING)` 成功之后那一行），而
+#: `DISPATCHED` 的任务按定义还没被认领、因此一行租约都没有。只认租约表的话
+#: `REAP_CLAIM_TIMEOUT` 这条分支在真实链路上**根本不可达**：派了一个当时没有
+#: 任何 Worker 承接的 role，任务会永久停在 DISPATCHED —— 无死信、无异常、无告警。
+#: （改造前 `worker.py` 那条 `status=failed` 是响的，静默跳过把一个吵闹的坏换成了
+#: 一个安静的坏；补上这个源才算把它换成「响一次然后自愈」。）
+#: 所以派发那一侧要有自己的时钟，读的是 `task.updated_at` —— 进 DISPATCHED
+#: 那一刻由 `update_task` 写下的时刻，不需要新增任何列。
+REAP_SOURCE_LEASE = "lease"        # 认领之后失联：claim_lease 行到期
+REAP_SOURCE_DISPATCH = "dispatch"  # 派发之后无人认领：从头到尾没有租约行
 
 # -- 补偿 ----------------------------------------------------------------
 ENV_SANDBOX_WORKDIR = "MAOS_SANDBOX_WORKDIR"
@@ -512,16 +524,31 @@ class ControlPlane:
     # 租约回收：`claim_timeout` 这条冻结迁移的第一个实现（T107）
     # ------------------------------------------------------------------
     def reap_expired_leases(self, *, now_iso: str) -> int:
-        """回收所有到期租约，按任务当前状态走**既有迁移**。返回处置条数。
+        """回收超时的任务，按任务当前状态走**既有迁移**。返回处置条数。
+
+        **两个超时源**（见 `REAP_SOURCE_LEASE` / `REAP_SOURCE_DISPATCH`）：
+
+          1. `claim_lease` 行到期 —— 认领成功之后失联；
+          2. 任务停在 DISPATCHED 且**没有租约行**、进 DISPATCHED 已超过 TTL ——
+             派发出去从头到尾没人认领。只有源 1 的话这一支不可达，而它正是
+             `worker.py` 那条静默跳过的兜底。
 
         处置表（一条新状态、一条新迁移都没加 —— 铁律 1 / 铁律 9）：
 
         | 任务状态 | 处置 | 迁移 |
         | :-- | :-- | :-- |
+        | 已被重规划冻结（任何状态） | 不归它管，只销租约 | 无 |
         | RUNNING，attempt < max_attempts | 放回队列重派 | `RUNNING -> PENDING` (`retry`) |
         | RUNNING，attempt >= max_attempts | 判死并连坐 plan | `RUNNING -> FAILED` (`retry_exhausted`) |
         | DISPATCHED | 没人认领，重投 | `DISPATCHED -> PENDING` (`claim_timeout`) |
         | 其余 | 租约是陈迹，只销不迁 | 无 |
+
+        ⚠️ **「没人能干的 role」只能被无限重投，杀不掉。** 冻结迁移表里
+        `DISPATCHED -> FAILED` 与 `PENDING -> FAILED` 都不存在，于是一个全队伍
+        都不承接的 role 会在 DISPATCHED/PENDING 之间按 TTL 慢速弹跳，plan 永远
+        RUNNING。这比改造前的「静默永久停摆」好在它**响**（每轮一条
+        `LeaseExpired`，reason=claim_timeout，detail.source=dispatch，可告警），
+        但要真正判死它需要往冻结迁移表里加一条 —— 那要人拍板，已记 BACKLOG。
 
         `now_iso` 是**必填关键字**，本方法自己不取时钟：过期回收是一个「时间到了
         就动状态」的动作，时钟藏在里面的话，测试要验它就只能 sleep 真实的 TTL。
@@ -529,36 +556,89 @@ class ControlPlane:
         `dispatch_ready` 攒到最后按 plan 调一次，不在循环里逐条调：同一个 plan 的
         两条租约同时到期时，循环内调用会在第一条刚回到 PENDING 时就把它派出去，
         第二条还没处置完 —— 派发看到的是一份处置到一半的任务表。
+
+        🔴 **那次派发挂在 `finally` 上**，不是挂在循环之后：循环里任何一条租约把
+        异常抛出来，都会连累**同一批里已经合法回到 PENDING 的任务** —— 它们的租约
+        已经在循环里销掉了，而 `claim_lease` 表是回收唯一的入口，没有任何机制会再
+        碰它们第二次。于是「一条坏租约」变成「一整批任务静默停摆」。异常照旧往外抛
+        （非法迁移说明有代码绕过了状态机，不许 catch 掉），但**已经做完的处置必须
+        兑现**。
         """
         if self.leases is None:
             return 0
 
         handled = 0
         touched: list[str] = []                    # 保序去重，让派发顺序可复现
-        for lease in self.leases.expired(now_iso):
-            task = self.store.get_task(lease["task_id"])
-            self.leases.release(lease["task_id"])
-            handled += 1
-            if task is None:
-                # 任务没了租约还在。写不了 event_log（plan_id 无从得知），
-                # 销掉租约就是全部能做的事。
-                log.warning("[%s] 租约到期但任务不存在，只销租约", lease["task_id"])
-                continue
-            plan_id = self._reap_one(task, lease)
+
+        def _mark(plan_id: str | None) -> None:
             if plan_id is not None and plan_id not in touched:
                 touched.append(plan_id)
 
-        for plan_id in touched:
-            self.dispatch_ready(plan_id)
+        try:
+            for lease in self.leases.expired(now_iso):
+                task = self.store.get_task(lease["task_id"])
+                self.leases.release(lease["task_id"])
+                handled += 1
+                if task is None:
+                    # 任务没了租约还在。写不了 event_log（plan_id 无从得知），
+                    # 销掉租约就是全部能做的事。
+                    log.warning("[%s] 租约到期但任务不存在，只销租约", lease["task_id"])
+                    continue
+                _mark(self._reap_one(task, lease))
+
+            # 第二个超时源：派发出去始终没人认领的任务。它们**没有租约行**，
+            # 上面那个循环永远看不到它们（见 REAP_SOURCE_DISPATCH 的注释）。
+            # 放在租约循环之后查，是为了不跟它撞车：这一查要求「没有租约行」，
+            # 而刚被回收的那些任务此刻已不是 DISPATCHED，两个源天然不重叠。
+            for task, pseudo in self._unclaimed_dispatched(now_iso):
+                handled += 1
+                _mark(self._reap_one(task, pseudo, source=REAP_SOURCE_DISPATCH))
+        finally:
+            for plan_id in touched:
+                self.dispatch_ready(plan_id)
         return handled
 
-    def _reap_one(self, task: dict, lease: dict) -> str | None:
+    def _unclaimed_dispatched(self, now_iso: str) -> list[tuple[dict, dict]]:
+        """派发后超时仍无人认领的任务，配一条**合成的**租约行给下游复用。
+
+        合成行的 `worker_id` 是空串 —— 这正是这一支与 `REAP_SOURCE_LEASE` 的
+        全部差别：没有任何 worker 碰过它，「谁失联了」这个问题没有答案。
+        `granted_at` 取任务进 DISPATCHED 的时刻，`expires_at` 取那个时刻 + TTL，
+        于是 `LeaseExpired` 那行 detail 的形状两个源完全一致，下游不用分两种读法。
+        """
+        book = self.leases
+        out: list[tuple[dict, dict]] = []
+        for task, deadline in book.unclaimed_dispatched(now_iso):
+            out.append((task, {
+                "task_id": task["task_id"], "attempt": task["attempt"],
+                "worker_id": "", "granted_at": canon_iso(task["updated_at"]),
+                "expires_at": deadline,
+            }))
+        return out
+
+    def _reap_one(self, task: dict, lease: dict, *,
+                  source: str = REAP_SOURCE_LEASE) -> str | None:
         """处置一条到期租约。返回需要重新派发的 plan_id，不需要则 None。"""
         state = task["state"]
-        last_error = (f"lease_expired: worker={lease['worker_id']} "
-                      f"attempt={lease['attempt']} expires_at={lease['expires_at']}")
+        if source == REAP_SOURCE_DISPATCH:
+            last_error = (f"claim_timeout: 派发后无人认领 "
+                          f"attempt={lease['attempt']} dispatched_at={lease['granted_at']} "
+                          f"deadline={lease['expires_at']}")
+        else:
+            last_error = (f"lease_expired: worker={lease['worker_id']} "
+                          f"attempt={lease['attempt']} expires_at={lease['expires_at']}")
 
-        if state == TaskState.RUNNING:
+        if _is_frozen(task):
+            # 🔴 **冻结判据必须排在状态判断之前。** 被重规划取代的任务
+            # （`last_error == FROZEN_BY_REPLAN`）可以停在 RUNNING 或 DISPATCHED 上
+            # 且租约还在（`_apply_replan` 只打标、不动状态、不销租约）。落到下面那两支
+            # 的话，`_transit` 会把 `last_error` 覆写成 lease_expired —— 而
+            # `_is_frozen` 的**唯一**判据就是这个字段：任务当场解冻，本方法末尾的
+            # `dispatch_ready` 立刻把它重新派出去。一个已被重规划明确淘汰的任务
+            # 于是复活并再执行一遍（补丁再打一遍）。
+            # 处置与「任务已经往前走了」同一个口径：只销租约，不迁移。
+            disposition, dst = REAP_STALE, None
+        elif state == TaskState.RUNNING:
             if task["attempt"] >= task["max_attempts"]:
                 disposition, dst = REAP_RETRY_EXHAUSTED, TaskState.FAILED
             else:
@@ -577,12 +657,25 @@ class ControlPlane:
             "detail": {"worker_id": lease["worker_id"], "attempt": lease["attempt"],
                        "granted_at": lease["granted_at"],
                        "expires_at": lease["expires_at"],
-                       "max_attempts": task["max_attempts"]},
+                       "max_attempts": task["max_attempts"],
+                       "source": source},
         })
 
         if disposition == REAP_RETRY_EXHAUSTED:
             # 与 on_task_result 的 failed 分支同一个口径：任务判死，plan 跟着死。
-            self._fail_plan(task["plan_id"])
+            #
+            # 🔴 **plan 已经不在 RUNNING 上就别再判一次。** 同一个 plan 里两条租约
+            # 同时耗尽额度时，第一条已经把 plan 迁到 FAILED，第二条再来一次就是
+            # `FAILED -> FAILED` —— 那不在 `PLAN_TRANSITIONS` 里，会抛
+            # `IllegalTransition` 打断整批回收。RUNNING 是通往 FAILED 的**唯一**
+            # 合法来源（`states.py:56`），所以判据就写成它，不写「不是终态」——
+            # 后者会把 PENDING 那种同样非法的来源放过去。
+            plan = self.store.get_plan(task["plan_id"])
+            if plan is not None and plan["state"] == PlanState.RUNNING:
+                self._fail_plan(task["plan_id"])
+            else:
+                log.info("[%s] plan 已是 %s，不再重复判死",
+                         task["plan_id"], None if plan is None else plan["state"])
             return None
         return task["plan_id"] if dst == TaskState.PENDING else None
 

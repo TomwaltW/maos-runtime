@@ -1775,3 +1775,13 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 |---|---|---|---|---|
 | 2026-09-05 | T98 | `ALLOWED_MIME` 今天只收 jpeg / png / gif / webp / heic / pdf。老板把退款申请表存成 `.xlsx`（Excel 的默认格式，不是「另存为 CSV」）拖进群，会被类型闸原样拒掉 —— 而 `sheet.py` 那条入口正是给不写代码的人用的 | 拒得出声（回一句「不收这个类型」），不是静默失败，所以不是 bug 只是缺口。但它与 `ENCODINGS` 认 gbk 是同一个取向的两半：认 gbk 是为了迁就中文 Windows 的 Excel，而那个 Excel 默认存出来的其实是 xlsx | 派单 3.3 明写不许在本轨扩白名单（铁律 4），只记不改。真要做的是**两件事**不是一件：白名单加一类，和 `looks_like_sheet` / `parse` 认 xlsx（zip 容器，得解 sheet1.xml，本机没有 openpyxl）。第二件才是主要成本，别把它读成「加一行白名单」 |
 | 2026-09-05 | T98 | `looks_like_sheet` 的 NUL 闸（`b"\x00" in data[:4096]`）与新加的类型闸有重叠：PNG 两条都撞，PDF 只撞后一条 | 没有害处，两条判据各挡各的一类（类型闸只认识六种魔数，NUL 闸兜住其余一切二进制，比如那个改名成 .csv 的 ELF）。记下来是因为读代码的人会问「有了类型闸为什么还留着 NUL 闸」 | 不要删任何一条。真要动的时候先想清楚：删 NUL 闸，ELF 那条测试就得靠附件白名单兜；删类型闸，本轨那条对抗样本会红 |
+
+## task-T110（生命周期 hook，2026-09-08）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-08 | T110 | `WORKER_IDLE` **只定义、未接线**：常量、payload 形状（`worker_id` / `roles` / `just_finished_task_id`）与一条用假 registry 直接 `fire` 的测试都在，但 `maos/runtime/worker.py` 里一行都没加 | 三个挂点里只有两个真的挂上了。写 hook 的人照着 `EVENTS` 注册 `WORKER_IDLE` 会注册成功、然后永远不被调用 —— 正是本模块开篇要治的「静默失效」那个病的一个残留 | 接线点是 `maos/runtime/worker.py::WorkerRuntime._reply` 之后。本轨没接是因为 `worker.py` 这一轮归 T107，跨轨改同一个文件只会给整合期多制造一个冲突。**整合期接**，接的时候连 `test_worker_idle_is_not_wired_into_the_worker_runtime` 那条反向守卫一起改掉（它现在断言 worker.py 里不出现 `worker_idle`） |
+| 2026-09-08 | T110 | `docs/expected-metrics.json` 的 `pytest_passed_nopg` 被本轨从 2259 改成 2284，而 T107–T111 五轨各自都在加测试、各自都会改这同一个数 | 整合期这一行**必冲突**，而且冲突的解法不是挑一个、也不是把五个增量加起来（各轨新增条数会重叠或抵消，且合并后可能有测试互相影响）：**必须在合并完成的那棵树上重新实跑一次 `python3 -m pytest maos/tests -q` 取末行两个数**。挑一个值填进去会让门禁在下一个人身上误红 —— 那正是这条守卫的 docstring 里记的、已经发生过五次的那个事故 | 整合期，合完五轨之后、打 commit 之前 |
+| 2026-09-08 | T110 | 「全部 task 被否决」那一档，`HookVetoed` 与 `TaskCreationVetoed` 落在一个**不存在的** plan_id 上（plan 行按设计没建） | 这些行 `list_event_log(plan_id)` 捞得到（event_log 没有外键），但 Trace 侧按 plan 树组织时它们会成为孤儿 —— 与 `docs/BACKLOG.md ## task-X4` 记的 `stray_events` 是同一类形态。不是 bug：这一档本来就没有树可挂，把它们丢掉才是错的 | 下一轨动 Trace / 可观测面时，给这一类补一个「被否决的计划」视图，别让它们只能靠翻库看见。别为了消 warn 去建一个假 plan 行 —— 那是拿假绿换绿 |
+| 2026-09-08 | T110 | `HookRegistry` 没有注销（`off`）、没有超时、没有并发保护：一个慢回调能把 `create_plan` 整个拖住，一个死循环回调能把控制面挂死 | 今天不成问题（回调由装配代码在进程内注册，不是第三方动态挂载），但「能否决的挂点」天然会吸引越来越重的回调 —— 一旦有人在里面发网络请求，`create_plan` 的耗时就不再由本仓库说了算 | 真有人往回调里塞 I/O 的那一天再做，且做的应该是超时而不是线程池：超时到了按 fail-open 放行并落 `HookFailed`，与现有的异常姿态同源。现在就加是过度设计 |
+

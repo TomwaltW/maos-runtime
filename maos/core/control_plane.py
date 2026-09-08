@@ -34,6 +34,13 @@ from maos.contracts.states import (
 )
 from maos.core.eventbus import EventBus
 from maos.core.store import Store
+from maos.runtime.hooks import (
+    HOOK_VETO_REASON,
+    TASK_COMPLETED,
+    TASK_CREATED,
+    HookRegistry,
+    PlanVetoed,
+)
 from maos.tools.sandbox import sandbox_git_apply
 
 log = logging.getLogger("maos.cp")
@@ -177,9 +184,16 @@ def _comp_order(art: dict) -> tuple[int, str]:
 
 class ControlPlane:
     def __init__(self, store: Store, bus: EventBus, *,
-                 replanner: Replanner | None = None) -> None:
+                 replanner: Replanner | None = None,
+                 hooks: HookRegistry | None = None) -> None:
         self.store = store
         self.bus = bus
+        # 生命周期 hook（maos/runtime/hooks.py）。**缺省 None 时一次 fire 都不发生**
+        # —— 不是「fire 了但没人订阅」，是那几行代码根本不执行：不注入就与本挂点
+        # 出现之前逐字节相同（口径同 maos/config/audit.py 的「默认不接线」）。
+        # 这条不是洁癖：能否决的挂点一旦默认接上，某个第三方回调抛异常就能改变
+        # 全仓既有链路的行为，而那时谁都说不清是谁改的。
+        self._hooks = hooks
         # 重规划要调 Manager，也就是要调模型。控制面不持有模型、不 import Agent：
         # 注入一个回调，由场景层决定「重规划」具体怎么做（scenario_5 注入的是
         # ScriptedModelClient 驱动的 ManagerAgent，因此结果确定性可复现）。
@@ -261,8 +275,60 @@ class ControlPlane:
 
         另起一个「规划期」伪 plan 是另一条路，**没走**：为了消 warn 在 trace 里
         造出一棵不存在的树，是拿假绿换绿。
+
+        ## 生命周期挂点 ``TASK_CREATED``（注入了 ``hooks`` 才有）
+
+        每个 task spec **落库前**开火，回调返回 ``Veto`` 就不建这一件。三处刻意：
+
+        · **先把所有 spec 问一遍，再落第一条库。** 不是边问边建 —— 「全部被否决」
+          那一档要求连 plan 行都不许留下（见下），而 plan 行在旧写法里是循环之前
+          就插进去的。顺带也让回调看见的库状态是一致的（问第二件时第一件还没建），
+          否则同一份 spec 列表的判定会取决于它在列表里的位置。
+        · **全部被否决 -> 抛 ``PlanVetoed``，不建空 plan。** 空 plan 会立刻走到
+          ``_advance`` 的「一条活任务都不剩」分支被收敛成 ``FAILED``，那把
+          「治理拦下了这个计划」伪装成「计划执行失败」——两件事在 event_log 上
+          必须分得开。判据写成「问过且一个都没留下」而不是「一个都没留下」：
+          ``create_plan(tasks=[])`` 是既有合法调用（重规划返回空规格时走到这里），
+          不许被一起判死。
+        · **被否决的 task 若是别人的 ``depends_on`` 目标，不重连依赖。**
+          照实建剩下的，``dispatch_ready`` 的 ``issubset(done)`` 于是永远不满足，
+          依赖方停在 PENDING。这是有意的：自动跳过被否决的那一环去接线，等于系统
+          替人判定「那一环可有可无」，而那恰恰是人刚刚否掉的东西。
         """
         plan_id = plan_id or E.new_id("plan")
+        if self._hooks is not None:
+            kept: list[dict] = []
+            vetoed: list[dict] = []
+            for t in tasks:
+                veto = self._hooks.fire(
+                    TASK_CREATED,
+                    plan_id=plan_id, trace_id=trace_id, goal=goal,
+                    role=t["role"], title=t["title"],
+                    risk_level=t.get("risk_level", "L"),
+                    effect_risk=t.get("effect_risk", "L"),
+                    depends_on=t.get("depends_on", []),
+                    spec=t,
+                )
+                if veto is None:
+                    kept.append(t)
+                    continue
+                vetoed.append({"task_id": t.get("task_id"), "title": t["title"],
+                               "reason": veto.reason})
+                # 否决**为什么**发生已由 HookVetoed 记下；这一条记的是它**造成了什么**
+                # ——「这个任务因此没被创建」。两条分开，是因为同一次否决在别的挂点上
+                # 造成的后果不一样（TASK_COMPLETED 那边是转人工），后果不该压进 hook 层。
+                self.store.append_event_log({
+                    "trace_id": trace_id, "plan_id": plan_id,
+                    "task_id": t.get("task_id"), "event_type": "TaskCreationVetoed",
+                    "reason": veto.reason,
+                    "detail": {"title": t["title"], "role": t["role"],
+                               "hook_event": TASK_CREATED},
+                })
+                log.warning("[%s] 任务「%s」被 hook 否决，不创建：%s",
+                            plan_id, t["title"], veto.reason)
+            if tasks and not kept:
+                raise PlanVetoed(plan_id, vetoed)
+            tasks = kept
         self.store.insert_plan({
             "plan_id": plan_id, "trace_id": trace_id, "goal": goal, "state": PlanState.PENDING,
         })
@@ -464,8 +530,39 @@ class ControlPlane:
                 self._transit(task, TaskState.BLOCKED, event_id=env.event_id,
                               detail={**detail, "await": "human_approval"})
             else:
-                self._transit(task, TaskState.DONE, event_id=env.event_id, detail=detail)
-                self._advance(task["plan_id"])
+                # 生命周期挂点 TASK_COMPLETED：**落 DONE 之前**开火，注入了 hooks 才有。
+                # 回调返回 Veto 就不落 DONE，改走既有转人工出口 —— 复用
+                # _escalate_to_human 而不是自己再写一次 _transit：那个方法是
+                # 「机器已经没有别的招了」的唯一出口（见其 docstring），hook 否决
+                # 完成正属于这一类，而唯一出口意味着 `await` 标记只写一处、
+                # HumanApprovalQueue.pending 只需认一个字面量。转人工而捞不到人，
+                # 比直接 FAILED 更糟（gate.py::HumanApprovalQueue.pending 原话）。
+                # 不新增状态、不新增迁移（铁律 1/9）：走既有的
+                # AWAITING_REVIEW -> BLOCKED("gate_needs_human")。
+                veto = None
+                if self._hooks is not None:
+                    veto = self._hooks.fire(
+                        TASK_COMPLETED,
+                        task_id=task["task_id"], plan_id=task["plan_id"],
+                        trace_id=task["trace_id"], event_id=env.event_id,
+                        attempt=env.attempt, role=task["role"],
+                        gate_results=env.payload.get("gate_results", {}),
+                        artifact_count=len(self.store.list_artifacts(task["task_id"])),
+                    )
+                if veto is not None:
+                    log.warning("[%s] 完成被 hook 否决，转人工：%s",
+                                task["task_id"], veto.reason)
+                    # findings 传任务行上现有的那份，不是空列表：它是 _transit 的
+                    # 写入字段，传 [] 会把前几轮返工攒下的 finding 抹掉 —— 而人正是
+                    # 要看着它们做决定的。
+                    self._escalate_to_human(
+                        task, event_id=env.event_id, findings=task["findings"],
+                        detail=detail, reason=HOOK_VETO_REASON,
+                        hook_reason=veto.reason)
+                    # plan 状态不动 —— 同 _escalate_to_human 的既有语义。
+                else:
+                    self._transit(task, TaskState.DONE, event_id=env.event_id, detail=detail)
+                    self._advance(task["plan_id"])
 
         elif verdict == "rework":
             findings = env.payload.get("findings", [])

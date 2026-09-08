@@ -216,8 +216,24 @@ class Mailbox:
                                    "kind": kind, "body_digest": _digest(body)})
         return msg_id
 
-    def mark_read(self, msg_ids: Any, *, now_iso: str) -> int:
-        """标记已读，返回实际改动行数。已读的不再改 `read_at`（首次读取时刻才有意义）。"""
+    def mark_read(self, msg_ids: Any, *, to_agent: str, now_iso: str) -> int:
+        """标记已读，返回实际改动行数。已读的不再改 `read_at`（首次读取时刻才有意义）。
+
+        🔴 **`to_agent` 是必填，不是可选校验。** UPDATE 带上 `to_agent=?` 之后，
+        「谁能把这条消息标成已读」与「这条消息投给了谁」变成同一个判断。不带这个
+        条件的话，任何拿到 `msg_id` 的调用方都能把**别人的**未读消息标掉：收件方从此
+        永远收不到它，而 `event_log` 里一行痕迹都没有（标已读本身不落事件），排查者
+        手上只有一条 `read_at` 非空、看起来完全正常的库记录。
+
+        做成必填而不是 `to_agent=None` 缺省不校验，是因为后者把这道闸的开关交给了
+        调用点：漏传一次就静默退回上面那个形态。本模块今天零外部调用方（接线留给
+        整合期），改签名的成本正好是零。
+        """
+        if not to_agent:
+            raise MailboxError(
+                "mark_read 必须指名收件方：不带 to_agent 的 UPDATE 会让任何拿到"
+                " msg_id 的人标掉别人的未读消息，而这件事不落任何事件。"
+            )
         ids = [str(m) for m in msg_ids]
         if not ids:
             return 0
@@ -225,8 +241,8 @@ class Mailbox:
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE agent_message SET read_at=? WHERE read_at IS NULL"
-                f" AND msg_id IN ({marks})",
-                (now_iso, *ids),
+                f" AND to_agent=? AND msg_id IN ({marks})",
+                (now_iso, to_agent, *ids),
             )
             self._conn.commit()
             return cur.rowcount
@@ -250,13 +266,28 @@ class Mailbox:
         """取未读 → 标记已读 → 返回可直接塞进 `TaskContext.inputs["inbox"]` 的 list。
 
         这是「自动投递」的落点：整合期由 Worker 在执行前调一次，Agent 自己不轮询
-        （`TaskContext` 拿不到 store，它也没法轮询）。**取走即已读**，所以同一批
-        消息只会进一次上下文 —— 重复注入的症状是 Agent 反复回应同一条请求。
+        （`TaskContext` 拿不到 store，它也没法轮询）。
+
+        🔴 **「读未读 → 标记已读」整段在同一次持锁里跑**，不是两次各取一次锁。
+        分成两段的话中间有一个窗口：两个线程可以各自读到**同一批**未读、各自都投递
+        一遍，症状是 Agent 对同一条请求回应两次 —— 而下一段那句「只会进一次上下文」
+        正是本方法对调用方的承诺，承诺和实现分叉时没有任何测试会红。段内的
+        `inbox()` / `mark_read()` 会把同一把锁再取一次，那是 RLock 的重入，允许。
+
+        ⚠️ **取走即已读是 at-most-once，不是 exactly-once，这有代价。** 同一批消息
+        只会进一次上下文（重复注入的症状是 Agent 反复回应同一条请求）；代价是**任务
+        重试时那条消息永久丢失** —— 本次 attempt 取走后执行失败，下一次 attempt 拿到的
+        是一份全新的 `TaskContext`，里面没有它，而它已读了，此后再也不会出现。
+        要换成 exactly-once 得改成「Agent 交回结果之后才标已读」，那要动
+        `runtime/worker.py`（本轮不碰，见 `docs/BACKLOG.md` 的 `## task-T108`），
+        且代价换到另一头：worker 在中途崩掉时消息会重复注入。
         """
-        msgs = self.inbox(agent_name, unread_only=True)
-        if not msgs:
-            return []
-        self.mark_read([m["msg_id"] for m in msgs], now_iso=now_iso)
+        with self._lock:
+            msgs = self.inbox(agent_name, unread_only=True)
+            if not msgs:
+                return []
+            self.mark_read([m["msg_id"] for m in msgs],
+                           to_agent=agent_name, now_iso=now_iso)
         # 返回的是取走那一刻的形态：read_at 补成本次投递时刻，而不是留 None ——
         # 留 None 会让读到这份 list 的人以为这些消息还没读过。
         for m in msgs:

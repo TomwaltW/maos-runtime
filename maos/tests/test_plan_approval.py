@@ -7,7 +7,7 @@
 本文件证明的是那条缝被补上了，且**一行内核都没改**（最后一节的静态守卫就是
 这句话的机器判据）。
 
-## 三条最容易被改坏的断言，改代码前先看清它们在守什么
+## 四条最容易被改坏的断言，改代码前先看清它们在守什么
 
 1. `test_reject_leaves_the_plan_pending_for_a_second_look` —— **驳回不 start**。
    重规划完就自己跑起来的话，人的那次驳回等于没发生：他驳的是方案，拿到的却是
@@ -22,6 +22,11 @@
    键写成 `plan_approval:<plan_id>`（像 `human:<task_id>` 那样）的话，
    驳回之后的第二轮审批会被当成重复投递当场短路，人再也批不动这个计划，
    而且一声不吭。这条断言是唯一拦得住那次「顺手简化」的东西。
+
+4. `test_an_approval_racing_an_in_flight_rejection_cannot_start_the_plan` ——
+   **`PlanRejected` 必须落在本轮最后**。轮次是数这条事件数出来的；把它挪回调
+   replanner 之前（那看起来更「按时间顺序」），下一轮的键在本轮还没跑完时就空了，
+   窗口里的 approve 会把人刚驳回的旧规格派发出去，而 plan 停在 RUNNING。
 """
 
 from __future__ import annotations
@@ -165,6 +170,33 @@ def test_approve_starts_the_plan_and_dispatches_the_ready_tasks():
     assert queue.pending() == [], "批过的计划不该还挂在待审批队列里"
 
 
+def test_approve_refuses_a_plan_that_cannot_dispatch_anything():
+    """🔴 一条任务都派不出去的计划，批准当场抛 —— 批了只会停在 RUNNING 空转。
+
+    `start_plan` 不校验这件事，`dispatch_ready` 派不出去也只是返回 0：没有任务在飞
+    就不会有 TaskResult 去触发 `_advance`，plan 既不 DONE 也不 FAILED，无事件、无告警。
+    这正是人工审批这道闸最该拦下来的静默死状态。
+
+    出口必须留着：**驳回不走这条校验** —— 人正是靠驳回带反馈把一个跑不动的计划救回来的。
+    """
+    store, _bus, cp, queue = _build()
+    empty = cp.create_plan(goal=GOAL, trace_id=TRACE, tasks=[])
+    broken = cp.create_plan(goal=GOAL, trace_id=TRACE, tasks=[
+        {"role": "coding", "title": "丙", "task_id": "task_c", "depends_on": ["task_ghost"]}])
+
+    for plan_id in (empty, broken):
+        with pytest.raises(PlanNotAwaitingApproval, match="派得出去"):
+            queue.approve(plan_id, "boss")
+        assert store.get_plan(plan_id)["state"] == PlanState.PENDING
+        assert _plan_transitions(store, plan_id) == []
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM processed_key WHERE op=?", (IDEMPOTENCY_OP,)
+    ).fetchone()[0] == 0, "非法批准不许烧掉这一轮的键"
+
+    cp.set_replanner(_Replanner())
+    assert queue.reject(broken, "boss", "依赖写错了") is True, "驳回是唯一的出口，不许一起焊死"
+
+
 def test_the_approval_event_is_written_before_the_plan_starts():
     """事件顺序即因果顺序：先有人批准，才有计划开跑。"""
     store, _bus, cp, queue = _build()
@@ -245,6 +277,120 @@ def test_reject_without_a_replanner_still_puts_the_feedback_on_the_record():
         "什么都没重规划，落一条说重规划过了就是假绿"
     assert [t["title"] for t in store.list_tasks(plan_id)] == \
         [s["title"] for s in _specs_v1()], "没人重出规格，任务一个字都不该变"
+
+
+def test_a_replanner_that_gives_no_spec_at_all_leaves_the_plan_untouched():
+    """🔴 replanner 一条规格都没给出：原方案原样留着，**一条任务都不许冻结**。
+
+    照直把空规格喂给 `_apply_replan` 的话，open_tasks 会被它全部打上
+    `frozen_by_replan`，而 plan 仍是 PENDING、仍在 `pending()` 里、`preview` 仍显示
+    可批准 —— 人一批准就是 RUNNING + 零派发：没有任务在飞，就不会有 TaskResult 去
+    触发 `_advance`，控制面那条「全冻结就收敛 FAILED」的兜底永远够不着，plan 既不
+    DONE 也不 FAILED，也没有任何一条事件说出它已经死了。
+
+    也不许照抄 `ControlPlane._replan` 末尾那句 `_fail_plan`：那条路是机器自己触发的
+    重规划，判死没人接得住；本轨的口径是 plan 的死活由人说了算。
+    """
+    store, bus, cp, queue = _build()
+    plan_id = _make_plan(cp)
+    cp.set_replanner(_Replanner(specs=[]))
+    before = [(t["task_id"], t["title"], t["role"]) for t in store.list_tasks(plan_id)]
+
+    assert queue.reject(plan_id, "boss", "这版整个都不行") is True
+
+    assert [t["last_error"] for t in store.list_tasks(plan_id)] == [None, None], \
+        "一条规格都没给出就冻结全部任务 = 把计划冻死，而人还以为它可以批"
+    assert [(t["task_id"], t["title"], t["role"]) for t in store.list_tasks(plan_id)] \
+        == before, "什么都没重规划，任务一个字都不该变"
+    assert _events(store, plan_id, EV_REPLANNED)[0]["detail"] == {
+        "new_specs": 0, "open_tasks": 2, "round": 0, "applied": False}, \
+        "如实标 applied=False —— 标成 True 就是拿「replanner 回过话了」冒充「方案换过了」"
+    assert store.get_plan(plan_id)["state"] == PlanState.PENDING
+    assert queue.preview(plan_id)["runnable"] == 2
+
+    seen = []
+    bus.subscribe(Topic.TASK_ASSIGNMENT, "t111-spy", seen.append)
+    assert queue.approve(plan_id, "boss") is True
+    bus.drain()
+    assert len(seen) == 1, "批准之后必须真的有任务在飞，否则 plan 永远停在 RUNNING"
+
+
+def test_a_replanner_that_blows_up_still_leaves_the_rejection_on_the_record():
+    """replanner 抛异常时，这一轮的驳回也**发生过** —— 不留痕，人就再也驳不动了。
+
+    轮次不推进、而本轮的幂等键已被占用：人重试驳回会撞上自己刚才那把键，当场被当成
+    重复投递短路，这个计划从此谁也动不了。所以 `PlanRejected` 落在 `finally` 里。
+    """
+    store, _bus, cp, queue = _build()
+    plan_id = _make_plan(cp)
+
+    def _boom(**_kwargs):
+        raise RuntimeError("模型超时")
+
+    cp.set_replanner(_boom)
+    with pytest.raises(RuntimeError):
+        queue.reject(plan_id, "boss", "第一次")
+
+    assert [e["detail"]["round"] for e in _events(store, plan_id, EV_REJECTED)] == [0]
+    cp.set_replanner(_Replanner())
+    assert queue.reject(plan_id, "boss", "第二次") is True, "轮次推进了，人才驳得动第二次"
+
+
+def test_every_round_of_feedback_reaches_the_replanner():
+    """🔴 第 2 轮重规划必须看得见第 1 轮驳回过什么。
+
+    历轮意见只存在于 event_log 里：本轨的计划**一次都没跑过**，任务上的 findings
+    恒为空（`ControlPlane._replan` 的历史之所以齐，是因为它走 `_transit(REWORK)`
+    把 findings 落了库）。只喂本轮那一条的话，模型可以把人第 1 轮明令禁止的做法
+    原样再提一遍，而默认上限只有 2 轮 —— 人的第一条硬约束被系统自己丢掉，
+    且丢得没有任何提示。
+    """
+    store, _bus, cp, queue = _build()
+    plan_id = _make_plan(cp)
+    replanner = _Replanner()
+    cp.set_replanner(replanner)
+
+    queue.reject(plan_id, "boss", "绝对不许直接打钱")
+    queue.reject(plan_id, "risk", "验收标准没写")
+
+    first, second = replanner.calls
+    assert [f["message"] for f in first["findings"]] == ["绝对不许直接打钱"]
+    assert [f["message"] for f in second["findings"]] == \
+        ["绝对不许直接打钱", "验收标准没写"], "第 1 轮那条意见不许丢"
+    assert [f["id"] for f in second["findings"]] == ["plan-reject-0", "plan-reject-1"]
+    assert [f["operator"] for f in second["findings"]] == ["boss", "risk"]
+    assert all(f["scope"] == SCOPE_PLAN and f["severity"] == "blocker"
+               for f in second["findings"]), "历轮的也是人下的 blocker，不是旁注"
+
+
+def test_a_task_born_from_a_rejection_stays_on_the_plans_trace():
+    """🔴 驳回造出来的新任务必须挂在**计划的** trace 上，不许现造一个。
+
+    `_apply_replan` 的新建分支在 open_tasks 为空时没有可继承的 trace_id，会
+    `E.new_id("trace")` 现造一个 —— 全仓只有 reject 这条路走得到那一格
+    （`ControlPlane._replan` 先把当前任务转回 PENDING，它的 open_tasks 恒 ≥ 1）。
+
+    后果不是「id 不好看」：派发用的是任务行自己的 trace_id，Worker 与模型客户端据此
+    记账，而 `export_trace` 按 **plan 的** trace_id 归集用量 —— 这条任务烧掉的 token
+    在这个计划的成本视图里一条都查不到，`unattributed_usage` 也不会点它的名。
+    """
+    store, bus, cp, queue = _build()
+    plan_id = cp.create_plan(goal=GOAL, trace_id=TRACE, tasks=[])   # Manager 一条都没规划出来
+    cp.set_replanner(_Replanner())
+
+    assert queue.reject(plan_id, "boss", "一个任务都没有，重来") is True
+
+    tasks = store.list_tasks(plan_id)
+    assert [t["title"] for t in tasks] == ["方案乙：先查再退"], "驳回要能把空计划救回来"
+    assert [t["trace_id"] for t in tasks] == [TRACE], \
+        "trace_id 与 plan 脱钩 = 这条任务的用量与失败在计划的成本视图里整段消失"
+    assert {e["trace_id"] for e in store.list_event_log(plan_id)} == {TRACE}
+
+    seen = []
+    bus.subscribe(Topic.TASK_ASSIGNMENT, "t111-spy", seen.append)
+    queue.approve(plan_id, "boss")
+    bus.drain()
+    assert [e.trace_id for e in seen] == [TRACE], "派单用的是任务行自己的 trace_id"
 
 
 # ======================================================================
@@ -402,6 +548,40 @@ def test_an_illegal_call_does_not_burn_the_key():
     ).fetchone()[0] == 0
 
 
+def test_an_approval_racing_an_in_flight_rejection_cannot_start_the_plan():
+    """🔴 驳回还在飞（replanner 那次模型往返）时，另一个操作员的批准必须批不动。
+
+    轮次是数 `PlanRejected` 数出来的。那条事件若在调 replanner **之前**就落了，
+    下一轮的幂等键当场变空：窗口里的 approve 拿着它畅通无阻地 `start_plan`，把人刚
+    驳回的**旧规格**派发出去；随后返回的新规格再把已经 DISPATCHED 的那条任务原地
+    覆写 —— 被驳回的方案照样在跑、Worker 手上的派单与库里的任务行对不上、plan 停在
+    RUNNING，「驳回后仍停 PENDING」的题眼当场破掉。
+
+    这里用**重入**模拟那个窗口：replanner 被调到的那一刻，正是真实世界里 reject
+    停在网络往返上的那几秒。
+    """
+    store, bus, cp, queue = _build()
+    plan_id = _make_plan(cp)
+    seen = []
+    bus.subscribe(Topic.TASK_ASSIGNMENT, "t111-spy", seen.append)
+    race = {}
+
+    def _replanner(*, goal, findings, open_tasks):
+        race["approve"] = queue.approve(plan_id, "operator-B")      # 窗口里的另一个人
+        bus.drain()
+        return [{"role": "coding", "title": "方案乙", "inputs": {"amount": 0}}]
+
+    cp.set_replanner(_replanner)
+    assert queue.reject(plan_id, "operator-A", "别直接打钱") is True
+
+    assert race["approve"] is False, "窗口里的批准撞的是本轮那把已被占用的键"
+    assert store.get_plan(plan_id)["state"] == PlanState.PENDING
+    assert _plan_transitions(store, plan_id) == []
+    assert seen == [], "一条派单都不许发出去 —— 发了就是把被驳回的方案送上了路"
+    assert _events(store, plan_id, EV_APPROVED) == []
+    assert queue.approve(plan_id, "operator-B") is True, "驳回完成之后，下一轮照样批得动"
+
+
 # ======================================================================
 # 6. 重规划中的 plan 不是待审批的 plan
 # ======================================================================
@@ -480,24 +660,35 @@ def test_preview_shows_what_a_human_needs_to_decide_on():
     assert doc["topology"]["blocks"] == {first["task_id"]: [second["task_id"]],
                                          second["task_id"]: []}
     assert doc["topology"]["cycle"] == [] and doc["topology"]["dangling"] == []
+    assert doc["topology"]["frozen"] == [] and doc["topology"]["unreachable"] == []
+    assert doc["runnable"] == 2, "两条都派得出去（分两批），这个数就是人要看的那个"
 
 
 def test_preview_names_the_broken_dependencies_instead_of_hiding_them():
-    """环与悬空依赖不抛异常，如实列出来 —— 人工审批这道闸的价值就在这里。
+    """🔴 环、悬空依赖、以及挡在它们后面的任务，一条都不许出现在 `layers` 里。
 
-    机器把这两类规划缺陷跑成「永远没有任务 ready」的静默停摆；人一眼就看得出。
+    机器把这两类规划缺陷跑成「永远没有任务 ready」的静默停摆；人一眼就看得出 ——
+    前提是投影别把它们画成「这一批能跑」。`{'task_ghost'}.issubset(done)` 永远为假，
+    所以丙永远派不出去，挡在丙后面的丁同样派不出去。
     """
     _store, _bus, cp, queue = _build()
     plan_id = cp.create_plan(goal=GOAL, trace_id=TRACE, tasks=[
         {"role": "coding", "title": "甲", "task_id": "task_a", "depends_on": ["task_b"]},
         {"role": "coding", "title": "乙", "task_id": "task_b", "depends_on": ["task_a"]},
         {"role": "coding", "title": "丙", "task_id": "task_c", "depends_on": ["task_ghost"]},
+        {"role": "coding", "title": "丁", "task_id": "task_d", "depends_on": ["task_c"]},
     ])
 
     topo = queue.preview(plan_id)["topology"]
-    assert topo["layers"] == [["task_c"]], "只有丙没有真依赖挡着"
+    assert topo["layers"] == [], "一条都派不出去 —— 这份计划一批都跑不起来"
     assert topo["cycle"] == ["task_a", "task_b"]
-    assert topo["dangling"] == [{"task_id": "task_c", "depends_on": "task_ghost"}]
+    assert topo["unreachable"] == ["task_c", "task_d"], "死路会传染给挡在它后面的任务"
+    assert topo["dangling"] == [
+        {"task_id": "task_c", "depends_on": "task_ghost", "reason": "missing"}]
+    assert queue.preview(plan_id)["runnable"] == 0
+    assert cp.dispatch_ready(plan_id) == 0, "口径对齐的机器判据：投影说 0，派发就是 0"
+    with pytest.raises(PlanNotAwaitingApproval, match="派得出去"):
+        queue.approve(plan_id, "boss")
 
 
 def test_preview_marks_the_tasks_frozen_by_a_replan():
@@ -510,6 +701,49 @@ def test_preview_marks_the_tasks_frozen_by_a_replan():
     frozen = [t["frozen"] for t in queue.preview(plan_id)["tasks"]]
     assert frozen == [False, True]
     assert store.list_tasks(plan_id)[1]["last_error"] == FROZEN_BY_REPLAN
+
+
+def test_preview_never_promises_a_batch_that_dispatch_ready_will_not_send():
+    """🔴 `layers` 的口径必须与 `dispatch_ready` 一致 —— 人是照着它按批准键的。
+
+    只按 depends_on 连边的话，被上一轮重规划冻结的那条会被排进「第 2 批」，而
+    `dispatch_ready` 明确 `continue` 跳过它：人以为方案有两批要跑，实际只有一批，
+    投影里还没有任何字段提示那一批是死的。
+    """
+    store, bus, cp, queue = _build()
+    plan_id = _make_plan(cp)
+    cp.set_replanner(_Replanner())                  # 只给 1 条规格 -> 第 2 条被冻结
+    queue.reject(plan_id, "boss", "砍掉第二条")
+    live, dead = store.list_tasks(plan_id)
+
+    doc = queue.preview(plan_id)
+    assert doc["topology"]["layers"] == [[live["task_id"]]], "冻结的那条不许进 layers"
+    assert doc["topology"]["frozen"] == [dead["task_id"]]
+    assert doc["topology"]["blocks"] == {live["task_id"]: []}, "死人不挡活人"
+    assert doc["runnable"] == 1
+
+    seen = []
+    bus.subscribe(Topic.TASK_ASSIGNMENT, "t111-spy", seen.append)
+    queue.approve(plan_id, "boss")
+    bus.drain()
+    assert len(seen) == doc["runnable"] == 1, "投影承诺几条，派发就发几条"
+
+
+def test_a_task_waiting_on_a_frozen_one_is_not_promised_either():
+    """依赖指向一条被冻结的任务：它永远不会变成 DONE，这条任务也就永远派不出去。"""
+    store, _bus, cp, queue = _build()
+    plan_id = _make_plan(cp)
+    first, second = store.list_tasks(plan_id)
+    store.update_task(first["task_id"], last_error=FROZEN_BY_REPLAN)
+
+    topo = queue.preview(plan_id)["topology"]
+    assert topo["frozen"] == [first["task_id"]]
+    assert topo["dangling"] == [{"task_id": second["task_id"],
+                                 "depends_on": first["task_id"], "reason": "frozen"}]
+    assert topo["layers"] == [] and topo["unreachable"] == [second["task_id"]]
+    assert cp.dispatch_ready(plan_id) == 0
+    with pytest.raises(PlanNotAwaitingApproval, match="派得出去"):
+        queue.approve(plan_id, "boss")
 
 
 # ======================================================================
@@ -530,9 +764,18 @@ def test_the_four_events_have_the_documented_detail_shape(tmp_path):
     assert [e["detail"] for e in _events(store, rejected, EV_REJECTED)] == [
         {"operator": "boss", "feedback": f"意见 {i}", "round": i} for i in range(3)]
     assert _events(store, rejected, EV_REPLANNED)[0]["detail"] == {
-        "new_specs": 1, "open_tasks": 2, "round": 0}
+        "new_specs": 1, "open_tasks": 2, "round": 0, "applied": True}, \
+        "applied 说的是「新规格真的接管了任务」，不是「replanner 回过话了」"
     assert _events(store, rejected, EV_EXHAUSTED)[0]["detail"] == {
         "rejects": 3, "limit": 2}
+
+    # 顺序：PlanRejected 落在本轮最后，所以它排在同轮的 PlanReplanned **后面**。
+    # 别按「时间顺序更好看」把它挪回去 —— 轮次是数它数出来的，挪回去下一轮的幂等键
+    # 在本轮还没跑完时就空了（见 test_an_approval_racing_an_in_flight_rejection...）。
+    kinds = [e["event_type"] for e in store.list_event_log(rejected)
+             if e["event_type"] in (EV_REJECTED, EV_REPLANNED, EV_EXHAUSTED)]
+    assert kinds == [EV_REPLANNED, EV_REJECTED, EV_REPLANNED, EV_REJECTED,
+                     EV_EXHAUSTED, EV_REJECTED]
 
 
 def test_every_approval_event_hangs_on_a_span_tree(tmp_path):

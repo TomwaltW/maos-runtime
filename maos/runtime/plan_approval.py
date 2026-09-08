@@ -25,7 +25,7 @@
 生态位同 ``maos/runtime/gate.py`` 的 ``HumanApprovalQueue``：捞出在等人的东西、
 把人的决定回灌进控制面。区别只在颗粒度 —— 那个捞 task，这个捞 plan。
 
-## 三处最容易被抄错的地方（改这个文件之前先读完这一节）
+## 五处最容易被抄错的地方（改这个文件之前先读完这一节）
 
 ### 1. 驳回**不** start —— 所以不能复用 ``ControlPlane._replan``
 
@@ -57,6 +57,26 @@ plan 退回 PENDING。那种 plan 是「机器正在重规划」，不是「在�
 
 两个键长得像、语义相反，是这个文件最容易抄错的一处。
 
+轮次是**数 event_log 里 ``PlanRejected`` 条数**得来的，所以那条事件必须落在本轮
+**全部做完之后**（见 ``reject()`` 里那段注释）。早落一步，下一轮的键在本轮还没跑完时
+就已经空了：重规划那几秒（真实是一次模型往返）里，另一个操作员的 ``approve``
+会拿着下一轮的空键畅通无阻地 ``start_plan``，把人刚驳回的**旧规格**派发出去。
+
+### 4. ``preview`` 的口径必须与 ``dispatch_ready`` 一致
+
+人是照着 ``preview`` 的 ``layers`` 按批准键的，所以 ``layers`` 的承诺只能是
+「这几批**派得出去**」。冻结的任务、依赖永远等不到的任务，``dispatch_ready``
+一条都不会发，它们就不许出现在 ``layers`` 里（详见 ``_topology``）。
+两边分叉的症状是：人以为方案有两批要跑，实际只有一批，而且没人看得出来。
+
+### 5. replanner 返回空规格：什么都不动，别把整个计划冻死
+
+``ControlPlane._replan`` 对「一条规格都没给出」有专门收口（``_fail_plan``）。
+本文件**不能照抄**那一句 —— 本轨的口径是 plan 的死活由人说了算。但那一格也不能
+不管：照直把空规格喂给 ``_apply_replan``，全部任务会被打上 ``frozen_by_replan``，
+而 plan 仍以「待审批」示人；人一批准就是 RUNNING + 零派发，既不 DONE 也不 FAILED。
+做法见 ``_replan_after_reject``：什么都不动，如实落一条 ``applied=False``。
+
 ## 为什么调私有的 ``ControlPlane._apply_replan``
 
 ``_apply_replan`` 是全仓**唯一**一份「新规格接管旧任务」的口径：逐位覆写（保住
@@ -80,6 +100,7 @@ from maos.contracts.states import (
     PLAN_TRANSITIONS,
     TERMINAL_STATES,
     PlanState,
+    TaskState,
     can_transition,
 )
 from maos.core.control_plane import SCOPE_PLAN, ControlPlane, _is_frozen
@@ -161,11 +182,14 @@ class PlanApprovalQueue:
 
         被重规划冻结的任务照样列出来并标 ``frozen`` —— 它们不会被派发，
         看计划的人必须知道哪几条其实是死的，否则会以为方案比实际更完整。
+        同理，``topology["layers"]`` 只画**派得出去**的那几批（口径与
+        ``dispatch_ready`` 一致，见 ``_topology``），``runnable`` 把这个数直接给出来。
         """
         plan = self._require_plan(plan_id)
         tasks = self.store.list_tasks(plan_id)
         rejects = self._rejects(plan_id)
         limit = self._max_reject()
+        topology = self._topology(tasks)
         return {
             "plan_id": plan["plan_id"],
             "trace_id": plan["trace_id"],
@@ -174,6 +198,9 @@ class PlanApprovalQueue:
             "round": rejects,
             "reject_limit": limit,
             "exhausted": rejects >= limit,
+            #: 派得出去的任务条数（口径同 ``dispatch_ready``，冻结/死依赖的都不算）。
+            #: 它是 0 就意味着「批了也跑不动」—— 别让人只能自己从 tasks[*].frozen 里数。
+            "runnable": sum(len(layer) for layer in topology["layers"]),
             "awaiting": plan["state"] == PlanState.PENDING and not self._has_started(plan_id),
             "tasks": [{
                 "task_id": t["task_id"],
@@ -186,7 +213,7 @@ class PlanApprovalQueue:
                 "acceptance": list(t["acceptance"]),
                 "frozen": _is_frozen(t),
             } for t in tasks],
-            "topology": self._topology(tasks),
+            "topology": topology,
         }
 
     # ------------------------------------------------------------------
@@ -199,12 +226,17 @@ class PlanApprovalQueue:
         ``ControlPlane.claim``，理由也同：幂等键一旦消费就不回滚（store 只有
         claim/finish，没有撤销口）。非法调用若先把 key 烧掉，等这个 plan 真的轮到
         审批时，**合法的那次批准**会被当成重复投递短路掉，计划再也开不了跑。
+
+        校验有两条：``_require_awaiting``（它现在确实在等人批）与 ``_require_runnable``
+        （批了它跑得动）。第二条见那个方法的 docstring —— 批准一个一条任务都派不出去的
+        计划，换来的是一个停在 RUNNING、永远不收敛、也不告警的 plan。
         """
         plan = self._require_awaiting(plan_id)
+        self._require_runnable(plan_id)
         rejects = self._rejects(plan_id)
         key = self._key(plan_id, rejects)
         if self.store.claim_idempotency(key, IDEMPOTENCY_OP, plan_id) is not None:
-            log.info("[%s] 重复审批（第 %d 轮），短路", plan_id, rejects)
+            log.info("[%s] 这一轮（第 %d 轮）的键已被消费，短路", plan_id, rejects)
             return False
 
         tasks = self.store.list_tasks(plan_id)
@@ -216,9 +248,12 @@ class PlanApprovalQueue:
         return True
 
     def reject(self, plan_id: str, operator: str, feedback: str) -> bool:
-        """驳回：落 ``PlanRejected``，带反馈重出规格并应用，**仍停在 PENDING**。
+        """驳回：带反馈重出规格并应用，落 ``PlanRejected``，**仍停在 PENDING**。
 
-        返回 False 表示重复投递。plan 到最后是死是活由人说了算 —— 到了驳回上限
+        两件事的先后不是随手排的：``PlanRejected`` 落在**最后**，轮次到那一刻才推进
+        （理由见下面 ``finally`` 那段注释，以及模块 docstring 第 3 点）。
+
+        返回 False 表示重复投递（含「这一轮正被别的操作员处理着」）。plan 到最后是死是活由人说了算 —— 到了驳回上限
         也不自动判死，只落一条 ``PlanApprovalExhausted`` 说明「该改的是目标，
         不是再改一次方案」。口径同 ``ControlPlane._escalate_to_human``：
         闸当场把 plan 判死就是替人做了那个决定。
@@ -230,21 +265,40 @@ class PlanApprovalQueue:
             log.info("[%s] 重复驳回（第 %d 轮），短路", plan_id, rejects)
             return False
 
-        self._log(plan, EV_REJECTED,
-                  {"operator": operator, "feedback": feedback, "round": rejects})
-        limit = self._max_reject()
-        if rejects >= limit:
-            # 判定用的是**这次驳回之前**的条数：limit=2 时，第 3 次驳回不再重规划。
-            self._log(plan, EV_EXHAUSTED, {"rejects": rejects + 1, "limit": limit})
-            log.warning("[%s] 已被驳回 %d 次（上限 %d），不再重规划 —— 需要人改目标",
-                        plan_id, rejects + 1, limit)
-        elif self.cp._replanner is None:
-            # 没接 replanner 不是故障：反馈已经留痕，plan 停在 PENDING 等人改了目标
-            # 再提。这里**不落** ``PlanReplanned`` —— 什么都没重规划，落一条说重规划
-            # 过了就是假绿。
-            log.warning("[%s] 未注入 replanner，驳回只留痕、不重出规格", plan_id)
-        else:
-            self._replan_after_reject(plan, operator, feedback, rejects)
+        try:
+            limit = self._max_reject()
+            if rejects >= limit:
+                # 判定用的是**这次驳回之前**的条数：limit=2 时，第 3 次驳回不再重规划。
+                self._log(plan, EV_EXHAUSTED, {"rejects": rejects + 1, "limit": limit})
+                log.warning("[%s] 已被驳回 %d 次（上限 %d），不再重规划 —— 需要人改目标",
+                            plan_id, rejects + 1, limit)
+            elif self.cp._replanner is None:
+                # 没接 replanner 不是故障：反馈已经留痕，plan 停在 PENDING 等人改了目标
+                # 再提。这里**不落** ``PlanReplanned`` —— 什么都没重规划，落一条说重规划
+                # 过了就是假绿。
+                log.warning("[%s] 未注入 replanner，驳回只留痕、不重出规格", plan_id)
+            else:
+                self._replan_after_reject(plan, operator, feedback, rejects)
+        finally:
+            # ⚠️ ``PlanRejected`` **最后**才落 —— 轮次到此刻才推进。
+            #
+            # 轮次 = event_log 里这条事件的条数（``_rejects``），而幂等键 =
+            # ``plan_approval:<plan_id>:<轮次>``。早落一步，下一轮的键在本轮还没跑完时
+            # 就已经空了：重规划那几秒（真实是一次模型往返）里，另一个操作员的
+            # ``approve`` 拿着下一轮那个空键畅通无阻地 ``start_plan``，把人刚驳回的
+            # **旧规格**派发出去；随后返回的新规格再把已经 DISPATCHED 的任务原地覆写，
+            # Worker 手上的派单与库里的任务行从此对不上，plan 也停在了 RUNNING ——
+            # 「驳回后仍停 PENDING」这条题眼当场破掉。落在最后，那几秒里的 approve
+            # 撞的是**本轮**这把已被占用的键，如实短路。
+            #
+            # 放进 ``finally`` 是因为 replanner 会抛：抛了这一轮的驳回也**发生过**，
+            # 不留痕的话轮次不推进，而本轮的键已被占用 —— 人重试驳回会撞上自己刚才
+            # 那把键，当场被当成重复投递，这个计划再也动不了。
+            #
+            # 代价是 event_log 里 ``PlanReplanned`` 排在 ``PlanRejected`` 前面，读着
+            # 别扭；两条都带 ``round``，审计按轮次归组即可。轮次的正确性优先。
+            self._log(plan, EV_REJECTED,
+                      {"operator": operator, "feedback": feedback, "round": rejects})
 
         self.store.finish_idempotency(key, {"approved": False, "operator": operator})
         return True
@@ -258,19 +312,93 @@ class PlanApprovalQueue:
         plan_id = plan["plan_id"]
         open_tasks = [t for t in self.store.list_tasks(plan_id)
                       if t["state"] not in TERMINAL_STATES and not _is_frozen(t)]
-        # 人的意见排在最前，历史 findings 跟在后面：重规划要看的是「整个计划为什么
-        # 走不通」，只喂一条就退化成了返工（口径同 ControlPlane._replan）。
-        findings = [self._feedback_finding(operator, feedback, rejects)]
-        findings += [f for t in self.store.list_tasks(plan_id) for f in t["findings"]]
+        findings = self._reject_findings(plan_id, operator, feedback, rejects)
 
         specs = self.cp._replanner(goal=plan["goal"], findings=findings,
                                    open_tasks=open_tasks) or []
+        if not specs:
+            # 一条规格都没给出。``control_plane.py`` 自己的注释点名了这个现实情形：
+            # 「模型输出空、或调用异常被上游吞成了空列表」。
+            #
+            # 这里刻意**不**调 ``_apply_replan``：调了，open_tasks 会被它全部打上
+            # ``frozen_by_replan``，而 plan 仍是 PENDING、仍在 ``pending()`` 队列里、
+            # ``preview`` 仍显示可批准 —— 人一批准就是 RUNNING + 零派发：没有任何任务
+            # 在飞，也就永远不会有 TaskResult 去触发 ``_advance``，控制面那条「全冻结
+            # 就收敛 FAILED」的兜底永远够不着，plan 既不 DONE 也不 FAILED，无告警。
+            #
+            # 也**不**照抄 ``_replan`` 末尾那句 ``_fail_plan``：那条路是机器自己触发的
+            # 重规划，判死没人接得住；本轨的口径是 plan 的死活由人说了算（同
+            # ``_escalate_to_human``）。所以什么都不动 —— 原方案原样留着，人再看一眼，
+            # 他可以改目标再驳、也可以就这么批。如实落一条 ``applied=False``：
+            # 落成 ``applied=True`` 就是拿「replanner 回过话了」冒充「方案换过了」。
+            self._log(plan, EV_REPLANNED,
+                      {"new_specs": 0, "open_tasks": len(open_tasks),
+                       "round": rejects, "applied": False})
+            log.warning("[%s] 重规划一条规格都没给出 —— 原方案原样留着，不冻结任何任务",
+                        plan_id)
+            return
+
         self.cp._apply_replan(plan_id, open_tasks, specs)
+        self._reattach_trace(plan)
         self._log(plan, EV_REPLANNED,
                   {"new_specs": len(specs), "open_tasks": len(open_tasks),
-                   "round": rejects})
+                   "round": rejects, "applied": True})
         log.info("[%s] 按驳回意见重出 %d 条规格，仍停在 PENDING 等再次审批",
                  plan_id, len(specs))
+
+    def _reject_findings(self, plan_id: str, operator: str, feedback: str,
+                         rejects: int) -> list[dict]:
+        """喂给 replanner 的 findings：**历轮驳回意见 + 本轮 + 任务上的 findings**。
+
+        历轮的必须从 event_log 重建出来。``ControlPlane._replan`` 的历史之所以齐，是
+        因为它走 ``_transit(task, REWORK, findings=...)`` 把 findings 落了库；本轨的
+        计划**一次都没跑过**，任务上的 findings 恒为空 —— 只喂本轮那一条的话，第 2 轮
+        重规划完全不知道第 1 轮被驳回过什么，模型可以把「直接调网关打钱」原样再提一遍。
+        而默认上限只有 2 轮，人的第一条硬约束就这么被系统自己丢掉了，丢得没有任何提示。
+
+        不把这条 finding 写回任务行（那是 ``_replan`` 的做法）：本轨的任务随时会被
+        ``_apply_replan`` 逐位覆写掉，而 event_log 是 Trace 与审计的唯一来源，重建的
+        代价只是一次本来就要做的 ``list_event_log``。
+
+        只取 ``round`` 小于本轮的，与「``PlanRejected`` 落在本轮最后」解耦：哪天有人
+        把那条事件挪回前面，这里也不会把本轮的意见喂两遍。
+        """
+        past = [e["detail"] for e in self.store.list_event_log(plan_id)
+                if e.get("event_type") == EV_REJECTED
+                and e.get("detail", {}).get("round", 0) < rejects]
+        out = [self._feedback_finding(d.get("operator", ""), d.get("feedback", ""),
+                                      d.get("round", i))
+               for i, d in enumerate(past)]
+        out.append(self._feedback_finding(operator, feedback, rejects))
+        # 人的意见按轮次排在最前，任务上的 findings 跟在后面：重规划要看的是「整个计划
+        # 为什么走不通」，只喂一条就退化成了返工（口径同 ControlPlane._replan）。
+        out += [f for t in self.store.list_tasks(plan_id) for f in t["findings"]]
+        return out
+
+    def _reattach_trace(self, plan: dict) -> None:
+        """把 ``_apply_replan`` 现造的 trace_id 拉回计划这棵树。
+
+        ``open_tasks`` 为空时（人驳回一个 Manager 一条任务都没规划出来的计划），
+        ``_apply_replan`` 的新建分支没有可继承的 trace_id，会
+        ``E.new_id("trace")`` 现造一个。全仓只有本轨的 ``reject`` 走得到这一格 ——
+        ``ControlPlane._replan`` 先把当前任务转回 PENDING，它的 open_tasks 恒 ≥ 1。
+
+        后果不是「id 不好看」：派发用的是**任务行自己的** trace_id，Worker 与模型客户端
+        据此记账，而 ``export_trace`` 是按 **plan 的** trace_id 归集用量与失败调用的
+        （``_cost_rows`` / ``_failure_rows``）。两边对不上，这条任务烧掉的 token 在这个
+        计划的成本视图里一条都查不到，显示成「这条链路没花过钱、没失败过」；
+        ``unattributed_usage`` 只抓 trace_id 为空的行，也不会点它的名。
+
+        本轨不许改 ``control_plane.py``（并行轨共用的面），所以在这里把它拉回来。
+        整合期把 ``_apply_replan`` 提升为公开方法、让它接受 plan 的 trace_id 之后，
+        这一段就该删（已记进 ``docs/BACKLOG.md`` 的 ``## task-T111``）。
+        """
+        want = plan["trace_id"]
+        for t in self.store.list_tasks(plan["plan_id"]):
+            if t["trace_id"] != want:
+                self.store.update_task(t["task_id"], trace_id=want)
+                log.info("[%s] 重规划现造的 trace_id %s 拉回计划的 %s",
+                         t["task_id"], t["trace_id"], want)
 
     @staticmethod
     def _feedback_finding(operator: str, feedback: str, rejects: int) -> dict:
@@ -305,6 +433,33 @@ class PlanApprovalQueue:
             raise PlanNotAwaitingApproval(
                 f"{plan_id} 已经开跑过，现在停在 PENDING 是重规划中，不是在等审批")
         return plan
+
+    def _require_runnable(self, plan_id: str) -> None:
+        """批准之前先确认这个计划**跑得动**：至少有一个任务派得出去。
+
+        ``start_plan`` 不校验这件事，``dispatch_ready`` 派不出去也只是返回 0。于是
+        一个「一条活任务都没有」的计划被批准之后会停在 RUNNING：没有任何任务在飞，
+        就永远不会有 TaskResult 去触发 ``_advance``，控制面那条「全冻结就收敛 FAILED」
+        的兜底也就永远够不着 —— 既不 DONE 也不 FAILED，无事件、无告警。这正是人工审批
+        这道闸最该拦下来的静默死状态（铁律 8：静默的终态是 bug，不是完成）。
+
+        走得到这一格的三条路：任务一条都没规划出来（``create_plan(tasks=[])``）、
+        全部任务被上一轮重规划冻结、以及依赖成环或指向不存在的任务。判据直接用
+        ``_topology``，与 ``dispatch_ready`` 同一口径，不另写一份。
+
+        拦在幂等闸**前面**（同 ``_require_awaiting``）：非法批准不许烧掉这一轮的键，
+        烧了人就再也批不动这个计划了。**驳回不走这条校验** —— 人正是靠驳回带反馈把一个
+        跑不动的计划救回来的，在这里拦住驳回等于把唯一的出口也焊死。
+        """
+        tasks = self.store.list_tasks(plan_id)
+        topo = self._topology(tasks)
+        if topo["layers"]:
+            return
+        raise PlanNotAwaitingApproval(
+            f"{plan_id} 没有任何任务派得出去（共 {len(tasks)} 条：冻结 "
+            f"{len(topo['frozen'])}、依赖等不到 {len(topo['unreachable'])}、"
+            f"成环 {len(topo['cycle'])}），批了也只会停在 RUNNING 空转。"
+            " 该驳回带反馈重出规格，或者改目标。")
 
     def _has_started(self, plan_id: str) -> bool:
         """这个 plan 有没有 ``PENDING -> RUNNING`` 过。判据取自 event_log。
@@ -363,44 +518,81 @@ class PlanApprovalQueue:
 
     @staticmethod
     def _topology(tasks: list[dict]) -> dict:
-        """依赖拓扑：谁挡着谁、哪几批能并行、有没有环、有没有悬空依赖。
+        """依赖拓扑：哪几批**派得出去**、谁挡着谁、哪些永远轮不到。
 
-        分层用的是最朴素的削峰：入度为零的一批取出来当一层，删掉再取下一批。
-        剩下取不完的就是**环**里的任务 —— 不抛异常，如实列进 ``cycle``：
-        人工审批这道闸的价值恰恰是让这类计划在开跑前就被看见，而不是让它跑成
-        「永远没有任务 ready」的静默停摆。
+        🔴 口径与 ``ControlPlane.dispatch_ready`` 对齐，这不是可选项。``layers``
+        的承诺是「这几批会被派出去」，而人正是照着它按批准键的；只按 ``depends_on``
+        连边画出来的层会把**永远发不出去**的任务画成「第 2 批要跑」，人以为方案比
+        实际完整，且没有任何字段提示那一批其实是死的。派发的三条判据是
+        ``state == PENDING``、``not _is_frozen``、``depends_on ⊆ done``，对应到这里：
+
+          · **冻结的任务**（上一轮重规划取代掉的）``dispatch_ready`` 明确 ``continue``
+            跳过 —— 不进 ``layers``/``blocks``，单列进 ``frozen``；
+          · **依赖指向不存在的任务、或指向已冻结的任务**：那条依赖永远不会变成 DONE，
+            ``issubset(done)`` 恒假，该任务永远派不出去 —— 进 ``dangling`` 与
+            ``unreachable``，不进 ``layers``。这条还要**沿依赖边往下传**：挡在一条死路
+            后面的任务同样跑不了。已经 DONE 的依赖则视为满足，与派发口径一致。
+
+        分层用最朴素的削峰：入度为零的一批取出来当一层，删掉再取下一批。剩下取不完的
+        就是**环**里的任务 —— 环与悬空依赖都不抛异常，如实列出来：人工审批这道闸的
+        价值恰恰是让这类规划缺陷在开跑前被人看见，而不是让它跑成「永远没有任务 ready」
+        的静默停摆。
         """
-        order = [t["task_id"] for t in tasks]
+        frozen = [t["task_id"] for t in tasks if _is_frozen(t)]
+        frozen_set = set(frozen)
+        done = {t["task_id"] for t in tasks if t["state"] == TaskState.DONE}
+        live = [t for t in tasks if not _is_frozen(t)]
+        order = [t["task_id"] for t in live]
         known = set(order)
+
         blocks: dict[str, list[str]] = {tid: [] for tid in order}
         dangling: list[dict] = []
+        unreachable: set[str] = set()
         remaining: dict[str, set[str]] = {}
-        for t in tasks:
+        for t in live:
             deps = set()
             for dep in t["depends_on"]:
+                if dep in done:
+                    continue                # 已经做完，派发口径认它满足
                 if dep in known:
                     deps.add(dep)
                     blocks[dep].append(t["task_id"])
                 else:
-                    dangling.append({"task_id": t["task_id"], "depends_on": dep})
+                    dangling.append({
+                        "task_id": t["task_id"], "depends_on": dep,
+                        "reason": "frozen" if dep in frozen_set else "missing",
+                    })
+                    unreachable.add(t["task_id"])
             remaining[t["task_id"]] = deps
 
+        # 死路会传染：依赖了一个永远等不到的任务，自己也就永远等不到。
+        changed = True
+        while changed:
+            changed = False
+            for tid, deps in remaining.items():
+                if tid not in unreachable and deps & unreachable:
+                    unreachable.add(tid)
+                    changed = True
+
+        pool = {tid: deps for tid, deps in remaining.items() if tid not in unreachable}
         layers: list[list[str]] = []
-        while remaining:
-            ready = [tid for tid in order if tid in remaining and not remaining[tid]]
+        while pool:
+            ready = [tid for tid in order if tid in pool and not pool[tid]]
             if not ready:
                 break                       # 剩下的全在环里
             layers.append(ready)
             for tid in ready:
-                remaining.pop(tid)
-            for deps in remaining.values():
+                pool.pop(tid)
+            for deps in pool.values():
                 deps.difference_update(ready)
 
         return {
             "layers": layers,
             "blocks": blocks,
-            "cycle": [tid for tid in order if tid in remaining],
+            "cycle": [tid for tid in order if tid in pool],
             "dangling": dangling,
+            "frozen": frozen,
+            "unreachable": [tid for tid in order if tid in unreachable],
         }
 
     def _all_plan_ids(self) -> list[str]:

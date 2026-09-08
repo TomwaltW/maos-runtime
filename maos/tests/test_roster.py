@@ -225,6 +225,112 @@ def test_register_fills_in_place_then_forks_for_a_second_worker():
     assert roster.find("refund-intake@w2").source == SOURCE_MANUAL
 
 
+def test_register_keeps_exactly_one_row_per_worker_across_four_workers():
+    """n 个 worker 装同一个 role → 名册上**恰好 n 行**，不是 2^(n-1) 行。
+
+    只走到两个 worker 的测试看不见这个 bug：分叉是从 `by_role()` 的**全量**结果
+    出发的，而全量里含着上一轮分叉出来的副本，于是第三个 worker 起每轮翻番，
+    并造出 `refund-intake@w2@w3` 这种 agent_id —— 它的 worker_id 是 w3，和
+    `refund-intake@w3` 指的是同一个真实 Agent，却在名册上占着第二个座位。
+
+    伤害有三层，都不报错：`by_role` 回答「这个 role 有几个人在干」时答错一倍；
+    `agent_id` 是本模块声明的点对点收件人，`@w2@w3` 这个地址发不到任何人；
+    `status_of` 还会照着尾部那个 worker 给幽灵行报 busy/idle，把不存在的成员
+    说成活着的。
+    """
+    roster = Roster.from_agent_pool()
+    pool = len(roster)
+    workers = ["w1", "w2", "w3", "w4"]
+
+    for worker in workers:
+        got = roster.register(worker, roles=["refund_intake"])
+        assert len(got) == 1, f"{worker} 一次登记只该动一行，实际 {[m.agent_id for m in got]}"
+        assert got[0].worker_id == worker
+
+    same = roster.by_role("refund_intake")
+    assert [m.agent_id for m in same] == [
+        "refund-intake", "refund-intake@w2", "refund-intake@w3", "refund-intake@w4"]
+    assert [m.worker_id for m in same] == workers
+    assert len(roster) == pool + 3                   # 只多了 w2/w3/w4 那三行
+
+    for member in same:                              # 每个收件人都指得到唯一一个 worker
+        assert member.agent_id.count("@") <= 1, f"{member.agent_id} 是叠出来的幽灵"
+        if "@" in member.agent_id:
+            assert member.agent_id.split("@", 1)[1] == member.worker_id
+
+    roster.register("w4", roles=["refund_intake"])    # 幂等：重复登记不长记录
+    roster.register("w2", roles=["refund_intake"])
+    assert [m.agent_id for m in roster.by_role("refund_intake")] == [
+        m.agent_id for m in same]
+    assert len(roster) == pool + 3
+
+
+def test_register_is_still_idempotent_after_a_second_worker_appears():
+    """w1、w2 都在册之后，任何一个再登记一次，名册**逐字节不变**。
+
+    「register 幂等」这句承诺原本只在第二个 worker 出现**之前**成立：w1 再登记
+    时，候选里混着 w2 那行副本（worker_id=w2≠w1），于是落进「另起一行」，凭空
+    长出 `refund-intake@w2@w1`。交替登记八轮就有 16 行，14 行是发不到人的地址。
+
+    这条把幂等断言放在 fork **之后** —— 原来那条测试恰好放在之前，所以这个 bug
+    对全套测试不可见。
+    """
+    roster = Roster.from_agent_pool()
+    roster.register("w1", roles=["refund_intake"])
+    roster.register("w2", roles=["refund_intake"])
+    snapshot = render_members(roster.members())
+    size = len(roster)
+
+    again = roster.register("w1", roles=["refund_intake"])
+    assert [(m.agent_id, m.worker_id) for m in again] == [("refund-intake", "w1")]
+
+    for _ in range(8):                               # 交替八轮，一行都不许长
+        roster.register("w1", roles=["refund_intake"])
+        roster.register("w2", roles=["refund_intake"])
+
+    assert len(roster) == size
+    assert render_members(roster.members()) == snapshot
+
+
+def test_register_by_a_fork_id_lands_on_the_origin_not_a_chained_ghost():
+    """拿副本的 `agent_id` 来登记，落回**本尊**再分叉，不接成第二段后缀。
+
+    `agent_ids=` 这条路不经过 `by_role` 的候选过滤，所以调用方直接报上
+    `refund-intake@w2`（它手里就这一个名字）时，天真的做法会拼出
+    `refund-intake@w2@w3` —— 一个 worker_id=w3、却把 w2 写在名字里的地址，
+    收件人对不上任何一台机器。
+    """
+    roster = Roster.from_agent_pool()
+    pool = len(roster)
+    roster.register("w1", roles=["refund_intake"])
+    roster.register("w2", roles=["refund_intake"])
+
+    got = roster.register("w3", agent_ids=["refund-intake@w2"])
+
+    assert [m.agent_id for m in got] == ["refund-intake@w3"]
+    assert roster.find("refund-intake@w2@w3") is None
+    assert len(roster) == pool + 2                   # 只多了 @w2 与 @w3 两行
+    assert roster.find("refund-intake@w2").worker_id == "w2"
+
+
+def test_register_does_not_mangle_a_real_agent_id_that_contains_an_at_sign():
+    """名字里本来就带 `@` 的成员不是分叉副本，不许被剥成前半截。
+
+    分叉行的判据是「source=manual 且带 `@` 且剥掉后缀在册、role 相同」三条同时
+    成立。少了最后一条，`boss@matrix` 这种真名字会被当成 `boss` 的副本 ——
+    于是给它换 worker 时，信被改投给一个叫 `boss` 的、可能压根不存在的人。
+    """
+    roster = Roster.from_agent_pool()
+    roster.register("w1", agent_ids=["boss@matrix"])
+    assert roster.find("boss@matrix").worker_id == "w1"
+
+    got = roster.register("w2", agent_ids=["boss@matrix"])
+
+    assert [m.agent_id for m in got] == ["boss@matrix@w2"]   # 整名加后缀，不切
+    assert roster.find("boss") is None                        # 没有凭空造出 boss
+    assert roster.find("boss@matrix").worker_id == "w1"       # 原地那行没动
+
+
 def test_register_keeps_a_worker_the_pool_never_heard_of():
     """池子里没有的 role / agent_id 不丢弃，按 `manual` 收进来。
 

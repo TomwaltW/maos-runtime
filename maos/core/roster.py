@@ -217,6 +217,28 @@ class Roster:
         return STATUS_BUSY if member.worker_id in running else STATUS_IDLE
 
     # -- 登记 ---------------------------------------------------------------
+    def _origin_id(self, member: Member) -> str:
+        """这一行的「本尊」``agent_id``：分叉行剥掉 ``@<worker>`` 后缀，其余原样。
+
+        分叉行是 ``register`` 规则 3 造出来的副本，**不是另一个人** —— 它和本尊
+        指的是同一个 Agent，只是装在别的 worker 上。分不清这件事，``register``
+        就会拿副本再分叉一次：第三个 worker 起成员数按 2^(n-1) 膨胀，并造出
+        ``refund-intake@w2@w3`` 这种没有对应真实收件人的 ``agent_id`` ——
+        而 ``agent_id`` 正是本模块声明的「点对点消息的收件人」，按它发信发不到人。
+
+        判据三个条件同时成立才认，缺一个都会误伤：``source == manual``（池子里
+        扫出来的行不可能是副本）、``agent_id`` 带 ``@``、剥掉后缀之后**在册且
+        role 相同**。第三条挡的是 ``register(agent_ids=["boss@matrix"])`` 这种
+        本来就带 ``@`` 的真名字 —— 那不是副本，不许被切成 ``boss``。
+        """
+        if member.source != SOURCE_MANUAL or "@" not in member.agent_id:
+            return member.agent_id
+        base = member.agent_id.split("@", 1)[0]
+        origin = self._members.get(base)
+        if origin is None or origin.role != member.role:
+            return member.agent_id
+        return base
+
     def register(self, worker_id: str, *, roles: Iterable[str] = (),
                  agent_ids: Iterable[str] | None = None) -> list[Member]:
         """登记一个**活着的** worker 装了哪几个 role。返回被登记到的成员。
@@ -225,9 +247,12 @@ class Roster:
 
         1. 这一行还没挂 worker（``worker_id == ""``）→ **就地填上**。单 worker 部署
            （全仓今天只有 ``w1``）因此拿到的仍是干净的 ``refund-intake``。
-        2. 已经挂在同一个 worker 上 → 不动。``register`` 幂等，重复调不长记录。
-        3. 已经挂在**别的** worker 上 → **另起一行**，``agent_id`` 是
-           ``<原 agent_id>@<worker_id>``，``source="manual"``。
+        2. 已经挂在同一个 worker 上 → 不动。``register`` 幂等，重复调不长记录——
+           第二个 worker 出现之后也一样：候选只取**本尊**那一行，规则 3 造出来的
+           副本不再参与下一轮分叉（见 ``_origin_id``）。
+        3. 已经挂在**别的** worker 上 → 从**本尊**那一行**另起一行**，
+           ``agent_id`` 是 ``<本尊 agent_id>@<worker_id>``，``source="manual"``。
+           n 个 worker 装同一个 role，名册上就恰好 n 行 —— 副本不会再生副本。
 
         为什么第三条不覆盖：``agent_id`` 是点对点消息的收件人，覆盖等于把发给
         w1 那位的信悄悄改投给 w2。也不能让两行共用一个 ``agent_id`` —— 那样收件人
@@ -249,7 +274,8 @@ class Roster:
             if not same_role:
                 same_role = [self.add(Member(agent_id=role, role=role, duty="",
                                              source=SOURCE_MANUAL))]
-            for member in same_role:
+            origins = [m for m in same_role if self._origin_id(m) == m.agent_id]
+            for member in origins or same_role:
                 picked.setdefault(member.agent_id, member)
         for agent_id in agent_ids or ():
             member = self.find(agent_id)
@@ -264,8 +290,8 @@ class Roster:
                 out.append(member)
             elif not member.worker_id:              # 规则 1：就地填
                 out.append(self.add(replace(member, worker_id=worker_id)))
-            else:                                   # 规则 3：另起一行
-                forked = f"{member.agent_id}@{worker_id}"
+            else:                                   # 规则 3：从本尊另起一行
+                forked = f"{self._origin_id(member)}@{worker_id}"
                 have = self._members.get(forked)
                 out.append(have if have is not None else self.add(replace(
                     member, agent_id=forked, worker_id=worker_id,

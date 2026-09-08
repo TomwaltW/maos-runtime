@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from datetime import datetime, timezone
@@ -194,6 +195,14 @@ class ControlPlane:
         # 这条不是洁癖：能否决的挂点一旦默认接上，某个第三方回调抛异常就能改变
         # 全仓既有链路的行为，而那时谁都说不清是谁改的。
         self._hooks = hooks
+        # 留痕是这个挂点契约的一半，不该靠调用方记得传参。HookRegistry 的 store 是
+        # 可选的（它也要能在不接库的轻量装配里直接用），于是最自然的写法
+        # `ControlPlane(store, bus, hooks=HookRegistry())` 不报错、也不留痕：
+        # HookFailed / HookVetoed 全部静默丢失，挂点退化成 maos/ingress/router.py
+        # 那种「只打日志」的观察者 —— 而控制面手里明明有 store，只是没绑上去。
+        # 只在它还没有 store 时补：已经绑了另一本账是调用方的显式选择，不覆盖。
+        if hooks is not None and hooks.store is None:
+            hooks.store = store
         # 重规划要调 Manager，也就是要调模型。控制面不持有模型、不 import Agent：
         # 注入一个回调，由场景层决定「重规划」具体怎么做（scenario_5 注入的是
         # ScriptedModelClient 驱动的 ManagerAgent，因此结果确定性可复现）。
@@ -300,14 +309,23 @@ class ControlPlane:
             kept: list[dict] = []
             vetoed: list[dict] = []
             for t in tasks:
+                # 交给回调的是**副本**，不是控制面手里的活对象 —— 回调只能表达
+                # 否决，不能改写。原样传 `t` 的话，一条 `return None`（即明确放行、
+                # 不否决）的回调就能把 effect_risk 从 H 改成 L 落库：on_review_verdict
+                # 的 NEEDS_HUMAN_APPROVAL 分支与 HumanApprovalQueue.pending 的判据
+                # 双双不再命中，不可逆产物无人放行地落 DONE，而 event_log 上一行痕迹
+                # 都没有（HookVetoed / HookFailed 只在否决或抛异常时才落）。同一条
+                # 回调往 depends_on 里塞一个不存在的 task_id，还能让任务永远停在
+                # PENDING。那与「只认 Veto 一种否决形态、别的一律不算」自相矛盾：
+                # 否决走不通的路，改字段反而走得通，且不留痕。
                 veto = self._hooks.fire(
                     TASK_CREATED,
                     plan_id=plan_id, trace_id=trace_id, goal=goal,
                     role=t["role"], title=t["title"],
                     risk_level=t.get("risk_level", "L"),
                     effect_risk=t.get("effect_risk", "L"),
-                    depends_on=t.get("depends_on", []),
-                    spec=t,
+                    depends_on=list(t.get("depends_on", [])),
+                    spec=copy.deepcopy(t),
                 )
                 if veto is None:
                     kept.append(t)
@@ -541,12 +559,18 @@ class ControlPlane:
                 # AWAITING_REVIEW -> BLOCKED("gate_needs_human")。
                 veto = None
                 if self._hooks is not None:
+                    # gate_results 同样传副本：上面那行 `detail` 与这里取的是
+                    # env.payload 里**同一个** dict 对象。原样传进去，一条
+                    # `return None` 的回调就能改写它，而写进 DONE 那一跳 detail 的
+                    # 正是被改过的值 —— 闸实际发来的结果永久丢失，审计链上留下一个
+                    # 从未发生过的闸结果。detail 那边继续持原对象即可：它记的就是
+                    # 闸发来的东西，不该被挂点碰到。
                     veto = self._hooks.fire(
                         TASK_COMPLETED,
                         task_id=task["task_id"], plan_id=task["plan_id"],
                         trace_id=task["trace_id"], event_id=env.event_id,
                         attempt=env.attempt, role=task["role"],
-                        gate_results=env.payload.get("gate_results", {}),
+                        gate_results=copy.deepcopy(env.payload.get("gate_results", {})),
                         artifact_count=len(self.store.list_artifacts(task["task_id"])),
                     )
                 if veto is not None:

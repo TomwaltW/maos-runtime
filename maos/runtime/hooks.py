@@ -37,6 +37,17 @@ MAOS 今天有四处回调，**没有一处能否决**：
 ``maos/config/audit.py`` 的 ``ConfigChanged``。``store=None`` 时跳过落库
 （口径同 ``maos/skills/invoker.py::SkillInvoker._settle``）。
 
+## 回调改不了它看见的东西
+
+``fire`` 的 payload 里凡是可变的（``spec`` / ``depends_on`` / ``gate_results``），
+控制面侧都**先拷贝再交出来**。理由是保住上面那条设计的自洽：本模块只认 ``Veto``
+一种否决形态，别的一律不算 —— 可如果回调还能顺手改写控制面手里的活对象，那条
+设计就自相矛盾了。否决走不通的路（要落 ``HookVetoed``、要短路、要被人看见），
+改字段反而走得通，而且一行痕迹都没有：一条 ``return None``（明确放行、不否决）
+的回调把 ``effect_risk`` 从 H 改成 L，就足以让不可逆产物无人放行地落 DONE。
+
+挂点该有的权力只有一个：说不。
+
 ## 三个挂点，只接了两个
 
 ``TASK_CREATED`` 与 ``TASK_COMPLETED`` 在 ``maos/core/control_plane.py`` 里接好了
@@ -47,6 +58,11 @@ MAOS 今天有四处回调，**没有一处能否决**：
 跨轨改同一个文件只会给整合期多制造一个冲突 —— 而这个挂点没有它也能证明自己成立
 （``maos/tests/test_hooks.py`` 用假 registry 直接调 ``fire`` 钉住了它的形状）。
 留给整合期接。
+
+接上的那两个也各有一块覆盖不到的面 —— ``TASK_CREATED`` 管不住重规划建/改的任务，
+``TASK_COMPLETED`` 管不住 ``effect_risk=H`` 的任务。**两块都写在对应常量的注释上**，
+别只读常量名就当它全覆盖：一个自以为管住了全部的挂点，比一个说清楚自己管到哪里
+的挂点更危险，那还是开篇那句话的变体。
 
 ## 为什么放在 runtime/ 而不是 core/
 
@@ -69,11 +85,46 @@ log = logging.getLogger("maos.hooks")
 
 # -- 三个挂点 ------------------------------------------------------------
 #: 任务落库前。payload：plan_id / trace_id / goal / role / title /
-#: risk_level / effect_risk / depends_on / spec（原始规格 dict）。
+#: risk_level / effect_risk / depends_on / spec（规格 dict）。
+#:
+#: ``spec`` 与 ``depends_on`` 交出来的是**副本**，改它们不会影响落库的字段
+#: （见模块 docstring「回调改不了它看见的东西」）。
+#:
+#: 🔴 **覆盖面只有 ``ControlPlane.create_plan`` 这一个入口。**
+#: ``ControlPlane._apply_replan`` 的两条路都绕过它，且都不落任何审计行：
+#:
+#: * **覆写既有任务** —— 重规划能把一个 ``role=coding / effect_risk=L`` 的任务
+#:   就地改成 ``role=payment / effect_risk=H``，等于凭空造出一个本挂点本该拦下的
+#:   任务，而 hook 一次都没被问过；
+#: * **``insert_task`` 直接建新任务** —— 连覆写都不用。
+#:
+#: 也就是说「哪些任务可以被创建」这个判据今天只管住了首次规划。返工命中
+#: ``_should_replan`` 时系统会自己绕过去，不需要人参与 —— 装一条「role == payment
+#: 一律 Veto」的 hook，首次规划拦得住，重规划照样把它建出来，``TaskCreationVetoed``
+#: 与 ``HookVetoed`` 都是 0 行。写 hook 的人不要以为它管住了全部任务创建。
+#: 本轨没补，是因为 ``_replan`` / ``_apply_replan`` 这一轮归 T107，跨轨改同一个
+#: 方法只会给整合期多制造一个冲突。缺口记在 ``docs/BACKLOG.md`` 的 ``## task-T110``，
+#: 接线留给整合期（覆写也算一次「这个任务该不该以这个形态存在」，不只是新建）。
 TASK_CREATED = "task_created"
 
 #: 任务判定完成、落 DONE 前。payload：task_id / plan_id / trace_id / event_id /
-#: attempt / role / gate_results / artifact_count。
+#: attempt / role / gate_results / artifact_count。``gate_results`` 是副本，
+#: 理由同 ``TASK_CREATED``。
+#:
+#: 🔴 **不覆盖 ``effect_risk`` 落在 ``NEEDS_HUMAN_APPROVAL``（今天是 H）的任务。**
+#: 那一支在 ``on_review_verdict`` 里 Gate 判 pass 就直接转人工（BLOCKED），最终的
+#: DONE 由 ``ControlPlane.human_decision`` 的 approved 分支落 —— 那条路上本挂点
+#: 一次都不开火，也不落任何「它被跳过了」的痕迹。后果得说白：一条「没有合规产物
+#: 就否决完成」的治理规则，对普通任务生效，对**最高 effect_risk** 的那一类完全
+#: 不生效，而两者在注册代码里长得一模一样。
+#:
+#: 这是刻意的取舍——挂点不参与人的决定，人已经看过产物了——**不是**「H 那一支
+#: 走不到判定完成」：它走得到，只是走的是另一条路（``human_decision``）。这两句
+#: 差别很大，前者是划定边界，后者是事实错误，别把注释读成后者。要让 H 也被问，
+#: 得在 ``human_decision`` 的 approved 分支也开火（人仍可覆盖否决，但「挂点被问过、
+#: 被人驳回」这件事至少进得了 event_log）。那属于整合期，记在 ``docs/BACKLOG.md``。
+#: 边界本身由 ``test_task_completed_does_not_fire_for_high_effect_risk_even_via_human_approval``
+#: 钉住 —— 边界不写测试，下一个人会以为它只是漏了。
 TASK_COMPLETED = "task_completed"
 
 #: 队友即将空闲。payload：worker_id / roles / just_finished_task_id。
@@ -143,8 +194,12 @@ class HookRegistry:
     """挂点注册表。``store=None`` 时一切照跑，只是不留痕。
 
     ``store`` 可选是为了让 hook 能在没接库的场景（单测、Agent 侧的轻量装配）里
-    直接用 —— 口径同 ``SkillInvoker``。代价是那些场景没有审计链，所以控制面接线时
-    **一定要把 store 传进来**。
+    直接用 —— 口径同 ``SkillInvoker``。代价是那些场景没有审计链。
+
+    接控制面时**不必**记得传：``ControlPlane.__init__`` 看见 ``store is None``
+    会把自己的 store 绑进来。这一条不是便利，是补漏 —— 留痕是本模块契约的一半，
+    而 ``HookRegistry()`` 不传 store 既不报错也不留痕，最自然的那种写法恰好是
+    静默失效的那种写法。已经绑了另一本账时不覆盖：那是调用方的显式选择。
     """
 
     def __init__(self, store: Store | None = None) -> None:

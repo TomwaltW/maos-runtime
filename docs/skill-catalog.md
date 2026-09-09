@@ -39,10 +39,10 @@
 | `notify.customer` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤2 次） | （空） | `maos/skills/builtin/refund/notify.py:22` |
 | `payment.execute` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.refund` | `maos/skills/builtin/refund/payment_execute.py:34` |
 | `payment.observe` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/payment_observe.py:36` |
-| `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:62` |
+| `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:363` |
 | `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:65` |
 | `refund.evidence_check` | `1.0.0` | 制造售后退款域 | `refund_evidence` | escalate | （空） | `maos/skills/builtin/refund/evidence_check.py:109` |
-| `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:59` |
+| `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:110` |
 | `refund.reason_classify` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤1 次） | （空） | `maos/skills/builtin/refund/reason_classify.py:141` |
 | `refund.risk_screen` | `1.0.0` | 制造售后退款域 | `refund_risk` | escalate | （空） | `maos/skills/builtin/refund/risk_screen.py:46` |
 | `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:51` |
@@ -478,18 +478,18 @@
 
 ### policy.match @ 1.0.0
 
-实现：`PolicyMatchSkill` @ `maos/skills/builtin/refund/policy.py:62`
+实现：`PolicyMatchSkill` @ `maos/skills/builtin/refund/policy.py:363`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
 | `purpose` | ① 用途 | 按订单快照锁定的政策版本检索适用规则并裁定退款资格（零模型，可复现） |
 | `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`rule_prefix`: str（可选，默认 'AS-'） |
-| `output_schema` | ③ 输出 | `policy_version`: int（订单锁定的版本，**不是**当前最新版本）<br>`matched_rules`: list[dict{rule_no,version,title,params}]<br>`rule_refs`: list[str]（形如 AS-01@v1）<br>`decision`: approve\|reject<br>`reason`: str<br>`invocation_id`: str |
+| `output_schema` | ③ 输出 | `policy_version`: int（订单锁定的版本，**不是**当前最新版本）<br>`matched_rules`: list[dict{rule_no,version,title,params}]<br>`rule_refs`: list[str]（形如 AS-01@v1）<br>`decision`: approve\|reject<br>`reason`: str<br>`eligibility`: dict{eligible,unmet,evidence_seen,checked_rules,ineffective_rules}（规则自己声明的条件判据满不满足；**与 decision 平行，不改 decision**：判据不满足 = 该规则不予适用，由 finance.settle 按 ineffective_rules 剔参）<br>`invocation_id`: str |
 | `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
 | `depends_tools` | ⑤ 依赖工具 | （空） |
 | `failure_policy` | ⑥ 失败策略 | escalate |
 | `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
-| `security_boundary` | ⑦ 安全边界 | 只读 refund_case / order_snapshot / policy_rule，只写 business_ref；不改 biz_status、不调模型、不碰支付网关；政策版本一律取自订单快照，禁止使用 policy_rule 的最新版本 |
+| `security_boundary` | ⑦ 安全边界 | 只读 refund_case / order_snapshot / policy_rule，只写 business_ref；条件判据只读 customer_evidence / product_snapshot，不写；不改 biz_status、不调模型、不碰支付网关；政策版本一律取自订单快照，禁止使用 policy_rule 的最新版本 |
 | `reuse_note` | ⑧ 复用说明 | 任何「按快照锁定的版本判定」的场景都可照此复用 objects.policy_rules_at_order |
 | `owner_roles` | ⑨ 归属角色 | `refund_policy` |
 
@@ -529,18 +529,18 @@
 
 ### refund.intake @ 1.0.0
 
-实现：`RefundIntakeSkill` @ `maos/skills/builtin/refund/intake.py:59`
+实现：`RefundIntakeSkill` @ `maos/skills/builtin/refund/intake.py:110`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
 | `purpose` | ① 用途 | 聚合多源退款诉求与证据，去重后建 refund_case 并挂上证据引用 |
-| `input_schema` | ② 输入 | `signals`: list[dict]（工单 / 客服记录 / 客户上传，形状同 issue.aggregate 的 findings）<br>`case_seed`: dict{tenant_id,case_id,channel_id,order_id,order_version,sku,reason_code,amount_claimed} |
-| `output_schema` | ③ 输出 | `case_draft`: dict（refund_case 那一行，biz_status=submitted）<br>`evidence_refs`: list[dict{evidence_id,kind,uri,digest,source}]<br>`issues`: list[dict]（issue.aggregate 的去重结果）<br>`dedup`: dict{signals:int,issues:int,merged:int}<br>`invocation_id`: str（本次写入的 actor 锚点） |
+| `input_schema` | ② 输入 | `signals`: list[dict]（工单 / 客服记录 / 客户上传，形状同 issue.aggregate 的 findings）<br>`case_seed`: dict{tenant_id,case_id,channel_id,order_id,order_version,sku,reason_code,amount_claimed}<br>`applicant_ref`: dict{supplier_id,po_no,approver,approved_amount,doc_no}（可选；供应链退款的审批单，给了就落一条 business_ref，doc_no 必填，approved_amount 只是申报值不是裁定金额；不给则行为与不带此键时完全一致，也不替代 case_seed 的必填校验） |
+| `output_schema` | ③ 输出 | `case_draft`: dict（refund_case 那一行，biz_status=submitted）<br>`evidence_refs`: list[dict{evidence_id,kind,kind_raw,uri,digest,source}]（kind 已归一化到 image/video/audio/document/attachment，kind_raw 是提交方的原始声明，认不出的 kind 原样留在这里）<br>`applicant_ref`: dict（原样回填的审批单；入参没给则本键不出现）<br>`issues`: list[dict]（issue.aggregate 的去重结果）<br>`dedup`: dict{signals:int,issues:int,merged:int}<br>`invocation_id`: str（本次写入的 actor 锚点） |
 | `preconditions` | ④ 前置条件 | `signals`、`case_seed` |
 | `depends_tools` | ⑤ 依赖工具 | （空） |
 | `failure_policy` | ⑥ 失败策略 | escalate |
 | `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
-| `security_boundary` | ⑦ 安全边界 | 只写 refund_case（经 guard.create_case）/ customer_evidence / business_ref；不调模型、不碰支付网关；去重经 SkillInvoker 复用 issue.aggregate，调用方 identity 必须同时授予该 skill，否则 PermissionDenied |
+| `security_boundary` | ⑦ 安全边界 | 只写 refund_case（经 guard.create_case）/ customer_evidence / business_ref；不调模型、不碰支付网关；去重经 SkillInvoker 复用 issue.aggregate，调用方 identity 必须同时授予该 skill，否则 PermissionDenied；kind 归一化只改写落库的取值，不改变证据集合的成员（成员判据仍是有没有 uri） |
 | `reuse_note` | ⑧ 复用说明 | 任何业务域要把多源诉求收成一个案子都可照此复用 issue.aggregate，不另写去重 |
 | `owner_roles` | ⑨ 归属角色 | `refund_intake` |
 

@@ -1635,6 +1635,100 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`sandbox.git_apply` / `sandbox.pytest_run` 本轮不迁 MCP** | 无。这两个工具的安全论证是「容器 `--network none --read-only --user 1000:1000`」，换成跨进程传输之后，隔离等价性要从头论证一遍（沙箱 server 自己跑在哪个边界里？降级路径怎么办？`sandbox_mode` 还测得准吗），而它们本来就已经是真调用，迁移收益为零 | 只有在「沙箱真的要跑到另一台机器上」时才值得做。届时先解决的不是传输，是隔离边界怎么跟着搬 |
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
+
+## task-T55（多 Provider 模型客户端：第二家协议）
+
+本轨新增 `maos/model/providers.py`（Anthropic Messages 客户端 + provider 注册表）
+与 38 条离线测试。**只造零件不接线**是派单定的范围，下面五条都是动手时撞到、
+按铁律 4 不当场改的。第 1 条是本轮范围裁剪留下的必然缺口，写在这里是为了让整合期
+有个挂钩 —— 零件没有消费方这件事不会有任何测试变红。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`PROVIDERS` 目前零消费方**。`select_model_client()`（`maos/model/client.py:329`）仍然只认 `MAOS_LLM_*` 三件套那一条 OpenAI 兼容路径，没有任何配置面能选中 `"anthropic"` | 新客户端能被 import、能被测试，但**跑不到生产路径上**。而「接不上」不会红任何一条用例：注册表是纯数据，没人读它也照样绿 | T57（构造入口）与整合期。接线时要连带决定「provider 名从哪个 env 读」——本轨刻意没定这个变量名，定了就是替 T57 拍板 |
+| 2026-09-01 | P9 | **`HigressModelClient` 不在注册表里**。它是占位类（`complete()` 一进来就 `NotImplementedError`），本轨按派单不动它，于是仓库里有三个客户端类、注册表只两条 | 今天无害。但「注册表 = 全部可用 provider」这条不变量现在只是口头的，没有测试守着类集合与表的对应关系 | 接 Higress 的那一轨。要么补进表、要么在表的 docstring 里写明「占位类不入表」并加一条守卫 |
+| 2026-09-01 | P9 | **零重试缺口被复制了一遍**（承接 `## task-T54` 记的第 19 条）。新客户端与 `GatewayModelClient` 一样，一次网络抖动就等于一个任务 failed | 现在是两家都没有，将来做重试要在两处做 —— 或者先把出网那段抽出来共用（但那要改 `client.py`，本轨的只读面） | 做重试的那一轨。抽公共出网层与加重试应当同一轨做完，别先抽后加 |
+| 2026-09-01 | P9 | **`stop_reason == "max_tokens"` 的截断没有任何上层处置**。本轨把 `stop_reason` 记进了 `ModelResponse.meta`，但全仓没有一处读它 | 截断发生时正文是**半截 JSON**，下游解析失败会表现成「模型没按格式回」，而真因是 `max_tokens` 给小了。误诊方向完全相反：会有人去改 prompt，而不是调额度 | 与「按角色配 `max_tokens`」一起做（T56 路由表那一侧更自然）。至少要在解析失败的错误文本里带上 `stop_reason` |
+| 2026-09-01 | P9 | **`model_usage` / `model_call_failure` 两张表都没有 provider 维度**（`maos/core/store.py:557`、`:595` 的参数表里只有 `model`，没有 provider） | 一家的时候不需要。两家并存之后，账上要靠 `model` 字符串反推是哪家 —— 而那一列的值来自服务端回显，不是我方可控的枚举 | 真正接第二家上生产的那一轮。表结构是冻结面，只能新增表或新增列，要和第 1 条的接线一起设计。注：`usage_is_estimated()` 这一处**不用改** —— 它判的是「是不是 `ScriptedModelClient`」，新客户端天然被判为真实计费 |
+
+## task-T56（角色 → 模型路由表，本轮都不改）
+
+2026-09-01 做路由表时撞到的四条。都在本轨白名单外（`conftest.py`、`model/client.py`、
+`runtime/worker.py`、`agents/**`），按铁律 4 记账不动手。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`maos/tests/conftest.py` 的起跑线不含 `MAOS_LLM_*`**。Matrix 五键与存储两键都有 autouse fixture 清场，模型这一族没有，每个用到它的测试文件各自 `delenv`（`test_model_client_hardening.py::_all_missing`、`test_registry_autodiscovery.py:451`，本轮 `test_model_routing.py` 又造了第三个） | 今天不红：现有文件都自防。但这是「靠每个作者记得」而不是「起跑线自己划」——漏一处的症状是**在配了 key 的机器上才红**，而那正是采集演示证据的那台。路由表落地后变量名从 3 个涨到「3 + 角色数 × 4 + tier 数 × 4」，靠人工写死名单必漏 | 归动 `conftest.py` 的那一轨：加一条按 `MAOS_LLM_` 前缀扫的 autouse fixture（本轮 `test_model_routing.py::_no_ambient_llm_env` 就是它的现成实现，抄过去即可），然后把三处各自的 delenv 收掉 |
+| 2026-09-01 | P9 | **`MAOS_LLM_TIMEOUT` 没有进 `RouteSpec`**，超时仍是全局唯一一份（`model/client.py::_timeout_from_env`） | 路由表让不同角色走不同家的模型之后，超时却还是一个值。强模型跑长任务需要 300s，轻量分类角色 300s 等于把一次挂死拖成五分钟 | 归接线那一轨（`client.py` 的持有轨）：要么给 `RouteSpec` 加 `timeout_env`，要么明确写死「超时按 tier 分档，不按路由分」。两条都行，别留成「没人决定过」 |
+| 2026-09-01 | P9 | **路由表本轮无人消费**：`routing.resolve()` / `describe()` 写完了，但 `select_model_client()`（A-12 冻结、T57 持有）与 `worker.py` 都还没调它 | 本轨范围就是「只出解析，不接线」，所以这不是缺陷。但它意味着：接线那一轨如果没做，这个模块是**没有任何红灯的死代码** —— 测试全绿，`run.py` 全绿，而 22 个 agent 照旧共用一个全局 client | 接线轨落地后，加一条守卫钉住「`describe()` 报出的 source 与 worker 实际注入的 client 对得上」。在那之前，`describe()` 说的是**配置意图**，不是**运行事实**，读它的人要知道这个区别 |
+| 2026-09-01 | P9 | **tier 这一级路由粒度接近失效**：22 个在池角色里 17 个是 `light`（实测 light 17 / medium 2 / strong 3） | `MAOS_LLM_TIER_LIGHT_MODEL` 一配就同时改掉 17 个角色，等于第二个全局开关；真要给某个理赔角色单独换模型，只能退回角色级逐个配。分档本身没错，错的是「新角色默认落 light」这个惯性 | 归下一轮补角色的那一轨：新增 `AgentIdentity` 时把 `model_tier` 当成必须想一想的字段，而不是抄上一个。不建议加第四档（会撞 `client.py::Tier` 的三档口径） |
+
+## task-T57（按角色注入模型客户端时发现，本轮都不改）
+
+2026-09-01 接线「每个 worker 连一个大模型 API」时撞到的四条。按铁律 4 只记不改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **生成物 `docs/agent-identity.md` 把 `maos/runtime/worker.py` 的 `__init__` 行号写进正文**（本轮 28 -> 39）。任何一轨在 worker.py 顶部加一行 import，`test_generated_docs` 立刻两条变红 | 红灯本身是对的（生成物确实过期了），坏的是**归因**：症状是「文档守卫红了」，原因是「别人加了个 import」，中间隔着一个没人会想到的行号。本轮为此多改了一个白名单外文件 | 做生成器那一轨。行号换成锚点（`AGENT_POOL` 那行的符号名），或者干脆只写文件名不写行号 —— 行号是全仓最容易过期的一种引用 |
+| 2026-09-01 | P9 | **`core/store.py::usage_is_estimated` 判的是客户端的 `isinstance`，与「给客户端加包装层」天然互斥**。本轮靠「Scripted 一律不包」绕开 | 今天无害。但下一轮若真想给缺省路径也留路由归属（比如演示时想看「假模型也按角色分了流」），就没有出路了 —— 包了 `estimated` 翻面，不包就没有归属 | 真需要那天再动，且**不要**改成判 `ModelResponse.model` 字符串：两者同源会让核验器第 8 项判据 c 退化成自己跟自己对账 |
+| 2026-09-01 | P9 | **provider 归属进不了 `model_usage` 表**。`RoutedModelClient` 把 role/provider/route_source 写进 `ModelResponse.meta`，而 `record_model_usage` 不落 meta（表结构是冻结面，铁律 1，本轮一列都没加） | 「这次调用花的钱是打给哪家的」在成本表里查不到，只能拿 `agent_role` 去关联 event_log 里那条 `ModelRouted`。一次运行里成立（路由是不变量），**一旦支持运行中改路由就不成立了** | 与 BACKLOG 里那条「`estimated` 一个字段扛两种语义」一起做，都要新增表 |
+| 2026-09-01 | P9 | **`ModelRouted` 落在 `plan_id` 空串下，进不了 `trace.json`**。Worker 构造在任何 plan 之前，此刻确实没有 plan 可归（编一个更坏），而 `obs/trace.py` 按 plan_id 取 event_log | 路由留痕在库里查得到、在证据束里查不到。演示当天要证明「各角色真的分流了」，得单独开一条查询 | 做可观测那一轨。要么 trace 额外捞一次 `plan_id=""`，要么 Worker 在首次接到派单时补一条带 plan_id 的归属行 |
+
+## task-T58（职责能力档案与声明一致性闸）
+
+本轨只造「一张档案表 + 一台体检机 + 一条会红的测试」，**一处漂移都没修**（铁律 4）。
+下面 11 条是 2026-09-01 在 `d386387` 上跑 `maos.capability.profiles.check_consistency()`
+实测出来的，整合期照着这张单子裁定。
+
+体检机报 **12 条 finding**（error 5 / warning 7），归并成 **11 条修改项**：
+`ap.compensate` 一处同时触发 `owner-role-unknown` 与 `skill-unowned` 两条 finding，
+但修法是同一处。四组的口径与派单 §5.1 一致：
+甲（白名单放行不存在的工具）2 条、乙（owner_roles 与实际持有者不符）7 条、
+丙（depends_tools 指向不存在的 ToolPort）2 条、丁（持有者缺依赖工具）**0 条**。
+
+`maos/capability/profiles.py` 的 `PROFILES` 已经按**实际调用点**写好了应然值，
+每条的「建议怎么修」就是把 identity / 契约改成与档案一致；
+改完 `maos/tests/test_capability_profiles.py` 的 `BASELINE`、`TOOL_DIFF_BASELINE`
+与分组计数会一起变红，那是**提醒把这张单子上对应的行划掉**，不是回归。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **甲-1（error）`coding.allowed_tools` 里的 `sandbox` 全仓没有对应的 ToolPort**。出处 `maos/agents/coding.py:33`。全仓真端口只有 11 个，其中沙箱侧叫 `sandbox.git_apply` / `sandbox.pytest_run`，没有裸的 `sandbox` | 白名单放行了一个不存在的东西 —— `check_tool("sandbox")` 会通过，但拿这个名字到任何地方都取不到端口。与 `maos/tools/mcp/git_tool.py` 文件头点名过的 `git-mcp` 那个洞同源，那处已补，这处还留着 | 整合期。建议改成 `frozenset({"git-mcp"})`：`code_repo_patch.py:197` 唯一的 `invoke_tool` 实参是 `GIT_MCP_PORT`，`coding` 今天并不调沙箱；`sandbox.git_apply` 至今没有任何生产调用方（全仓只有定义处 `maos/tools/sandbox.py:723`），不要顺手把它塞进白名单充数 |
+| 2026-09-01 | P9 | **甲-2（error）`testing.allowed_tools` 里的 `sandbox` 同样查不到端口**。出处 `maos/agents/testing.py:165` | 同上。`testing` 是真的要跑沙箱的角色，所以这条一旦有人按 `check_tool` 的结论去接线，会拿着一个错名字接不上 | 整合期。建议改成 `frozenset({"sandbox.pytest_run"})` —— `test_verify.py:68` 调的就是 `PYTEST_RUN_PORT`，实名如此 |
+| 2026-09-01 | P9 | **丙-1（error）`code.repo-patch` 的 `depends_tools` 含 `sandbox`**。出处 `maos/skills/builtin/code_repo_patch.py:171` | 契约自述依赖一个不存在的端口。`docs/toolport-contract.md` 这类生成物是照契约产出的，等于把不存在的依赖写进了对外文档 | 与甲-1 同一轨改，建议改成 `["git-mcp"]`。**两处要一起改**：只改 identity 不改契约，丁类（持有者缺依赖工具）会立刻从 0 条变成有条 |
+| 2026-09-01 | P9 | **丙-2（error）`test.verify` 的 `depends_tools` 含 `sandbox`**。出处 `maos/skills/builtin/test_verify.py:46` | 同上。这份契约的 `security_boundary` 文案里已经写明「一律经 sandbox.pytest_run 这个 ToolPort」（`test_verify.py:53`），**文案是对的、字段是错的** | 与甲-2 同一轨改，建议改成 `["sandbox.pytest_run"]`，与同文件的文案对齐 |
+| 2026-09-01 | P9 | **乙-1（error + warning，两条 finding 一处修法）`ap.compensate` 的 `owner_roles=["ap_compensation"]` 指向一个全仓不存在的角色**，且没有任何角色的 `allowed_skills` 含它。出处 `maos/skills/builtin/ap/compensate.py:97` | 判 error：契约指向落空，装配期照它接线必然接不上，而今天没有任何机制会发现（这正是本轨造这台机器的理由）。同时应付账款域的补偿路径**没有任何角色调得起来** | 整合期，需人类裁定业务口径：应付域的补偿到底该归 `ap_treasury`（它持有 `ap.execute` / `ap.observe`，是唯一碰银行的角色）还是新设角色。对齐参照：`investigation.compensate` 归 `investigation_observe` 且**真的被持有**（`maos/agents/investigation/observe_agent.py`） |
+| 2026-09-01 | P9 | **乙-2（warning）`claim.compensate` 有实现但无人持有**。契约自述 `owner_roles=["claim_payment"]`（`maos/skills/builtin/claim/compensate.py:102`），而 `claim_payment.allowed_skills` 只有 `{claim.pay, claim.observe}`（`maos/agents/claim/payment_agent.py:73`） | 判 warning 而非 error：指向的角色是真存在的，接线接得上，问题是白名单**少授权了一项**。后果是理赔域补偿路径调不起来 —— `SkillInvoker` 会按白名单拒掉 | 整合期。建议把 `claim.compensate` 加进 `claim_payment.allowed_skills`（自述已经这么写了，改白名单比改自述更贴业务）。与乙-3、乙-4 是同一个模式，建议同轨一起改 |
+| 2026-09-01 | P9 | **乙-3（warning）`refund.compensate` 有实现但无人持有**。自述 `owner_roles=["refund_payment"]`（`maos/skills/builtin/refund/compensate.py:103`），而 `refund_payment.allowed_skills` 只有 `{payment.execute, payment.observe}`（`maos/agents/refund/payment_agent.py:64`） | 同乙-2，退款域补偿路径调不起来 | 整合期，同乙-2 的改法 |
+| 2026-09-01 | P9 | **乙-4（warning）`kb.sink` 有实现但无人持有**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/kb_sink.py:50`），而 `manager.allowed_skills` 是 `{req.normalize, kb.retrieve}`（`maos/agents/manager.py:38`） | 知识沉淀这条路今天没有任何 agent 走得通。注意 `maos/runtime/plan_finalizer.py` 的复盘沉淀是**绕开 agent 白名单**直接做的（run.py 输出里那句「复盘完成，沉淀 3 条」），所以现在看不出问题 | 整合期，需裁定：要么给 `manager` 加上 `kb.sink`，要么把自述改成「本 skill 由 plan_finalizer 直接调用，不经 agent 白名单」并在契约里写明。**别只改一边** |
+| 2026-09-01 | P9 | **乙-5（warning）`issue.aggregate` 的实际持有者与自述完全不相交**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/issue_aggregate.py:84`），实际持有 `claim_intake`（`maos/agents/claim/intake_agent.py:26`）与 `refund_intake`（`maos/agents/refund/intake_agent.py:35`） | 判 warning：接线接得上，是自述漂了。但这条漂得最厉害 —— 自述指的角色一个都没持有，两个真持有者一个都没写上 | 整合期。建议把自述改成 `["claim_intake", "refund_intake"]`（多源聚合去重本来就是受理侧的活，两个 intake 角色的 duty 都写着「聚合去重」）。**改自述、不改白名单** |
+| 2026-09-01 | P9 | **乙-6（warning）`policy.match` 的自述少了一个持有者**。自述 `owner_roles=["refund_policy"]`，实际持有 `refund_policy` + `refund_finance`（`maos/agents/refund/finance_agent.py:32`）。两个版本的契约都要改：`maos/skills/builtin/refund/policy.py:91` 与 `refund/policy_v1_1.py:148` | 判 warning。`refund_finance` 持有它是**刻意的**（duty 写着「自行复核规则」，不接受政策侧的结论口述），所以错的是自述 | 整合期，建议两个版本文件的自述都改成 `["refund_policy", "refund_finance"]`。**别删 `refund_finance` 的授权** —— 那会把「财务自行复核」这条设计砍掉 |
+| 2026-09-01 | P9 | **乙-7（warning）`req.normalize` 的自述少了 `requirement`**。自述 `owner_roles=["manager"]`（`maos/skills/builtin/req_normalize.py:69`），实际持有 `manager`（`maos/agents/manager.py:38`）+ `requirement`（`maos/agents/requirement.py:35`） | 判 warning，同乙-6。顺带一条口径提醒：`manager` 有完整 identity 但刻意不进 `AGENT_POOL`（C-2），只按池核对的话这条根本发现不了 —— 本轨的体检机因此按**全仓 23 个 AgentIdentity** 取事实源 | 整合期，建议自述改成 `["manager", "requirement"]` |
+
+## task-T59（MCP server 注册表与按角色挂载，本轮都不改）
+
+2026-09-01 建 `maos/tools/mcp/registry.py` 时发现的四条。注册表消灭了
+「server 说的」与「MAOS 认的」这一处分家，但**没有**消灭下面这几处 ——
+写在这里免得下一个人以为注册表已经把对账做全了。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`ToolPort.params_schema` 是自然语言描述，不是 JSON Schema**（`git_tool.py` 里写成 `"op": "str（baseline / ls_files / show_file）"`） | `reconcile()` 的 `schema-drift` 只能判到**键名级**：server 把某个参数从 string 改成 array、或把可选改成必填但键名不变，对账一律看不见。判宽是本轮的刻意选择（见 DECISIONS `## task-T59` 第 2 条），但代价是真的存在 | 要收紧就得把 `params_schema` 换成真 JSON Schema，那要动 `maos/tools/port.py` 与全仓每一个 ToolPort —— 是一轮独立的活，且必须一次改完，不能留半张表 |
+| 2026-09-01 | P9 | **`git_tool.py::OPS` 没有被纳入对账**。`OPS`（op -> MCP 工具名的手写映射）与 `SERVERS[...].exposes` 仍是两份各自维护的清单，当前值相同纯属人记着 | server 加一个工具时，`exposes` 漏登记会被 `reconcile()` 报 `undeclared`，但 `OPS` 漏加**没有任何东西会红** —— 上层调用点拿到的仍是「未知的 git-mcp 操作」 | 泛化的做法是把 op 映射放进 `McpServerSpec`（比如 `ops: Mapping[str, str]`），让 `reconcile()` 三方对账。本轮没做：那要改 §5.2 定死的 spec 形状，且只有一个 server 时看不出这个抽象对不对 |
+| 2026-09-01 | P9 | **`reconcile()` 没有挂进任何自动入口**，只有 `maos/tests/test_mcp_registry.py` 在跑它 | 加第二个 server 的人如果只跑自己那几条测试、不跑全量 pytest，对账就形同虚设。`scripts/verify.py` 与 `gen_docs --check` 都没有引它 | 挂进 `scripts/verify.py` 之前要先想清楚一件事：对账要**真拉子进程**，而 verify 是证据束核验，多一个会 fork 的步骤要评估它在无网/受限环境下的表现。归做 verify 那一轨 |
+| 2026-09-01 | P9 | **角色到工具的映射仍是两份手写表**：`registry.DEFAULT_ROLE_SERVERS` 与 `maos/agents/*.py` 各自的 `allowed_tools` | 本轮加了一条测试守着「`ports_for("coding")` 挑出来的 port 必须在 `CodingAgent.identity.allowed_tools` 里」，但那是**单向**的：白名单里有而映射里没有的（比如 `sandbox`）无人过问。真正的档案表是别轨的产出，本轨的映射只是兜底 | 归能力档案表那一轨（`profiles` 注入口已经留好）。合并后应当让档案表成为唯一出处，`DEFAULT_ROLE_SERVERS` 退化成「没人注入时的最小可跑集」或直接删掉 |
+
+## task-T60（能力装配层落地时发现，本轮都不改）
+
+2026-09-01 把 Identity 里的名字解析成真能调的 ToolPort 时撞见的四条。装配层只让它们
+**显形**（落进 `AssemblyReport` 与 `evidence/capability-matrix.json`），一处都没修 —— 铁律 4。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-01 | P9 | **`coding` / `testing` 白名单里的 `sandbox` 全仓没有对应 ToolPort**（实际存在的是 `sandbox.git_apply` 与 `sandbox.pytest_run`），22 个角色里就这两处 | 白名单放行了一个不存在的名字 —— 与 `git-mcp` 补上之前是同一个洞。今天无害（没有调用点用这个名字取工具），但装配层一接进 Worker，这两个角色启动时就会看到「有授权无实现」 | 归整合期。两条路二选一：把白名单改成那两个真名，或者真加一个叫 `sandbox` 的聚合 ToolPort。**别只改测试** |
+| 2026-09-01 | P9 | **装配函数还没有生产调用方**：`assemble()` 目前只在测试与证据脚本里被调，Worker 起 Agent 时没有接线 | 每个 Agent 仍然各自 import 各自的 ToolPort，装配层的收窄约束在生产路径上还没生效 —— 它守得住的只是「调过 assemble 的那些」 | 归整合期。接线点在 `maos/runtime/worker.py`（本轨白名单外，T57 持有），一行 `assemble(agent, profile=..., mcp_ports=...)`，等 T57/T58/T59 落地后一起接 |
+| 2026-09-01 | P9 | **`evidence/capability-matrix.json` 没进 `evidence/INDEX.json`，也不在 `scripts/verify.py` 的核验项里** | 这份证据目前只有「首行有出处」这一层保证，没被证据束的索引与核验链条覆盖 | 归整合期。`INDEX.json` 有主仓在制品在动（本轨不许改），`verify.py` 是事实源 |
+| 2026-09-01 | P9 | **`implemented_without_authorization` 目前等于「全仓目录减本角色白名单」**，22 个角色每个都是 8–10 条 | 当计数指标可用（矩阵里只落了 count），但当作「该给谁加授权」的建议清单就是噪音 —— 它没区分「本该有」与「本来就不该有」 | 等职责能力档案（T58）落地后再收窄：档案说得出「这个职责应该有哪些」，差集才有意义 |
 | 2026-09-02 | P8 | 🔴 **政策里那三个证据判据字段没有任何代码消费方**：`scenarios/refund/cases/case_r4a.json` 的 AS-003 body 里写着 `requires_evidence_kinds:["image"]`、`min_evidence_count:1`、`evidence_source:"customer_evidence"`（v2 收紧到 2 张、加 video），而全仓 `grep` 这三个键在 `maos/**/*.py` 里**零命中** —— 政策引擎只读 `refund_ratio` / `deduct_fee`（`skills/builtin/refund/finance.py:186`） | `docs/EXECUTION.md:843` 把「AS-003 人为损坏免责 / 需 `customer_evidence` 中有图片证据」当成已实现的差异点列在表里，而它其实是**语料里的字面量**。本轮补完照片入口后这条更扎眼：证据真的进库了，但没有一行代码会因为「有没有图」而改变裁定 —— 交一张图和不交，结论一模一样，且不报错 | 两条路。①**最小**：`policy.match` 读 `requires_evidence_kinds` / `min_evidence_count`，与 `customer_evidence` 实际行数比对，不足则不予适用该排除规则 —— 这才让「需图片举证」成为真判据。②**先降噪**：把 `EXECUTION.md:843` 那格改成「语料已定义，判据待实现」，别让它继续读起来像已完成。建议先做 ②（一处文案），①归政策面下一轮：它要动 `maos/skills/builtin/refund/policy.py`，不在本轮附件轨白名单内（`maos/skills/builtin/refund/policy.py`） |
 | 2026-09-02 | P8 | **`scenarios/custom/ledger.json` 的 AS-003 与 `case_r4a.json` 的 AS-003 是两条完全不同的规则**：前者「发错货全额退」（`wrong_item`），后者「人为损坏免责（需图片举证）」（`artificial_damage`） | 同一个规则号在两套语料里指两件事。本轮实跑 `/refund ORD-2026-0001 质量问题` 命中了 `AS-003@v1`，看回帖会以为「证据判据生效了」，其实命中的是发错货那条、与证据无关。凡是拿规则号当口径讲的地方（答辩、PPT、EXECUTION 的差异表）都可能对错人 | 要么给两套语料的规则号加租户前缀（`custom` 是 `tnt-demo`、r4a 是 `tnt-mfg-a`，本来就分得开），要么在两份语料的抬头各写一句「本文件的 AS-00x 编号只在本租户内有意义」。归语料面，本轮不动 |
 | 2026-09-02 | P8 | **`var/attachments/` 没有清理机制**，`AttachmentStore` 刻意只写不删 | 长期跑下去盘会满，而症状是落盘那一步抛 OSError → 回执说「取件失败」，指向完全错误的方向 | 删证据的判断需要知道案子状态（结案多久可清），本层不知道也不该知道。正确做法是一条按 mtime + 案子终态的运维清理，或在 `refund_case` 终态时登记可清列表。归运维面 |

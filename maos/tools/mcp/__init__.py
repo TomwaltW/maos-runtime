@@ -22,5 +22,7 @@
 """
 
 from maos.tools.mcp.protocol import PROTOCOL_VERSION, McpError
+from maos.tools.mcp.registry import SERVERS, McpServerSpec, discover, ports_for, reconcile
 
-__all__ = ["PROTOCOL_VERSION", "McpError"]
+__all__ = ["PROTOCOL_VERSION", "McpError", "SERVERS", "McpServerSpec",
+           "discover", "ports_for", "reconcile"]

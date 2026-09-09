@@ -13,6 +13,15 @@
   - 运行时：`objects.execute()` 见到 ap_case 的写语句直接抛 `BypassedGuardError`
   - 提交前：`maos/tests/test_ap_guard.py::test_no_bypass_writes_settled` 扫全仓源码
 
+## 控制流下沉到 `maos/domain/_case_guard.py`
+
+四道闸的顺序、fail-closed 姿态、两条审计行的字段、幂等回读比对 —— 这些四个域一字
+不差，已经下沉成一份骨架。本模块留下的是**域**：判据表、观察表的 INSERT、
+`record_observation()` 这条本域独有的旁路、异常类，以及每道闸对外说的那句人话
+（见 `_TEXTS`）。判据表递给骨架的是**取值的函数**而不是值本身 —— 它们是模块级常量，
+`test_missing_receipt_criterion_is_fail_closed` 会 monkeypatch 它来演漏配时的姿态，
+在 import 那一刻捕获值会让那条测试再也测不到真的判据表。
+
 ## 比退款域多一条：settled 必须带银行流水号
 
 退款域的 `payment_observation` 只要求 `request_id` / `gateway_code` /
@@ -38,6 +47,10 @@
   · 写入方不同：本域是 `ap.observe`，退款域是 `payment.observe`。
     把 `payment.observe` 递给本模块，第 ① 道会当场拒 —— 它不是本域的权威写入方。
 
+共用一份**骨架**不改变这三条：骨架不知道 ap 是什么，它拿到的是表名、判据表和一组
+文案；退款域这一轮压根没接（见 `docs/BACKLOG.md` 的 `## task-T81`）。
+`AuthoritativeFactViolation` 这三个异常类因此仍然各定义各的。
+
 `maos/tests/test_ap_guard.py::test_ap_and_refund_guards_are_independent` 把这三条
 钉住：同一个 store 里两个域各推进一个案子到 settled，互不干扰，且任一方的
 writer 都写不进对方的表。
@@ -51,9 +64,10 @@ writer 都写不进对方的表。
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
+from .. import _case_guard
+from .._case_guard import CaseGuardErrors, CaseGuardTexts, _now
 from . import objects
 
 # ---------------------------------------------------------------- 冻结常量
@@ -114,17 +128,35 @@ DOMAIN = "ap"
 #: 不是同一件事」，两种排查方向完全不同。
 CASE_CONFLICT_EVENT = "ApCaseIdentityConflict"
 
+#: 业务状态变更事件。
+BIZ_STATUS_EVENT = "ApBizStatusChanged"
+
 #: 一条回单至少要有的字段。缺任何一个都算「没有回单」。
 #: `bank_reference` 在里面 —— 见模块 docstring「比退款域多一条」。
 _OBSERVATION_REQUIRED = ("instruction_id", "observed_state", "bank_reference")
 
-#: 判定「这是不是同一件事的重放」要逐字段比对的业务字段。
+#: 判定「这是不是同一件事的重放」要逐字段比对的业务字段，值是该列的**归一函数**。
+#:
+#: 必须过一遍类型归一：sqlite 的 INTEGER 回来是 int，而调用方递进来的可能是 str；
+#: 金额一律过 `objects.money_str` 折成两位小数字符串 —— 不归一就会把
+#: 「3200 与 3200.00」判成冲突，幂等当场退化成「每次重跑都报冲突」。
 #:
 #: `biz_status` 与 `created_at` **不在里面**：前者是案子建成之后被推进的结果，
 #: 后者是第一次受理的时刻 —— 拿它们比对会让每一次正常重放都判成冲突。
 #: `amount_claimed` 在里面：它是三单匹配拿去比对的输入，悄悄换掉等于把匹配绕过去。
-_CASE_IDENTITY_FIELDS = ("supplier_id", "po_id", "po_version", "invoice_id", "gr_id",
-                         "amount_claimed", "currency", "plan_id")
+_IDENTITY_COERCERS: dict[str, Any] = {
+    "supplier_id":    str,
+    "po_id":          str,
+    "po_version":     int,
+    "invoice_id":     str,
+    "gr_id":          str,
+    "amount_claimed": objects.money_str,
+    "currency":       str,
+    "plan_id":        str,
+}
+
+#: 与 `_IDENTITY_COERCERS` 同一份，只是取键 —— 两处各写一份必漂，漂了幂等就退化。
+_CASE_IDENTITY_FIELDS = tuple(_IDENTITY_COERCERS)
 
 
 class AuthoritativeFactViolation(RuntimeError):
@@ -149,61 +181,80 @@ class CaseIdentityConflict(ValueError):
     """
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# ---------------------------------------------------------------- 域的那部分
+#: 四道闸对外说的那句人话。句式由骨架定死，这里只填名词 —— 报错文案是排查的第一
+#: 现场，下沉最容易在这里偷偷退化成看不出是哪张表、哪种凭据的通用话。
+#: `missing_tail` 是本域独有的那一句：银行流水号管的是「凭据全不全」，
+#: 与第 ④ 道管的「内容对不对」是两件事，缺它时得当场说清楚为什么。
+_TEXTS = CaseGuardTexts(
+    authority_holder="银行",
+    evidence_seen_phrase="回单后",
+    submitted_noun="银行回单",
+    fact_subject="回单",
+    receipt_noun="银行回单",
+    missing_why_noun="银行回单",
+    attach_noun="银行回单",
+    intake_verb="收票",
+    replay_unit="张发票",
+    missing_tail="。其中 bank_reference 是**可对账的凭据**，没有它的「已付」在财务上"
+                 "对不了账 —— 「有一张回单」不等于「有一张能拿去对账的回单」",
+)
 
 
-def _require_invocation_id(invocation_id: str) -> str:
-    """actor 溯源的唯一锚点，空了这条审计链就断了。"""
-    if not invocation_id:
-        raise ValueError("invocation_id 不许为空：它是 ap_case 每一次写入的 actor 锚点")
-    return invocation_id
+def _write_observation(store: Any, conn: Any, *, tenant_id: str, case_id: str,
+                       observation: dict, invocation_id: str) -> None:
+    """把银行回单落进 `ap_payment_observation`，用骨架递进来的那条连接。
 
-
-def _identity_of(row: dict) -> dict:
-    """把库里那一行折成与 `create_case` 入参同一个形状，好逐字段比。
-
-    必须过一遍类型归一：sqlite 的 INTEGER 回来是 int，而调用方递进来的可能是 str；
-    金额一律过 `objects.money_str` 折成两位小数字符串 —— 不归一就会把
-    「3200 与 3200.00」判成冲突，幂等当场退化成「每次重跑都报冲突」。
+    连接是骨架的事务里那一条 —— 回单与状态更新同生共死。自己另开一条会让
+    「状态推进了但回单没落」变得可表达，而那正是铁律 8 要挡的形状。
     """
-    return {
-        "supplier_id":    str(row["supplier_id"]),
-        "po_id":          str(row["po_id"]),
-        "po_version":     int(row["po_version"]),
-        "invoice_id":     str(row["invoice_id"]),
-        "gr_id":          str(row["gr_id"]),
-        "amount_claimed": objects.money_str(row["amount_claimed"]),
-        "currency":       str(row["currency"]),
-        "plan_id":        str(row["plan_id"]),
-    }
+    obs = dict(observation)
+    conn.execute(
+        "INSERT INTO ap_payment_observation (tenant_id, case_id, instruction_id,"
+        " observed_state, bank_reference, value_date, raw_advice_json,"
+        " observed_at, actor_invocation_id) VALUES (?,?,?,?,?,?,?,?,?)",
+        (tenant_id, case_id, obs["instruction_id"], obs["observed_state"],
+         obs.get("bank_reference", ""), obs.get("value_date", ""),
+         obs.get("raw_advice_json", "{}"),
+         obs.get("observed_at") or _now(), invocation_id),
+    )
 
 
-def _log_case_conflict(store: Any, *, plan_id: str, tenant_id: str, case_id: str,
-                       diff: dict, actor: str, invocation_id: str) -> None:
-    """拒绝一次案号复用也要留证据 —— 理由同模块 docstring：吞掉就没了。"""
-    store.append_event_log({
-        "plan_id": plan_id,
-        "event_type": CASE_CONFLICT_EVENT,
-        "reason": f"case_id 被复用，业务字段对不上：{sorted(diff)}",
-        "detail": {"domain": DOMAIN, "tenant_id": tenant_id, "case_id": case_id,
-                   "actor": actor, "invocation_id": invocation_id,
-                   "conflicts": {f: {"stored": old, "incoming": new}
-                                 for f, (old, new) in diff.items()}},
-    })
+_GUARD = _case_guard.make_case_guard(
+    case_table="ap_case",
+    objects_mod=objects,
+    identity_fields=_IDENTITY_COERCERS,
+    authoritative_writer=AUTHORITATIVE_WRITER,
+    authoritative_states=lambda: AUTHORITATIVE_STATES,
+    biz_status_flow=lambda: BIZ_STATUS_FLOW,
+    observation_required=_OBSERVATION_REQUIRED,
+    conflict_event=CASE_CONFLICT_EVENT,
+    violation_event=VIOLATION_EVENT,
+    biz_status_event=BIZ_STATUS_EVENT,
+    errors=CaseGuardErrors(violation=AuthoritativeFactViolation,
+                           transition=BizStatusTransitionError,
+                           conflict=CaseIdentityConflict),
+    texts=_TEXTS,
+    check_evidence=_case_guard.make_receipt_state_gate(
+        receipt_state=lambda: AUTHORITATIVE_RECEIPT_STATE,
+        violation_error=AuthoritativeFactViolation,
+        receipt_noun="回单",
+        authority_says="银行说钱划走了",
+    ),
+    write_observation=_write_observation,
+    #: 本域三条审计行的 detail 都把 `domain` 排在最前（claim 排在 invocation_id 之后，
+    #: investigation 压根没有）。位置是历史留下的不一致，本轨照抄不统一 ——
+    #: 统一会改掉审计行的形状，那是行为变更。
+    conflict_detail_domain=DOMAIN,
+    violation_detail_domain=DOMAIN,
+    event_detail_domain=DOMAIN,
+)
 
-
-def _log_violation(store: Any, *, plan_id: str, tenant_id: str, case_id: str,
-                   attempted: str, actor: str, invocation_id: str, why: str) -> None:
-    store.append_event_log({
-        "plan_id": plan_id,
-        "event_type": VIOLATION_EVENT,
-        "reason": why,
-        "detail": {"domain": DOMAIN, "tenant_id": tenant_id, "case_id": case_id,
-                   "attempted": attempted, "actor": actor,
-                   "invocation_id": invocation_id,
-                   "authoritative_writer": AUTHORITATIVE_WRITER},
-    })
+_require_invocation_id = _GUARD._require_invocation_id
+_identity_of = _GUARD._identity_of
+_log_case_conflict = _GUARD._log_case_conflict
+_log_violation = _GUARD._log_violation
+get_case = _GUARD.get_case
 
 
 def create_case(
@@ -230,66 +281,42 @@ def create_case(
     **幂等语义**（收票这一步会被返工重跑，而主键是 `(tenant_id, case_id)`）：
 
       · 案号已在库 + `_CASE_IDENTITY_FIELDS` 逐字段相同 → 一个字节都不写，返回
-        **既有那一行**（原 `created_at`、原 `biz_status`）。所以这里既不能
-        `INSERT OR REPLACE` 也不能 `ON CONFLICT DO UPDATE`：那两种写法会让一次
-        重跑把已经推进到 matched / payment_requested 的案子**静悄悄**倒回
-        `received`，比裸 INSERT 抛异常坏得多。
+        **既有那一行**（原 `created_at`、原 `biz_status`）。
       · 案号已在库 + 任一业务字段不同 → 落一条 `CASE_CONFLICT_EVENT` 事件并抛
         `CaseIdentityConflict`。**这一档不许静默**：悄悄收下新金额，则库里的
         `amount_claimed` 是三单匹配真正拿去比对的输入，等于把匹配绕过去；
         悄悄丢弃，则调用方拿到一份和自己递进来的发票对不上的案子，同样一点信号都没有。
 
-    用 `ON CONFLICT (tenant_id, case_id) DO NOTHING` 而不是 `INSERT OR IGNORE`：
-    后者会把 `biz_status` 那条 CHECK 约束的失败一并吞掉，指名冲突目标才只放过
-    主键这一种冲突。判定放在插入**之后**回读比对，而不是插入前先查一次 ——
-    先查后插在 `lock_of()` 退化成 nullcontext 的 Store 上有 TOCTOU 窗口。
+    插入语句的形状（`ON CONFLICT DO NOTHING` 而不是 `INSERT OR IGNORE`、
+    回读比对而不是先查后插）由骨架定，理由见 `_case_guard.create_case`。
     """
-    _require_invocation_id(invocation_id)
-    incoming = {
-        "supplier_id":    str(supplier_id),
-        "po_id":          str(po_id),
-        "po_version":     int(po_version),
-        "invoice_id":     str(invoice_id),
-        "gr_id":          str(gr_id),
-        "amount_claimed": objects.money_str(amount_claimed),
-        "currency":       str(currency),
-        "plan_id":        str(plan_id),
-    }
-    conn = objects._conn(store)
-    with objects.lock_of(store):
-        conn.execute(
-            "INSERT INTO ap_case (tenant_id, case_id, supplier_id, po_id, po_version,"
-            " invoice_id, gr_id, amount_claimed, currency, biz_status, plan_id, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT (tenant_id, case_id) DO NOTHING",
-            (tenant_id, case_id, incoming["supplier_id"], incoming["po_id"],
-             incoming["po_version"], incoming["invoice_id"], incoming["gr_id"],
-             incoming["amount_claimed"], incoming["currency"], INITIAL_STATUS,
-             incoming["plan_id"], _now()),
-        )
-        conn.commit()
-
-    case = get_case(store, tenant_id, case_id)
-    if case is None:
-        # 既没插进去、又读不到。不静默返回 None：调用方的类型标注说这里必有一行。
-        raise RuntimeError(
-            f"create_case 之后读不到 case：tenant={tenant_id} case={case_id}")
-
-    stored = _identity_of(case)
-    diff = {f: (stored[f], incoming[f])
-            for f in _CASE_IDENTITY_FIELDS if stored[f] != incoming[f]}
-    if diff:
-        _log_case_conflict(store, plan_id=incoming["plan_id"], tenant_id=tenant_id,
-                           case_id=case_id, diff=diff, actor=actor_skill,
-                           invocation_id=invocation_id)
-        detail = "；".join(f"{f}：库里 {old!r}、这次 {new!r}"
-                          for f, (old, new) in sorted(diff.items()))
-        raise CaseIdentityConflict(
-            f"case={case_id}（tenant={tenant_id}）已经存在，业务字段对不上：{detail}。"
-            "收票重跑只在业务字段逐字段相同时幂等；对不上说明这不是同一张发票的重放，"
-            "既不许覆盖也不许静默丢弃 —— 换个 case_id，或先查清这个案号为什么被复用"
-        )
-    return case
+    # 递进来的这一份与库里回读的那一份过**同一套**归一函数（`_identity_of`）——
+    # 两边各归一各的正是「3200 与 3200.00 判成冲突」那个坑的来源。
+    incoming = _identity_of({
+        "supplier_id":    supplier_id,
+        "po_id":          po_id,
+        "po_version":     po_version,
+        "invoice_id":     invoice_id,
+        "gr_id":          gr_id,
+        "amount_claimed": amount_claimed,
+        "currency":       currency,
+        "plan_id":        plan_id,
+    })
+    return _GUARD.create_case(
+        store, tenant_id=tenant_id, case_id=case_id, incoming=incoming,
+        columns={
+            "supplier_id":    incoming["supplier_id"],
+            "po_id":          incoming["po_id"],
+            "po_version":     incoming["po_version"],
+            "invoice_id":     incoming["invoice_id"],
+            "gr_id":          incoming["gr_id"],
+            "amount_claimed": incoming["amount_claimed"],
+            "currency":       incoming["currency"],
+            "biz_status":     INITIAL_STATUS,
+            "plan_id":        incoming["plan_id"],
+            "created_at":     _now(),
+        },
+        actor_skill=actor_skill, invocation_id=invocation_id)
 
 
 def update_biz_status(
@@ -305,125 +332,17 @@ def update_biz_status(
 ) -> dict:
     """`ap_case.biz_status` 的唯一写入路径。
 
-    四道闸，顺序不可换（每一道旁边写了为什么它必须在这个位置）：
+    写进去的是**观察与推断**，不是权威事实（铁律 8）—— 一笔货款有没有划出去，
+    权威在银行。四道闸，顺序不可换（骨架里每一道旁边写了为什么它必须在那个位置）：
 
     ① `new_status` 落在 `AUTHORITATIVE_STATES` 而 actor 不是权威写入方 → 拒 + 留证据
     ② 递了 `observation` 却不是权威写入方 → 拒（否则等于给别人开伪造回单的口子）
     ③ 权威终态**必须**带回单，且字段齐全（含银行流水号）
     ④ 回单说的**得是这件事**：`observed_state` 必须落在该终态的判据集合里
     """
-    _require_invocation_id(invocation_id)
-    case = get_case(store, tenant_id, case_id)
-    plan_id = (case or {}).get("plan_id", "")
-
-    # ① 权威闸放在最前面：case 不存在也照样记一笔越权尝试。
-    #    先查存在性会让「对不存在的 case 越权写 settled」以 LookupError 收场，
-    #    证据就没了 —— 而那恰恰是最该留痕的一种试探。
-    if new_status in AUTHORITATIVE_STATES and actor_skill != AUTHORITATIVE_WRITER:
-        _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, case_id=case_id,
-                       attempted=new_status, actor=actor_skill, invocation_id=invocation_id,
-                       why=f"{new_status} 只能由 {AUTHORITATIVE_WRITER} 写入")
-        raise AuthoritativeFactViolation(
-            f"{actor_skill} 试图把 case={case_id} 写成 {new_status}；"
-            f"该状态的权威在银行，只有 {AUTHORITATIVE_WRITER} 观察到回单后才写得进来"
-        )
-
-    # ② 回单只有权威写入方递得进来，否则等于给别人开了个伪造回单的口子。
-    if observation is not None and actor_skill != AUTHORITATIVE_WRITER:
-        _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, case_id=case_id,
-                       attempted=new_status, actor=actor_skill, invocation_id=invocation_id,
-                       why=f"银行回单只能由 {AUTHORITATIVE_WRITER} 提交")
-        raise AuthoritativeFactViolation(
-            f"{actor_skill} 递交了银行回单；回单是外部权威事实，"
-            f"只有 {AUTHORITATIVE_WRITER} 能落库"
-        )
-
-    if case is None:
-        raise LookupError(f"没有这个 case：tenant={tenant_id} case={case_id}")
-
-    cur = case["biz_status"]
-    if new_status not in BIZ_STATUS_FLOW.get(cur, ()):
-        raise BizStatusTransitionError(
-            f"业务状态不许从 {cur} 迁到 {new_status}（case={case_id}）；"
-            f"{cur} 的合法去向：{BIZ_STATUS_FLOW.get(cur, ()) or '无（终态）'}"
-        )
-
-    # ③ 权威终态必须有回单，且字段齐全。没有回单的 settled 就是把外部状态写死为终态。
-    if new_status in AUTHORITATIVE_STATES:
-        missing = [f for f in _OBSERVATION_REQUIRED if not (observation or {}).get(f)]
-        if missing:
-            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, case_id=case_id,
-                           attempted=new_status, actor=actor_skill,
-                           invocation_id=invocation_id,
-                           why=f"银行回单缺字段 {missing}")
-            raise AuthoritativeFactViolation(
-                f"写 {new_status} 必须同事务附银行回单，缺字段：{missing}。"
-                f"其中 bank_reference 是**可对账的凭据**，没有它的「已付」在财务上"
-                f"对不了账 —— 「有一张回单」不等于「有一张能拿去对账的回单」"
-            )
-
-        # ④ 回单还得**说的是这件事**。③ 只保证「有一张回单」，不保证那张回单说钱走了 ——
-        #    一条 observed_state='accepted' 的受理回单三个字段齐全，在 ③ 眼里与终态
-        #    回单无从分辨。放过它，系统持有的就只是「银行收下了指令」，不是
-        #    「银行说钱划走了」，而后者才是 settled 这个词的全部含义（铁律 8）。
-        #    防线必须在守卫里，不能只活在某个 skill 的 `if status == "settled"` 分支里：
-        #    那种防线改一次分支顺序两层都不会响。
-        allowed = AUTHORITATIVE_RECEIPT_STATE.get(new_status)
-        if allowed is None:
-            # 加了权威终态却没给判据。fail-closed：宁可写不进去，也不许默认放行 ——
-            # 默认放行会让这个终态退回到「有回单就算数」，静默且没人会发现。
-            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, case_id=case_id,
-                           attempted=new_status, actor=actor_skill,
-                           invocation_id=invocation_id,
-                           why=f"{new_status} 没有在 AUTHORITATIVE_RECEIPT_STATE 里配回单判据")
-            raise AuthoritativeFactViolation(
-                f"{new_status} 在 AUTHORITATIVE_STATES 里，却没有在 "
-                f"AUTHORITATIVE_RECEIPT_STATE 里给出回单判据；两张表必须同增同减"
-            )
-        seen = str((observation or {}).get("observed_state"))
-        if seen not in allowed:
-            _log_violation(store, plan_id=plan_id, tenant_id=tenant_id, case_id=case_id,
-                           attempted=new_status, actor=actor_skill,
-                           invocation_id=invocation_id,
-                           why=f"回单 observed_state={seen!r}，不在 {new_status} 的判据 "
-                               f"{sorted(allowed)} 里")
-            raise AuthoritativeFactViolation(
-                f"写 {new_status} 的回单说的是 {seen!r}，不是 {sorted(allowed)}；"
-                f"「有一张回单」不等于「银行说钱划走了」，外部权威没这么说就不许收口"
-            )
-
-    conn = objects._conn(store)
-    with objects.lock_of(store):
-        try:
-            if observation is not None:
-                obs = dict(observation)
-                conn.execute(
-                    "INSERT INTO ap_payment_observation (tenant_id, case_id, instruction_id,"
-                    " observed_state, bank_reference, value_date, raw_advice_json,"
-                    " observed_at, actor_invocation_id) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (tenant_id, case_id, obs["instruction_id"], obs["observed_state"],
-                     obs.get("bank_reference", ""), obs.get("value_date", ""),
-                     obs.get("raw_advice_json", "{}"),
-                     obs.get("observed_at") or _now(), invocation_id),
-                )
-            conn.execute(
-                "UPDATE ap_case SET biz_status=? WHERE tenant_id=? AND case_id=?",
-                (new_status, tenant_id, case_id),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-
-    store.append_event_log({
-        "plan_id": plan_id,
-        "event_type": "ApBizStatusChanged",
-        "from_state": cur, "to_state": new_status, "reason": reason,
-        "detail": {"domain": DOMAIN, "tenant_id": tenant_id, "case_id": case_id,
-                   "actor": actor_skill, "invocation_id": invocation_id,
-                   "observation_attached": observation is not None},
-    })
-    return get_case(store, tenant_id, case_id)  # type: ignore[return-value]
+    return _GUARD.update_biz_status(store, tenant_id, case_id, new_status,
+                                    actor_skill, invocation_id,
+                                    observation=observation, reason=reason)
 
 
 def record_observation(
@@ -445,6 +364,9 @@ def record_observation(
     成」这件事只活在日志里。但那一刻**没有合法的目标状态可迁** —— 走到
     `compensated` 意味着补偿已经做完，而补偿是失败路径的事，在这里替它宣布收口
     就是又一次把状态写死。
+
+    本域独有，**不进骨架**：另外三个域的失败留痕各有各的形状（investigation 走
+    `insert_observation`，claim 压根没有这条旁路）。
 
     权威写入方之外的 actor 一律拒：回单是外部权威事实，同 `update_biz_status` 第 ②
     道。这里不能走 `objects.execute` 图省事 —— 那条路对 `ap_payment_observation`
@@ -478,13 +400,6 @@ def record_observation(
              value_date, raw_advice_json, _now(), invocation_id),
         )
         conn.commit()
-
-
-def get_case(store: Any, tenant_id: str, case_id: str) -> dict | None:
-    """按 (tenant_id, case_id) 读一个 case；不存在返回 None。"""
-    rows = objects.query(
-        store, "SELECT * FROM ap_case WHERE tenant_id=? AND case_id=?", (tenant_id, case_id))
-    return rows[0] if rows else None
 
 
 def observations_of(store: Any, tenant_id: str, case_id: str) -> list[dict]:

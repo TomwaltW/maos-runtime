@@ -1678,6 +1678,61 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P8 | 承上一条：那份 case JSON 逐列对齐 `schema.sql`，不写代码的人根本填不出来 —— 「老板该以什么格式把退款交给 MAOS」没有答案 | 拆成**底账 + 申请表**两份：`scenarios/custom/ledger.json`（客户/渠道/商品/订单/政策，配一次，真实落地由 ERP 导出）与一张四列 CSV（订单号/诉求类型/申报金额/申请日期），入口 `scripts/run_requests.py` 按订单号从底账补齐其余字段，诉求类型认中文 | 让人每次手抄租户/渠道/SKU/订单版本，抄错一个字段裁定就错一次，**而且不会报错** —— 订单号是唯一该由人填的钥匙。诉求类型看不懂时报错不猜：猜错一个词，套用的就是另一条政策。两份分开还有一层：底账是外部系统快照（铁律 8 的「读到的那一版」），申请表是每天变的业务输入，混在一个文件里等于让人每天重抄一遍外部事实 |
 | 2026-09-02 | P8 | `docs/usage.md` 第 7 节写着「场景 5 与全部测试强制 scripted」，实际是**除场景 1 外全部**显式传 `force_scripted=True`；且没写 `BASE_URL` 拼接口径、静默降级怎么自证、`MAOS_LLM_TIMEOUT` 这三件事 | 按代码实况改准那句，并补：`/v1` 拼接、一行 `select_model_client` 自证命令、跨 origin 3xx 拒绝的理由、key 不落 `.env` 的持久化方式 | 手册没覆盖「人拿到 key 之后照哪份文档配」。原文那句会让人以为「除场景 5 都在跑真模型」，而实际只有场景 1 会出网 —— 配错 key 时的静默降级本来就无声，再加一句失真的范围描述，就成了「以为跑通了真模型」的假结论。只改文档，代码与证据一行未动 |
 
+## task-T80（域存储骨架下沉 · 三个陪跑域接 `_case_store`）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | 跨轨契约把 `make_case_store()` 的签名钉死成 `(*, case_table, schema_sql)`，可各域的 `_migrate()` 与业务引用取值域（`_REF_TARGETS`）都得让骨架用得上 | **不加构造参数**，改成造完之后由域模块挂三样：`_CASE_STORE.migrate = _migrate`、`.ref_targets`、`.versioned_ref_tables`；不挂就是本域没有 | 加参数是改契约形状，T81 按那份文件写薄封装，形状一改就对不上（派单 §0 明写不许自行改）。而且 `_migrate` 必须后挂：它要引用的 `_MIGRATIONS` 里每一步又要用骨架的 `_atomic` / `_has_column`，构造期给不出来。挂钩子是唯一不改签名又能接回去的写法 |
+| 2026-09-02 | P8 | 记账表 / 保存点 / 业务引用表三个表名，是让各域各报一遍，还是从 `case_table` 反推 | **从 `case_table` 反推**（`ap_case` → `ap` → `ap_schema_version` / `ap_schema_migrate` / `ap_business_ref`），四个域实测全部吻合 | 让调用方多报三个名字就是多三次报错的机会，而报错的形态是「静默写进另一张表」—— 版本记账写错表不会抛，只会让迁移永远从 0 开始重跑。反推错了当场 `no such table`，响得早。`test_lowering_did_not_change_behavior` 把这三个名字逐字段写死钉住 |
+| 2026-09-02 | P8 | `BypassedGuardError` 下沉后是共用一个类，还是每域一个 | **基类共用，每域一个动态子类**（类名仍是 `BypassedGuardError`） | 共用一个类的话，A 域守卫被绕开时 B 域一句 `except objects.BypassedGuardError` 会把它接住当自己的事处理掉 —— 域边界被抹掉，且不报错。子类保留「互不相等」，基类留给「要一网打尽」的场合。`test_each_domain_keeps_its_own_bypass_error_type` 钉着 |
+| 2026-09-02 | P8 | `schema_sql` 是原文字符串，而下沉前四份是在 `ensure_schema()` 里才 `_SCHEMA_PATH.read_text()` | **在模块导入时读一次**，`_SCHEMA_PATH` 仍保留为模块级名字 | 契约签名要的是原文不是路径；而且 `ensure_schema()` 与 `_MIGRATIONS` 每一步拿到的必须是**同一份**脚本文本，传路径就得各读各的。代价是 schema.sql 缺失从「调 ensure_schema 时炸」提前到「import 时炸」—— 提前暴露更好，且三个域的 schema.sql 都是随包发布的固定文件 |
+| 2026-09-02 | P8 | `_conn()` 取不到连接时那句 TypeError，下沉前各域各写各的域名（「应付账款域」「理赔域」「差错处理域」），下沉后拿不到域中文名 | 改成点名 `{case_table} 所在域的新增表无处落库` | 契约签名里没有域中文名这个参数，为它加一个又回到第 1 条的问题。文案里留具体表名同样定位得到是哪个域，且与 `_guarded` 那条「必须点名具体表」的硬约束口径一致。无测试断言过这句原文 |
+| 2026-09-02 | P8 | ap 域下沉前**没有** `_has_column`（另三个域有） | 骨架统一提供，ap 跟着多出这一个名字 | 纯新增，没有调用方受影响；它是契约 §1.1 点名要留的两个迁移原语之一，ap 将来加迁移步骤时一样要用。缺一个域就等于把「四份同构」的前提削掉一角 |
+## task-T81（案件守卫骨架下沉，2026-09-02）
+
+跨轨契约 `review/domain-slim-contracts.md` §1.2 给了三条硬约束。第 2 条
+（`_require_invocation_id` 的 fail-closed 姿态不许变）没有取舍余地 —— 四份现有实现
+都是抛，下沉后照抛，`test_missing_invocation_id_raises_instead_of_defaulting` 三个域
+各钉一次。下面记的是**实际做了取舍**的那几条，以及手册没覆盖而自行判断的地方。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | 硬约束 1（铁律 8 那句「外部系统才是权威」的注释要原样带进骨架）落在哪儿 —— 四份实现里它散在 `update_biz_status` 的 docstring 与第 ③ 道的行内注释两处 | **两处都带**：骨架的模块 docstring 起一节「铁律 8 在这里，不在别处」，`update_biz_status` 的 docstring 开头一句红字，第 ③ 道行内注释保留原话；三个域的 `update_biz_status` 各自再留一句本域的（权威在银行 / 赔付方 / 清算方） | 只留一处的话，下沉之后各域的 `update_biz_status` 变成三行转发，读它的人根本走不到骨架里去 —— 而「这个函数写的是观察不是事实」正是读到这个函数时最该看见的一句。四处重复不是冗余：它是唯一的现场提示，删哪一处都会让下一个人在那个位置把外部状态写死成终态 |
+| 2026-09-02 | P8 | 硬约束 3（域特有守卫留在各域）与第 ④ 道闸的归属：④ 是唯一一道**结构**各域不同的闸 —— ap / claim 只看 `observed_state`，investigation 还要看报文族、退回金额、退回原因码 | **④ 整道不进骨架**，由各域给一个 `check_evidence` 钩子；ap 与 claim 共用骨架里的 `make_receipt_state_gate()`，investigation 自己写一份 `_check_evidence()` | 硬把 investigation 那三样塞进通用闸，等于让 ap / claim 也长出「报文族」这个它们没有的概念，判据表会退化成一堆 `None`。反过来只抽 ap/claim 那份、让 investigation 完全自理，则两个域的「漏配判据 -> fail-closed」会各写一遍 —— 那正是本轨要消灭的重复。折中点落在「④ 是钩子，但通用形状仍由骨架提供一份」。代价已记 `docs/BACKLOG.md` 第 4 条 |
+| 2026-09-02 | P8 | 判据表（`AUTHORITATIVE_STATES` / `AUTHORITATIVE_RECEIPT_STATE` / `BIZ_STATUS_FLOW`）是模块级常量，骨架在 import 时就要拿到它们 | **递 `lambda: AUTHORITATIVE_STATES` 这样的取值函数，不递值本身** | 两条现存测试靠 monkeypatch 这些模块属性来演「漏配判据时 fail-closed」（`test_ap_guard.py::test_missing_receipt_criterion_is_fail_closed`、`test_investigation_guard.py::test_unconfigured_authoritative_state_is_fail_closed`）。在 import 那一刻捕获值，这两条会**照样绿**但测的是一张冻住的表 —— 一条测不到东西的守卫比没有守卫更坏 |
+| 2026-09-02 | P8 | `create_case` 的 INSERT 语句：各域列不同（claim 多 `reported_at`，investigation 多 `cancellation_reason_code`），SQL 字面量留在域里还是骨架现造 | **骨架按 `columns` 有序字典现造**，域只给「列名 -> 值」 | 留在域里的话 `ON CONFLICT DO NOTHING` 这个形状要抄三遍，而它正是幂等语义的载体（换成 `INSERT OR IGNORE` 会吞掉 CHECK 约束失败，换成 `DO UPDATE` 会把推进过的案子静悄悄倒回初始状态）。顺带确认了三条源码扫描守卫仍然绿：它们找的是**字面表名**的写语句，骨架里只有 `{case_table}`，扫不到也不该扫到 |
+| 2026-09-02 | P8 | ap 与 investigation 的业务状态变更事件类型原先是**字面量**（`"ApBizStatusChanged"` / `"InvestigationBizStatusChanged"`），骨架要按参数收 | **各提成模块常量 `BIZ_STATUS_EVENT`**，值一个字都没改；investigation 的 `set_classification()` 里那处字面量一并换成常量 | 骨架收参数之后，域里若还留着一份字面量就是两处各写一份，必漂 —— 而漂的症状是「这个案子的业务状态动过没有」漏查一处。investigation 那处不是「顺手优化」：`set_classification` 与 `update_biz_status` 落的是同一个事件类型，留一个字面量在旁边正是这次下沉要消灭的形状 |
+| 2026-09-02 | P8 | `_CASE_IDENTITY_FIELDS`（比对字段元组）与 `_identity_of`（归一函数）原先是各写一份、必须手工保持一致 | **合并成一份 `_IDENTITY_COERCERS` 有序字典**，`_CASE_IDENTITY_FIELDS = tuple(...)` 由它派生；`create_case` 里递进来那份 `incoming` 也改成过 `_identity_of` 同一套归一 | 两份手工对齐的清单迟早漂，漂的症状是幂等退化成「每次重跑都报冲突」或者反过来「换了金额也判成重放」。合并之后「递进来的那份」与「库里回读的那份」在代码上就是同一套归一函数，那正是幂等成立的前提 |
+## task-T82（Agent 薄壳骨架三份合一，2026-09-02）
+
+三个域的 `extras_of` / `artifact` / `failed` 下沉到 `maos/agents/_domain_base.py`。
+函数体本来就逐字节同构，真正要做取舍的只有 docstring 与「什么不下沉」这两件事。
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | 四份 `extras_of` 的 docstring 对 `invocation_id` 给了两种互相矛盾的说法：应付账款域写「兜底，会被 invoker 覆盖」，理赔 / 差错处理 / 退款域写「本域补的，invoker 生成的那个到不了 skill 里」 | **两种用途都写进合并后的 docstring**（第 1 条兜底、第 2 条本域补），但**不照抄「到不了 skill 里」那半句** —— 改写成各域 skill 的实际口径「调用方经 extras 传入，传不到则本地生成」，并另加一段说明「删掉任一条下次会出什么事」 | 两条是真差异不是同义反复，合并时抹掉一条，另一种用途下次就会被人当成冗余删掉。但那半句理由已经过期：`maos/skills/invoker.py` 现在确实把它塞进了 `SkillContext.extras`（那段注释自写「故意覆盖调用方传入的同名键」）。把一句已经不成立的因果原样搬进共用件，等于让三个域一起相信一件假事 —— 而它恰好是「为什么本键必须存在」的唯一说明。改理由不改口径：口径仍是两条都要。过期那半句在源头 `_common.py` 里没动，记进 `docs/BACKLOG.md ## task-T82`（`maos/skills/**` 本轮全禁） |
+| 2026-09-02 | P8 | `artifact()` 的 docstring 里，三个域各写了一句本域的症状（「应付 / 理赔 / 差错流程走不完」）与一句本域真正的验收判据（三单匹配规则编号 / 条款版本 / 原始支付快照…）。下沉后这些话没地方放 | **症状那句合并成一句并列出三个域原话**；**验收判据那句下放到各域 `_base.py` 的模块 docstring**，骨架里只留一句指路 | 派单点名这段是「这个函数存在的全部理由」，压缩成「补上 Gate 要的字段」等于把它删了 —— 下一个人看到的是一个多此一举塞两个常量的函数，删起来毫无心理负担，而删掉之后炸的地方在闸上，跟这里隔着整条链路。验收判据则相反：它**是**域知识，写进三个域共用的文件里必然要写成一句谁都不得罪的通用话，那句话没有信息量。所以症状上收、判据下放，两句都不丢 |
+| 2026-09-02 | P8 | 各域 `_base.py` 里那段「KIND 常量刻意不进 `maos/artifacts.py` 的 `ALL_KINDS`」的注释，三份措辞略有出入（引的例子分别是 refund 的 `_base.py` / 「本轨只读不写」/「artifacts.py 可读不可写」） | **三份各自原样留在本域**，一个字不合并；每份**另加一句**「同理不下沉到 `_domain_base.py`」 | 这份清单是本域自己的口径，不是共用件。并进骨架就等于三个域共用一份 kind 表，谁加一个别的域都跟着变 —— 而这正是那段注释一开始要防的事（跨轨冻结口径，单轨往里加会撞）。措辞差异是各轨当时的上下文，不值得为了整齐而统一 |
+| 2026-09-02 | P8 | 三个域 `_base.py` 转出骨架的写法：`from .._domain_base import ...` 还是各写一层同名薄封装 | **直接 `from .._domain_base import artifact, extras_of, failed`**，并补一条测试钉住「三个域拿到的是同一个函数对象」 | 薄封装能挡住 import 路径变化，但本轮的目标恰恰是**没有第二份实现**。包一层之后「三份合一」在字节上成立、在阅读上不成立 —— 下一个人还是会在三个域文件里各看到一个 `def artifact`，照旧各改各的。对外 import 路径（`from ._base import ...`）本来就没变，12 个 agent 文件一行未动 |
+## task-T83（受保护路径判定下沉到 tools 层，2026-09-02）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | 派单点名要搬的是 `PROTECTED_SEGMENTS` 与 `_path_segments`，但 `_path_segments` 第一件事就是调 `unquote_c_style`（C-quoted 解码），那个函数也定义在 skills 层 | **`unquote_c_style` 一起下沉**到 `maos/tools/paths.py`，`code_repo_patch` 与 `sandbox` 都从那里取 | 不搬它，`paths.py` 就得反向 import `maos.skills` 才能解码 —— 环原样还在，本轨那条「tools 不许 import skills」的硬约束当场落空。判据也不许拆开住：解码是分段匹配的第一步，两半分居两层，漂的就是「`\164ests` 算不算 `tests`」这一条 |
+| 2026-09-02 | P8 | `_path_segments` 带下划线却是跨层公共件，搬到公共模块后「顺手改名成 `path_segments`」看着更正 | **不改名**，原样保留下划线，只在模块 docstring 里写清它是跨层公共件 | 重命名不产生任何价值，却要同时动两个调用点与既有测试的断言 —— 把一次纯结构性搬家混进行为面。本轨碰的是安全判定，判定面上任何「顺手」的动作，出事时都分不清是搬家搬坏的还是改名改坏的 |
+| 2026-09-02 | P8 | 清单语义是「目录名分段相等」，而「路径前缀」是更符合直觉的读法（`## fix-1` 记过：早年就是前缀，改分段时修掉了漏拦+误伤） | 语义**一个字不动**，另加一条测试 `test_a_segment_with_slash_would_never_match` 把「带斜杠的条目恒不命中」钉死 | 这个失效形态**不报错、只放行**：往清单里塞 `"tests/"`，分段相等下永远匹配不上，补丁静默打进去，没有任何测试会红。注释挡不住直觉，只有一条会红的测试挡得住 |
+| 2026-09-02 | P8 | 搬家让 `code_repo_patch.py` 净少 91 行、`sandbox.py` 净少 17 行，`docs/skill-catalog.md` 与 `docs/toolport-contract.md` 里写死的行号随之失配，`test_generated_docs.py` 4 条红 | **重跑 `python3 scripts/gen_docs.py`**（两份生成物只变 4 个行号），不手改 | 这两份是代码的投影，判据是「与代码逐字节一致」。它们不在本轨白名单，但改动是本轨代码位移的机械后果，且测试报错里写死的修法就是这一条命令。手改或不改都会留一条红 |
+| 2026-09-02 | P8 | `scripts/check_docs.py` 的 `ALLOW_MISSING` 里有一条 `"maos/tools/paths.py": "BACKLOG 提议的下沉落点，尚未建"`，文件建出来后 `test_allow_missing_has_no_dead_entries` 红 | **删掉那条豁免**（本轨白名单外的第二处改动） | 那条豁免就是为本轨这个落点写的，前提是「尚未建」。留着不报错，但它会继续遮住 `maos/tools/paths.py` 这条路径上未来的真问题（比如文档里写个拼错的路径也不会红）—— 那正是那条测试存在的理由 |
+
+## integrate-p9-t80-t83（T80/T81/T82/T83 四轨整合轮，2026-09-02）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P8 | 四轨在 `docs/BACKLOG.md` / `docs/DECISIONS.md` 尾部各追加一节，git 判为冲突。两侧都是纯追加、无重叠内容 | **两侧全保留**，只去掉三行冲突标记，按轨号顺序排（T80→T81→T82→T83）。用脚本处理且只在冲突区内删 `=======` | 区外的 `=======` 可能是 markdown 的标题下划线，全局删会改坏正文。四节各记各的轨，谁的账都不该被合并动作吞掉 |
+| 2026-09-02 | P8 | T83 改了三个白名单外文件（`scripts/check_docs.py` 与两份生成物文档），按派单规矩属越界 | **判越界成立但接受，不要求返工**，在 BACKLOG 记明是派单漏了预警 | 三处都是新建 `maos/tools/paths.py` 的必然连锁：不删那条豁免 `test_allow_missing_has_no_dead_entries` 变红，不改行号 `gen_docs.py --check` 变红。要求返工等于要求它留下两条红门禁，代价与收益完全倒置 |
+| 2026-09-02 | P8 | 合并态生产代码净增 157 行，与派单立项时「压缩重复面」的说法有出入 | **如实记进 BACKLOG，不改写立项说法、也不去凑行数** | 事后把目标改成「本来就不是为了减行」是自欺。真实结论是：判定从 4 份收敛到 1 份这件事成立且有 47 条测试守着，而行数没减 —— 两件事都要说 |
+| 2026-09-02 | P8 | `EXPECT_TESTS_NOPG=1476` 已过期 155 条，本轮是并轨轮、按 `## task-T51` 的规程本该由并轨轮来刷 | **本轮不刷** | T74–T79 六轨尚未并轨，条数还会再变一次。现在刷完立刻再过期，等于让下一轮多做一次同样的事，还多一次误报窗口 |
+| 2026-09-02 | P8 | 是否现在合回 `goai-restructure` | **不合回，整合分支挂着等** | 主工作区那两份账本有 ingress 轨的未提交改动，现在合要多解一次账本冲突；且 T74–T79 并轨后还要再合一次。等两轮齐了一次性合回，冲突只解一遍，条数门禁也只刷一遍 |
 ## task-T70（供应链付款的表格入口，2026-09-02）
 
 把 Excel 导出的付款数据接到应付账款引擎上。引擎、`maos/domain/ap/**`、

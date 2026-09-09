@@ -1,149 +1,71 @@
 """银行差错处理域的读写口径 —— 建表、迁移、原始支付快照。
 
-**为什么这里自带一层 SQL 访问器**：`maos/core/store.py` 是冻结面（铁律 1），
+**为什么这里有一层 SQL 访问器**：`maos/core/store.py` 是冻结面（铁律 1），
 而 `Store` 抽象基类只有 plan/task/artifact/event_log 那几个具名方法，没有通用 execute。
 本域的 6 张业务表（外加 1 张迁移记账表）是**新增表**，只能从 `SqliteStore` 的连接上走。
-因此本模块提供 `execute()` / `query()` 两个薄壳，本域的所有 SQL 都从这里过 ——
+因此本域提供 `execute()` / `query()` 两个薄壳，本域的所有 SQL 都从这里过 ——
 store.py 一个字不改。
-
-口径整体照抄 `maos/domain/refund/objects.py`（那是本仓已经跑绿的形状），
-差别只在守的是哪张表：
 
 `execute()` **拒绝任何对 `investigation_case` 的写入**：那张表只有 `guard.py` 写得动。
 这是把「不留第二条路径」从 grep 自查升级成代码级拦截 —— grep 挡的是提交进仓库的旁路，
 这一条挡的是运行时的旁路。
+
+## 那层薄壳现在住在 `maos/domain/_case_store.py`
+
+本文件原本整体照抄 `maos/domain/refund/objects.py`，差别只在守的是哪张表。既然
+差别只有表名，就由 `make_case_store(case_table="investigation_case", ...)` 现造，
+不再各写一份。
+
+**本域不接业务引用三件套**（`attach_business_ref` / `list_business_refs` /
+`resolve_business_ref`）：骨架里有，本域不绑。差错处理挂的是**原始支付快照**
+（`put_payment_snapshot` 那一套），不是「Task → 业务对象」的引用表，`schema.sql`
+里也没有 `investigation_business_ref` 这张表。为了「四个域看起来一样」去硬造一张
+空表，是拿一致性换掉真实形状 —— 调用方会以为那里能挂东西。
+
+留在本文件的是真正属于差错处理的那些：原始支付快照的读写与版本、
+本域的迁移步骤（`_MIGRATIONS` / `_migrate`）。
 """
 
 from __future__ import annotations
 
-import contextlib
-import re
-import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .._case_store import _now, make_case_store
+
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
-#: `investigation_case` 的写入必须走 guard.create_case / guard.update_biz_status。
-_CASE_WRITE = re.compile(
-    r"\b(?:insert\s+(?:or\s+\w+\s+)?into|update|delete\s+from|replace\s+into)\s+"
-    r"[\"'`\[]?investigation_case[\"'`\]]?\b",
-    re.IGNORECASE,
+#: 本域的存储口径。`schema.sql` 在这里一次读进来：`ensure_schema()` 与
+#: `_MIGRATIONS` 里每一步拿到的必须是**同一份**脚本文本。
+_CASE_STORE = make_case_store(
+    case_table="investigation_case",
+    schema_sql=_SCHEMA_PATH.read_text(encoding="utf-8"),
 )
 
+#: 骨架的通用件，绑成模块级名字 —— 对外的调用形态与下沉前逐字相同。
+#: **业务引用那三个刻意不绑**，理由见模块抬头。
+BypassedGuardError = _CASE_STORE.BypassedGuardError
+_conn = _CASE_STORE._conn
+lock_of = _CASE_STORE.lock_of
+_guarded = _CASE_STORE._guarded
+execute = _CASE_STORE.execute
+query = _CASE_STORE.query
+_atomic = _CASE_STORE._atomic
+_has_column = _CASE_STORE._has_column
+applied_schema_version = _CASE_STORE.applied_schema_version
+ensure_schema = _CASE_STORE.ensure_schema
 
-class BypassedGuardError(RuntimeError):
-    """有人试图绕开 `guard.py` 直接写 `investigation_case`。"""
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _conn(store: Any) -> sqlite3.Connection:
-    """取底层连接。只认暴露了 `_conn` 的 Store 实现（当前是 `SqliteStore`）。"""
-    conn = getattr(store, "_conn", None)
-    if conn is None:
-        raise TypeError(
-            f"{type(store).__name__} 没有暴露 sqlite 连接，差错处理域的新增表无处落库。"
-            " 换后端时在这里加一条分支，不要去改冻结的 store.py。"
-        )
-    return conn
-
-
-def lock_of(store: Any) -> Any:
-    """借 Store 自己的锁。
-
-    `SqliteStore` 的连接是**共享**的（`check_same_thread=False` + 一把 RLock）。
-    本域绕过 store.py 直接用这条连接，就必须一并用它那把锁：否则别的线程在
-    `insert_task` 里一次 `commit()`，就把 guard 这边只写了观察、还没改状态的
-    事务提交掉了 —— 「returned 与观察同事务」当场破，而且是偶发的。
-    """
-    lock = getattr(store, "_lock", None)
-    return lock if lock is not None else contextlib.nullcontext()
-
-
-def _guarded(sql: str) -> str:
-    if _CASE_WRITE.search(sql):
-        raise BypassedGuardError(
-            "investigation_case 的写入必须走 guard.create_case / guard.update_biz_status，"
-            "不许经 objects.execute 旁路（铁律 8）"
-        )
-    return sql
-
-
-def execute(store: Any, sql: str, params: tuple | list = ()) -> None:
-    """本域的写入口径。对 `investigation_case` 的写入一律拒绝。"""
-    conn = _conn(store)
-    with lock_of(store):
-        conn.execute(_guarded(sql), tuple(params))
-        conn.commit()
-
-
-def query(store: Any, sql: str, params: tuple | list = ()) -> list[dict]:
-    """本域的读取口径。读不设限 —— 守的是写入方，不是读取方。"""
-    with lock_of(store):
-        rows = _conn(store).execute(sql, tuple(params)).fetchall()
-    return [dict(r) for r in rows]
+#: 迁移那组「同生共死」语句用的保存点名，由 `_case_store` 按域前缀现造
+#: （本域是 `investigation_schema_migrate`）。多个域的迁移嵌套跑时保存点不能重名。
+_MIGRATE_SAVEPOINT = _CASE_STORE.savepoint
 
 
 # ------------------------------------------------------------------ schema 迁移
-#: 迁移那组「同生共死」语句用的保存点名。**带域前缀**：退款域用的是
-#: `refund_schema_migrate`、知识层用 `kb_schema_migrate`，两个域的迁移嵌套跑时
-#: 保存点不能重名。
-_MIGRATE_SAVEPOINT = "investigation_schema_migrate"
-
-
-def _atomic(store: Any, statements: list[tuple[str, tuple]]) -> None:
-    """一组语句同生共死，**DDL 也算在内**。理由与退款域逐字相同：
-
-    「删表 → 建表 → 重灌」这种三步走，断在中间而前两步已落盘的话，表在、列全、
-    **一行数据都没有** —— 下一次迁移探针看到列已存在于是跳过，那张表从此恒空且不报错。
-
-    **光靠 `rollback()` 撤不回 DDL**：Python 的 sqlite3 在传统模式下只为 DML 隐式开
-    事务，`DROP TABLE` 是在自动提交下跑的，一发就落盘。显式发一句 `SAVEPOINT` 才能
-    把 DDL 拉进事务；用 SAVEPOINT 而不是 BEGIN，是因为外层已在事务里时 BEGIN 会报
-    cannot start a transaction within a transaction。
-
-    **每条语句照样过 `_guarded()`**（铁律 8）。迁移绕开 `execute()` 直连底层连接是为了
-    拿事务，不是为了拿豁免权。
-    """
-    for sql, _params in statements:
-        _guarded(sql)
-    conn = _conn(store)
-    with lock_of(store):
-        conn.execute(f"SAVEPOINT {_MIGRATE_SAVEPOINT}")
-        try:
-            for sql, params in statements:
-                conn.execute(sql, tuple(params))
-        except BaseException:
-            conn.execute(f"ROLLBACK TO {_MIGRATE_SAVEPOINT}")
-            conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
-            conn.rollback()
-            raise
-        conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
-        conn.commit()
-
-
-def _has_column(store: Any, table: str, column: str) -> bool:
-    """探「这张表有没有这一列」。用一条 SELECT，**不用 PRAGMA**。
-
-    理由同退款域：PRAGMA 是 SQLite 方言（换后端不保证有），且
-    `PRAGMA table_info` **不列生成列**，拿它判一个生成列在不在会每次都去 ALTER，
-    每次都撞 duplicate column name。
-
-    异常一律当「没这列」：真是连接坏了，紧随其后的 ALTER 会自己响。
-    """
-    try:
-        query(store, f"SELECT {column} FROM {table} LIMIT 1")
-        return True
-    except Exception:                                  # noqa: BLE001 —— 探针不该炸
-        return False
-
-
 #: 迁移步骤表，**按版本号升序**，每项是 `(版本号, 说明, 步骤函数)`，
 #: 步骤函数签名 `step(store, script)`。
+#:
+#: **留在本域不进骨架**：各域的迁移步骤是各域自己的历史，没有一步是共通的。
+#: 骨架只提供步骤要用的两个原语 `_atomic` / `_has_column`。
 #:
 #: **当前是空的，这是对的**：本域是第一次落地，一列都还没改过。凭空造一次迁移
 #: 等于给老库跑一段没人验证过的搬运，风险白担（口径同退款域 `_MIGRATIONS`）。
@@ -154,13 +76,6 @@ _MIGRATIONS: tuple[tuple[int, str, Any], ...] = ()
 
 #: 本域 schema 的当前版本。跟着 `_MIGRATIONS` 算，**不手写**。
 INVESTIGATION_SCHEMA_VERSION = max((v for v, _label, _step in _MIGRATIONS), default=0)
-
-
-def applied_schema_version(store: Any) -> int:
-    """这库已经升到第几版。没有记账行就是 0。"""
-    rows = query(store, "SELECT MAX(version) AS version FROM investigation_schema_version")
-    version = rows[0]["version"] if rows else None
-    return int(version) if version is not None else 0
 
 
 def _migrate(store: Any, script: str) -> None:
@@ -181,20 +96,10 @@ def _migrate(store: Any, script: str) -> None:
                        " VALUES (?, ?)", (version, _now()))
 
 
-# ---------------------------------------------------------------------- 建表
-def ensure_schema(store: Any) -> None:
-    """建表 + 迁移到最新版本。幂等，可连跑。
-
-    **两段，缺一不可**：`schema.sql` 那段全是 `IF NOT EXISTS`，只管「表不在就建」，
-    对已经存在的表一个字都改不动；`_migrate()` 那段才管「表在但形状旧」。
-    只有第一段的时候，改列是静默无效的。
-    """
-    script = _SCHEMA_PATH.read_text(encoding="utf-8")
-    conn = _conn(store)
-    with lock_of(store):
-        conn.executescript(script)
-        conn.commit()
-    _migrate(store, script)
+#: 把本域的迁移入口挂回骨架 —— `ensure_schema()` 建完表之后调的就是它。
+#: **两段，缺一不可**：`schema.sql` 那段全是 `IF NOT EXISTS`，只管「表不在就建」，
+#: 对已经存在的表一个字都改不动；`_migrate()` 那段才管「表在但形状旧」。
+_CASE_STORE.migrate = _migrate
 
 
 # ------------------------------------------------------------ 原始支付快照

@@ -1636,6 +1636,46 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
 
+## task-T66（自然语言意图解析层，本轮都不改）
+
+2026-09-02 建 `maos/nlu/` 时发现的三条，都在本轨白名单之外，按铁律 4 只记不改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **跨轨契约 `review/nl-contracts.md` 不在版本库里**，只躺在主仓工作区。四轨都被要求「照抄同一份定义」，但从 worktree 里 `git show` 不出来它 | 今天无害（四轨手里各有一份）。代价在并轨之后：谁都无法回答「当时那份契约到底怎么写的」，字段名一旦有分歧就成了各说各话，而这种冲突**不会有任何红灯** —— 两侧都能各自跑绿 | 整合轨落库。要么入 `docs/`，要么至少提交进 `review/`；答辩要讲「四轨零交集怎么保证」时也要指得到它 |
+| 2026-09-02 | P9 | **关键词词表会有两份**：本轨的 `_KW_APPROVE` 等四张表，与 T67 自带的 `_KeywordParser`（跨轨契约 §1.3 明写 T67 不许 import `maos.nlu`） | 并行期间是对的，整合后就是同一件事的两处实现。分叉的症状很温和：房间里「不同意」判成驳回、而某条旁路仍判成同意，两边测试各自全绿 | 整合时按契约 §5 grep `# INTEGRATION-POINT:`，把 T67 那份换成本轨的 `parse_intent` 偏函数并**删掉**它的词表，不要留成兜底的兜底 |
+| 2026-09-02 | P9 | **降级客户端认不出来，只能靠 `isinstance(model, ScriptedModelClient)` 判**。`ModelClient` 上没有任何「我是降级来的」标记，`ModelResponse.meta` 里也没有 | 本轨的关键词兜底就挂在这个 isinstance 上。哪天 `select_model_client` 的降级目标换成别的类（`HigressModelClient` 今天还是占位），兜底会**静默不触发** —— 无 key 的机器上一句「同意」直接变 unknown，没有任何报错 | 归动 `maos/model/client.py` 的那一轨（本轨只读，未动）：给 `ModelClient` 加一个 `degraded: bool` 类属性，或让降级路径在 `ModelResponse.meta` 里落一个 `degraded=True`。改完把本轨的 isinstance 换掉 |
+## task-T67（房间常驻监听器，本轮都不改）
+
+2026-09-02 建 `hiclaw/room_agent.py` 时撞到的四条。都在本轨白名单之外，一行没动。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **`MirrorChannel.listen` 的回调签名是 `(sender, body)`，不带 `event_id`** —— 真房间里监听器拿不到消息 id | 去重只能退到「`sender` + 正文指纹 + 5s 时间窗」这一档（`room_agent.RoomAgent._is_duplicate`）。它挡得住 sync 重连的连续重放，挡不住「重放隔了 5s 才来」；而窗口不敢调大，调大就会把人隔一会儿再说一遍的**合法第二次发言**一起吃掉。审批是不可逆动作，这个缺口有真实代价 | 要根治得放宽 `MirrorChannel` 协议、让 `_NioChannel.listen` 把 `event.event_id` 一路带下来 —— 那是**冻结参照物** `hiclaw/matrix_bus.py`，本轮不许改。归下一轮真房间轨，与「回调形状」一起改一次，别分两次 |
+| 2026-09-02 | P9 | **`HumanApprovalQueue.decide()` 对库里不存在的 task_id 抛的是 `TypeError: 'NoneType' object is not subscriptable`** | 这句会被 `RoomApprovalBridge` 原样贴进房间回执：实跑截到的是「审批未生效：task_997ca4541e66 —— 'NoneType' object is not subscriptable」。演示当天房间里的人看到这句，既不知道是自己打错了 id，也不知道该怎么办 | 归 `maos/runtime/gate.py` 那一轨：`decide` 开头查一次任务，查不到就抛一个说人话的异常（「库里没有这条任务，请核对 task_id」）。不在本轨白名单 |
+| 2026-09-02 | P9 | **`known_task_ids` 只能靠 `--plan-id` 显式喂**：`Store` 没有「跨 plan 按状态列任务」的方法，`HumanApprovalQueue.pending()` 又只接受单个 `plan_id` | 常驻监听器上线时并不知道房间里将来会出现哪些 plan。不给 `--plan-id` 时自然语言路径认不出任何 task_id（一律降 UNKNOWN 静默）——**保守是对的**，但可用性上等于自然语言只在「盯着某个 plan」时才活着。显式 `/approve` 不受影响 | 归下一轮：要么给 `Store` 加一个只读的 `list_blocked_tasks()`（新增方法不动现有表结构，不违铁律 1），要么让监听器订阅 `TaskBlocked` 事件自己维护待审集合。后者更贴事件溯源，但要碰 `maos/core/**` |
+| 2026-09-02 | P9 | **`_KeywordParser` / `_StubDispatcher` 是并行期替身，整合后必须删掉** | 留着就是第二份解析与派发口径，而两份判据一定会漂；漂了的症状是「同一句话在冒烟里认得出、在房间里认不出」，且不会有任何测试变红 | 整合时（T66/T68 落地后）按两处 `# INTEGRATION-POINT:` 注释替换，**删掉替身类本身**，不要留成「默认实现」。`maos/tests/test_room_agent.py` 里针对替身的那两节（第 2、11 节）跟着删或改喂真实现 |
+## task-T68（意图派发与权限闸，本轮都不改）
+
+2026-09-02 做 `maos/runtime/intent_dispatch.py` 时发现的三条。都在本轨白名单外，
+按铁律 4 记账不当场改。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **两条审批路径在「env 没给名单」时行为不同**：房间侧 `RoomApprovalBridge._effective_approvers` 是 `current_approvers() or self.config.approvers` —— 读到空会**回落到构造时那份快照**；本轨的 `resolve_approvers(env)` 没有这一支，空就是空、一律拒绝 | 今天不出事：真房间跑的时候 `MAOS_APPROVERS` 是配着的，两边给出同一个名单（对照测试覆盖的正是这一段）。但 `MatrixBusConfig.from_env({...})` / `room_demo.py` 降级自检那种「env 没配、config 有快照」的场景下，同一个人走显式指令能批、走自然语言会被拒 —— **症状是「时灵时不灵」，不会报错** | 归整合轨（T66→T67/T68→T69 并轨那一步）。要么给 `dispatch_intent` 的调用方显式传 bridge 那份 effective 名单，要么把回落语义也搬进 `resolve_approvers`。**别让调用方各自决定**，那正是分叉的来源 |
+| 2026-09-02 | P9 | **`maos/config/__init__.py` 的配置键登记表只记了一个读取点**：`MAOS_APPROVERS` 那行写的是 `hiclaw/matrix_bus.py::RoomApprovalBridge._effective_approvers`，本轮新增的 `maos/runtime/intent_dispatch.py::resolve_approvers` 没登记 | 那张表是「动这个键会影响谁」的唯一索引，也是安全事件时的排查起点。少一个读取点，排查时会漏掉自然语言这条路径 | `maos/config/**` 是配置审计面（只读，动它属于安全事件），本轨没动。归有权改配置面的那一轨，补一行即可 |
+| 2026-09-02 | P9 | **状态查询只认单个任务，没有 plan 级概览**：`dispatch_intent` 的签名（跨轨契约 §1.2）不带 `plan_id`，所以「现在什么情况」这种不带 task_id 的问法只能反问「想查哪个任务」 | 人在房间里最自然的问法恰恰是不带 id 的那种。现在的回答虽然不错，但没解决他的问题 | 归 T69 端到端冒烟之后再定：要加就得改跨轨契约的签名，属于四轨共同口径，**不许单轨自己加参数** |
+## task-T69（自然语言接入面的文档、runbook 补坑与冒烟）
+
+本轨只动文档、冒烟脚本与一份文档守卫测试，不碰任何运行时代码。
+下面四条是动手过程中撞到、按铁律 4 **不当场改**的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **整合后需补三处路径引用**。`docs/nl-interface.md` 与 `scripts/nl_smoke.py` 里，意图解析层 / 房间常驻监听器 / 意图派发与权限闸三个模块，文档侧一律只写职责不写路径 —— T66 / T67 / T68 与本轨并行，那三个文件在本轨的 worktree 里一个都不存在，写进反引号会被 `scripts/check_docs.py` 判据 E 当场判红 | 现在文档能自洽，但读的人拿不到指路：想去看解析层长什么样，只能靠猜模块名。冒烟脚本里的模块名是代码字符串，不受文档守卫管，那三处是准的 | 四轨整合完成之后另开一轮补。补的时候顺手核一遍模块名与实际落点是否一致 |
+| 2026-09-02 | P9 | **Element 弹窗那一条本轨未复现**，写进 runbook 的逐字原文采信编排侧 2026-09-02 的实测。本轨没有 Synapse / Element 环境（探测 localhost 的命令被权限拦下），且那个弹窗是客户端 GUI 行为，无法用命令行复现 | 文字本身有出处（编排侧实测），但**没有截图**。按钮名一旦在 Element 某个版本里改了措辞，`maos/tests/test_nl_interface_doc.py` 钉的是文档里的字符串，钉不住真实按钮 | 正式取证窗口开真房间时，顺手截一张弹窗图进 `evidence/room/`，并核一次按钮名 |
+| 2026-09-02 | P9 | **`scripts/nl_smoke.py` 的端到端分支在本轨没有真跑过**。三个模块都不存在，只能用 scratchpad 里的一次性假模块探针把那条分支走了一遍（含 R1 变异检验：把派发结果改成「已执行」，脚本退 1）。探针不入库 | 装配、打印与 R1 断言的形状是验过的，但**与三轨真实签名的契合没验**。签名若与跨轨契约有出入，第一次真跑才会炸 | 整合后第一件事就是真跑一次这个脚本，期望 exit=0，并把输出留进整合回执 |
+| 2026-09-02 | P9 | **冒烟脚本的退出码语义没有机器守卫**。`maos/tests/test_nl_interface_doc.py` 钉的是两份文档的措辞，没有任何测试钉住「未合并 = 3、坏了 = 1」这条约定；`docs/nl-interface.md` §6 把它当结论写着 | 谁把 `EXIT_NOT_MERGED` 改成 1，文档当场说假话而全绿。这正是文档守卫本来要挡的那类腐烂，只是它这次落在脚本侧 | 整合后与上一条一起做：真跑通了再补一条测试，同时钉住三态退出码 |
 ## task-T55（多 Provider 模型客户端：第二家协议）
 
 本轨新增 `maos/model/providers.py`（Anthropic Messages 客户端 + provider 注册表）

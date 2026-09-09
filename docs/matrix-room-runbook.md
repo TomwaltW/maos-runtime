@@ -281,6 +281,28 @@ Agent 产出补丁是 M 级、在其授权内，但这个补丁**合进生产**�
 /approve task_5a1469c54bbe        # ← 你那一轮的 id 不是这个，每次运行都重新生成
 ```
 
+🔴 **回车之后消息不会发出去 —— Element 把它当成自己的斜杠指令吃掉了。**
+弹出来的是这么一个对话框（2026-09-02 编排侧实测，逐字）：
+
+```text
+未知指令
+无法识别的指令：/approve task_997ca4541e66
+你可以使用 /help 列出可用的指令。是否将此文本作为消息发送？
+提示：请以 / 开头。
+                                        [取消]  [作为消息发送]
+```
+
+**必须点「作为消息发送」那个按钮，这条命令才真的进房间。** 点完后台立刻收到并生效：
+
+```text
+INFO  nio.rooms  Room !qcaXWSgkmosmxdYgpD:maos.local handling event of type RoomMessageText
+INFO  maos.cp    [task_997ca4541e66] BLOCKED -> DONE (human_approve)
+```
+
+不知道这一步的人会以为「系统没反应」，而这个误判**在现象上与「机器人真的挂了」
+完全无法区分** —— 它也不在 §0 那张静默表里：那五种都是消息发出去了没人理，
+这一种是消息**压根没离开客户端**，房间历史里连一条都不会有。演示当天一定会撞上。
+
 不要手打 task_id。打错的那条命令**不会**被猜成相近的任务 ——
 `parse_approval_command` 认不出就返回 `None`，一律不猜，因为审批不可逆。
 
@@ -557,6 +579,8 @@ git checkout -- evidence/scenario-1 evidence/scenario-2 evidence/scenario-3 \
 
 ### 7.4 房间有消息但审批命令没反应
 
+- **先确认那条命令真的进了房间**：Element 会把它当自己的斜杠指令吃掉，弹窗里点了
+  「作为消息发送」才算发出去（见 §4）。房间历史里找不到你发的那条 = 卡在这一步
 - 先确认发命令的账号在 `MAOS_APPROVERS` 里（`echo $MAOS_APPROVERS`，**这条不回显 token，可以截**）
 - 再确认命令是 `/approve` / `/reject` 开头且**带 task_id**：缺参数只回用法，不落任何决策
 - 机器人不听自己的回声（`should_deliver` 里跳过 `sender == whoami 回来的 mxid`），
@@ -891,6 +915,11 @@ ORD-2026-0006：第 1 轮 need_more → 第 2 轮 escalate
 `maos/tests/test_room_team_recheck.py`。
 
 ---
+## 修订记录（2026-09-02，基线 `b35c618`）
+
+| 节 | 原来写的 | 改成什么 | 依据 |
+|---|---|---|---|
+| §4「在哪一步打命令」、§9 7.4 | 只说「在房间发 `/approve <task_id>`」，未提客户端会拦下这条命令 | 补 Element「未知指令」弹窗逐字原文 + **必须点「作为消息发送」**，并在 7.4 加一条「先确认命令真的进了房间」 | 2026-09-02 编排侧真房间实测（本轨未复现，采信编排侧原文） |
 
 ## 修订记录（T 轮，基线 `27c9e18`）
 

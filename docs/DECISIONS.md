@@ -1675,6 +1675,20 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P9 | 两份账本六轨各自尾部追加，逐轨合并时五次冲突 | 脚本化解冲突：两段全保留，HEAD 段在前、分支段在后 | 纯追加型冲突，两边内容互不重叠；解完核验 `## task-T55`..`T60` 六个小节齐全、零冲突标记残留 |
 | 2026-09-01 | P9 | `providers` / `routing` / `capability.profiles` 三个模块整合后生产侧仍零引用 | 如实留着，不在整合期顺手接线 | 「只造零件不接线」是派单定的范围，三轨的 BACKLOG 各自记了这条。整合期擅自接线等于把一轨的活塞进合并提交里，出问题时分不清是谁的 |
 
+## task-T63（RTV 域 Skill 层）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | 派单 §5.2 只给了 `ensure_schema` 的试探性 import 样例，但权威守卫（`update_biz_status`）同样在 T61 手里 | **只有建表走试探性 import；守卫在 `_common.py` 自带一份，不试探** | 派单 §5.5 第 5 条明说「用 T61 的 guard 拒不了，本轨自己要有一道」。委托守卫要赌 T61 的函数签名（契约只冻结了常量，没冻结签名），赌错就是整合期两处都得改；而建表只赌一个 `ensure_schema(store)`，是派单给过的形状。切换点收在 `_rtv_domain_objects()` 一个函数里，整合期删 fallback 仍只改一处 |
+| 2026-09-02 | P9 | 契约 C-R1 的两张回执表都没有 `poll_count` 列，而「终态是问出来的」要拿轮询次数当证据 | **落进 `RtvBizStatusChanged` 事件的 `detail.poll_count` 与 reason 文本，不动契约** | 契约冻结（改它要走人类解锁），而证据本身不必非在回执表里 —— 事件日志是已有的、可查询的留痕面。测试直接断言事件 detail 里的次数，不靠回执行 |
+| 2026-09-02 | P9 | 契约要求 `rtv_reconciliation.findings_json` 的 `rule_id` 也必在 `RULES` 里，而 `RULES` 原本只装裁定规则（结论是三种处置类型） | **一张 `RULES` 装两组规则，结论取值域按用途分开**（裁定组落 `credit`/`exchange`/`replacement`/`rejected`，对账组落 `mismatch`/`pending`），`dispose` 侧加一道「取到非处置类结论就抛」 | 分两张表会让「这个编号查哪一张」多一次猜，而契约对两处提的是同一句话（每项必带 rule_id 且编号在 RULES 里）。取值域混用的风险由 `dispose.py` 那道断言挡住，且有测试 |
+| 2026-09-02 | P9 | 「超出退货窗口」的结论是 `rejected`，而 `rtv_disposition.return_action` 的 CHECK 只收三种处置类型 | **这一档只推状态到 `rejected`，不写 `rtv_disposition` 行**，理由落在状态变更事件与返回值里 | 硬塞 `rejected` 要么被 sqlite 拒，要么得放宽契约里的 CHECK —— 两条都不许。裁定表只记「裁成了哪种处置」，不记「不予受理」，语义上也更干净 |
+| 2026-09-02 | P9 | 派单 §5.3 把 `rtv.compensate` 写成 `*` → `compensated`，而契约 C-R2 的 `BIZ_STATUS_FLOW` 里 `received` 的合法去向只有 `disposed` / `rejected` | **照 C-R2 实现**：补偿只从 `disposed` / `shipped` / `credited` 过来，`received` 阶段调用会被迁移守卫拒 | 契约是冻结面，派单的 `*` 是简写。`received` 阶段还没有任何对外动作，没有什么要补偿的，那一档本来就该走 `rejected` |
+| 2026-09-02 | P9 | 供应商 `disputed` / AP 凭单 `voided` 是外部明确说的坏消息，必须留痕，但两张回执表都只为**成功凭据**定义 | **落一条 `RtvAdverseObservation` 事件，不塞回执表**，且只有 `rtv.observe` 记得了 | 硬塞要么留一堆空字段（`credit_note` 每一列都在描述一张开出来的票），要么得动冻结的表结构。但不许不留痕 —— 「供应商说不认」只活在日志里等于系统没观察到它 |
+| 2026-09-02 | P9 | 外部回执自带 `is_terminal` 字段，是否直接用它判终态 | **不用。终态由我方按 `SUPPLIER_/CARRIER_/AP_TERMINAL` 三张表判** | 信它等于把「这算不算终态」的判据交给被观察方：一个把 `acknowledged` 标成终态的实现会让 `rtv.observe` 提前收口，而那正是本域最不该出的错。取值域外的状态一律抛，不兜底成非终态 |
+| 2026-09-02 | P9 | fallback 建表要不要连 `supplier` / `purchase_order` / `goods_receipt` 五张复用表一起建 | **建，但用「读 `maos/domain/ap/schema.sql` 文本 + executescript」，不 import 跨域** | 契约 C-R9 说 ap 域的口径可以照抄、跨域 import 不许有；读的是文本不是代码路径。不建的话 `rtv.intake` 报 `no such table`，而真实原因是「这库还没装配源单」，症状离原因很远。已记进 BACKLOG，整合期随 fallback 一起删 |
+| 2026-09-02 | P9 | 一个案子里既有「发错货要补发」又有「次品要退款」 | **抛异常要求拆案，不自动挑一个当代表** | `rtv_case.return_action` 是案子头上的一个值（PeopleSoft 的 header 级 return action 就是一个）。挑一个之后另一半诉求会静悄悄消失，且在对账那步以「金额对不上」的面目重新出现 |
+| 2026-09-02 | P9 | 新增六个 skill 之后 `test_generated_docs.py` 与 `test_capability_profiles.py` 共四条既有测试变红 | **不跑 `gen_docs.py`、不改基线测试，如实报告并记进 BACKLOG** | 派单 §0.1 明令本轮不跑生成器（投影要等五轨齐了整合期统一跑），§8 明令不许改测试。四条红全部源自缺席轨（T62 的工具、T64 的角色）与那份待重跑的投影，不是本轨实现的缺陷 —— 但它确实让「1707 一条不许红」这条判据不成立，所以摆在回执最上面，不藏在附注里 |
 ## task-T62（RTV 域 ToolPort 与编码表）
 
 | 日期 | Phase | 情境 | 选择 | 理由 |

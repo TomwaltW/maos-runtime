@@ -1944,3 +1944,11 @@ router 侧的 @岗位点名分流与待办里的合议建议。以下六处是�
 | 日期 | Phase | 情境 | 选择 | 理由 |
 |---|---|---|---|---|
 | 2026-09-09 | p9 | `docs/agent-teams-gap-analysis.md` 与 `docs/five-roles-accuracy-test-plan.md` 两份只读产物落盘后一直未入库，且后者让 `test_docs_guard` 恒红 7 条（1 条 B-cols + 6 条 E-missing）。守卫按 **git 在册面**扫（已跟踪 + 未跟踪未忽略），未跟踪文件同样在射程内 —— 于是铁律 5 的「验收全绿才许 commit」把两份文档一起卡住，连零阻断的那份也提不了 | B-cols 改文档本身（E-15 行 4 列并回 3 列，`待补` 挪进期望列，与同表 `（✅ 已有）` 写法一致）；6 条 E-missing 涉及的 4 个路径进 `scripts/check_docs.py` 的 `ALLOW_MISSING`「待建」档，各写理由 | 4 个路径的上下文全是「**新文件**」「**产出**」（`:468` `:477` `:555` `:592` `:607`），且 `git ls-files` 反查无任何近似物，确认是该方案第 2 / 4 / 5 步的待建交付物，与档内既有的 `maos/tools/paths.py`「BACKLOG 提议的下沉落点，尚未建」、`scripts/gen_room_transcript.py`「BACKLOG 提议收编的脚本，尚未建」同类。守卫 docstring 警告「红了不要往白名单里加 —— 它多半是真的」，故先逐条验过不是错拼再加，不是把红的塞进来。`scripts/check_docs.py` 属本会话白名单外的文件（CLAUDE.md 第 4 类），已停手报人类并获点头后才改 |
+
+## 整合 T107–T111 五轨（2026-09-09）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-09 | p9 | 五轨并入 `goai-restructure`。`maos/core/control_plane.py` 上 T107 的 `leases` 与 T110 的 `hooks` 撞在同一处构造函数签名；`docs/DECISIONS.md` / `docs/BACKLOG.md` 每轨各追加一节，逐轨冲突 | 构造函数两个关键字参数都保留（都在 `*` 之后，顺序无关），两侧注释一字未改；两份文档按时间正序拼（各轨 09-08 的节排在 09-09 归档节之前） | 两个参数各自缺省 `None`、互不引用，语义上正交，合并不需要任何取舍；两份文档是纯追加型，没有一行是两边同时改的 —— 判据是冲突块内 ours/theirs 各为一个完整新章节 |
+| 2026-09-09 | p9 | T107 收口那节预告的「整合期统一刷条数」：合并后实测 collected 2476、skipped 41，而 `docs/expected-metrics.json` 仍是各轨基线的 2259 | `pytest_passed_nopg` 2259 -> 2435，并跟着刷 `docs/submission-checklist.md:24` 的锚点行 | 守卫的口径是 `collected == pytest_passed_nopg + pytest_skipped_nopg`（2435 + 41 = 2476）。这一步正是各轨都被明令不许自己改、留给整合期做的那一次；两份文件在各轨白名单外、在整合会话内 |
+| 2026-09-09 | p9 | 合并前后全量测试都有 11 errors + 1 failed（`test_domain_evidence` 7 条、`test_verify_warn` 4 条、`test_cost_metrics` 1 条），本机环境所致：`SSL_CERT_FILE` 未设 + `~/.maos.env` 里的 DeepSeek key 已失效（网关回 HTTP 401 `api key ... is invalid`） | 不动代码、不改测试、不加 skip；合并的验收判据改取「红的集合与合并前基线逐条一致，且 passed 2247 -> 2422」 | 这 12 项在合并前的 `9d4df28` 基线上就红，报错全部指向 https 证书与模型网关认证，与五轨的改动面（租约 / 邮箱 / 名册 / 挂点 / 驳回）无交集。key 失效是环境问题，按铁律 4 记进 BACKLOG 交人类换 key，不在整合轨里顺手处理 |

@@ -26,6 +26,7 @@ import pathlib
 import pytest
 
 from maos.core.store import SqliteStore
+from maos.domain.ap import objects as ap_objects
 from maos.skills.builtin.rtv import RTV_SKILLS
 from maos.skills.builtin.rtv import _common as C
 from maos.skills.contract import SkillContext, SkillContract
@@ -179,6 +180,9 @@ def run_skill(name: str, payload: dict, ctx: SkillContext):
 def store():
     s = SqliteStore()
     s.init_schema()                       # 编排层的表（event_log 在里面）
+    # 五张源单表（supplier / purchase_order / ... ）的持有方是 ap 域，rtv 不重建：
+    # 见 maos/domain/rtv/objects.py::require_upstream_tables 的 docstring。
+    ap_objects.ensure_schema(s)
     C.ensure_schema(SkillContext(store=s))
     seed_source_documents(s)
     return s

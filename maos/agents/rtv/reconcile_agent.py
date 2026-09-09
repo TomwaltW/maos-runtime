@@ -45,23 +45,30 @@ class RtvReconcileAgent(BaseAgent):
         res = self.skills.invoke(SKILL_RECONCILE, {
             "tenant_id": ctx.inputs.get("tenant_id"),
             "case_id": ctx.inputs.get("case_id"),
-            "supplier_portal": ctx.inputs.get("supplier_portal"),
+            # 容差按案子给（不同供应商的合同容差不同），任务上没写就用 skill 的缺省。
+            "tolerance": ctx.inputs.get("tolerance"),
             "reconciled_by": self.identity.agent_id,
         }, extras=extras_of(self, ctx))
         if res.status != "ok" or not isinstance(res.output, dict):
             return AgentOutput(status="failed", error=failed(res, SKILL_RECONCILE))
 
+        # `rtv.reconcile` 的产出是扁平的，不是包在 "reconciliation" 里。
+        # 两个金额**都搬出来**：我方按退货行算的那个与供应商贷项通知单认的那个是两个
+        # 事实，摘要里合并成一个数，「以外部权威为准」这句话就没地方落了。
         out = res.output
-        r = out["reconciliation"]
         return AgentOutput(
             status="ok",
             open_questions=list(out.get("open_questions") or []),
             artifacts=[artifact(KIND_RTV_RECONCILIATION, dict(out), summary=(
-                f"三方对账第 {r['attempt']} 次：reconciled={r['reconciled']}，"
-                f"可退 {r['creditable_amount']!r}（容差 {r['tolerance']}）；"
-                f"findings {[f['rule_id'] for f in r['findings']]}；"
+                f"三方对账第 {out['attempt']} 次：reconciled={out['reconciled']}；"
+                f"我方按退货行算 {out['amount_claimed']!r}、供应商贷项通知单认 "
+                f"{out['amount_credited']!r}、可动账 {out['creditable_amount']!r}；"
+                f"供应商侧 {out['supplier_status']}，AP 侧已观察到核销="
+                f"{out['settled_observed']}；findings "
+                f"{[f['rule_id'] for f in out['findings']]}；"
                 f"biz_status={out['biz_status']} —— 对账只出结论，终态归 rtv.observe"
             ))],
-            metrics={"reconciled": r["reconciled"], "findings": len(r["findings"]),
+            metrics={"reconciled": out["reconciled"], "findings": len(out["findings"]),
+                     "supplier_status": out["supplier_status"],
                      "is_rework": ctx.is_rework},
         )

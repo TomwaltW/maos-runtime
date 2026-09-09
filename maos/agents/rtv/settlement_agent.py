@@ -74,29 +74,35 @@ class RtvSettlementAgent(BaseAgent):
         res = self.skills.invoke(SKILL_OBSERVE, {
             "tenant_id": ctx.inputs.get("tenant_id"),
             "case_id": ctx.inputs.get("case_id"),
-            "supplier_portal": ctx.inputs.get("supplier_portal"),
-            "ap_system": ctx.inputs.get("ap_system"),
             "max_polls": ctx.inputs.get("max_polls"),
-            "observed_by": self.identity.agent_id,
         }, extras=extras_of(self, ctx))
         if res.status != "ok" or not isinstance(res.output, dict):
             return AgentOutput(status="failed", error=failed(res, SKILL_OBSERVE))
 
+        # `rtv.observe` **一次只问一个外部系统**（问哪个由案子当前的业务状态决定，
+        # 见 `observe._STAGES`）—— 两个权威终态由 DAG 上两个观察任务分别问，
+        # 不在这里循环着替它跳第二跳：那一跳该不该跳是 skill 的判据，
+        # 在 Agent 里循环等于把它抄第二遍。
         out = res.output
-        credit, adjust = out["credit_receipt"], out["adjustment_receipt"]
+        # `advanced` 是 skill 说的「这次有没有推进」。没推进就把它挂出来给人看，
+        # 但一个字都不改状态 —— 判据仍在 skill 里，这里只是把它翻成一句人话。
+        questions = [] if out["advanced"] else [
+            f"问了 {out['poll_count']} 次，{out['system']} 侧仍回 "
+            f"{out['observed_state']}：{out['message']}；"
+            f"业务状态一个字都没动，需人处置 —— 不得据此自行收口"
+        ]
         return AgentOutput(
             status="ok",
-            # 原样搬运。要不要停下来等人，判据在 skill 里 —— 见模块 docstring。
-            open_questions=list(out.get("open_questions") or []),
+            open_questions=questions,
             artifacts=[artifact(KIND_RTV_SETTLEMENT_ADVICE, dict(out), summary=(
-                f"轮询终态回执（问了 {out['poll_count']} 次）：供应商侧 "
-                f"{credit['state']}（贷项通知单 {credit['document_id']!r}）、"
-                f"AP 侧 {adjust['state']}（调整凭单 {adjust['document_id']!r}）；"
-                f"biz_status={out['biz_status']} —— 两个权威终态各有各的外部来源，"
-                f"都不是本地推断"
+                f"向 {out['system']} 侧问终态回执（问了 {out['poll_count']} 次）："
+                f"对方回 {out['observed_state']}，可对账外部单号 "
+                f"{out['reference']!r}；biz_status={out['biz_status']} —— "
+                f"两个权威终态各有各的外部来源，一个都不是本地推断"
             ))],
             metrics={"poll_count": out["poll_count"],
-                     "credit_state": credit["state"],
-                     "adjustment_state": adjust["state"],
+                     "system": out["system"],
+                     "observed_state": out["observed_state"],
+                     "advanced": out["advanced"],
                      "is_rework": ctx.is_rework},
         )

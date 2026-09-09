@@ -45,6 +45,45 @@ ALL_RTV_KINDS = (
 )
 
 
+# ---------------------------------------------------------------- 工具绑定
+# 六个 skill 按契约 C-R5 的名字从 `ctx.extras["tools"]` 取 ToolPort
+# （`skills/builtin/rtv/_common.py::tool_port`），取不到就抛、不自造 stub。
+# 而 T62 的五个 `*_PORT` 的 entry 要的是**实例**（supplier / carrier / ap_system）。
+# 两侧按 C-R8「五轨互不 import」各自开发，中间缺的正是这一步装配。
+#
+# 装配放在这里而不是放进 task 的 payload：payload 会被 `json.dumps`（`dump()` 与
+# 证据束都要序列化它），塞一个绑好实例的可调用进去当场就炸。所以场景在 `drive_*`
+# 里按名登记一套绑定，Agent 只按 `ctx.inputs["tools_binding"]` 取 —— Agent 仍然
+# **不 import 场景**，也不知道那套绑定里装的是 mock 还是真门户。
+#
+# 名字这一层不能省成「全局唯一一套」：顺利路径与失败路径各有自己的三个外部系统实例，
+# 共用一套会让失败路径那份 disputed 脚本把顺利路径的轮询计数一并推着走。
+_TOOL_BINDINGS: dict[str, dict] = {}
+
+
+def register_tools(name: str, tools: dict) -> None:
+    """按名登记一套绑好实例的工具（C-R5 的五个名字 -> 可调用）。"""
+    _TOOL_BINDINGS[name] = dict(tools)
+
+
+def reset_tools() -> None:
+    """清空登记。每条路径开跑前调一次，两条路径互不串味。"""
+    _TOOL_BINDINGS.clear()
+
+
+def tools_of(name: str) -> dict:
+    """按名取一套工具。**取不到就抛** —— 口径同 `_common.tool_port`：
+
+    悄悄返回一个空 dict 的话，skill 那边报的会是「上下文里没有工具 x」，
+    而真正的原因是这套绑定压根没登记过，两者离得很远。
+    """
+    if name not in _TOOL_BINDINGS:
+        raise LookupError(
+            f"没有登记叫 {name!r} 的工具绑定（已登记：{sorted(_TOOL_BINDINGS)}）；"
+            f"请在装配处调 register_tools(name, binding.as_tools())")
+    return _TOOL_BINDINGS[name]
+
+
 def extras_of(agent: Any, ctx: Any) -> dict:
     """一次 skill 调用的 extras。**每调一次生成一个新的 invocation_id。**
 
@@ -58,7 +97,7 @@ def extras_of(agent: Any, ctx: Any) -> dict:
     口径逐字同 `agents/ap/_base.py::extras_of` —— 两个域各存一份不是重复没抽掉，
     是「换域只换域内文件」的代价，抽成公共件就等于两个域共同持有一个面。
     """
-    return {
+    out = {
         "model": agent.model,
         "tier": agent.identity.model_tier,
         "plan_id": ctx.plan_id,
@@ -67,6 +106,12 @@ def extras_of(agent: Any, ctx: Any) -> dict:
         "attempt": ctx.attempt,
         "invocation_id": uuid.uuid4().hex,
     }
+    # 这一步是**搬运**，不是判定：任务上写着用哪套外部系统，就把那套递给 skill。
+    # 不写就不递 —— 不碰外部系统的 skill（rtv.intake / rtv.dispose）本来就不需要它。
+    binding = str((getattr(ctx, "inputs", None) or {}).get("tools_binding") or "")
+    if binding:
+        out["tools"] = tools_of(binding)
+    return out
 
 
 def artifact(kind: str, content: dict, *, summary: str) -> dict:

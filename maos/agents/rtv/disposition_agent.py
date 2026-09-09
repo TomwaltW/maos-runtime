@@ -48,16 +48,17 @@ class RtvDispositionAgent(BaseAgent):
         if res.status != "ok" or not isinstance(res.output, dict):
             return AgentOutput(status="failed", error=failed(res, SKILL_DISPOSE))
 
+        # `rtv.dispose` 的产出是扁平的（return_action / attempt / rationale 平铺在
+        # 顶层），不是包在 "disposition" 里 —— 整合期按真 skill 的形状搬运。
         out = res.output
-        d = out["disposition"]
         return AgentOutput(
             status="ok",
             artifacts=[artifact(KIND_RTV_DISPOSITION, dict(out), summary=(
-                f"处置裁定 {d['return_action']}（第 {d['attempt']} 次裁定，"
-                f"裁定人 {d['decided_by']}）；依据 "
-                f"{[r['rule_id'] for r in d['rationale']]} —— 编号取自码表，"
+                f"处置裁定 {out['return_action']!r}（第 {out['attempt']} 次裁定，"
+                f"裁定人 {self.identity.agent_id}）；依据 "
+                f"{[r['rule_id'] for r in out['rationale']]} —— 编号取自码表，"
                 f"不是自然语言理由；biz_status={out['biz_status']}"
             ))],
-            metrics={"rationale": len(d["rationale"]), "attempt": d["attempt"],
-                     "is_rework": ctx.is_rework},
+            metrics={"rationale": len(out["rationale"]), "attempt": out["attempt"],
+                     "rejected": out["rejected"], "is_rework": ctx.is_rework},
         )

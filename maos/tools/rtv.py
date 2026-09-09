@@ -997,3 +997,187 @@ RTV_PORTS: tuple[ToolPort, ...] = (
     CARRIER_TRACK_PORT,
     AP_ADJUST_QUERY_PORT,
 )
+
+
+# ===========================================================================
+# 绑定层（T112 新增）—— 把三个外部系统的**实例**绑进上面五个 port 的 entry
+# ===========================================================================
+# 为什么需要这一层，而不是一句 ``functools.partial(entry, supplier=inst)``：
+# 五个 port 的 entry 收的是**领域对象**（``RmaRequest`` / ``ShipmentOrder``）与
+# ``rma_id`` / ``tracking_no``，而六个 skill 经 ``_common.call_tool`` 递进来的
+# 一律是一份扁平 params（``{"tenant_id": ..., "case_id": ..., ...}``）——
+# 两侧按契约 C-R8「五轨互不 import」各自开发，从没对过形状。
+#
+# 三件桥接都发生在**这一层**，T62 的五个 ``*_PORT`` 与 T63 的六个 skill 一行不改：
+#
+#   ① 形状：params dict -> 领域对象。构造 ``RmaRequest`` 要的字段
+#      （supplier_id / po_id / gr_id / amount_claimed / line_count）全在
+#      ``rtv_case`` 与 ``rtv_line`` 里，所以本类持有 store，按案子现读现造 ——
+#      不缓存，案子的金额会随返工重裁而变。
+#   ② 退货授权号：``supplier.credit_query`` 要 ``rma_id``，可顺利路径上**没有任何一步
+#      调过 ``supplier.rma_submit``**（``rtv.observe`` 的 depends_tools 里刻意没有写
+#      工具）。所以第一次问贷项通知单时在这里**懒建**一张 RMA：现实里退货件寄出之前
+#      本来就要先拿授权号，缺的是场景没把这一步显式画进 DAG，不是判据少了一条。
+#      幂等键恒为 (tenant, case)，重复调只会拿回同一张单。
+#   ③ 理由码：T63 的 skill 用 ``defective`` / ``damaged`` 那一套
+#      （``skills/builtin/rtv/_common.RETURN_REASONS``），T62 的 ``RmaRequest``
+#      只收 ``RTV-RSN-0x``（``rtv_codes.RETURN_REASONS``）—— 两份码表**不是同一份**，
+#      谁也没引用谁。在这里做一次显式映射，而不是在任一侧偷偷放宽校验：
+#      两侧的校验都还在，只是中间多了一张对照表。对照表本身是一笔账，
+#      记在 docs/BACKLOG.md。
+
+#: 本段自己要读整张理由码表（判「已经是编号了吗」）。单独 import 一次而不是往文件
+#: 顶上那个 import 块里加名字：那个块是 T62 交付面的一部分，本轨只许新增。
+from maos.tools.rtv_codes import RETURN_REASONS as _RETURN_REASON_TABLE  # noqa: E402
+
+#: T63 skill 侧理由码 -> T62 ``rtv_codes`` 的已核对编号。
+#: 值必须落在 ``rtv_codes.RETURN_REASONS`` 里 —— 构造 ``RmaRequest`` 时会当场核。
+REASON_CODE_ALIASES: dict[str, str] = {
+    "damaged": "RTV-RSN-01",         # 运输途中损坏
+    "defective": "RTV-RSN-04",       # 到货即为次品 / 功能不良
+    "wrong_item": "RTV-RSN-03",      # 发错货
+    "not_ordered": "RTV-RSN-03",     # 未订购的货物（同归错发 / 超发那一档）
+    "over_shipment": "RTV-RSN-03",   # 超发
+    "spec_change": "RTV-RSN-02",     # 规格变更：按验收未通过那一档退
+}
+
+
+def alias_return_reason(code: str) -> str:
+    """把 skill 侧的理由码翻成 ``rtv_codes`` 的编号。已经是编号的原样返回。
+
+    翻不出来就抛，**不兜底成一个通用编号**：兜底会让一笔理由说不清的退货带着一个
+    看起来完全正常的编号递到供应商门户，而那正是 ``require_return_reason`` 存在的理由。
+    """
+    if code in _RETURN_REASON_TABLE:
+        return code
+    try:
+        return REASON_CODE_ALIASES[code]
+    except KeyError:
+        raise KeyError(
+            f"退货理由码 {code!r} 既不在 rtv_codes.RETURN_REASONS 里，"
+            f"也没有对照条目（已知对照：{sorted(REASON_CODE_ALIASES)}）"
+        ) from None
+
+
+class RtvToolBinding:
+    """一套外部系统实例 + 一个 store，折成六个 skill 认得的 ``extras["tools"]``。
+
+    一条 RTV 案子的三个外部系统各一个实例。**按路径建一套**而不是全局单例：
+    两条路径（顺利 / 失败）共用一个 ``MockSupplier`` 的话，失败路径那份 disputed
+    脚本会把顺利路径的轮询计数一并推着走，两条链路的 ``poll_count`` 从此互相污染。
+
+    ``origin`` / ``destination`` 只进运单，不进任何判据 —— 发货地址改了不影响这笔
+    退货的任何结论，所以它们也不在 ``ShipmentOrder.fingerprint()`` 里。
+    """
+
+    def __init__(self, store: Any, *, supplier: Any, carrier: Any, ap_system: Any,
+                 origin: str = "WH-1", destination: str = "") -> None:
+        self.store = store
+        self.supplier = supplier
+        self.carrier = carrier
+        self.ap_system = ap_system
+        self.origin = origin
+        self.destination = destination
+        #: case_id -> rma_id。懒建之后记住，第二次问贷项通知单不再建第二张。
+        self._rma_by_case: dict[str, str] = {}
+
+    # ------------------------------------------------------------- 领域对象
+    def _case_and_lines(self, tenant_id: str, case_id: str) -> tuple[dict, list[dict]]:
+        from maos.domain.rtv import objects as _objects
+
+        case = _objects.get_case(self.store, tenant_id, case_id)
+        if case is None:
+            raise LookupError(
+                f"没有这个 case：tenant={tenant_id} case={case_id} —— "
+                f"外部系统调用要按案子上的源单信息组装，案子还没建就无从组装")
+        lines = _objects.rtv_lines(self.store, tenant_id, case_id)
+        if not lines:
+            raise LookupError(f"case={case_id} 没有任何退货行，组装不出退货授权申请")
+        return case, lines
+
+    def rma_request(self, tenant_id: str, case_id: str, *, note: str = "") -> RmaRequest:
+        """按库里那一行现造一条退货授权申请。"""
+        case, lines = self._case_and_lines(tenant_id, case_id)
+        return RmaRequest(
+            supplier_id=str(case["supplier_id"]),
+            case_id=case_id,
+            po_id=str(case["po_id"]),
+            gr_id=str(case["gr_id"]),
+            amount_claimed=str(case["amount_claimed"]),
+            reason_code=alias_return_reason(str(lines[0]["reason_code"])),
+            currency=str(case["currency"] or "CNY"),
+            line_count=len(lines),
+            idempotency_key=f"{tenant_id}:{case_id}",
+            note=note,
+        )
+
+    def ensure_rma(self, tenant_id: str, case_id: str, *, note: str = "") -> str:
+        """拿到这个案子的退货授权号，没有就递一张（幂等）。"""
+        known = self._rma_by_case.get(case_id)
+        if known:
+            return known
+        advice = SUPPLIER_RMA_SUBMIT_PORT.entry(
+            supplier=self.supplier,
+            request=self.rma_request(tenant_id, case_id, note=note))
+        self._rma_by_case[case_id] = str(advice["rma_id"])
+        return self._rma_by_case[case_id]
+
+    # --------------------------------------------------------- 五个 entry 适配
+    def _rma_submit(self, **params: Any) -> dict:
+        """``rtv.compensate`` 的补提申请。
+
+        **幂等键不变** —— 一个案子只有一张退货授权，补提拿回的是那张单的当前回执，
+        不是第二张授权（``MockSupplier`` 那条 ``DuplicateRequest`` 守着这件事）。
+        """
+        tenant_id, case_id = params["tenant_id"], params["case_id"]
+        request = self.rma_request(tenant_id, case_id,
+                                   note=str(params.get("reason") or ""))
+        advice = SUPPLIER_RMA_SUBMIT_PORT.entry(supplier=self.supplier, request=request)
+        self._rma_by_case[case_id] = str(advice["rma_id"])
+        return advice
+
+    def _credit_query(self, **params: Any) -> dict:
+        rma_id = self.ensure_rma(params["tenant_id"], params["case_id"])
+        return SUPPLIER_CREDIT_QUERY_PORT.entry(supplier=self.supplier, rma_id=rma_id)
+
+    def _ship(self, **params: Any) -> dict:
+        tenant_id, case_id = params["tenant_id"], params["case_id"]
+        case, _lines = self._case_and_lines(tenant_id, case_id)
+        order = ShipmentOrder(
+            case_id=case_id,
+            rma_id=self.ensure_rma(tenant_id, case_id),
+            carrier=str(params.get("carrier") or "demo-carrier"),
+            origin=self.origin,
+            destination=(self.destination
+                         or str(params.get("address") or "")
+                         or f"supplier:{case['supplier_id']}"),
+            parcel_count=1,
+            idempotency_key=f"{tenant_id}:{case_id}",
+        )
+        return CARRIER_SHIP_PORT.entry(carrier=self.carrier, order=order)
+
+    def _track(self, **params: Any) -> dict:
+        tracking_no = str(params.get("tracking_no") or "")
+        if not tracking_no:
+            raise LookupError(
+                "查轨迹必须给运单号 —— 没有运单号的这货到哪了问的不是这一票货")
+        return CARRIER_TRACK_PORT.entry(carrier=self.carrier, tracking_no=tracking_no)
+
+    def _adjust_query(self, **params: Any) -> dict:
+        return AP_ADJUST_QUERY_PORT.entry(
+            ap_system=self.ap_system, case_id=params["case_id"])
+
+    # ------------------------------------------------------------------ 装配
+    def as_tools(self) -> dict:
+        """折成 ``ctx.extras["tools"]``：契约 C-R5 的五个名字 -> 绑好实例的可调用。
+
+        键必须逐字是 C-R5 那五个名字 —— ``_common.tool_port()`` 按名取，取不到就抛，
+        **不自动兜底成一个空实现**（那会让忘了注册工具变成一路绿灯的失真）。
+        """
+        return {
+            SUPPLIER_RMA_SUBMIT_PORT.name: self._rma_submit,
+            SUPPLIER_CREDIT_QUERY_PORT.name: self._credit_query,
+            CARRIER_SHIP_PORT.name: self._ship,
+            CARRIER_TRACK_PORT.name: self._track,
+            AP_ADJUST_QUERY_PORT.name: self._adjust_query,
+        }

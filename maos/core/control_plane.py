@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from datetime import datetime, timezone
@@ -35,6 +36,13 @@ from maos.contracts.states import (
 from maos.core.eventbus import EventBus
 from maos.core.lease import LeaseBook, canon_iso, utc_now_iso
 from maos.core.store import Store
+from maos.runtime.hooks import (
+    HOOK_VETO_REASON,
+    TASK_COMPLETED,
+    TASK_CREATED,
+    HookRegistry,
+    PlanVetoed,
+)
 from maos.tools.sandbox import sandbox_git_apply
 
 log = logging.getLogger("maos.cp")
@@ -215,7 +223,8 @@ def _comp_order(art: dict) -> tuple[int, str]:
 class ControlPlane:
     def __init__(self, store: Store, bus: EventBus, *,
                  replanner: Replanner | None = None,
-                 leases: LeaseBook | None = None) -> None:
+                 leases: LeaseBook | None = None,
+                 hooks: HookRegistry | None = None) -> None:
         self.store = store
         self.bus = bus
         # 认领租约（T107）。**缺省 None = 今天的路径逐字节不变**：不注入时
@@ -226,6 +235,21 @@ class ControlPlane:
         # （单机演示 300s，真集群另说），而控制面不该替部署做这个决定；
         # 更要紧的是「不注入即不改变行为」这条，它是本轨能安全落地的全部依据。
         self.leases = leases
+
+        # 生命周期 hook（maos/runtime/hooks.py）。**缺省 None 时一次 fire 都不发生**
+        # —— 不是「fire 了但没人订阅」，是那几行代码根本不执行：不注入就与本挂点
+        # 出现之前逐字节相同（口径同 maos/config/audit.py 的「默认不接线」）。
+        # 这条不是洁癖：能否决的挂点一旦默认接上，某个第三方回调抛异常就能改变
+        # 全仓既有链路的行为，而那时谁都说不清是谁改的。
+        self._hooks = hooks
+        # 留痕是这个挂点契约的一半，不该靠调用方记得传参。HookRegistry 的 store 是
+        # 可选的（它也要能在不接库的轻量装配里直接用），于是最自然的写法
+        # `ControlPlane(store, bus, hooks=HookRegistry())` 不报错、也不留痕：
+        # HookFailed / HookVetoed 全部静默丢失，挂点退化成 maos/ingress/router.py
+        # 那种「只打日志」的观察者 —— 而控制面手里明明有 store，只是没绑上去。
+        # 只在它还没有 store 时补：已经绑了另一本账是调用方的显式选择，不覆盖。
+        if hooks is not None and hooks.store is None:
+            hooks.store = store
         # 重规划要调 Manager，也就是要调模型。控制面不持有模型、不 import Agent：
         # 注入一个回调，由场景层决定「重规划」具体怎么做（scenario_5 注入的是
         # ScriptedModelClient 驱动的 ManagerAgent，因此结果确定性可复现）。
@@ -307,8 +331,69 @@ class ControlPlane:
 
         另起一个「规划期」伪 plan 是另一条路，**没走**：为了消 warn 在 trace 里
         造出一棵不存在的树，是拿假绿换绿。
+
+        ## 生命周期挂点 ``TASK_CREATED``（注入了 ``hooks`` 才有）
+
+        每个 task spec **落库前**开火，回调返回 ``Veto`` 就不建这一件。三处刻意：
+
+        · **先把所有 spec 问一遍，再落第一条库。** 不是边问边建 —— 「全部被否决」
+          那一档要求连 plan 行都不许留下（见下），而 plan 行在旧写法里是循环之前
+          就插进去的。顺带也让回调看见的库状态是一致的（问第二件时第一件还没建），
+          否则同一份 spec 列表的判定会取决于它在列表里的位置。
+        · **全部被否决 -> 抛 ``PlanVetoed``，不建空 plan。** 空 plan 会立刻走到
+          ``_advance`` 的「一条活任务都不剩」分支被收敛成 ``FAILED``，那把
+          「治理拦下了这个计划」伪装成「计划执行失败」——两件事在 event_log 上
+          必须分得开。判据写成「问过且一个都没留下」而不是「一个都没留下」：
+          ``create_plan(tasks=[])`` 是既有合法调用（重规划返回空规格时走到这里），
+          不许被一起判死。
+        · **被否决的 task 若是别人的 ``depends_on`` 目标，不重连依赖。**
+          照实建剩下的，``dispatch_ready`` 的 ``issubset(done)`` 于是永远不满足，
+          依赖方停在 PENDING。这是有意的：自动跳过被否决的那一环去接线，等于系统
+          替人判定「那一环可有可无」，而那恰恰是人刚刚否掉的东西。
         """
         plan_id = plan_id or E.new_id("plan")
+        if self._hooks is not None:
+            kept: list[dict] = []
+            vetoed: list[dict] = []
+            for t in tasks:
+                # 交给回调的是**副本**，不是控制面手里的活对象 —— 回调只能表达
+                # 否决，不能改写。原样传 `t` 的话，一条 `return None`（即明确放行、
+                # 不否决）的回调就能把 effect_risk 从 H 改成 L 落库：on_review_verdict
+                # 的 NEEDS_HUMAN_APPROVAL 分支与 HumanApprovalQueue.pending 的判据
+                # 双双不再命中，不可逆产物无人放行地落 DONE，而 event_log 上一行痕迹
+                # 都没有（HookVetoed / HookFailed 只在否决或抛异常时才落）。同一条
+                # 回调往 depends_on 里塞一个不存在的 task_id，还能让任务永远停在
+                # PENDING。那与「只认 Veto 一种否决形态、别的一律不算」自相矛盾：
+                # 否决走不通的路，改字段反而走得通，且不留痕。
+                veto = self._hooks.fire(
+                    TASK_CREATED,
+                    plan_id=plan_id, trace_id=trace_id, goal=goal,
+                    role=t["role"], title=t["title"],
+                    risk_level=t.get("risk_level", "L"),
+                    effect_risk=t.get("effect_risk", "L"),
+                    depends_on=list(t.get("depends_on", [])),
+                    spec=copy.deepcopy(t),
+                )
+                if veto is None:
+                    kept.append(t)
+                    continue
+                vetoed.append({"task_id": t.get("task_id"), "title": t["title"],
+                               "reason": veto.reason})
+                # 否决**为什么**发生已由 HookVetoed 记下；这一条记的是它**造成了什么**
+                # ——「这个任务因此没被创建」。两条分开，是因为同一次否决在别的挂点上
+                # 造成的后果不一样（TASK_COMPLETED 那边是转人工），后果不该压进 hook 层。
+                self.store.append_event_log({
+                    "trace_id": trace_id, "plan_id": plan_id,
+                    "task_id": t.get("task_id"), "event_type": "TaskCreationVetoed",
+                    "reason": veto.reason,
+                    "detail": {"title": t["title"], "role": t["role"],
+                               "hook_event": TASK_CREATED},
+                })
+                log.warning("[%s] 任务「%s」被 hook 否决，不创建：%s",
+                            plan_id, t["title"], veto.reason)
+            if tasks and not kept:
+                raise PlanVetoed(plan_id, vetoed)
+            tasks = kept
         self.store.insert_plan({
             "plan_id": plan_id, "trace_id": trace_id, "goal": goal, "state": PlanState.PENDING,
         })
@@ -753,8 +838,45 @@ class ControlPlane:
                 self._transit(task, TaskState.BLOCKED, event_id=env.event_id,
                               detail={**detail, "await": "human_approval"})
             else:
-                self._transit(task, TaskState.DONE, event_id=env.event_id, detail=detail)
-                self._advance(task["plan_id"])
+                # 生命周期挂点 TASK_COMPLETED：**落 DONE 之前**开火，注入了 hooks 才有。
+                # 回调返回 Veto 就不落 DONE，改走既有转人工出口 —— 复用
+                # _escalate_to_human 而不是自己再写一次 _transit：那个方法是
+                # 「机器已经没有别的招了」的唯一出口（见其 docstring），hook 否决
+                # 完成正属于这一类，而唯一出口意味着 `await` 标记只写一处、
+                # HumanApprovalQueue.pending 只需认一个字面量。转人工而捞不到人，
+                # 比直接 FAILED 更糟（gate.py::HumanApprovalQueue.pending 原话）。
+                # 不新增状态、不新增迁移（铁律 1/9）：走既有的
+                # AWAITING_REVIEW -> BLOCKED("gate_needs_human")。
+                veto = None
+                if self._hooks is not None:
+                    # gate_results 同样传副本：上面那行 `detail` 与这里取的是
+                    # env.payload 里**同一个** dict 对象。原样传进去，一条
+                    # `return None` 的回调就能改写它，而写进 DONE 那一跳 detail 的
+                    # 正是被改过的值 —— 闸实际发来的结果永久丢失，审计链上留下一个
+                    # 从未发生过的闸结果。detail 那边继续持原对象即可：它记的就是
+                    # 闸发来的东西，不该被挂点碰到。
+                    veto = self._hooks.fire(
+                        TASK_COMPLETED,
+                        task_id=task["task_id"], plan_id=task["plan_id"],
+                        trace_id=task["trace_id"], event_id=env.event_id,
+                        attempt=env.attempt, role=task["role"],
+                        gate_results=copy.deepcopy(env.payload.get("gate_results", {})),
+                        artifact_count=len(self.store.list_artifacts(task["task_id"])),
+                    )
+                if veto is not None:
+                    log.warning("[%s] 完成被 hook 否决，转人工：%s",
+                                task["task_id"], veto.reason)
+                    # findings 传任务行上现有的那份，不是空列表：它是 _transit 的
+                    # 写入字段，传 [] 会把前几轮返工攒下的 finding 抹掉 —— 而人正是
+                    # 要看着它们做决定的。
+                    self._escalate_to_human(
+                        task, event_id=env.event_id, findings=task["findings"],
+                        detail=detail, reason=HOOK_VETO_REASON,
+                        hook_reason=veto.reason)
+                    # plan 状态不动 —— 同 _escalate_to_human 的既有语义。
+                else:
+                    self._transit(task, TaskState.DONE, event_id=env.event_id, detail=detail)
+                    self._advance(task["plan_id"])
 
         elif verdict == "rework":
             findings = env.payload.get("findings", [])

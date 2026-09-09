@@ -253,7 +253,9 @@ PROFILES: dict[str, CapabilityProfile] = {
     "refund.intake": CapabilityProfile(
         duty="refund.intake",
         roles=frozenset({"refund_intake"}),
-        skills=frozenset({"issue.aggregate", "notify.customer", "refund.intake"}),
+        # T101 / T102 给受理岗加的两个 skill（诉求类型分类、表头映射），整合 T55-T83 时补齐
+        skills=frozenset({"issue.aggregate", "notify.customer", "refund.intake",
+                          "refund.reason_classify", "sheet.header_map"}),
         tools=frozenset(),
         model_tier=Tier.LIGHT,
     ),
@@ -261,6 +263,20 @@ PROFILES: dict[str, CapabilityProfile] = {
         duty="refund.policy-judgement",
         roles=frozenset({"refund_policy"}),
         skills=frozenset({"policy.match"}),
+        tools=frozenset(),
+        model_tier=Tier.LIGHT,
+    ),
+    "refund.evidence-check": CapabilityProfile(
+        duty="refund.evidence-check",
+        roles=frozenset({"refund_evidence"}),
+        skills=frozenset({"refund.evidence_check"}),
+        tools=frozenset(),
+        model_tier=Tier.LIGHT,
+    ),
+    "refund.risk-screen": CapabilityProfile(
+        duty="refund.risk-screen",
+        roles=frozenset({"refund_risk"}),
+        skills=frozenset({"refund.risk_screen"}),
         tools=frozenset(),
         model_tier=Tier.LIGHT,
     ),

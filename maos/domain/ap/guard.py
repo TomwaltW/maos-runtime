@@ -243,7 +243,7 @@ _GUARD = _case_guard.make_case_guard(
     ),
     write_observation=_write_observation,
     #: 本域三条审计行的 detail 都把 `domain` 排在最前（claim 排在 invocation_id 之后，
-    #: investigation 压根没有）。位置是历史留下的不一致，本轨照抄不统一 ——
+    #: 差错处理域压根没有）。位置是历史留下的不一致，本轨照抄不统一 ——
     #: 统一会改掉审计行的形状，那是行为变更。
     conflict_detail_domain=DOMAIN,
     violation_detail_domain=DOMAIN,
@@ -365,7 +365,7 @@ def record_observation(
     `compensated` 意味着补偿已经做完，而补偿是失败路径的事，在这里替它宣布收口
     就是又一次把状态写死。
 
-    本域独有，**不进骨架**：另外三个域的失败留痕各有各的形状（investigation 走
+    本域独有，**不进骨架**：另外三个域的失败留痕各有各的形状（差错处理域走
     `insert_observation`，claim 压根没有这条旁路）。
 
     权威写入方之外的 actor 一律拒：回单是外部权威事实，同 `update_biz_status` 第 ②

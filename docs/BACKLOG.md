@@ -2196,3 +2196,12 @@ python3 scripts/gen_docs.py --check →  3 份文档与代码逐字节一致  ex
 |---|---|---|---|---|
 | 2026-09-09 | p9 | 上一节「DeepSeek key 失效」**已解除**：当天换了新 key，实测网关正常应答（`test_cost_metrics` 从 1.3s 秒挂变成跑满 50s，Reviewer 产出了完整的中文语义审查结论） | 房间 bot 的闲聊接话、`refund.reason_classify` 的模型判据恢复可用 | 已完成，留档 |
 | 2026-09-09 | p9 | **真模型模式下 `scenario_1` 走不到 DONE**：coding 岗产出的 unified diff 格式不合格（v1 缺 diff 头、v2 缺 `@@` 行且两个文件为空），沙箱 `validate` 阶段报 `corrupt patch at line 14`，三次 attempt 全被拒 -> `retry_exhausted` -> plan FAILED。Reviewer 的语义审查反而判得很准，把两版补丁的毛病逐条点了出来 | 只要环境里 `MAOS_LLM_BASE_URL` / `MAOS_LLM_API_KEY` / `MAOS_LLM_MODEL` 三项齐全，`select_model_client` 就走真模型 —— 也就是说 **source 过 `~/.maos.env` 再跑 `python3 run.py`，场景 1 必红**；裸跑（Scripted）不受影响，房间那条链路也不受影响（不产补丁）。`test_cost_metrics::test_a_real_scenario_run_records_only_registered_call_sites` 因此在配了 key 的机器上恒红 | 独立一轨：要么在 coding 岗的提示词里把 diff 格式约束写死并加一轮自校验，要么在落盘前做一次 `git apply --check` 的重试。**与 T107-T111 无关** —— 合并前的 `9d4df28` 用同一个 key 跑同一条测试，失败在同一行（`scenario_1.py:151`） |
+
+## 整合 T55–T83 的遗留（2026-09-09）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-09 | p9 | **RTV 五轨（T61–T65）没进主干**，进度在 `integrate/p9-t55-t83-with-rtv`（已含：`worker.py` 接线、RTV fixture 补建 ap 源单表、T64 的场景改 `scenario_12`）。卡在两套写权威表的实现：T63 rtv skills 那份 `_common.py` 直写 `rtv_case`，T65 `test_rtv_guard.py` 只许 rtv 域那份 `guard.py` 写。另有测试自陈的整合期项：`test_rtv_flow.py:138` Agent 池 22->27 实际会是 29；`:690` 场景是否进 `ALL_SCENARIOS`；`test_rtv_sop_doc.py:226` `docs/domain-portability.md` 前 393 行被主干改过；`scenario_12.py:714` `KeyError: supplier_id`（16 条） | RTV 域（采购退货退款）整个不可用；`maos/capability/`、`maos/agents/rtv/` 里引用它的部分也一并缺席 | 单独一轨：先由人类定「谁能写权威表」这一条，其余四项是机械收口 |
+| 2026-09-09 | p9 | `evidence/scenario-*`（50 份）与 `evidence/INDEX.json` 是**合并前主干态**，首行 sha 与当前 HEAD 对不上 | `scripts/verify.py` 的证据出处守卫（T105）会把它判成「不是当前代码跑出来的」 | 合并进主干后按合并态重跑 `scripts/make_evidence.py`（本机要先 `. ~/.maos.env`：证书与 key 都在里面），同前几轮的「证据束按合并态重跑」 |
+| 2026-09-09 | p9 | `scripts/gen_capability_matrix.py` 报「有授权无实现的工具：sandbox（2 个角色受影响）」 | 能力矩阵里两个角色声明了一个不存在的 ToolPort；脚本只记账不修 | T58 时代的老账，与本次整合无关；补 `sandbox` 的 ToolPort 或从档案里摘掉，二选一 |
+| 2026-09-09 | p9 | `track-a-prerebase` 分支的内容已全部在主干（产物判据核过） | 只是 `--no-merged` 列表里多一行噪音 | 随手 `git branch -D track-a-prerebase` |

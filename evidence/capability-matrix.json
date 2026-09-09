@@ -1,8 +1,8 @@
-# generated at 2026-09-01T15:38:04.140861+00:00 from e0c68d5928ef22232d7adf6e228373c73c8dc9fe
+# generated at 2026-09-09T15:48:58.531510+00:00 from 22caba78bb5052f8331f0f537e9d9277e91b403f-dirty
 {
   "summary": {
-    "roles": 22,
-    "skills_registered": 30,
+    "roles": 24,
+    "skills_registered": 34,
     "tool_ports": 11,
     "mcp_backed_tool_ports": 1,
     "roles_with_tool_drift": 2,
@@ -292,6 +292,13 @@
       "latest": "1.0.0"
     },
     {
+      "name": "refund.evidence_check",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
       "name": "refund.intake",
       "versions": [
         "1.0.0"
@@ -299,7 +306,28 @@
       "latest": "1.0.0"
     },
     {
+      "name": "refund.reason_classify",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "refund.risk_screen",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
       "name": "req.normalize",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "sheet.header_map",
       "versions": [
         "1.0.0"
       ],
@@ -801,6 +829,33 @@
       }
     },
     {
+      "role": "refund_evidence",
+      "agent_id": "refund-evidence",
+      "duty": "只核对随案证据是否满足政策/缺省举证要求并交叉核对物流与质检；不裁定、不算钱",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "refund.evidence_check",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
       "role": "refund_finance",
       "agent_id": "refund-finance",
       "duty": "按锁定政策自行复核规则并核算退款金额，写 finance_entry 并产出复核凭据",
@@ -855,6 +910,16 @@
         },
         {
           "name": "refund.intake",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "refund.reason_classify",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "sheet.header_map",
           "implemented": true,
           "version": "1.0.0"
         }
@@ -930,6 +995,33 @@
       "allowed_skills": [
         {
           "name": "policy.match",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 11,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "refund_risk",
+      "agent_id": "refund-risk",
+      "duty": "按底账筛查重复退款、退款频率与金额异常，给出风险分档与逐条理由；只提示不裁定 —— 是否放行由规则审核岗与审批人决定，本岗不改状态也不动钱",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "refund.risk_screen",
           "implemented": true,
           "version": "1.0.0"
         }

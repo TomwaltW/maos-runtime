@@ -26,7 +26,7 @@ from maos.artifacts import ALL_KINDS
 
 #: 下沉前三份实现在 `AGENT_POOL` 里的 role 条数。骨架是共用件不是 Agent，
 #: 改完必须还是这个数。
-EXPECTED_AGENT_POOL_SIZE = 22
+EXPECTED_AGENT_POOL_SIZE = 24   # 整合 T55-T83 时刷：主干已多出 refund_evidence / refund_risk
 
 DOMAIN_BASES = (
     ("ap", ap_base, ap_base.ALL_AP_KINDS),

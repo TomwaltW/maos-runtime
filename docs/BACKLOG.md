@@ -1776,6 +1776,17 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-05 | T98 | `ALLOWED_MIME` 今天只收 jpeg / png / gif / webp / heic / pdf。老板把退款申请表存成 `.xlsx`（Excel 的默认格式，不是「另存为 CSV」）拖进群，会被类型闸原样拒掉 —— 而 `sheet.py` 那条入口正是给不写代码的人用的 | 拒得出声（回一句「不收这个类型」），不是静默失败，所以不是 bug 只是缺口。但它与 `ENCODINGS` 认 gbk 是同一个取向的两半：认 gbk 是为了迁就中文 Windows 的 Excel，而那个 Excel 默认存出来的其实是 xlsx | 派单 3.3 明写不许在本轨扩白名单（铁律 4），只记不改。真要做的是**两件事**不是一件：白名单加一类，和 `looks_like_sheet` / `parse` 认 xlsx（zip 容器，得解 sheet1.xml，本机没有 openpyxl）。第二件才是主要成本，别把它读成「加一行白名单」 |
 | 2026-09-05 | T98 | `looks_like_sheet` 的 NUL 闸（`b"\x00" in data[:4096]`）与新加的类型闸有重叠：PNG 两条都撞，PDF 只撞后一条 | 没有害处，两条判据各挡各的一类（类型闸只认识六种魔数，NUL 闸兜住其余一切二进制，比如那个改名成 .csv 的 ELF）。记下来是因为读代码的人会问「有了类型闸为什么还留着 NUL 闸」 | 不要删任何一条。真要动的时候先想清楚：删 NUL 闸，ELF 那条测试就得靠附件白名单兜；删类型闸，本轨那条对抗样本会红 |
 
+## task-T111（计划审批停靠点，2026-09-08）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-08 | T111 | `Store` 抽象类没有「列出全部 plan」这个方法。`maos/obs/trace.py::list_plan_ids` 为此自己开了一条 `sqlite3.connect`，本轨的 `PlanApprovalQueue._all_plan_ids` 则借核心 store 的 `_conn` / `_lock` 写了同一条 SQL —— 同一个需求现在有两份实现，且都绕过了 `Store` 抽象 | 换非 sqlite 后端时两处都得改，而 `trace.py` 那条另开连接的写法还绕过了全仓唯一的写互斥（只读，暂时无害）。`store.py` 表结构禁改但**加方法不改表**，`list_plans()` 属于可以做的增量 | 整合期或下一轨给 `Store` 加 `list_plans() -> list[dict]`（纯新增抽象方法，不动五张表），把这两处收口。本轨没做：`store.py` 在白名单外（铁律 4） |
+| 2026-09-08 | T111 | `ControlPlane._apply_replan` 与 `_replanner` 是私有的，但它们是「新规格接管旧任务」的唯一口径，本轨与 `_replan` 两个调用点都得从外面伸手进去拿 | 私有名没有兼容承诺，改签名时不会有人想到 worktree 外还有一个调用点。本轨已在模块 docstring 与 DECISIONS 里写明这是有意为之，但那只是留痕，不是约束 | 整合期把 `_apply_replan` 提升为公开方法（比如 `apply_replan`），或给 `ControlPlane` 加一个「重规划但不启动」的公开入口。**别在提升之前顺手改它的签名** |
+| 2026-09-08 | T111 | `Store.claim_idempotency(key, op, task_id)` 的第三个参数与 `processed_key.task_id` 这一列，名字都写死成 task。本轨往里传的是 plan_id | 只是旁注列、不参与唯一性判定（唯一键是 `idempotency_key`），所以行为没问题；但按 `task_id` 去查 `processed_key` 的人会拿到一个其实是 plan_id 的值，排查时会绕路 | 真要治得改列名，属于改表结构（铁律 1 禁改），成本远高于收益。建议只在 `store.py` 那个方法的 docstring 上补一句「这一列是旁注，不限于 task」。本轨没动：白名单外 |
+| 2026-09-08 | T111 | 没有任何生产链路接进 `PlanApprovalQueue` —— 所有场景仍是 `create_plan` 之后立刻 `start_plan`，`test_nothing_in_production_imports_the_approval_queue` 这条守卫把这件事钉住了 | 本轨交付的是能力与那条缝，不是演示。缺省路径逐字节不变（这正是铁律「缺省零影响」要的），但也意味着评委在 `run.py` 里看不到人工审批 | 整合期主会话决定**哪一条**链路从此要过人工审批，接的那一刻上面那条守卫测试会红 —— 红得应该，它逼人明确回答这个问题，而不是让审批悄悄生效。接线时记得同步改那条测试 |
+| 2026-09-08 | T111 | `pending()` 缺省会把库里每个 plan 都 `get_plan` + `list_event_log` 扫一遍，判「有没有 PENDING→RUNNING 过」 | 演示规模（几十个 plan）下无感；plan 数量上千之后这是一次全表 + 全事件扫描 | 真到那个量级再治，治法是给 `event_log` 加一条 `(plan_id, event_type)` 索引，或在 SQL 里直接把两条判据一起筛掉。现在做属于过早优化 |
+| 2026-09-08 | T111 | **变异实测会被 `__pycache__` 骗**：本轨把「幂等闸排到状态校验前面」这条变异做完、`git checkout --` 还原之后，测试仍然红 2 条，而 `git status` 干净、`md5` 与 HEAD 里的 blob 逐字节相同 | 差点被当成真回归上报。真因是那条变异只**挪动**了一行，改后文件与原文件**字节数相同**，而变异与还原发生在**同一秒**内 —— CPython 的 pyc 失效判据就是「源文件的 mtime 秒 + 字节数」，两项都没变，于是解释器一直在跑变异版的字节码。`inspect.getsource` 读的是源文件所以显示正确，行为却是变异的，两边对不上 | 以后做变异实测一律加 `PYTHONDONTWRITEBYTECODE=1`（本轨复测就是这么做的，六条变异全部复现、还原全绿）。要收进脚本的话，`scripts/` 下哪个跑测试的入口都可以带上这个环境变量；本轨没动 `scripts/`（白名单外）。同类症状的通用排查手法：`find . -name __pycache__ -type d -exec rm -rf {} +` 之后再跑一遍，结果变了就是它 |
+| 2026-09-08 | T111 | `PlanApprovalQueue._reattach_trace` 是一段**事后补救**：`ControlPlane._apply_replan` 在 `open_tasks` 为空时给新建任务现造 trace_id，本轨调完再把它改回 plan 的 trace_id | 中间态在库里存在过一瞬（insert 用现造的 id、随后 update 回来）。同一个事务里没有别人看得到它，但这是绕行不是修根 | 与上面那条「把 `_apply_replan` 提升为公开方法」一起做：让它接受 plan 的 trace_id（或直接从 `store.get_plan` 取），`_reattach_trace` 连同它那段 docstring 一起删掉。**别只删补丁不改上游** —— 删了那条路就退回「用量在成本视图里整段消失」 |
 ## task-T110（生命周期 hook，2026-09-08）
 
 | 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |

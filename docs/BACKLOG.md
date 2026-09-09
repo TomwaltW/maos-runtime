@@ -1830,3 +1830,10 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 |---|---|---|---|---|
 | 2026-09-09 | p9 | **`~/.maos.env` 里的 DeepSeek key 已失效**：模型网关回 HTTP 401 `Authentication Fails, Your api key: ****2309 is invalid`（`maos/model/client.py::GatewayModelClient.complete` 抛 RuntimeError） | 全量测试里 `test_cost_metrics::test_a_real_scenario_run_records_only_registered_call_sites` 恒红；房间 bot 的闲聊接话、`refund.reason_classify` 的模型判据、一切走真模型的路径都会当场抛异常 —— 房间里的表现是回一句处理失败，而不是降级。复赛演示若要展示真模型接话，这是硬前置 | 换 key（人类操作，只改 `~/.maos.env`，不入库、不进 evidence）。换完重启 launchd 的 `com.maos.room-ingress` 让 bot 重新读环境 |
 | 2026-09-09 | p9 | 不带 `~/.maos.env` 直接跑全量测试时，`test_domain_evidence` 7 条 + `test_verify_warn` 4 条恒 error，根因是 `SSL_CERT_FILE` 未设（本机 Python.framework 3.11 从未跑过 Install Certificates.command，`ssl` 的 cafile 是 None） | 裸跑 `python3 -m pytest maos/tests -q` 在这台机器上永远是 11 errors，且报错文本指向「证据束生成失败」而不是证书 —— 每次都要重新往下挖两层才看得见 `CERTIFICATE_VERIFY_FAILED` | 二选一：conftest 里对「取不到 cafile」显式 skip 并在原因里点名证书；或把 source 前缀写进 CLAUDE.md 的常用命令。别把它当回归查 |
+
+## 换 key 后的复测：真模型下场景 1 走不到 DONE（2026-09-09）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-09 | p9 | 上一节「DeepSeek key 失效」**已解除**：当天换了新 key，实测网关正常应答（`test_cost_metrics` 从 1.3s 秒挂变成跑满 50s，Reviewer 产出了完整的中文语义审查结论） | 房间 bot 的闲聊接话、`refund.reason_classify` 的模型判据恢复可用 | 已完成，留档 |
+| 2026-09-09 | p9 | **真模型模式下 `scenario_1` 走不到 DONE**：coding 岗产出的 unified diff 格式不合格（v1 缺 diff 头、v2 缺 `@@` 行且两个文件为空），沙箱 `validate` 阶段报 `corrupt patch at line 14`，三次 attempt 全被拒 -> `retry_exhausted` -> plan FAILED。Reviewer 的语义审查反而判得很准，把两版补丁的毛病逐条点了出来 | 只要环境里 `MAOS_LLM_BASE_URL` / `MAOS_LLM_API_KEY` / `MAOS_LLM_MODEL` 三项齐全，`select_model_client` 就走真模型 —— 也就是说 **source 过 `~/.maos.env` 再跑 `python3 run.py`，场景 1 必红**；裸跑（Scripted）不受影响，房间那条链路也不受影响（不产补丁）。`test_cost_metrics::test_a_real_scenario_run_records_only_registered_call_sites` 因此在配了 key 的机器上恒红 | 独立一轨：要么在 coding 岗的提示词里把 diff 格式约束写死并加一轮自校验，要么在落盘前做一次 `git apply --check` 的重试。**与 T107-T111 无关** —— 合并前的 `9d4df28` 用同一个 key 跑同一条测试，失败在同一行（`scenario_1.py:151`） |

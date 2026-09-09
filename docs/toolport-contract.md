@@ -94,32 +94,32 @@
 
 ### `gateway.query`
 
-声明：`maos/tools/gateway.py:395`（`GATEWAY_QUERY_PORT`）　入口实现：`maos/tools/gateway.py:362`
+声明：`maos/tools/gateway.py:455`（`GATEWAY_QUERY_PORT`）　入口实现：`maos/tools/gateway.py:420`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
 | `name` | ① 名称 | gateway.query |
 | `purpose` | ② 用途 | 查询一笔退款在支付网关侧的当前状态 —— 终态的唯一合法来源 |
 | `entry` | ③ 入口 | `maos.tools.gateway.gateway_query` |
-| `params_schema` | ④ 入参 | `gateway`: GatewayPort<br>`request_id`: str |
+| `params_schema` | ④ 入参 | `gateway_name`: str（已 register_gateway 的名字；实例由工具侧持有）<br>`request_id`: str |
 | `returns_schema` | ⑤ 出参 | `status`: processing\|unknown\|settled\|failed<br>`poll_count`: int（问过几次，证明终态是问出来的）<br>`outcome`: success\|failed\|unknown<br>`is_terminal`: bool |
-| `failure_modes` | ⑥ 失败形态 | · KeyError: 未知 request_id<br>· status 仍为 processing/unknown: 还没到终态，继续轮询，**不许当成失败**<br>· NotImplementedError: 用了 AlipaySandboxAdapter 而沙箱未接通 |
+| `failure_modes` | ⑥ 失败形态 | · LookupError: gateway_name 没有登记过 —— **不兜底成默认网关**<br>· KeyError: 未知 request_id<br>· status 仍为 processing/unknown: 还没到终态，继续轮询，**不许当成失败**<br>· NotImplementedError: 用了 AlipaySandboxAdapter 而沙箱未接通 |
 | `security_boundary` | ⑦ 安全边界 | 只读观察，不改变网关侧任何状态；轮询次数落在回执的 poll_count 上，审计可证明终态来自观察而非本地推断 |
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-r3 |
 
 ### `gateway.refund`
 
-声明：`maos/tools/gateway.py:367`（`GATEWAY_REFUND_PORT`）　入口实现：`maos/tools/gateway.py:350`
+声明：`maos/tools/gateway.py:425`（`GATEWAY_REFUND_PORT`）　入口实现：`maos/tools/gateway.py:406`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
 | `name` | ① 名称 | gateway.refund |
 | `purpose` | ② 用途 | 向支付网关发起退款；返回受理回执，**不返回终态**（终态须经 gateway.query 观察） |
 | `entry` | ③ 入口 | `maos.tools.gateway.gateway_refund` |
-| `params_schema` | ④ 入参 | `gateway`: GatewayPort<br>`out_trade_no`: str<br>`refund_amount`: str（金额不进浮点）<br>`idempotency_key`: str<br>`reason`: str（可选） |
+| `params_schema` | ④ 入参 | `gateway_name`: str（已 register_gateway 的名字；实例由工具侧持有）<br>`out_trade_no`: str<br>`refund_amount`: str（金额不进浮点）<br>`idempotency_key`: str<br>`reason`: str（可选） |
 | `returns_schema` | ⑤ 出参 | `request_id`: str<br>`status`: processing\|unknown（非终态）<br>`code`: str<br>`retriable`: bool<br>`outcome`: success\|failed\|unknown<br>`remedy`: str<br>`source`: str（错误码出处）<br>`is_terminal`: bool |
-| `failure_modes` | ⑥ 失败形态 | · ValueError: 缺 idempotency_key（对应支付宝 out_request_no）<br>· status=unknown: 网关说不清结果（ACQ.SYSTEM_ERROR / code 20000）——**不许在本地推断成败**，必须 gateway.query<br>· status=failed: 明确失败（ACQ.TRADE_NOT_EXIST / ACQ.SELLER_BALANCE_NOT_ENOUGH 等）<br>· code=ACQ.DISCORDANT_REPEAT_REQUEST: 同幂等键参数不一致，前一笔下落未知<br>· NotImplementedError: 用了 AlipaySandboxAdapter 而沙箱未接通 |
+| `failure_modes` | ⑥ 失败形态 | · LookupError: gateway_name 没有登记过 —— **不兜底成默认网关**<br>· ValueError: 缺 idempotency_key（对应支付宝 out_request_no）<br>· status=unknown: 网关说不清结果（ACQ.SYSTEM_ERROR / code 20000）——**不许在本地推断成败**，必须 gateway.query<br>· status=failed: 明确失败（ACQ.TRADE_NOT_EXIST / ACQ.SELLER_BALANCE_NOT_ENOUGH 等）<br>· code=ACQ.DISCORDANT_REPEAT_REQUEST: 同幂等键参数不一致，前一笔下落未知<br>· NotImplementedError: 用了 AlipaySandboxAdapter 而沙箱未接通 |
 | `security_boundary` | ⑦ 安全边界 | MAOS 不持有退款的权威事实（铁律 8），本工具只产生**观察记录**：refund 永不返回终态，终态一律经 query 取得；同一 idempotency_key 不产生第二笔退款；错误码判据全部取自 gateway_codes 的已核对官方表，未知码抛 KeyError 不兜底 |
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-r3 |

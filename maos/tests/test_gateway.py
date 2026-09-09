@@ -35,6 +35,7 @@ from maos.tools.gateway import (
     AlipaySandboxAdapter,
     MockGateway,
     RefundRequest,
+    register_gateway,
 )
 from maos.tools.port import invoke_tool
 
@@ -302,12 +303,13 @@ def test_invoke_tool_writes_tool_invoked_row():
     冻结面（A-6），``invoke_tool`` 返回的是 entry 的返回值。所以调用标识落在
     ``extras["event_id"]`` 上 —— 不改冻结签名，审计仍然可追。
     """
-    store, gw = _store(), MockGateway()
+    store = _store()
+    register_gateway("gw-audit", MockGateway())
     plan_id, invocation_id = "plan-r3", uuid.uuid4().hex
 
     out = invoke_tool(
         GATEWAY_REFUND_PORT,
-        {"gateway": gw, "out_trade_no": "T-0001", "refund_amount": "12.00",
+        {"gateway_name": "gw-audit", "out_trade_no": "T-0001", "refund_amount": "12.00",
          "idempotency_key": "R-0001"},
         store=store,
         extras={"event_id": invocation_id, "plan_id": plan_id, "trace_id": "tr-1"},
@@ -329,11 +331,14 @@ def test_invoke_tool_writes_tool_invoked_row():
 def test_params_digest_is_stable_across_calls():
     """同样的参数要算出同样的 digest —— 否则审计对不上账。
 
-    这条盯的是 ``MockGateway.__repr__``：带内存地址的话每次 digest 都不同。
+    这条原先盯的是 ``MockGateway.__repr__``（活对象进 params，带内存地址就每次
+    不同）。T76 之后 params 里只有标量，可复现性由机制保证而非实现方自觉 ——
+    断言不变，守的东西从「实现方记得写 __repr__」换成了「params 不含活对象」。
     """
-    store, gw = _store(), MockGateway()
-    params = {"gateway": gw, "out_trade_no": "T-0001", "refund_amount": "12.00",
-              "idempotency_key": "R-0001"}
+    store = _store()
+    register_gateway("gw-digest", MockGateway())
+    params = {"gateway_name": "gw-digest", "out_trade_no": "T-0001",
+              "refund_amount": "12.00", "idempotency_key": "R-0001"}
     for _ in range(2):
         invoke_tool(GATEWAY_REFUND_PORT, dict(params), store=store,
                     extras={"event_id": uuid.uuid4().hex, "plan_id": "p"})
@@ -345,8 +350,10 @@ def test_params_digest_is_stable_across_calls():
 
 def test_query_via_invoke_tool_also_audited():
     store, gw = _store(), MockGateway(settle_after=1)
+    register_gateway("gw-query", gw)
     r = gw.refund(_req())
-    out = invoke_tool(GATEWAY_QUERY_PORT, {"gateway": gw, "request_id": r.request_id},
+    out = invoke_tool(GATEWAY_QUERY_PORT,
+                      {"gateway_name": "gw-query", "request_id": r.request_id},
                       store=store, extras={"event_id": "e2", "plan_id": "p"})
 
     assert out["status"] == STATUS_SETTLED
@@ -362,10 +369,11 @@ def test_tool_error_is_audited_then_reraised():
     ``port.py`` 已有此语义，这里是回归：真网关超时的那天，审计行必须还在。
     """
     store = _store()
+    register_gateway("gw-sandbox", AlipaySandboxAdapter())
     with pytest.raises(NotImplementedError, match="尚未接通支付宝沙箱"):
         invoke_tool(
             GATEWAY_REFUND_PORT,
-            {"gateway": AlipaySandboxAdapter(), "out_trade_no": "T-1",
+            {"gateway_name": "gw-sandbox", "out_trade_no": "T-1",
              "refund_amount": "1.00", "idempotency_key": "R-1"},
             store=store,
             extras={"event_id": "e-fail", "plan_id": "p"},

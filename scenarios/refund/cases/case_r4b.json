@@ -1,6 +1,7 @@
 {
   "_note": "对照组 R4（渠道维度）之 R4B。与 R4A 唯一的差别是 channel_id：同租户、同商品、同诉求、同政策版本。AS-004 的 channel_scope 就是 ch-dealer，而 policy_rules_at_order 按 channel_scope 过滤 —— 所以这一组的差异在**现有匹配器上直接成立**，不需要任何新代码。",
   "_provenance": "政策规则与历史案例为按行业惯例构造的合成数据；支付回执与错误码取自支付宝开放平台 alipay.trade.refund 官方错误码表（出处见 maos/tools/gateway_codes.py 的 SOURCES / SRC_REFUND_API 常量）。不得作为真实企业数据引用。",
+  "_rule_no_scope": "本文件的 AS-00x 编号只在租户 tnt-mfg-a 内有意义。同一个编号在别的租户语料里指的是另一条规则 —— 跨语料引用规则号前先看租户。具体地：本文件的 AS-003 是「人为损坏免责（需图片举证）」（rule_kind=artificial_damage_exclusion），而 scenarios/custom/ledger.json 里租户 tnt-demo 的 AS-003 是「发错货全额退」（rule_kind=wrong_item）—— 两者毫无关系。对照表见 scenarios/refund/README.md。",
   "_expected": {
     "dimension": "channel",
     "pair_id": "R4",

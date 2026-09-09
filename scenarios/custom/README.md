@@ -277,3 +277,28 @@ INV-2026-0002,PO-2026-0002,1,SKU-C,80,45.00,2026-08-01,2026-08-31,0.13,数量比
 python3 scripts/ap_smoke.py
 ```
 
+## 规则号的作用域：`AS-00x` 只在租户内有意义
+
+> 本文件的 `AS-00x` 编号只在租户 `tnt-demo` 内有意义。
+> 同一个编号在别的租户语料里指的是另一条规则 —— **跨语料引用规则号前先看租户**。
+
+底账 `ledger.json` 里的政策编号是**你这一家公司自己的编号**。`policy_rule` 表的主键是
+`(tenant_id, rule_no, version)`，`rule_no` 单独拿出来没有所指。本仓库现有语料里，
+同一个 `AS-003` 就指着两件毫不相干的事：
+
+| 语料文件 | 租户 | AS-003 是什么 | `rule_kind` |
+| :-- | :-- | :-- | :-- |
+| `scenarios/custom/ledger.json`（本目录的底账） | `tnt-demo` | 发错货全额退并免手续费（`reason_code=wrong_item`） | `wrong_item` |
+| `scenarios/refund/policy/policy_rules.json`、`cases/case_r4a.json`、`cases/case_r4b.json` | `tnt-mfg-a` | 人为损坏免责，需图片举证（`reason_code=artificial_damage`） | `artificial_damage_exclusion` |
+| `scenarios/refund/policy/policy_rules.json` | `tnt-mfg-b` | 人为损坏免责，需图片举证；v2 另加 `third_party_report_required` | `artificial_damage_exclusion` |
+
+**为什么要专门说这一句**：跑 `python3 scripts/run_requests.py` 时回帖里打出来的
+`AS-003@v1` 是**本目录底账**里那条发错货规则，与「举证」毫无关系。
+拿着这个编号去对照 `scenarios/refund/` 的语料或答辩材料，会对错人。
+
+放你自己的数据进去时，编号随你定，但**前缀要留着** ——
+`policy.match` 按前缀筛规则，缺省是 `AS-`（`policy.py` 的 `AFTER_SALES_PREFIX`，
+可用入参 `rule_prefix` 改）；换了前缀又不改入参，会一条都命中不上。
+**也别假设你的 `AS-003` 和别处的 `AS-003` 是同一条**。
+
+守着这条口径的测试在 `maos/tests/test_refund_corpus_rule_no.py`。

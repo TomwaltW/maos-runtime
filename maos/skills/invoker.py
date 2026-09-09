@@ -10,9 +10,9 @@
 审计落的是 event_log **行**（event_type="SkillInvoked"），不是总线 Envelope ——
 冻结的 maos/contracts/events.py 里没有这个事件类型，也不许为此去加。
 
-每次 invoke 生成一个 invocation_id（uuid4().hex），**成败都生成**，
-既返回给调用方（SkillResult.invocation_id）也写进落库那行的 detail ——
-两侧同一个值，后续 Phase 的权威事实守卫靠它做 actor 溯源。
+每次 invoke 生成一个 invocation_id（uuid4().hex），**成败都生成**，同时进三处：
+返回给调用方的 SkillResult.invocation_id、skill 拿得到的 SkillContext.extras、
+落库那行的 detail —— 三处同一个值，后续 Phase 的权威事实守卫靠它做 actor 溯源。
 连 skill_not_found / precondition_failed 这两条早退也要带上：
 失败调用同样是需要被追溯的事实。
 
@@ -88,6 +88,14 @@ class SkillInvoker:
         # 事件的 id 不是同一个值 —— verify.py 第 3 项 authoritative-fact 按事件
         # 对账，会判「权威事实边界被绕过」。故意覆盖调用方传入的同名键：
         # 官方 id 只有这一个，调用方那个是 invoker 补齐前的兜底。
+        #
+        # 【回归守卫】覆盖不是可以放宽成 setdefault 的：一次 invoke 一个新 id 是
+        # `scripts/verify.py` 第 1 项 hash-integrity 的硬判据（同一份证据里
+        # invocation_id 不许重复）。而调用方**允许**把同一个 extras dict 复用给
+        # 相邻两次 invoke（`agents/refund/payment_agent.py` 的 execute → observe
+        # 就是这么写的），改成 setdefault 会让这两次共用一个 id —— 实测 T79 轨
+        # scenario-6/7/R5 当场红 6 处。要留住「调用方那个」请另起键名，不要动这里。
+        # 见 test_skill_invocation_anchor.py 与 docs/DECISIONS.md ## task-T79。
         ctx = SkillContext(model=extras.get("model"), store=self.store,
                            identity=self.identity,
                            extras={**extras, "invocation_id": invocation_id})

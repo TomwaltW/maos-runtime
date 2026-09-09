@@ -56,9 +56,44 @@ scenarios/refund/
 
 `finance.settle` 目前只消费其中两个键：`refund_ratio` 与 `deduct_fee`。其余键（`no_reason_days` / `warranty_basis` / `min_evidence_count` / `extra_tasks` / `approver_role` …）会原样进入 `policy.match` 出参的 `matched_rules[].params`，供下游取用。
 
+> **这段是实测口径，截至 `b35c618`**：`min_evidence_count` / `requires_evidence_kinds` / `evidence_source`
+> 三个键在 `maos/**/*.py` 里**没有任何消费方**（`b35c618` 上 grep 零命中；今天唯一的命中是
+> `maos/tests/test_refund_corpus_rule_no.py` 那条守卫，它断言这几个键**不该**出现在发错货规则里，
+> 不是在读它们）—— 语料定义了举证要求，但**没有任何代码去看它**，
+> 于是同一个案子交不交图，裁定结论逐字节相同且不报错。这是一条**静默失效**，不是「功能没做完」。
+> 已记进 `docs/BACKLOG.md` 的 `## task-T78`；**政策判定器落地后本段需复核**（届时消费的键不止两个）。
+
 ### `effective_to` 为什么全是 `null`
 
 `objects.policy_rules_at_order` 的过滤条件是 `effective_to IS NULL OR effective_to > paid_at`。若把 v1 的 `effective_to` 设成 v2 的生效时刻，那么**锁定 v1 的老订单会一条规则都命中不上** —— 版本对照当场退化成「无规则可用」，证明不了任何东西。版本之间的分界靠的是 `version <= pinned`，不靠时间区间。
+
+## 规则号的作用域：`AS-00x` 只在租户内有意义
+
+> 本文件的 `AS-00x` 编号只在租户 `tnt-mfg-a` / `tnt-mfg-b` 各自范围内有意义。
+> 同一个编号在别的租户语料里指的是另一条规则 —— **跨语料引用规则号前先看租户**。
+
+`rule_no` 在 `policy_rule` 表里**不是全局主键**：主键是 `(tenant_id, rule_no, version)`。
+所以「AS-003」这四个字单独拿出来讲是没有所指的，必须连着租户一起说。
+本仓库现有语料里，同一个 `AS-003` 就指着两件毫不相干的事：
+
+| 语料文件 | 租户 | AS-003 是什么 | `rule_kind` |
+| :-- | :-- | :-- | :-- |
+| `scenarios/custom/ledger.json` | `tnt-demo` | 发错货全额退并免手续费（`reason_code=wrong_item`） | `wrong_item` |
+| `scenarios/refund/policy/policy_rules.json`、`cases/case_r4a.json`、`cases/case_r4b.json` | `tnt-mfg-a` | 人为损坏免责，需图片举证（`reason_code=artificial_damage`）；v2 收紧为「图片或视频 ≥2」 | `artificial_damage_exclusion` |
+| `scenarios/refund/policy/policy_rules.json` | `tnt-mfg-b` | 人为损坏免责，需图片举证；v2 另加 `third_party_report_required` | `artificial_damage_exclusion` |
+
+**这为什么是个真会咬人的坑**：拿规则号当口径讲的地方（答辩问答、PPT、`docs/EXECUTION.md` 附 B 的差异表）
+会对错人 —— 实跑自定义入口命中的 `AS-003@v1` 是 `tnt-demo` 那条**与证据无关**的发错货规则，
+而听众按 `tnt-mfg-a` 的语料理解，会以为「举证判据生效了」。两件事，一个编号。
+
+守着这条口径的测试是 `maos/tests/test_refund_corpus_rule_no.py`：它钉住
+「每份含规则号的语料都声明了自己的租户作用域」，也钉住
+「两个租户的 `AS-003` 的 `rule_kind` **确实不同**」—— 将来谁把两边改成一样，那条测试会红，
+逼改的人先来看这一节，而不是默默假设它们一致。
+
+**编号本身不改**：`evidence/scenario-R5/` 等证据束里冻着 `AS-003` 这个字面量，
+而证据必须是真实命令输出、一个字节都不许手改（铁律 3）。改号会让证据束与语料当场对不上。
+所以这里买的是「口径说清楚 + 机器守着」，不是重新编号。
 
 ## 三组对照
 

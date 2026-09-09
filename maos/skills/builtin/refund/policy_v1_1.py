@@ -49,7 +49,7 @@ v1.1.0 把这句话变成机器可读的判据：规则 body 里可以声明 ``w
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from maos.domain.refund import guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
@@ -60,6 +60,10 @@ from .policy import (
     AFTER_SALES_PREFIX,
     DECISION_APPROVE,
     DECISION_REJECT,
+    as_datetime,
+    elapsed_days,
+    evaluate_conditions,
+    paid_at_of,
     rule_params,
     rule_ref,
 )
@@ -81,30 +85,23 @@ def window_days_of(params: dict) -> float | None:
 
 
 def _as_datetime(text: object) -> datetime | None:
-    """ISO8601 -> aware datetime；解析不了返回 None。无时区的按 UTC 读。
+    """ISO8601 -> aware datetime。**实现在 `policy.py`，这里只留符号名。**
 
-    naive 与 aware 相减会抛 TypeError，而这里抛出去等于「时间戳格式不标准」
-    变成一次 skill 失败。时效闸的缺省方向是**放行**（见 `_elapsed_days`）。
+    时点解析原本两版各有一份。条件判据（`eligibility`）也要用它，于是提到 v1.0.0
+    的模块级去 —— 三份实现迟早在「无时区按什么读」上分叉，而分叉的症状是同一个
+    案子两版给不同结论，且没有任何地方报错。
     """
-    try:
-        dt = datetime.fromisoformat(str(text))
-    except (TypeError, ValueError):
-        return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return as_datetime(text)
 
 
 def _elapsed_days(paid_at: object, as_of: object) -> float | None:
-    """申请时点距支付时点的天数；任一端解析不出就返回 None。
+    """申请时点距支付时点的天数。**实现在 `policy.py`，这里只留符号名。**
 
     None 的语义是**不判超窗**，不是「超窗」：时点读不出来时拒付一笔本该退的钱，
     比放行一笔本该拒的钱更难解释，而且这一档的行为与 v1.0.0 一致 —— 时效闸只在
     数据足够时才收紧口径，数据不足时不制造两版之间的无谓分叉。
     """
-    paid = _as_datetime(paid_at)
-    now = _as_datetime(as_of)
-    if paid is None or now is None:
-        return None
-    return (now - paid).total_seconds() / 86400.0
+    return elapsed_days(paid_at, as_of)
 
 
 @register_skill
@@ -128,6 +125,11 @@ class PolicyMatchV11Skill(Skill):
             "rule_refs": "list[str]（形如 AS-01@v1）",
             "decision": "approve|reject（命中集合被时效闸剔空则 reject）",
             "reason": "str（有规则超窗时点明剔除了哪几条、窗口多少天）",
+            "eligibility": (
+                "dict{eligible,unmet,evidence_seen,checked_rules,ineffective_rules}"
+                "（与 v1.0.0 同一个判定器，同案同证据下逐字节相同；"
+                "只核**时效闸留下的**那几条规则 —— 超窗规则本就不是裁定依据）"
+            ),
             "invocation_id": "str",
         },
         preconditions=["tenant_id", "case_id"],
@@ -139,7 +141,8 @@ class PolicyMatchV11Skill(Skill):
             "不改 biz_status、不调模型、不碰支付网关；"
             "政策版本一律取自订单快照，禁止使用 policy_rule 的最新版本；"
             "时效判定只读订单快照的 paid_at 与 case 的 created_at，不写任何表，"
-            "且超窗规则不写进 business_ref —— 依据链里只许留真正采信的那几条"
+            "且超窗规则不写进 business_ref —— 依据链里只许留真正采信的那几条；"
+            "条件判据只读 customer_evidence / product_snapshot，不写"
         ),
         reuse_note=(
             "在 v1.0.0「按快照锁定的版本判定」之上补时效闸；"
@@ -190,6 +193,12 @@ class PolicyMatchV11Skill(Skill):
         decision, reason = self._conclude(pinned, prefix, matched, refs, expired,
                                           len(applicable), elapsed)
 
+        # 条件判据走 v1.0.0 的那一个判定器（两版共享口径，见 policy.evaluate_conditions）。
+        # 传 `matched` 而不是 `prefix_hits`：超窗规则已经不是裁定依据，再去核它的
+        # 证据只会在出参里多出一条永远解释不清的 unmet。
+        eligibility = evaluate_conditions(
+            store, tenant_id=tenant_id, case=case, rules=matched, as_of=as_of)
+
         plan_id = str(extras.get("plan_id") or "")
         task_id = str(extras.get("task_id") or "")
         if plan_id and task_id:
@@ -206,6 +215,7 @@ class PolicyMatchV11Skill(Skill):
             "rule_refs": refs,
             "decision": decision,
             "reason": reason,
+            "eligibility": eligibility,
             "case_id": case_id,
             "tenant_id": tenant_id,
             "invocation_id": invocation_id,
@@ -214,13 +224,12 @@ class PolicyMatchV11Skill(Skill):
     # ------------------------------------------------------------------
     @staticmethod
     def _paid_at(store, tenant_id: str, case: dict) -> str | None:
-        """订单支付时刻 —— 时效窗口的起算点，权威在订单快照上（铁律 8）。"""
-        rows = objects.query(
-            store,
-            "SELECT paid_at FROM order_snapshot WHERE tenant_id=? AND order_id=? AND version=?",
-            (tenant_id, case["order_id"], int(case["order_version"])),
-        )
-        return rows[0]["paid_at"] if rows else None
+        """订单支付时刻 —— 时效窗口的起算点，权威在订单快照上（铁律 8）。
+
+        **实现在 `policy.py`**：条件判据的时点起算点与时效闸是同一个，
+        两处各查一次早晚会在「取哪一版快照」上分叉。
+        """
+        return paid_at_of(store, tenant_id, case)
 
     @staticmethod
     def _conclude(pinned, prefix, matched, refs, expired, n_applicable, elapsed):

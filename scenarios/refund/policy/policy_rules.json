@@ -1,6 +1,7 @@
 {
   "_note": "AS-001..AS-004 四条 × 租户 A/B × v1/v2 两版本 = 16 行 policy_rule。列名逐字对齐 maos/domain/refund/schema.sql 的 policy_rule 表。body 是紧凑 JSON 字符串：policy.match::rule_params() 用 json.loads 读它，读不动就返回空 dict，finance.settle 随即落到「全额退不扣费」的缺省 —— 写成自然语言条款时金额会静默算错，所以这里一律 JSON。顺带带上被引用的 tenant / channel / product_snapshot，让本文件可以单独灌库。",
   "_provenance": "政策规则与历史案例为按行业惯例构造的合成数据；支付回执与错误码取自支付宝开放平台 alipay.trade.refund 官方错误码表（出处见 maos/tools/gateway_codes.py 的 SOURCES / SRC_REFUND_API 常量）。不得作为真实企业数据引用。",
+  "_rule_no_scope": "本文件的 AS-00x 编号只在租户 tnt-mfg-a / tnt-mfg-b 各自范围内有意义。同一个编号在别的租户语料里指的是另一条规则 —— 跨语料引用规则号前先看租户。具体地：本文件两个租户的 AS-003 都是「人为损坏免责」（rule_kind=artificial_damage_exclusion，但 A 与 B 的 v2 举证参数不同），而 scenarios/custom/ledger.json 里租户 tnt-demo 的 AS-003 是「发错货全额退」（rule_kind=wrong_item）—— 两者毫无关系。对照表见 scenarios/refund/README.md。",
   "_effective_from": {
     "v1": "2025-01-01T00:00:00+00:00",
     "v2": "2026-06-01T00:00:00+00:00",

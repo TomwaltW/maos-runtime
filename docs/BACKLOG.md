@@ -1636,6 +1636,90 @@ M3 停掉 Anthropic 口径分支，三次分别让 1、6、3 条用例变红）�
 | 2026-09-01 | P8 | **`gateway.refund` / `gateway.query` 迁 MCP 前必须先重构参数** | 这两个工具把 `GatewayPort` **活对象本身**当 params 传（`skills/builtin/refund/payment_execute.py:112`），跨进程之后传不过去。`maos/tools/gateway.py:235` 特意给 `MockGateway.__repr__` 去掉内存地址就是为了让 `params_digest` 可复现 —— 那是在给这个设计打补丁，不是在支持它 | 重构方向是「MCP server 侧持有 gateway，客户端只传 `gateway_name`」，配 `_common.py:88 register_gateway` 的注册表天然成立。归下一轮支付面轨，**先改参数再谈传输** |
 | 2026-09-01 | P8 | **三处绕过 `invoke_tool` 的裸调用没有审计行**：`core/control_plane.py:801`、`runtime/gate.py:505`、`flows/common.py:249` 与 `:258` 直接调 `sandbox_git_apply` / `sandbox_pytest_run` 函数，不经 ToolPort | 这三处的补偿回滚与场景驱动**不产生 `ToolInvoked`**，`scripts/verify.py` 第 1 项校验也就看不见它们。今天无害（它们不是 agent 发起的调用），但它同时意味着：以后把 `sandbox.*` 的 `entry` 换掉时，这三处**不会跟着换**，且不会报错 —— 是静默失效 | `core/**` 与 `flows/**` 不在本轨白名单，没动。归下一轮：要么改成走 `invoke_tool`，要么在 ToolPort 声明里写明「本工具另有 N 处内部裸调用」。别默默留着 |
 
+## task-T78（语料规则号撞号与失真文案 · 本轨只动语料与文档，零业务代码）
+
+本轨一行业务逻辑都没改（唯一的 `.py` 是新建的守卫测试）。买的是「文档和语料说的话」
+与「代码真做的事」重新对齐 —— 三处失真里两处已就地改准，一处够不着，逐条记在下面。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **同一个 `AS-003` 在本仓库里指着两件毫不相干的事**：`scenarios/custom/ledger.json` 的租户 `tnt-demo` 是「发错货全额退」（`rule_kind=wrong_item`，与证据无关），`scenarios/refund/**` 的租户 `tnt-mfg-a` / `tnt-mfg-b` 是「人为损坏免责，需图片举证」（`artificial_damage_exclusion`）。`policy_rule` 的主键是 `(tenant_id, rule_no, version)`，`rule_no` 不是全局主键 | 拿规则号当口径讲的地方会对错人：自定义入口实跑一单，回帖打出 `AS-003@v1`，听众按 `scenarios/refund/` 的语料理解会以为「举证判据生效了」，其实命中的是发错货那条 | **本轨了结到「加口径 + 加守卫」，编号本身没改** —— 理由见下一条。六份语料/文档补了固定措辞的租户作用域说明，两份 README 各加一张三租户对照表，机器判据在 `maos/tests/test_refund_corpus_rule_no.py`（4 条，负例注入实测 3 条会红）。**注**：派单把本条记作「了结 `docs/BACKLOG.md:1643`」，但 `b35c618` 上本文件只有 1641 行、grep 全文也没有撞号条目 —— 那两行属于主仓未提交的在制品，本条是**新立**的 |
+| 2026-09-02 | P9 | **规则号为什么不能改**：`evidence/scenario-R5/business-objects.json`（生成自 `cfe4384`）里冻着 4 行 `rule_no=AS-003`（去重后是 `tnt-mfg-a` v1 一种），其 `body` 与 `scenarios/refund/policy/policy_rules.json` 里对应行**逐字节相同**（本轨实跑比对：同 4 / 不同 0 / 查无此行 0） | 改语料里的编号会让证据束与语料当场对不上，而证据必须来自真实命令输出、一个字节都不许手改（铁律 3）—— 唯一正当的修法是**全量重跑证据束**，那是整合轮的事，不是一条文案改动该拖出来的动作 | 将来真要重新编号（比如给不同租户加前缀），必须与「证据束按合并态全量重跑」同一轮做，且先确认没有别的束引用旧号。单独改语料 = 证据束失效 |
+| 2026-09-02 | P9 | **三处文案会因为政策判定器落地而过期，逐处点名**：① `docs/EXECUTION.md` 附 B 的 AS-003 那一格与其下新增的注（写着「判据待实现」）；② `scenarios/refund/README.md` 「`body` 为什么是 JSON 字符串」一节新增的注（写着「`finance.settle` 只消费两个键」）；③ 同文件那句「其余键会原样进入 `matched_rules[].params` 供下游取用」 | 这三处**今天是准确的**（`b35c618` 实测），落地后会变成过期描述。本轨刻意**没有预先写成未来态** —— 那是把没跑过的现象写成实录，违铁律 3 | **交整合轮复核**：政策判定器与金额核算面合并后，逐处重跑一次判断再改。改之前先跑 `grep -rn "requires_evidence_kinds\|min_evidence_count\|evidence_source" --include=*.py maos/` 看消费方到底出现了没有，别按派单的预期改 |
+| 2026-09-02 | P9 | **还有 4 份含 `policy_rule` 的语料没补租户作用域口径**：`scenarios/custom/refund-case.json`、`scenarios/refund/cases/case_r3a.json` / `case_r3b.json` / `case_r6.json`。其中 r3a / r3b 的 `_note` 已经用自然语言说了「同一条规则编号在两个租户下参数不同」，另两份什么都没说 | 本轨白名单只点了 4 份语料 + 2 份 README（派单 §4「只许动这些」），这 4 份在白名单外，按 CLAUDE.md「本轨白名单以外的文件一律停手问」没动 | 已写进 `maos/tests/test_refund_corpus_rule_no.py` 的 `PENDING` 集合，**不是从判据里删掉而是显式列着** —— 补完一份就挪进 `COVERED`，挪漏了第 1 条测试会红。整合轮顺手补，一份加一行抬头即可 |
+| 2026-09-02 | P9 | **docs 目录下那份 ingress 配置手册（文件名 ingress-setup.md，此处刻意不写成反引号路径 —— 它还不存在，写成路径会让文档守卫报 `E-missing` 阻断）的那处口径本轨够不着**：该文件不在版本库里（`git ls-files docs/` 无此项），只作为未提交的在制品存在于主仓工作区，另有活跃会话正在 ingress 通道上作业 | 派单 §5.4 要求给它的第 188-189 行加一句时点标注。该处**当前描述是准确的**（如实记了三个键零消费方这一缺陷），所以不加标注的代价只是「判定器落地后它会变成过期描述」，不是现在就错 | 归 ingress 那一轨或整合轮：文件进版本库后，照 `docs/EXECUTION.md` 附 B 那条注的写法加一句「截至 `<sha>`；判定器落地后需复核」即可，**别改它的结论** |
+| 2026-09-02 | P9 | **`run.py` 的输出不可能「与某个 sha 逐字节一致」**：`plan_*` / `task_*` / `actor` 都是每次运行现生成的随机 id，耗时也逐次不同。同一棵树连跑两次，裸 `diff` 就不一致 | 派单把「`run.py` 输出与基线逐字节一致」写成硬判据，字面上恒假 —— 照字面执行会把一次正常运行报成回归。本轨改成「规范化随机 id 与耗时后逐行比对」，实测 427 行一致 | 下次写派单时把这条判据改成规范化比对，或给 `run.py` 加一个 `--deterministic-ids` 开关。**判据恒假比没有判据更坏**：它会训练下一个人跳过这一条 |
+## task-T79（调用面：actor 锚点与同名同版本覆盖）
+
+本轨开工时实测到一件与派单前提不符的事，先写在这里，后面几条都建立在它上面：
+**「actor 锚点断链」在基线 `b35c618` 上已经不存在了** —— `1ac85b3` 已经把
+`invocation_id` 塞进 `SkillContext.extras`（`maos/skills/invoker.py:91`），
+skill 侧、`SkillResult`、落库那行三处同值。本轨因此把 §5.1 做成**回归守卫**
+（注释 + 测试），而不是再修一遍已经好了的东西。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | ✅ **已了结：`register_skill` 同名同版本静默覆盖**（本文件 `:1513` 与 `:1560` 记的同一条） | 后 import 的照旧赢（行为一个字没变），但现在会打一条 `WARNING`，串里带 skill 名、版本、被顶掉的类与新类的模块名。选 `warning` 不选 `raise` 的理由照抄 `:1560` 的推荐：skill 是 import 注册的，`_discover_builtin()` 一次 import 整个 builtin 包，`raise` 会让一次误 import 掀掉整个进程启动，而撞名本身并不影响已注册的那份能不能用 | **本轮已做**。实现落在 `maos/skills/registry.py` 末尾的 `_put()`，而不是 `register_skill()` 函数体里 —— 后者会把 `get()` / `versions()` 的行号往下推，而这两个行号被写死在 `docs/skill-catalog.md` 正文里（同本文件 `:1561` 记的那条「行号当标识」的固有代价）。三份生成物本轮归整合轮统一重跑、各轨不碰，故绕开而不是重跑 |
+| 2026-09-02 | P9 | **四个域 `_common.py` 里 `invocation_id_of` 的第二条分支不是死代码** —— 「调用方经 extras 传入，传不到则本地生成」两条分支都还在，合并 invoker 之后走的是**第一条** | 单测直调 skill（不经 `SkillInvoker`）走的正是第二条，删掉它这类测试当场炸在 `guard._require_invocation_id`。已由 `maos/tests/test_skill_invocation_anchor.py` 对四个域各钉一条参数化用例，只读地断言两条分支都在 | **不要清理**。顺带记一笔：四个域 `_common.py` 的模块 docstring 第 2 条、以及 `maos/agents/*/_base.py::extras_of` 的注释，都还写着「invoker 那个 id 到不了 skill 里（invoker.py:69）」—— 这句自 `1ac85b3` 起已不成立，是本轮派单误判的源头。本轨不改（那五个文件分别归 T77 与引擎侧），留给持有它们的轨顺手刷 |
+| 2026-09-02 | P9 | **`contract.py` 里 `SkillResult` 的 actor 溯源承诺现在有测试钉住了**，但「后续 Phase 的权威事实守卫」仍**没有真的用这个 id 对账** | `scripts/verify.py` 第 3 项 authoritative-fact 今天按 `plan_id` / 案子 / skill 名对齐，不是按 `invocation_id` 直接连表。所以「三处同值」目前只被单测守着，证据侧还没有一条判据会在它断掉时变红 —— 第 1 项 hash-integrity 守的是另一件事（同一份证据里 id 不许重复） | 归后续轨。真要接就是在第 3 项里把 `payment_observation.actor_invocation_id` 与 `SkillInvoked.detail.invocation_id` 直接对上，届时本轨这几条单测正好是它的前置保证 |
+| 2026-09-02 | P9 | **派单 §5.1 约束 1（改成 `setdefault`、不覆盖调用方）实测会打红 `scripts/verify.py` 第 1 项**，本轨照实况没做 | 实跑取证：改成「调用方给了就用调用方的」之后 `hash-integrity 87/93`，scenario-6 / scenario-7 / scenario-R5 各出现「invocation_id 与上一条重复」，共 6 处。根因是调用方**允许**把同一个 `extras` dict 复用给相邻两次 invoke（`maos/agents/refund/payment_agent.py` 的 execute → observe 就是这么写的），`setdefault` 会让第二次捡起第一次留下的 id | **已了结**：`invoker.py` 里那段回归守卫注释与 `test_two_invocations_sharing_one_extras_dict_do_not_collide` 一起把它钉住。要留住调用方自己的标识，正确做法是另起键名，不是放宽这里。决策已记 `docs/DECISIONS.md ## task-T79` |
+## task-T74（政策判定器：证据与条件成为真判据）
+
+2026-09-02。本轨把 `policy.match` 的条件判据补上了，**但只补到 `eligibility` 为止**——
+金额面归 T75。下面五条是本轨结清的、留下的、以及交给别人的。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **`## task-D2` 那条（本文件 `:185`）已了结一半**：`no_reason_days` / `warranty_basis` / `min_evidence_count` / `requires_evidence_kinds` 四条判据现在都有判定器（`policy.py::evaluate_conditions`），R3 那组租户对照跑得出差异了（`test_refund_policy_eligibility.py::test_tenant_window_difference_makes_exactly_one_side_ineffective`） | **剩下的一半是金额**：判定结果只落在新出参 `eligibility` 里，`finance.settle` 还没读它，所以 R3 两侧的**金额仍然相同**。那条账在 T75 合并前不能划掉 | T75（`finance.settle` 消费 `ineffective_rules`）。两轨合完再回来划 `:185` |
+| 2026-09-02 | P9 | **三个证据判据字段（`min_evidence_count` / `requires_evidence_kinds` / `evidence_source`）零消费方这条已结清**：本轨之前 `grep -rn` 在 `maos/**/*.py` 里零命中，现在 `policy.py` 有判定器且有 13 条测试守着 | 「同一个案子交一张图和不交，裁定结论逐字节相同」这条静默失效在 `policy.match` 这一侧消失了 —— 出参里的 `eligibility.evidence_seen` 与 `ineffective_rules` 会变 | 已结。**注意派单里把这条记成 `docs/BACKLOG.md:1642`，实际那一行是 MCP 节的「三处绕过 invoke_tool 的裸调用」**，内容对得上的是 `:185`。行号失真，按内容认 |
+| 2026-09-02 | P9 | **中间态：举证不足只影响 `eligibility`，不影响金额**。`finance.settle` 的 `_params_of` 仍只读 `refund_ratio` / `deduct_fee`，不看 `ineffective_rules` | 在 T74 与 T75 合并之前，**端到端还没生效**：演示时交一张图与不交，`decision` 与最终退款金额仍然相同，只有 `policy.match` 的出参不同了。整合轮不要把本轨当成「已端到端生效」 | T75。这一条是本轮的已知中间态，不是缺陷 |
+| 2026-09-02 | P9 | **`docs/EXECUTION.md:843` 仍写着「AS-003 人为损坏免责 / 需 `customer_evidence` 中有图片证据」**，措辞像是已实现 | 本轨让它**接近**成立了（判据真的在读证据），但那格所在的差异点表描述的是端到端效果，在 T75 合并前仍然偏乐观 | **归 T78**（`docs/EXECUTION.md` 是它的独占文件）。本轨只读未改 |
+| 2026-09-02 | P9 | **`unmet[].direction` 目前是个只有一个取值的"枚举"**（恒为 `not_applied`），写死在出参里 | 今天无害，是刻意的：方向必须在出参里显式可读，不能靠下游推断。但一旦将来出现「条件不满足反而要收紧」的规则类型，这个字段需要第二个取值，而**加取值必须先改跨轨契约文件**（`review/refund-skill-contracts.md` §1.2 的同款约束） | 出现第二种方向时。别顺手加 —— T75 是按单值写的 |
+| 2026-09-02 | P9 | **`gen_docs.py --check` 与 `test_generated_docs.py` 两条当前是红的**：本轨按派单补了 `policy.match` 的 `output_schema.eligibility` 与 `security_boundary`，`docs/skill-catalog.md` 随之对不上代码 | 不是回归，是派单 §0.3 预见到的情况（生成物由整合轮统一重跑 `python3 scripts/gen_docs.py`）。本轨一行没碰三份生成物 | 整合轮。重跑一次即转绿 |
+## task-T75（金额核算面：让举证不足真的改变金额）
+
+2026-09-02。本轨只动 `maos/skills/builtin/refund/finance.py` 一个代码文件，
+下面两条是**留给整合轮的**，不是本轨没做完的事。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **本轨在政策侧那一轨合并前验不到端到端**：这个 worktree 里 `policy.match` 根本不产 `eligibility`，`finance.settle` 收到的入参恒无此键，走的全是「全部规则均适用」的缺省分支。新测试的 `eligibility` 一律是按跨轨契约 §1.1 自造的 fixture | 剔除逻辑本身有单测钉住，但「政策侧算出的形状与金额侧读的形状是否真对得上」这条**没有任何测试覆盖到** —— 两轨各自绿、合到一起才发作，正是本仓最怕的那类失效 | 整合轮合入政策侧之后**重跑本文件的第 1 / 2 条对照**，并补一条真跑 `policy.match` → `finance.settle` 的端到端：交一张图与不交图，金额必须不同 |
+| 2026-09-02 | P9 | `_params_of` 的 `max()` 口径（比例取最大、扣费取最大）本轨**保留未动** | 它有一个不直观的推论：一条 `refund_ratio: "0"` 的排除规则**只有在它是唯一命中规则时**才压得动金额；命中集合里还有别的规则时，它对比例毫无影响，只能靠扣费咬金额。新测试第 1 / 2 条那组对照因此用的是单条 AS-003 的命中集合 | 谁将来想改这个口径，先读 `_params_of` 的 docstring —— 那不是随手定的方向，是「政策对客户的承诺是并集」的直接后果。真要改，连带改的是本文件这两组对照的期望值，别只改代码 |
+## task-T76
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **本轨了结了 `2026-09-01` 那条（`gateway.refund` / `gateway.query` 迁 MCP）的「参数」那一半，「传输」那一半仍未做** | 已了结的：两个 ToolPort 不再收 `GatewayPort` 活对象，改收 `gateway_name`（`maos/tools/gateway.py` 自持一张 name → 实例注册表，取不到抛 `LookupError`）；params 从此全是标量，`params_digest` 的可复现性由机制保证，不再押在实现方自觉写 `__repr__` 上，那个补丁也已拆掉。**仍未做的**：传输本身。今天的形状离 MCP 还差三件事 —— ① 装配桥接还在客户端：`payment_execute.py` / `payment_observe.py` 各有一行 `register_tool_gateway(name, C.get_gateway(name))`，把 skill 层登记的实例转登记进工具侧表，跨进程之后这一行**必须搬到 server 侧装配处**，客户端只发名字；② 工具侧注册表是**进程内**的普通 dict，server 侧要换成随进程启动就装配好的形态，且要想清楚多 worker 时各自持有一份账本意味着什么（`MockGateway` 的幂等账本在内存里，两个 server 进程 = 两本账）；③ `AlipaySandboxAdapter` 仍是只抛 `NotImplementedError` 的壳，真网关接通前迁移无从验证 | 归后续支付面轨。**先把那两行桥接搬走，再谈传输** —— 它们是唯一还在跨层传活对象的地方，也是迁移时唯一会「本地跑得通、跨进程当场断」的点 |
+| 2026-09-02 | P9 | 承上：§5.1 选了「工具层自持一张表」，**代价是同一个网关要注册两次** | `maos/tools/gateway.py` 与 `maos/skills/builtin/refund/_common.py` 各有一张 name → 实例表。本轨没去改 8 个装配点（`maos/kb/experiment.py:362`、`maos/flows/custom_case.py:239`、`maos/flows/scenario_6.py:267`、`maos/flows/scenario_7.py:468/470/598` 与 4 个存量测试文件都不在本轨白名单），而是让两个 payment skill 在调 `invoke_tool` 前**按调用现场转登记一次**。好处有二：装配点一行没动；且每次调用都刷新工具侧那一格，`reset_gateways()` 之后换了实例也不会读到上一轮的陈账。坏处是「注册」这件事散在调用路径上，不在装配处，读代码时不易一眼看见 | 后续轨若要把装配收回装配处，改这 8 个点即可，两个 skill 里的桥接行随之删掉。别在没搬走桥接前先删注册表 |
+| 2026-09-02 | P9 | **`docs/toolport-contract.md` 本轨结束时落后于代码，`maos/tests/test_generated_docs.py` 因此红 2 条** | 差异只有三类，逐条核过：两个 port 的 `params_schema`（`gateway` → `gateway_name`）、`failure_modes` 各多一条 `LookupError`、以及行号锚点漂移。`security_boundary` 等其余字段一字未动。这是 §5.1 改签名的直接产物，不是声明面被误改 | 派单明令该生成物由整合轮统一重跑（口径同 `4bb6694`），本轨一律不碰。**整合轮跑一次 `python3 scripts/gen_docs.py` 即转绿** |
+| 2026-09-02 | P9 | 硬判据「`grep "gateway":` 应 0 命中」在本轨实际是 **2 命中**，且这 2 条不该消除 | 两条都是 skill 自己的 `input_schema` 声明（`payment_execute.py:43`、`payment_observe.py:45`），值是「已 register_gateway 的**名字**，默认 demo」这个字符串口径，从来不是活对象。skill payload 这一层的键名叫 `gateway` 是既有约定，`maos/flows/scenario_6.py:150`、`scenario_7.py:269/306`、`custom_case.py:162`、`maos/agents/refund/payment_agent.py:82/90`、`maos/kb/experiment.py:155` 与 `compensate.py:140` 都按这个键名传名字 —— 改它要动 7 个白名单外文件，且与本轨要买的东西无关 | 判据的**意图**（活对象那个键名不复存在）已达成：ToolPort params 里再无 `gateway` 键。后续若要统一改名为 `gateway_name`，那是一次纯改名的独立轨 |
+## task-T77（收案面：证据 kind 归一化与供应链审批单字段）
+
+2026-09-02。本轨把 `refund.intake` 落库的证据 `kind` 收敛到五个规范值
+（`maos/skills/builtin/refund/_common.py::EVIDENCE_KINDS`），并让审批单能进来。
+以下四条是这次的**取舍**，不是遗漏，写在这里免得下一轮当成 bug 重查一遍。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | **归一化表只覆盖常见写法**（`_common.py::_KIND_ALIASES`：photo/img/screenshot、mp4/mov、voice/录音、pdf/扫描件 等），真实渠道一定会送来表外的值 | 表外的值归 `attachment`。证据一条都不丢（成员判据仍是有没有 uri），但政策里若写 `requires_evidence_kinds:["image"]`，一张写成「实拍图」的照片仍然数不进 image。这是**已知的覆盖不全**，不是静默失效——`kind_raw` 留得下原值，查得出来 | 接真渠道后按 `event_log` 里 `kind_raw` 的实际分布补表。补表是加别名，不是加规范值——五个规范值是跨轨口径，改它要先改 `review/refund-skill-contracts.md` |
+| 2026-09-02 | P9 | **`kind_raw` 不落库**：提交方的原始声明只在 `refund.intake` 的出参与 `event_log` 里，`customer_evidence` 表没有这一列 | 库里查不到「这条证据当初声明的是什么」——只查得到归一化后的规范值。要复原原始声明，得从 `event_log` 里那次 `SkillInvoked` 的 output 捞 | 本轮红线是退款域 14 张表一列不改，所以只能这么放。哪天证据面真要审计原始声明（比如渠道扯皮「我明明报的是 image」），再给 `customer_evidence` 加一列 `kind_raw`，那是**加列**不是改列，届时一并把历史行回填成空 |
+| 2026-09-02 | P9 | **`applicant_ref` 走 `business_ref` 是不扩表的权宜**：供应链退款的审批单（supplier_id / po_no / approver / approved_amount / doc_no）只落成一条 `object_type="applicant_ref"`、`object_id=doc_no` 的引用，五个字段本身一个都没有自己的列 | 单号之外的字段库里查不到（`purpose` 那句文字里带了供应商/采购单/审批人，但那是给人看的说明，不是可查询的列）。按供应商统计、按采购单反查退款，今天都做不了 | 供应链退款真要做深，它该有自己的域（口径同 `ap` / `claim`：自己的表、自己的 guard、自己的 skill），不是往退款域塞列。塞列会把「消费者售后」与「供应链退款」两套完全不同的业务对象压进同一张表，然后一半的列永远为空 |
+| 2026-09-02 | P9 | **`docs/skill-catalog.md` 落后于代码**：本轨改了 `RefundIntakeSkill.contract` 的 `input_schema` / `output_schema` / `security_boundary` 三个**字段值**（`SkillContract` 的 dataclass 字段一个没动），生成物随之陈旧 | `python3 scripts/gen_docs.py --check` 退出码 1，连带 `maos/tests/test_generated_docs.py` 两条变红：`test_generated_doc_matches_code[docs/skill-catalog.md]` 与 `test_check_mode_agrees_and_writes_nothing`。差异只有 `refund.intake` 一条目（三个字段值 + 实现行号 59→110），别的 skill 一个字没变 | **交整合轮统一重跑 `python3 scripts/gen_docs.py`**，本轨不碰生成物（`docs/skill-catalog.md` 是六轨都不许碰的文件，见 `review/refund-skill-contracts.md` §4；口径同 `4bb6694` 那次） |
+
+## integrate-p9-t74-t79（整合轮：六轨合并、生成物重跑、接缝守卫、证据束重跑）
+
+合并顺序按跨轨契约 §6：T78 → T79 → T74 → T75 → T76 → T77。
+六轨的代码面零冲突（白名单确实不相交），全部冲突集中在两份账本的尾部追加，
+按「两侧全留、按合并顺序拼接」解。合并态实测 1662 passed / 39 skipped、
+`run.py` exit=0、`gen_docs --check` exit=0、`verify.py` 8/8 PASS。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | 🔴 **两轨之间的接缝无人看守**：T74 只验 `policy.match` **产出** `eligibility`，T75 只验 `finance.settle` **消费**（自造 fixture 入参，不跑 policy.match）。没有任何一条测试把真实出参喂进下游 | 形状分叉、方向写反、键名写错，**两轨的测试都不会红**。这一轮买的那句话（「交一张图和不交，金额必须不同」）在合并前从未被端到端证明过 | **本轮已补**：`maos/tests/test_refund_evidence_end_to_end.py`，6 条，拿真出参跑。实测 800.00（没图，排除规则不予适用）vs 0（有图，排除规则生效）。**这类接缝测试应当成为并行分轨的固定收尾**：凡是「A 轨产出、B 轨消费」的跨轨契约，整合轮都要补一条真链路断言，否则契约只被两份 fixture 各自守着 |
+| 2026-09-02 | P9 | **派单 T76 的白名单漏列了存量测试 `maos/tests/test_gateway.py`** | T76 改了 `GATEWAY_REFUND_PORT` / `GATEWAY_QUERY_PORT` 的入参（活对象 → `gateway_name`），存量测试**必然**要跟着改，但那个文件不在它 §4 的独占清单里。T76 照实改了并记了账 —— 属合理越界，不是偷跑 | **是派单的缺陷不是执行的问题**。下次写「改某个 ToolPort / 公共签名」的派单时，要把**该签名的存量测试**一并列进白名单；不列的话执行方要么越界、要么交一个红的树 |
+| 2026-09-02 | P9 | **`finance.settle` 的 `applied_rules` / `excluded_rules` 落在 `breakdown` 里，不在出参顶层** | 跨轨契约 §1.1 只冻结了 `eligibility` 的形状，没规定 finance 侧留痕放哪 —— 所以这不是违约，是实现自由。但整合轮写接缝测试时按顶层取，当场红了一条，查了两轮才定位 | 放 `breakdown` 是**对的**（它随 `finance_entry.breakdown_json` 一起落库，对账查得到；放顶层反而不落库）。要记的是：**跨轨契约只冻结了上游的出参形状，没冻结下游的**，下一轮若有第三方要读 finance 的留痕，得先把这个位置也写进契约 |
+| 2026-09-02 | P9 | **`evidence/scenario-*/trace.json` 里没有 `decision` 字段**，契约 §1.3 那条「decision 必须与基线逐字节一致」的判据在 trace 上验不了 | trace 存的是 span 结构，不含 skill output 明细。整合轮改用**等价判据**验证：三个退款场景的 `rule_refs` 逐字节一致、`amount_approved` 全部未变（金额不变 = 裁定结果不变）。结论成立，但验的路径与契约写的不是一条 | 下次写这类判据时先确认它在证据里查得到。要让 `decision` 真的可外部核验，得让 `make_evidence` 把 skill output 的关键字段落进 `business-objects.json`，那是证据束轨的活 |
+| 2026-09-02 | P9 | **`scripts/verify.py` 第 3 项 authoritative-fact 仍只认退款域**（承接本文件 `:1473` 那条，本轮未动） | 本轮六轨全在退款域，所以第 3 项 3/3 PASS 是**真的**核验到了。但 ap / claim / investigation 三个域仍在它视野外，那条老账没有因为本轮而变好 | 仍归证据束轨。本轮新增的 `eligibility` 也没有进第 3 项的对账口径 —— 举证判据是否被绕过，外部核验目前看不见 |
 ## task-T80（域存储骨架下沉时看到、本轮不改的三条）
 
 2026-09-02 把四个域同构的存储骨架下沉成 `maos/domain/_case_store.py`、三个陪跑域接过去时记的。

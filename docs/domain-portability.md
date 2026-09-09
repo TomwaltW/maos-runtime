@@ -562,3 +562,109 @@ D-1 的第三出口与 D-2 的 plan 级判据都落在内核（`core/` + `runtim
 
 后续要复跑的只有一种情况：**主干再前进**。届时区间 B 与合计表按文中给的
 `git diff --shortstat` 命令逐行重跑即可，**区间 A 永远不用回填。**
+
+---
+
+## RTV 域（第 5 个域）—— 两个权威源的增量
+
+**本节 2026-09-02 由 T65 追加，基线 `4c956a8`。以上 393 行一个字节都没动** ——
+那些数字与它们各自的历史端点绑定，改一个就得把整节重跑一遍。本节只做加法。
+
+RTV（Return to Vendor，采购退货退款）是 `maos/domain/` 下的**第五个业务域**。
+现有四个自己数：
+
+```bash
+ls maos/domain/ | grep -v '^__'
+# ap
+# claim
+# investigation
+# refund
+```
+
+### R1 增量是什么：从「一个外部权威源」到「两个」
+
+前四个域都只有**一个**外部权威源、**一个**权威终态：
+
+```bash
+grep -n "^AUTHORITATIVE_STATES" maos/domain/ap/guard.py
+# 67:AUTHORITATIVE_STATES = frozenset({"settled"})
+```
+
+RTV 域是**两个**（冻结契约 `review/rtv-contracts.md` 的 C-R3）：
+
+| 权威终态 | 外部权威源 | 回执判据 |
+| :-- | :-- | :-- |
+| `credited` | 供应商开出贷项通知单 | `observed_state == "issued"` + `credit_note_id` |
+| `settled` | AP / 银行到账 | `observed_state == "settled"` + `adjustment_id` |
+
+为什么这是「增量」而不只是「多一个状态」：**两个权威源是两件独立的事**。
+供应商认账（`credited`）和钱回到账上（`settled`）中间可以隔很久，也可以永远不发生。
+前四个域的 guard 只需要判「这一个终态的回执对不对」，RTV 的 guard 必须让
+`AUTHORITATIVE_STATES` 与 `AUTHORITATIVE_RECEIPT_STATE` **同增同减** ——
+见到没有判据的权威终态直接拒（漏配不放行）。这是铁律 8 在本仓库被逼到最紧的一次：
+一个域里有两个「MAOS 写不了、只能问」的终态。
+
+SOP 全文与评委问答的形状见 [`sop-rtv.md`](sop-rtv.md)。
+
+### R2 复用面有多大
+
+**五张表复用，一张不重建。** `supplier` / `purchase_order` / `purchase_order_line` /
+`goods_receipt` / `goods_receipt_line` 直接用 `ap` 域的既有定义：
+
+```bash
+grep -nE "^CREATE TABLE IF NOT EXISTS (supplier|purchase_order|purchase_order_line|goods_receipt|goods_receipt_line) " maos/domain/ap/schema.sql
+# 48:CREATE TABLE IF NOT EXISTS supplier (
+# 61:CREATE TABLE IF NOT EXISTS purchase_order (
+# 73:CREATE TABLE IF NOT EXISTS purchase_order_line (
+# 88:CREATE TABLE IF NOT EXISTS goods_receipt (
+# 100:CREATE TABLE IF NOT EXISTS goods_receipt_line (
+```
+
+而冻结契约给 RTV 定的十张新表里，这五张一张都没有：
+
+```bash
+grep -c "^CREATE TABLE" review/rtv-contracts.md
+# 10
+grep -cE "^CREATE TABLE IF NOT EXISTS (supplier|purchase_order|purchase_order_line|goods_receipt|goods_receipt_line) " review/rtv-contracts.md
+# 0
+```
+
+按 §4「换一个新域要做什么」那份清单，RTV 域要新增的是：业务对象与表、六个 skill、
+五个 ToolPort、五个角色、一条演示场景（分别对应契约的 C-R1 / C-R4 / C-R5 / C-R7）。
+**不需要动**的仍是那五处：`maos/contracts/`、`maos/core/`、`maos/runtime/`、
+`maos/artifacts.py`、`maos/main.py`。
+
+### R3 🔴 「内核零改动」这句话现在**还没有**被跑过
+
+本节成稿时（基线 `4c956a8`），RTV 域的代码由四条并行轨在各自 worktree 里落地，
+**一行都还没有合进来**。所以这里不写「内核零改动」，只写**待整合期核验**，
+并给出该跑的命令：
+
+```bash
+# 端点：<RTV 四轨合入前的 sha> → <合入后的 sha>，届时填真值
+git diff --shortstat <before> <after> -- maos/contracts/ maos/core/
+# 期望：无输出（真零，口径同 §2.2）
+git diff --shortstat <before> <after> -- maos/runtime/
+# 期望：无输出。RTV 域**不加第八道闸** —— 若这里非空，§4 那份清单就要改，
+#       且必须像 §2.2 那样逐条论证新增的判据是领域无关的
+for p in contracts core runtime agents skills tools domain flows; do \
+  printf '%-10s ' "$p"; git diff --shortstat <before> <after> -- maos/$p/; echo; done
+# 两条 AST 守卫对 RTV 域同样要绿（它们扫的是 maos.domain.** 整个命名空间）：
+python3 -m pytest maos/tests -q -k "not_import_refund_domain or does_not_know_the_refund_domain"
+# 期望：2 passed
+```
+
+**编不出来就写不知道。** §5「不吹的部分」那一节的可信度全靠这一条 ——
+先把「零改动」写下来再补证据，和手写证据没有区别。届时若 `runtime/` 非空，
+如实回填并论证，别把数字往「零」上凑。
+
+### R4 与既有五节的关系
+
+- 既有五节（§1–§5）的每一个数字都是**历史 HEAD 上的实测**，端点在过去、钉死了。
+  本节**不覆盖、不修订、不稀释**它们中的任何一条。
+- 区间 A（`90251b3..4a70cb0`，上退款域的代价）**永远不用回填** —— 两个端点都在过去。
+- RTV 域合入后要动的只有一处：**新起一段 RTV 的区间**，按 R3 的命令实测。
+  不要把 RTV 的改动并进区间 B —— 那是「X/Y/D 轮之后的内核增量」，混进去会让
+  「上一个业务域的代价」这件事第二次被稀释（§2 开头那段说的就是这个坑）。
+- §1 的对照表现在覆盖两个域。RTV 合入后它变成三列还是另起一张表，留给整合期决定；
+  本节不动那张表。

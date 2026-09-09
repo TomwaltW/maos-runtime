@@ -355,6 +355,7 @@ def update_biz_status(
     observation: dict | None = None,
     return_action: str = "",
     reason: str = "",
+    poll_count: int = 0,
 ) -> dict:
     """`rtv_case.biz_status` 的唯一写入路径。
 
@@ -508,6 +509,8 @@ def update_biz_status(
         "detail": {"domain": DOMAIN, "tenant_id": tenant_id, "case_id": case_id,
                    "actor": actor_skill, "invocation_id": invocation_id,
                    "return_action": return_action,
+                   # 不进库（C-R1 的回执表没这一列），只留在审计里：终态是问出来的。
+                   "poll_count": int(poll_count),
                    "observation_attached": observation is not None},
     })
     return get_case(store, tenant_id, case_id)  # type: ignore[return-value]

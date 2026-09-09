@@ -280,6 +280,42 @@ PROFILES: dict[str, CapabilityProfile] = {
         tools=frozenset(),
         model_tier=Tier.LIGHT,
     ),
+    # ---- RTV（采购退货退款）五岗：整合 T61-T65 时按各 Agent 的 identity 生成 ----
+    "rtv.disposition": CapabilityProfile(
+        duty="rtv.disposition",
+        roles=frozenset({"rtv_disposition"}),
+        skills=frozenset(['rtv.dispose']),
+        tools=frozenset([]),
+        model_tier=Tier.LIGHT,
+    ),
+    "rtv.intake": CapabilityProfile(
+        duty="rtv.intake",
+        roles=frozenset({"rtv_intake"}),
+        skills=frozenset(['rtv.intake']),
+        tools=frozenset([]),
+        model_tier=Tier.LIGHT,
+    ),
+    "rtv.logistics": CapabilityProfile(
+        duty="rtv.logistics",
+        roles=frozenset({"rtv_logistics"}),
+        skills=frozenset(['rtv.ship']),
+        tools=frozenset(['carrier.ship', 'carrier.track']),
+        model_tier=Tier.LIGHT,
+    ),
+    "rtv.reconcile": CapabilityProfile(
+        duty="rtv.reconcile",
+        roles=frozenset({"rtv_reconcile"}),
+        skills=frozenset(['rtv.reconcile']),
+        tools=frozenset(['supplier.credit_query']),
+        model_tier=Tier.LIGHT,
+    ),
+    "rtv.settlement": CapabilityProfile(
+        duty="rtv.settlement",
+        roles=frozenset({"rtv_settlement"}),
+        skills=frozenset(['rtv.compensate', 'rtv.observe']),
+        tools=frozenset(['ap.adjust_query', 'supplier.credit_query', 'supplier.rma_submit']),
+        model_tier=Tier.LIGHT,
+    ),
     "refund.finance-settlement": CapabilityProfile(
         duty="refund.finance-settlement",
         roles=frozenset({"refund_finance"}),

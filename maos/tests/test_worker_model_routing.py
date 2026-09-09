@@ -112,7 +112,7 @@ def test_factory_receives_the_role_and_its_declared_tier():
     assert dict(seen) == {role: cls.identity.model_tier for role, cls in AGENT_POOL.items()}
     tiers = [tier for _, tier in seen]
     assert len(seen) == len(AGENT_POOL)
-    assert {t: tiers.count(t) for t in set(tiers)} == {"light": 19, "medium": 2, "strong": 3}
+    assert {t: tiers.count(t) for t in set(tiers)} == {"light": 24, "medium": 2, "strong": 3}
 
 
 # --- 3. 降级不崩 -----------------------------------------------------------

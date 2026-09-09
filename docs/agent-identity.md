@@ -4,9 +4,9 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-扫到 **25 个** 带 Identity 的 Agent 类，其中 **24 个**注册进 `AGENT_POOL`（可被 Worker 按 role 派单），**1 个**未注册（由流程层直接构造）。
+扫到 **30 个** 带 Identity 的 Agent 类，其中 **29 个**注册进 `AGENT_POOL`（可被 Worker 按 role 派单），**1 个**未注册（由流程层直接构造）。
 
-分域：软件交付域 6 个；ap 4 个；claim 4 个；investigation 4 个；制造售后退款域 7 个。
+分域：软件交付域 6 个；ap 4 个；claim 4 个；investigation 4 个；制造售后退款域 7 个；rtv 5 个。
 
 **字段顺序即冻结契约附录 A 的声明顺序**，由 `dataclasses.fields(AgentIdentity)` 取（maos/agents/base.py:59）：`agent_id`、`role`、`duty`、`allowed_skills`、`allowed_tools`、`write_scope`、`max_risk`、`model_tier`、`max_self_repair`。本文件不另抄一份顺序。
 
@@ -41,6 +41,11 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `refund_payment` | `refund-payment` | 制造售后退款域 | 是 | `maos/agents/refund/payment_agent.py:58` |
 | `refund_policy` | `refund-policy` | 制造售后退款域 | 是 | `maos/agents/refund/policy_agent.py:22` |
 | `refund_risk` | `refund-risk` | 制造售后退款域 | 是 | `maos/agents/refund/risk_agent.py:40` |
+| `rtv_disposition` | `rtv-disposition` | rtv | 是 | `maos/agents/rtv/disposition_agent.py:25` |
+| `rtv_intake` | `rtv-intake` | rtv | 是 | `maos/agents/rtv/intake_agent.py:25` |
+| `rtv_logistics` | `rtv-logistics` | rtv | 是 | `maos/agents/rtv/logistics_agent.py:28` |
+| `rtv_reconcile` | `rtv-reconcile` | rtv | 是 | `maos/agents/rtv/reconcile_agent.py:26` |
+| `rtv_settlement` | `rtv-settlement` | rtv | 是 | `maos/agents/rtv/settlement_agent.py:50` |
 
 > **未注册的 1 个（`manager`）不是漏网**：`AGENT_POOL` 的语义是「Worker 收到 TaskAssignment 后按 role 找得到的执行者」（maos/runtime/worker.py:39 一行构造全池）。Manager 是规划者不是执行者，由流程层直接构造并调 `plan()`，不接派单 —— 所以它有 Identity（白名单同样被 `SkillInvoker` 强制），但不进池。手册写「十角色」指的是包含它在内的角色总数。
 
@@ -451,5 +456,87 @@ Identity 不是文档，是运行时会被执行的约束：`BaseAgent.check_too
 | `allowed_tools` | 可调工具白名单 | （空） |
 | `write_scope` | 可写资源 | `artifact` |
 | `max_risk` | 最高授权风险级 | L |
+| `model_tier` | 模型档位 | light |
+| `max_self_repair` | 自修复上限 | 0 |
+
+## rtv（5 个）
+
+### rtv_disposition — RtvDispositionAgent
+
+声明位置：`maos/agents/rtv/disposition_agent.py:25`
+
+| 字段 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `agent_id` | 实例 id | rtv-disposition |
+| `role` | 角色名（派单按它路由） | rtv_disposition |
+| `duty` | 职责边界 | 按退货理由与合同条款裁定 credit/exchange/replacement，并保留规则出处 |
+| `allowed_skills` | 可调 Skill 白名单 | `rtv.dispose` |
+| `allowed_tools` | 可调工具白名单 | （空） |
+| `write_scope` | 可写资源 | `artifact` |
+| `max_risk` | 最高授权风险级 | L |
+| `model_tier` | 模型档位 | light |
+| `max_self_repair` | 自修复上限 | 0 |
+
+### rtv_intake — RtvIntakeAgent
+
+声明位置：`maos/agents/rtv/intake_agent.py:25`
+
+| 字段 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `agent_id` | 实例 id | rtv-intake |
+| `role` | 角色名（派单按它路由） | rtv_intake |
+| `duty` | 职责边界 | 受理退货诉求，定位源 PO 与收货单，建案并挂上业务对象引用 |
+| `allowed_skills` | 可调 Skill 白名单 | `rtv.intake` |
+| `allowed_tools` | 可调工具白名单 | （空） |
+| `write_scope` | 可写资源 | `artifact` |
+| `max_risk` | 最高授权风险级 | L |
+| `model_tier` | 模型档位 | light |
+| `max_self_repair` | 自修复上限 | 0 |
+
+### rtv_logistics — RtvLogisticsAgent
+
+声明位置：`maos/agents/rtv/logistics_agent.py:28`
+
+| 字段 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `agent_id` | 实例 id | rtv-logistics |
+| `role` | 角色名（派单按它路由） | rtv_logistics |
+| `duty` | 职责边界 | 登记退货发运并取得承运商回执（shipped 只能由回执得到） |
+| `allowed_skills` | 可调 Skill 白名单 | `rtv.ship` |
+| `allowed_tools` | 可调工具白名单 | `carrier.ship`、`carrier.track` |
+| `write_scope` | 可写资源 | `artifact` |
+| `max_risk` | 最高授权风险级 | M |
+| `model_tier` | 模型档位 | light |
+| `max_self_repair` | 自修复上限 | 0 |
+
+### rtv_reconcile — RtvReconcileAgent
+
+声明位置：`maos/agents/rtv/reconcile_agent.py:26`
+
+| 字段 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `agent_id` | 实例 id | rtv-reconcile |
+| `role` | 角色名（派单按它路由） | rtv_reconcile |
+| `duty` | 职责边界 | 退货行 × 贷项通知单 × 到账三方对账，产出可核对的结论 |
+| `allowed_skills` | 可调 Skill 白名单 | `rtv.reconcile` |
+| `allowed_tools` | 可调工具白名单 | `supplier.credit_query` |
+| `write_scope` | 可写资源 | `artifact` |
+| `max_risk` | 最高授权风险级 | M |
+| `model_tier` | 模型档位 | light |
+| `max_self_repair` | 自修复上限 | 0 |
+
+### rtv_settlement — RtvSettlementAgent
+
+声明位置：`maos/agents/rtv/settlement_agent.py:50`
+
+| 字段 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `agent_id` | 实例 id | rtv-settlement |
+| `role` | 角色名（派单按它路由） | rtv_settlement |
+| `duty` | 职责边界 | 轮询取得终态回执（credited 与 settled 都只能由观察得到） |
+| `allowed_skills` | 可调 Skill 白名单 | `rtv.compensate`、`rtv.observe` |
+| `allowed_tools` | 可调工具白名单 | `ap.adjust_query`、`supplier.credit_query`、`supplier.rma_submit` |
+| `write_scope` | 可写资源 | `artifact` |
+| `max_risk` | 最高授权风险级 | M |
 | `model_tier` | 模型档位 | light |
 | `max_self_repair` | 自修复上限 | 0 |

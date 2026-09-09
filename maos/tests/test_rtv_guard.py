@@ -361,7 +361,9 @@ def test_no_source_file_writes_the_guarded_tables_outside_the_guard():
         re.IGNORECASE)
     allowed = {RTV_PKG / "guard.py",
                MAOS_PKG / "tests" / "test_rtv_guard.py",
-               MAOS_PKG / "tests" / "test_rtv_domain.py"}
+               MAOS_PKG / "tests" / "test_rtv_domain.py",
+               # 里面那三行 SQL 是证明 execute() 拦得住的反例（test_no_bypass_path_around_the_guard）
+               MAOS_PKG / "tests" / "test_rtv_skills.py"}
     offenders = []
     for path in sorted(MAOS_PKG.rglob("*.py")):
         if path in allowed:

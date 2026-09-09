@@ -161,10 +161,9 @@ class RtvDisposeSkill(Skill):
             (tenant_id, case_id, attempt, action,
              json.dumps(rationale, ensure_ascii=False, sort_keys=True),
              decided_by, C.now_iso()))
-        C.set_return_action(store, tenant_id, case_id, action)
-
         case = C.update_biz_status(
             store, tenant_id, case_id, "disposed", self.contract.name, invocation_id,
+            return_action=action,          # 与 disposed 同事务，guard 的口径
             reason=f"裁定处置类型 {action}（第 {attempt} 次，依据 "
                    f"{sorted({item['rule_id'] for item in rationale})}）")
 

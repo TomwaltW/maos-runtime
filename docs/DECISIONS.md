@@ -2347,3 +2347,14 @@ router 侧的 @岗位点名分流与待办里的合议建议。以下六处是�
 | 2026-09-09 | p9 | 老轨的静态清单没跟上主干后来加的角色 / skill：T58 的职责档案缺 `refund_evidence` / `refund_risk`，`refund.intake` 档案缺 T101/T102 加的 `refund.reason_classify` / `sheet.header_map`；`EXPECTED_AGENT_POOL_SIZE` 仍是 22（实际 24）；路由测试 tier 分布仍是 light 17（实际 19） | 逐条补齐 / 刷成实测值，`evidence/capability-matrix.json` 用 `scripts/gen_capability_matrix.py` 重生成 | 这些断言的本意都是「清单与代码一致」，代码是真源；主干的角色与 skill 是后加的、有各自的轨与测试，不该反过来削掉 |
 | 2026-09-09 | p9 | 条数真源：合并后 collected 2999、skipped 41 | `docs/expected-metrics.json` 的 `pytest_passed_nopg` 2435 -> 2958，`docs/submission-checklist.md:24` 锚点跟着刷 | 与前一批同一口径（`collected == passed + skipped`），整合期统一刷一次 |
 | 2026-09-09 | p9 | 验收判据 | 红的集合与合并前基线逐条一致（`test_domain_evidence` 7 + `test_verify_warn` 4 + `test_cost_metrics` 1，全是本机环境所致），passed 2423 -> 2945 | 与第一批（T107–T111）同一判据 |
+
+## 整合 RTV 五轨 T61–T65（2026-09-10）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-10 | p9 | 两套写权威表的实现打架：T63 的 rtv skills `_common.py` 第八节自带同形状守卫并直写三张表；T65 的 `test_rtv_guard.py` 断言全仓只有 rtv 域 `guard.py` 写得动 | **留 T65 那套**（人类拍板）。`_common.py` 第八节整节换成 guard 的薄适配：名字原样保留（六个 skill 与测试引用 `C.xxx`），实现全部来自 guard；`set_return_action()` 旁路取消，`rtv.dispose` 改为 `update_biz_status(..., return_action=)` 与 disposed 同事务一次写入 | 主干 ap / claim / investigation 三个域都是「权威表只经 guard.py 写」的口径，rtv 跟齐才一致；两边常量逐项比过全部同值（`RETURN_ACTIONS` 仅 tuple 与 frozenset 之差），`create_case` 签名完全相同 |
+| 2026-09-10 | p9 | guard 的 `update_biz_status` 没有 `poll_count`，而 T63 的 `test_poll_count_proves_the_terminal_state_was_asked_for` 要求轮询次数落在 `RtvBizStatusChanged` 的 detail 里 | 给 guard 加可选 `poll_count: int = 0`，只进审计 detail、不进库 | 「终态是问出来的」是本域要证明的事，证据不能丢；不进库是因为 C-R1 的回执表没这一列、且契约冻结。加一个缺省 0 的关键字参数对既有调用方零影响 |
+| 2026-09-10 | p9 | T63 的 `test_only_one_tentative_cross_track_import` 要求 rtv skills 包里跨轨 import 只有一句；适配 guard 后多了一句 | 与 `objects` 合成一句 `from maos.domain.rtv import guard as _guard, objects as _objects`，探测函数不再自己 import | 整合后 T61 的域层必在，「试探」这一前提已不成立；fallback 那条路与内嵌 SQL 先留着（走不到），删它记进 BACKLOG，不在本轮顺手做 |
+| 2026-09-10 | p9 | 场景 12（T64）带着三段 stub：业务对象层 / 五个 ToolPort / 六个 skill，一起跑时 stub skill 把 T63 的真 skill 顶掉（`KeyError: supplier_id`、`input_schema` 空、正则不匹配三条同根）。要真正替换：T62 的 port 要调用方传实例、T63 的 skill 从 `extras["tools"]` 取、T64 的 Agent 不注入工具、`test_rtv_flow.py` 引用 50 个 stub 名 —— 四方接口从未一起跑过 | **场景 12 与 `test_rtv_flow.py` 不进本次合并**（`git rm`，文件仍在 `task-T64` 与 `integrate/p9-t55-t83-with-rtv`）；RTV 的 domain / tools / skills / agents 与 4 个测试文件（130 条）进主干。替换按文件自带的「STUB 清单」另开一轨 | 那是三方接线的集成工程，不是收口；硬做到一半会让主干红或把 RTV 测试整批隔离。可逆、只影响本轨。代价是主干上 RTV 暂无 `run.py` 演示入口、五个 Agent 只由池 / 档案测试覆盖 |
+| 2026-09-10 | p9 | 静态清单对数 | 五个 rtv 角色的职责档案从各 Agent 的 identity 生成；`EXPECTED_AGENT_POOL_SIZE` 24 -> 29；路由测试 light 19 -> 24；条数真源 2958 -> 3163；`test_rtv_sop_doc` 里 `domain-portability.md` 前 393 行的 sha 刷成合并态；`test_rtv_guard` 白名单加 `test_rtv_skills.py`（其中三行 SQL 是证明守卫拦得住的反例） | 与前两批同一口径：清单跟代码走，代码是真源 |
+| 2026-09-10 | p9 | 验收判据 | 红的集合与合并前基线逐条一致（12 项本机环境红），passed 2946 -> 3151 | 同前 |

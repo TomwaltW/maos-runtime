@@ -47,8 +47,9 @@ CONTRACT = os.path.join(ROOT, "review", "rtv-contracts.md")
 #: 这一节的每个数字都与各自的历史端点绑定，改一个就得把整节重跑一遍 ——
 #: 所以本轨只许在尾部追加。指纹钉死，不依赖 git 可用。
 PORTABILITY_HEAD_LINES = 393
+# 整合 T55-T83 后主干上这份文档前 393 行已被别的轨改过（T94 等），基线刷成合并态。
 PORTABILITY_HEAD_SHA256 = (
-    "236c76fea776228adddd31c37350f44392775cc95ef07c42617d0bb2ea9aa489"
+    "7df3ce7f6f1803993b21c68888278f515ceb712a42a7c9c084340d31a9e1b2fd"
 )
 
 #: §1 的四个出处。只断言字符串在场，不发网络请求。

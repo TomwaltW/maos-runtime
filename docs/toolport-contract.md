@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **11 个**已实现工具，分布在 `ap`、`investigation`、`gateway`、`git_tool`、`claim`、`sandbox` 六处。
+工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **16 个**已实现工具，分布在 `rtv`、`ap`、`investigation`、`gateway`、`git_tool`、`claim`、`sandbox` 七处。
 
 ## 九要素
 
@@ -27,6 +27,22 @@
 直接调 `port.entry` 就没有审计行，出事查不到是谁、什么参数、跑了多久。`params_digest` 走 sha256（maos/tools/port.py:35），落的是摘要不是明文，入参里的业务字段不进证据束。
 
 ## 已实现工具契约
+
+### `ap.adjust_query`
+
+声明：`maos/tools/rtv.py:951`（`AP_ADJUST_QUERY_PORT`）　入口实现：`maos/tools/rtv.py:797`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | ap.adjust_query |
+| `purpose` | ② 用途 | 问一次 AP 系统的调整凭单 —— 全系统**唯一**能取得 settled 判据（款项到账）的途径 |
+| `entry` | ③ 入口 | `maos.tools.rtv._adjust_query` |
+| `params_schema` | ④ 入参 | `ap_system`: ApSystemPort（进程内按名取到的 AP 系统实例；该协议**只有 query 一个方法，没有写方法**）<br>`case_id`: str（RTV 案子号） |
+| `returns_schema` | ⑤ 出参 | `status`: none\|staged\|built\|settled\|voided（取值域唯一出处：rtv_codes.AP_ADJUSTMENT_STATUSES）<br>`is_terminal`: bool（只有 settled / voided 为 True）<br>`is_settlement_evidence`: bool（**只有 settled 且带核销流水号才为 True** —— voided 是终态但不是钱到账）<br>`adjustment_id`: str（AP 侧凭单号，**AP 生成，我方不许造**；none 时为空串）<br>`ap_reference`: str（仅 settled 才有：核销流水号，钱确实到账的外部凭据）<br>`poll_count`: int（问了几次 —— 终态是问出来的证据）<br>`settled_at`: str（仅 settled 才有） |
+| `failure_modes` | ⑥ 失败形态 | · AP 侧还没就本案建凭单 -> status=none，**这不是失败也不是错误**，是「还没到」；不许改判成 voided，也不许因此重发任何东西<br>· 轮询到顶仍非终态 -> **如实返回非终态回执**，不许改判成失败：「我问累了」和「AP 说这笔作废了」是两回事<br>· status=voided -> 凭单作废，本笔退款不会到账，该案子走补偿路径（契约 C-R2 的 credited -> compensated），**不是** settled<br>· AP 系统不可达 -> 原样上抛，上层按「未知外部状态」处置，不许推断成任何终态 |
+| `security_boundary` | ⑦ 安全边界 | 🔴 **只读，而且本模块不提供任何写 AP 的方法**（契约 C-R5 红字）：调整凭单由 AP 侧按自己的规则建，RTV 域只观察 —— 两处都能写会让「这笔调整是谁建的」失去唯一答案。ApSystemPort 协议里因此只有 query 一个方法。本 port 是 rtv.observe 取得 settled 权威事实的唯一入口，而 rtv.observe 是全系统唯一写得进 settled 的 actor（契约 C-R3）；非终态回执一律不推进业务状态 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | rtv_settlement |
 
 ### `bank.pay`
 
@@ -59,6 +75,38 @@
 | `security_boundary` | ⑦ 安全边界 | 只读。本 port 是 ap.observe 取得权威事实的唯一入口，而 ap.observe 是全系统唯一写得进 settled 的 actor（maos/domain/ap/guard.py）。非终态回单一律不推进业务状态 |
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | ap_treasury |
+
+### `carrier.ship`
+
+声明：`maos/tools/rtv.py:884`（`CARRIER_SHIP_PORT`）　入口实现：`maos/tools/rtv.py:789`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | carrier.ship |
+| `purpose` | ② 用途 | 向承运商下一张退货运单；返回建单回执，**永远不是终态**（建单不等于送达） |
+| `entry` | ③ 入口 | `maos.tools.rtv._ship` |
+| `params_schema` | ④ 入参 | `carrier`: CarrierPort（进程内按名取到的承运商实例）<br>`order`: ShipmentOrder（必须带 rma_id —— 没有退货授权的货会被供应商拒收） |
+| `returns_schema` | ⑤ 出参 | `shipment_id`: str（承运商侧运单 id）<br>`tracking_no`: str（carrier.track 用它）<br>`case_id`: str<br>`status`: created —— 建单态，永不为 delivered/exception<br>`is_terminal`: bool（恒 False）<br>`poll_count`: int（恒 0，建单不算一次观察） |
+| `failure_modes` | ⑥ 失败形态 | · order 缺 rma_id -> ValueError：没有退货授权就发货，供应商可以直接拒收，而货已经在路上<br>· 幂等键为空 -> ValueError；同一幂等键上参数不一致 -> DuplicateRequest：两张运单会让「货到底在哪一箱里」失去唯一答案<br>· 承运商系统不可达 -> 原样上抛，上层按「未知外部状态」处置，**不许推断成 exception**：没建成单和货丢了是两回事 |
+| `security_boundary` | ⑦ 安全边界 | 只下运单，不判送达：本 port 的返回值永远不是终态。业务状态 shipped 只能由carrier.track 观察到的回执得到，我方不许自称已发运（契约 C-R2 第 ③ 步「谁说了算」写的是承运商）。本 port 不碰供应商门户，也不碰 AP —— 裁定的人不碰承运商，发运的人不碰供应商开票（契约 C-R7） |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | rtv_logistics |
+
+### `carrier.track`
+
+声明：`maos/tools/rtv.py:918`（`CARRIER_TRACK_PORT`）　入口实现：`maos/tools/rtv.py:793`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | carrier.track |
+| `purpose` | ② 用途 | 问一次承运商轨迹 —— 退货业务状态 shipped/送达只能由这里的回执得到 |
+| `entry` | ③ 入口 | `maos.tools.rtv._track` |
+| `params_schema` | ④ 入参 | `carrier`: CarrierPort（进程内按名取到的承运商实例）<br>`tracking_no`: str（carrier.ship 返回的运单号） |
+| `returns_schema` | ⑤ 出参 | `status`: created\|in_transit\|delivered\|exception（取值域唯一出处：rtv_codes.CARRIER_STATUSES）<br>`is_terminal`: bool（只有 delivered / exception 为 True）<br>`poll_count`: int（问了几次）<br>`delivered_at`: str（仅 delivered 才有：签收时间）<br>`message`: str（异常时说明是丢件 / 拒收 / 途中破损退回） |
+| `failure_modes` | ⑥ 失败形态 | · 运单号不存在 -> LookupError<br>· 轮询到顶仍在途 -> **如实返回 in_transit**，不许改判成 exception：「我问累了」和「承运商说货丢了」是两回事<br>· status=exception -> 货**未**送达供应商，不许据此推进对账；该案子走补偿路径（契约 C-R2 的 shipped -> compensated） |
+| `security_boundary` | ⑦ 安全边界 | 只读，不改承运商的任何东西。承运商是外部系统，回执是观察结果不是我方决定（契约 C-R1 里 rtv_shipment.carrier_status 那条注释）。本 port 不构成 credited / settled 的判据 —— 货到了不等于供应商认了钱，更不等于钱到账；那两个判据分别归 supplier.credit_query 与 ap.adjust_query |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | rtv_logistics |
 
 ### `clearing.cancel`
 
@@ -204,6 +252,38 @@
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-b |
 
+### `supplier.credit_query`
+
+声明：`maos/tools/rtv.py:842`（`SUPPLIER_CREDIT_QUERY_PORT`）　入口实现：`maos/tools/rtv.py:785`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | supplier.credit_query |
+| `purpose` | ② 用途 | 问一次供应商门户 —— 全系统**唯一**能取得 credited 判据（贷项通知单已开出）的途径 |
+| `entry` | ③ 入口 | `maos.tools.rtv._credit_query` |
+| `params_schema` | ④ 入参 | `supplier`: SupplierPort（进程内按名取到的供应商门户实例）<br>`rma_id`: str（supplier.rma_submit 返回的供应商侧退货授权号） |
+| `returns_schema` | ⑤ 出参 | `status`: submitted\|acknowledged\|issued\|disputed\|unknown（取值域唯一出处：rtv_codes.SUPPLIER_STATUSES）<br>`is_terminal`: bool（只有 issued / disputed 为 True）<br>`is_credit_evidence`: bool（**只有 issued 且带单号才为 True** —— acknowledged 恒 False）<br>`poll_count`: int（问了几次 —— 终态是问出来的证据）<br>`credit_note_id`: str（**仅 issued 才有**：供应商侧单号，acknowledged 时恒为空串）<br>`document_type`: str（仅 issued 才有：UNCL1001 的 381，见 rtv_codes）<br>`amount_credited`: str（仅 issued 才有：供应商**认的**金额，与 amount_claimed 刻意分开）<br>`issued_at`: str（仅 issued 才有：供应商开票时间，非我方观察时间） |
+| `failure_modes` | ⑥ 失败形态 | · 退货授权号不存在 -> LookupError<br>· 轮询到顶仍非终态 -> **如实返回非终态回执**，不许改判成 disputed：「我问累了」和「供应商说不认这笔退货」是两回事<br>· status=acknowledged -> **这不是 credited 的判据**：供应商收到退货了，还没开贷项通知单，差着一次会计确认。据此推进 credited 是本域第一号 bug<br>· status=unknown -> 该笔**可能已被受理**，不许重提 RMA（会开出第二张授权），只能继续问或转人工 |
+| `security_boundary` | ⑦ 安全边界 | 只读，不写供应商门户的任何东西。本 port 是 rtv.observe 取得 credited 权威事实的唯一入口，而 rtv.observe 是全系统唯一写得进 credited 的 actor（契约 C-R3：AUTHORITATIVE_WRITER = rtv.observe）。判据只收 issued，**acknowledged 绝不许进 credited 的判据集**；非终态回执一律不推进业务状态 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | rtv_reconcile |
+
+### `supplier.rma_submit`
+
+声明：`maos/tools/rtv.py:801`（`SUPPLIER_RMA_SUBMIT_PORT`）　入口实现：`maos/tools/rtv.py:779`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | supplier.rma_submit |
+| `purpose` | ② 用途 | 向供应商门户递一条退货授权（RMA）申请；返回受理回执，**永远不是终态** |
+| `entry` | ③ 入口 | `maos.tools.rtv._rma_submit` |
+| `params_schema` | ④ 入参 | `supplier`: SupplierPort（进程内按名取到的供应商门户实例）<br>`request`: RmaRequest（金额为字符串，reason_code 取 rtv_codes.RETURN_REASONS） |
+| `returns_schema` | ⑤ 出参 | `rma_id`: str（供应商侧退货授权号，supplier.credit_query 用它）<br>`idempotency_key`: str<br>`case_id`: str（RTV 案子号）<br>`status`: submitted —— 递出态，永不为 issued/disputed<br>`is_terminal`: bool（恒 False）<br>`is_credit_evidence`: bool（恒 False —— 递申请不构成任何权威判据）<br>`amount_claimed`: str（退货方自称的应退金额，非供应商认的金额）<br>`currency`: str<br>`credit_note_id`: str（恒空串 —— 贷项通知单只有 issued 才有）<br>`poll_count`: int（恒 0，递申请不算一次观察） |
+| `failure_modes` | ⑥ 失败形态 | · 幂等键为空 -> ValueError：没有幂等键就挡不住第二张退货授权<br>· 同一幂等键上参数不一致 -> DuplicateRequest，**不静默收下也不静默丢弃**：收下会开出第二张 RMA，丢弃会让调用方拿到一份与自己递进来的申请对不上的回执<br>· reason_code 不在 RETURN_REASONS 内 -> KeyError（RmaRequest 构造时即抛），上层据此出「退货理由不可核对」的拒收结论<br>· 供应商门户不可达 / 超时 -> 由适配器抛，经 invoke_tool 落审计后原样上抛，上层按「未知外部状态」处置，**不许推断成 disputed**：「我没问到」和「供应商说不认」是两回事 |
+| `security_boundary` | ⑦ 安全边界 | 只递申请，不判成败：本 port 的返回值永远不是终态，任何据此写 credited 的代码都是 bug（铁律 8）—— credited 的唯一判据是 supplier.credit_query 观察到 issued，而写入方只有 rtv.observe。金额一律字符串，不进浮点。幂等键由 (tenant, case) 唯一确定，一个退货案子只允许有一张退货授权 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | rtv_settlement |
+
 ## 迁移到 MCP
 
 **迁移到 MCP = 换 entrypoint 的传输层，schema 与审计不变。**
@@ -219,4 +299,4 @@ python3 -m maos.tools.mcp.server --root scenarios/fixture-repo  # 手工起 serv
 python3 -m pytest maos/tests/test_mcp_transport.py maos/tests/test_mcp_git_tool.py -q
 ```
 
-其余 10 个工具的 `entry` 仍是进程内函数 —— **这是刻意的，不是没来得及**：`sandbox.*` 的隔离论证（容器 `--network none --read-only`）独立成立，换传输层要重新论证一遍等价性而收益为零；`gateway.*` 则把 `GatewayPort` 活对象当参数传，跨进程前必须先重构成「server 侧持有 gateway」。两条都记在 `docs/BACKLOG.md`。
+其余 15 个工具的 `entry` 仍是进程内函数 —— **这是刻意的，不是没来得及**：`sandbox.*` 的隔离论证（容器 `--network none --read-only`）独立成立，换传输层要重新论证一遍等价性而收益为零；`gateway.*` 则把 `GatewayPort` 活对象当参数传，跨进程前必须先重构成「server 侧持有 gateway」。两条都记在 `docs/BACKLOG.md`。

@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-注册表里共 **34 个 skill / 34 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
+注册表里共 **40 个 skill / 40 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
 
 失败策略取值域冻结为 `retry`、`fallback`、`escalate`（maos/skills/contract.py:16）。
 
@@ -46,6 +46,12 @@
 | `refund.reason_classify` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤1 次） | （空） | `maos/skills/builtin/refund/reason_classify.py:141` |
 | `refund.risk_screen` | `1.0.0` | 制造售后退款域 | `refund_risk` | escalate | （空） | `maos/skills/builtin/refund/risk_screen.py:46` |
 | `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:51` |
+| `rtv.compensate` | `1.0.0` | 软件交付域 | `rtv_settlement` | escalate | `supplier.rma_submit` | `maos/skills/builtin/rtv/compensate.py:41` |
+| `rtv.dispose` | `1.0.0` | 软件交付域 | `rtv_disposition` | escalate | （空） | `maos/skills/builtin/rtv/dispose.py:50` |
+| `rtv.intake` | `1.0.0` | 软件交付域 | `rtv_intake` | escalate | （空） | `maos/skills/builtin/rtv/intake.py:43` |
+| `rtv.observe` | `1.0.0` | 软件交付域 | `rtv_settlement` | escalate | `supplier.credit_query`、`ap.adjust_query` | `maos/skills/builtin/rtv/observe.py:71` |
+| `rtv.reconcile` | `1.0.0` | 软件交付域 | `rtv_reconcile` | retry（≤1 次） | `supplier.credit_query` | `maos/skills/builtin/rtv/reconcile.py:53` |
+| `rtv.ship` | `1.0.0` | 软件交付域 | `rtv_logistics` | retry（≤1 次） | `carrier.ship`、`carrier.track` | `maos/skills/builtin/rtv/ship.py:40` |
 | `sheet.header_map` | `1.0.0` | 软件交付域 | `refund_intake` | retry（≤1 次） | （空） | `maos/skills/builtin/sheet_header_map.py:193` |
 | `test.verify` | `1.0.0` | 软件交付域 | `testing` | escalate | `sandbox` | `maos/skills/builtin/test_verify.py:30` |
 
@@ -595,6 +601,108 @@
 | `reuse_note` | ⑧ 复用说明 | Manager 规划前的统一入口；任何角色要澄清目标都复用它，不要各写一份归一逻辑 |
 | `owner_roles` | ⑨ 归属角色 | `manager` |
 
+### rtv.compensate @ 1.0.0
+
+实现：`RtvCompensateSkill` @ `maos/skills/builtin/rtv/compensate.py:41`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 失败路径收口：写 rtv_compensation_record，必要时补提 RMA，并推进到 compensated |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`reason`: str（为什么要补偿，必填 —— 收口没有理由等于没收口）<br>`observed_state`: str（可选，触发补偿的那次观察结果；unknown 时禁止 resubmit）<br>`detail`: dict（可选，随记录落库的上下文）<br>`resubmit`: bool（可选，默认 False；True 才调 supplier.rma_submit） |
+| `output_schema` | ③ 输出 | `record`: dict（rtv_compensation_record 那一行）<br>`seq`: int（本案第几次补偿，历史保留）<br>`resubmitted`: bool（有没有真的补提 RMA）<br>`rma`: dict（补提时供应商侧的回执，未补提为空 dict）<br>`biz_status`: str（compensated）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id`、`reason` |
+| `depends_tools` | ⑤ 依赖工具 | `supplier.rma_submit` |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 唯一会调写工具（supplier.rma_submit）的 RTV skill，且只在调用方显式 resubmit=True 时调；observed_state=unknown 时一律拒绝重发 —— 那笔申请可能已经受理，重发会造出第二笔。只写 rtv_compensation_record 与 biz_status -> compensated，credited / settled 在本 skill 里没有写入路径 |
+| `reuse_note` | ⑧ 复用说明 | 任何域的失败收口都该照此写：先落补偿记录再推状态，「问不出来」不许走补偿，写操作在不确定时一律不重发 |
+| `owner_roles` | ⑨ 归属角色 | `rtv_settlement` |
+
+### rtv.dispose @ 1.0.0
+
+实现：`RtvDisposeSkill` @ `maos/skills/builtin/rtv/dispose.py:50`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 按退货理由与合同条款裁定 credit/exchange/replacement，写 rtv_disposition 并推进到 disposed |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`within_return_window`: bool（可选，默认 True；False 走 RTV-R-05 不予受理）<br>`requested_action`: str（可选，申请方的诉求；与规则不一致时以规则为准）<br>`decided_by`: str（可选，裁定人/角色，缺省记 skill 名） |
+| `output_schema` | ③ 输出 | `case`: dict（rtv_case 当前那一行）<br>`return_action`: credit\|exchange\|replacement\|''（不予受理时为空串）<br>`rejected`: bool<br>`attempt`: int（本次裁定的序号，返工重裁保留历史）<br>`rationale`: list[dict]（每项带 rule_id，可核对）<br>`biz_status`: str（disposed 或 rejected）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只写 rtv_disposition 与 rtv_case.return_action，并把 biz_status 推到 disposed / rejected；credited 与 settled 在本 skill 里没有任何写入路径，递进去也会被守卫第 ① 道拒掉（本 skill 不是 AUTHORITATIVE_WRITER）。裁定依据全部来自本地规则表，不调任何外部工具 |
+| `reuse_note` | ⑧ 复用说明 | 任何「本地规则出结论」的一步都该照此写：结论挂编号、编号可查、历史结论保留、诉求不等于结论 |
+| `owner_roles` | ⑨ 归属角色 | `rtv_disposition` |
+
+### rtv.intake @ 1.0.0
+
+实现：`RtvIntakeSkill` @ `maos/skills/builtin/rtv/intake.py:43`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 受理退货诉求，定位源 PO 与收货单，建出 rtv_case（received）并挂业务对象引用 |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`po_id`: str（源采购订单号）<br>`po_version`: int（订单快照版本 —— 权威在 ERP，我们存的是读到的那一版）<br>`gr_id`: str（源收货单号）<br>`lines`: list[dict]：gr_line_no / sku / quantity_returned / unit_price / reason_code（理由码必在 RETURN_REASONS 里）<br>`currency`: str（可选，缺省 CNY） |
+| `output_schema` | ③ 输出 | `case`: dict（rtv_case 当前那一行）<br>`lines`: list[dict]（落库的 rtv_line）<br>`source`: dict（源单定位结果：po_id/po_version/gr_id 与各自的行数）<br>`amount_claimed`: str（按退货行算出来的自称应退金额，两位小数）<br>`refs`: list[dict]（挂上去的 rtv_business_ref）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id`、`po_id`、`gr_id`、`lines` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只建案不裁定：biz_status 一律由 create_case 落成 received、return_action 恒为空串，调用方指定不了；credited / settled 在本 skill 里没有任何写入路径。源单只读不写 —— supplier / purchase_order / goods_receipt 五张表复用 ap 域的定义，本域一行都不往里写 |
+| `reuse_note` | ⑧ 复用说明 | 任何「先把诉求定位到外部源单、再建本地案子」的域都该照此分层：指不指得回去是可重试的失败，该不该办是要裁定的结论 |
+| `owner_roles` | ⑨ 归属角色 | `rtv_intake` |
+
+### rtv.observe @ 1.0.0
+
+实现：`RtvObserveSkill` @ `maos/skills/builtin/rtv/observe.py:71`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 轮询供应商与 AP 取得终态回执，写 credit_note / rtv_settlement_observation，并（仅在此处）写 credited 与 settled |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`max_polls`: int（可选，默认 5） |
+| `output_schema` | ③ 输出 | `advice`: dict（终态回执，或到顶时的最后一次观察）<br>`system`: supplier\|ap（这一次问的是哪个外部系统）<br>`observed_state`: str（对方说的当前状态）<br>`poll_count`: int（问了几次 —— 终态是问出来的证据）<br>`reference`: str（可对账的外部单号：贷项通知单号或 AP 凭单引用）<br>`biz_status`: str（credited / settled 只可能由本 skill 写入）<br>`advanced`: bool（这次调用有没有推进状态）<br>`credited`: bool<br>`settled`: bool<br>`needs_compensation`: bool（供应商 disputed 或 AP 凭单 voided 时为 True）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | `supplier.credit_query`、`ap.adjust_query` |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 本 skill 是本域的 AUTHORITATIVE_WRITER —— 全系统唯一可写 credited / settled 的 actor，且写入必须同事务附带外部单号的回执（credit_note / rtv_settlement_observation），缺字段或回执说的不是这件事，由守卫抛 AuthoritativeFactViolation。非终态一律不推进；两个查询工具都是只读，本 skill 依赖清单里没有任何写工具 —— unknown 时重发申请那条路不存在 |
+| `reuse_note` | ⑧ 复用说明 | 任何「权威在外部系统」的终态都该照此写：先观察、再落库，两件事同一个事务；有几个外部权威就分几跳，不许由一个推定另一个 |
+| `owner_roles` | ⑨ 归属角色 | `rtv_settlement` |
+
+### rtv.reconcile @ 1.0.0
+
+实现：`RtvReconcileSkill` @ `maos/skills/builtin/rtv/reconcile.py:53`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 退货行 × 贷项通知单 × 到账三方对账，写 rtv_reconciliation；**不推进业务状态** |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`tolerance`: dict（可选，{'absolute': '0.01'}）<br>`reconciled_by`: str（可选，缺省记 skill 名） |
+| `output_schema` | ③ 输出 | `reconciled`: bool（三条腿齐备且金额在容差内才为 True）<br>`attempt`: int（本次对账序号，历史保留）<br>`amount_claimed`: str（我方按退货行算出来的应收）<br>`amount_credited`: str（库里贷项通知单的合计；没有则空串）<br>`creditable_amount`: str（对上时的应收金额，对不上时空串）<br>`supplier_status`: submitted\|acknowledged\|issued\|disputed\|unknown（问到的当前状态）<br>`settled_observed`: bool（库里有没有 AP 侧的 settled 观察）<br>`findings`: list[dict]（每项带 rule_id，可核对）<br>`biz_status`: str（**与调用前相同** —— 本 skill 不推进状态）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | `supplier.credit_query` |
+| `failure_policy` | ⑥ 失败策略 | retry |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 1 |
+| `security_boundary` | ⑦ 安全边界 | 只读三方数据、只写 rtv_reconciliation：不推进 biz_status（对账是推断，开票是观察），也写不动 credit_note / rtv_settlement_observation —— 那两张表只有 rtv.observe 写得动，从这里写会被 _common.execute 的 BypassedGuardError 拦下。供应商查询经 invoke_tool 留审计行 |
+| `reuse_note` | ⑧ 复用说明 | 任何「本地算出应得、外部确认实得」的域都该照此分：算出来的那一份永远不许直接当成对方认了的那一份 |
+| `owner_roles` | ⑨ 归属角色 | `rtv_reconcile` |
+
+### rtv.ship @ 1.0.0
+
+实现：`RtvShipSkill` @ `maos/skills/builtin/rtv/ship.py:40`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 下发退货运单并轮询承运商回执，写 rtv_shipment；仅在 delivered 时推进到 shipped |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`carrier`: str（承运商名，缺省 'demo-carrier'）<br>`address`: str（可选，退货收货地址，原样递给承运商）<br>`max_polls`: int（可选，默认 5） |
+| `output_schema` | ③ 输出 | `shipment`: dict（rtv_shipment 当前那一行）<br>`carrier_status`: created\|in_transit\|delivered\|exception<br>`poll_count`: int（问了几次 —— 送达是问出来的证据）<br>`delivered`: bool<br>`reshipped`: bool（False 表示复用了已有运单，没有重发）<br>`needs_compensation`: bool（承运商回 exception 时为 True）<br>`biz_status`: str（shipped 只可能由本 skill 在 delivered 时写入）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | `carrier.ship`、`carrier.track` |
+| `failure_policy` | ⑥ 失败策略 | retry |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 1 |
+| `security_boundary` | ⑦ 安全边界 | 承运商调用一律经 invoke_tool 留 ToolInvoked 审计行；已有非 exception 运单时只查不发，不重复下发写操作。只写 rtv_shipment 与 biz_status: disposed->shipped，credited / settled 在本 skill 里没有任何写入路径 |
+| `reuse_note` | ⑧ 复用说明 | 任何「交出去之后要等对方确认」的一步都该照此写：非终态一律不推进，写操作不重发，终态由查询得到而不是由发起动作推定 |
+| `owner_roles` | ⑨ 归属角色 | `rtv_logistics` |
+
 ### sheet.header_map @ 1.0.0
 
 实现：`SheetHeaderMapSkill` @ `maos/skills/builtin/sheet_header_map.py:193`
@@ -638,4 +746,4 @@
 - **回滚**：旧版本从不被覆盖，`get(name, "1.0.0")` 永远拿得到当年那一个。在册版本用 `versions(name)` 列（maos/skills/registry.py:84）。升级期间在跑的旧 Plan 因此行为可复现 —— 这是保留历史版本的**唯一**理由。
 - **质量评估**：每次调用落一条 `SkillInvoked`，`detail` 带 `status` / `duration_ms` / `input_digest` / `output_hash` / `usage`；按 `skill + version` 聚合 event_log 即可得到成功率与耗时分布，无需另建埋点。证据侧由 `scripts/verify.py` 第 1 项做哈希一致性重放。
 
-当前在册的 34 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。
+当前在册的 40 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。

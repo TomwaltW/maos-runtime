@@ -2270,3 +2270,11 @@ python3 scripts/gen_docs.py --check →  3 份文档与代码逐字节一致  ex
 | 2026-09-09 | p9 | `evidence/scenario-*`（50 份）与 `evidence/INDEX.json` 是**合并前主干态**，首行 sha 与当前 HEAD 对不上 | `scripts/verify.py` 的证据出处守卫（T105）会把它判成「不是当前代码跑出来的」 | 合并进主干后按合并态重跑 `scripts/make_evidence.py`（本机要先 `. ~/.maos.env`：证书与 key 都在里面），同前几轮的「证据束按合并态重跑」 |
 | 2026-09-09 | p9 | `scripts/gen_capability_matrix.py` 报「有授权无实现的工具：sandbox（2 个角色受影响）」 | 能力矩阵里两个角色声明了一个不存在的 ToolPort；脚本只记账不修 | T58 时代的老账，与本次整合无关；补 `sandbox` 的 ToolPort 或从档案里摘掉，二选一 |
 | 2026-09-09 | p9 | `track-a-prerebase` 分支的内容已全部在主干（产物判据核过） | 只是 `--no-merged` 列表里多一行噪音 | 随手 `git branch -D track-a-prerebase` |
+
+## RTV 并入后的遗留（2026-09-10）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-10 | p9 | **场景 12（RTV 五步 SOP）与 `test_rtv_flow.py` 没进主干**，文件在 `task-T64`（原名 `scenario_11.py`）与 `integrate/p9-t55-t83-with-rtv`（已改名 `scenario_12.py`、引用已随改）。替换清单在那份文件第 59 行起，共三段：① 业务对象层 -> `maos/domain/rtv/{objects,guard,fixtures}`；② 五个 ToolPort -> `maos/tools/rtv.py` 的 `Mock*` + `*_PORT`，**但 T62 的 entry 要 `supplier=/carrier=/ap_system=` 实例、T63 的 skill 只从 `ctx.extras["tools"]` 按名取、T64 的 `agents/rtv/_base.py::extras_of` 不注入工具** —— 需要一层绑定（把 mock 实例 partial 进 port 再注进 extras）；③ 六个 stub skill 整段删。另：`seed_case_inputs` 改走 `fixtures.seed_source_documents`（真 intake 从 ap 五张表定位供应商），`_tasks()` 的 payload 按真 skill 的形状改，`test_rtv_flow.py` 的 50 处 `s11.*` 跟改，`EXPECTED_POLLS_OK=3` 等断言要按 `MockSupplier(ack_after/issue_after)` 的语义重对 | RTV 域在主干上没有 `run.py` 演示入口；五个 Agent 只有池 / 档案 / 生成文档测试覆盖，没有端到端 | 单独一轨（建议 T112），估 2–4 小时，四方接口第一次一起跑，预期还会撞新接缝 |
+| 2026-09-10 | p9 | `skills/builtin/rtv/_common.py` 里 T63 时代的 fallback 还在：`_ensure_schema_fallback`、内嵌 `_SCHEMA_SQL`、`_AP_SCHEMA_PATH`、第三节「临时码表」（`RETURN_REASONS` / `RULES` 应换成 `maos/tools/rtv_codes.py`）| 全是走不到的死码，但两份 SQL / 两份码表并存，改一处漏一处不报错 | 与上一条同一轨做：文件抬头第 1、3 条写明了怎么删 |
+| 2026-09-10 | p9 | `scripts/gen_capability_matrix.py` 仍报「有授权无实现的工具：sandbox（2 个角色）」 | 同 09-09 那条 | 同 09-09 那条 |

@@ -1,9 +1,9 @@
-# generated at 2026-09-09T15:48:58.531510+00:00 from 22caba78bb5052f8331f0f537e9d9277e91b403f-dirty
+# generated at 2026-09-09T16:30:12.205039+00:00 from e0541e9c587292892617ea413e499bb434bda879-dirty
 {
   "summary": {
-    "roles": 24,
-    "skills_registered": 34,
-    "tool_ports": 11,
+    "roles": 29,
+    "skills_registered": 40,
+    "tool_ports": 16,
     "mcp_backed_tool_ports": 1,
     "roles_with_tool_drift": 2,
     "authorized_tools_without_impl": [
@@ -12,6 +12,14 @@
     "authorized_skills_without_impl": []
   },
   "tool_ports": [
+    {
+      "name": "ap.adjust_query",
+      "module": "maos.tools.rtv",
+      "backing": "local",
+      "owner": "rtv_settlement",
+      "purpose": "问一次 AP 系统的调整凭单 —— 全系统**唯一**能取得 settled 判据（款项到账）的途径",
+      "rate_limit": ""
+    },
     {
       "name": "bank.pay",
       "module": "maos.tools.ap",
@@ -26,6 +34,22 @@
       "backing": "local",
       "owner": "ap_treasury",
       "purpose": "问一次银行回单 —— 应付账款域**唯一**能取得付款终态的途径",
+      "rate_limit": ""
+    },
+    {
+      "name": "carrier.ship",
+      "module": "maos.tools.rtv",
+      "backing": "local",
+      "owner": "rtv_logistics",
+      "purpose": "向承运商下一张退货运单；返回建单回执，**永远不是终态**（建单不等于送达）",
+      "rate_limit": ""
+    },
+    {
+      "name": "carrier.track",
+      "module": "maos.tools.rtv",
+      "backing": "local",
+      "owner": "rtv_logistics",
+      "purpose": "问一次承运商轨迹 —— 退货业务状态 shipped/送达只能由这里的回执得到",
       "rate_limit": ""
     },
     {
@@ -98,6 +122,22 @@
       "backing": "local",
       "owner": "task-b",
       "purpose": "在容器沙箱里跑 workdir 的测试，产出结构化 test_report",
+      "rate_limit": ""
+    },
+    {
+      "name": "supplier.credit_query",
+      "module": "maos.tools.rtv",
+      "backing": "local",
+      "owner": "rtv_reconcile",
+      "purpose": "问一次供应商门户 —— 全系统**唯一**能取得 credited 判据（贷项通知单已开出）的途径",
+      "rate_limit": ""
+    },
+    {
+      "name": "supplier.rma_submit",
+      "module": "maos.tools.rtv",
+      "backing": "local",
+      "owner": "rtv_settlement",
+      "purpose": "向供应商门户递一条退货授权（RMA）申请；返回受理回执，**永远不是终态**",
       "rate_limit": ""
     }
   ],
@@ -327,6 +367,48 @@
       "latest": "1.0.0"
     },
     {
+      "name": "rtv.compensate",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "rtv.dispose",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "rtv.intake",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "rtv.observe",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "rtv.reconcile",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
+      "name": "rtv.ship",
+      "versions": [
+        "1.0.0"
+      ],
+      "latest": "1.0.0"
+    },
+    {
       "name": "sheet.header_map",
       "versions": [
         "1.0.0"
@@ -365,7 +447,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -392,7 +474,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -419,7 +501,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -467,7 +549,7 @@
         "resolved_count": 2,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 9,
+        "implemented_without_authorization_count": 14,
         "skills_without_impl": []
       }
     },
@@ -488,7 +570,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -515,7 +597,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -547,7 +629,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -595,7 +677,7 @@
         "resolved_count": 2,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 9,
+        "implemented_without_authorization_count": 14,
         "skills_without_impl": []
       }
     },
@@ -622,7 +704,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -672,7 +754,7 @@
           "sandbox"
         ],
         "authorized_without_impl_count": 1,
-        "implemented_without_authorization_count": 10,
+        "implemented_without_authorization_count": 15,
         "skills_without_impl": []
       }
     },
@@ -708,7 +790,7 @@
         "resolved_count": 1,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 10,
+        "implemented_without_authorization_count": 15,
         "skills_without_impl": []
       }
     },
@@ -735,7 +817,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -762,7 +844,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -803,7 +885,7 @@
         "resolved_count": 1,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 10,
+        "implemented_without_authorization_count": 15,
         "skills_without_impl": []
       }
     },
@@ -824,7 +906,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -851,7 +933,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -883,7 +965,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -930,7 +1012,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -978,7 +1060,7 @@
         "resolved_count": 2,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 9,
+        "implemented_without_authorization_count": 14,
         "skills_without_impl": []
       }
     },
@@ -1005,7 +1087,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -1032,7 +1114,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -1059,7 +1141,7 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     },
@@ -1080,7 +1162,195 @@
         "resolved_count": 0,
         "authorized_without_impl": [],
         "authorized_without_impl_count": 0,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "rtv_disposition",
+      "agent_id": "rtv-disposition",
+      "duty": "按退货理由与合同条款裁定 credit/exchange/replacement，并保留规则出处",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "rtv.dispose",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 16,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "rtv_intake",
+      "agent_id": "rtv-intake",
+      "duty": "受理退货诉求，定位源 PO 与收货单，建案并挂上业务对象引用",
+      "model_tier": "light",
+      "max_risk": "L",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "rtv.intake",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [],
+      "assembly": {
+        "resolved": [],
+        "resolved_count": 0,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 16,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "rtv_logistics",
+      "agent_id": "rtv-logistics",
+      "duty": "登记退货发运并取得承运商回执（shipped 只能由回执得到）",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "rtv.ship",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "carrier.ship",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.rtv"
+        },
+        {
+          "name": "carrier.track",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.rtv"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "carrier.ship",
+          "carrier.track"
+        ],
+        "resolved_count": 2,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 14,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "rtv_reconcile",
+      "agent_id": "rtv-reconcile",
+      "duty": "退货行 × 贷项通知单 × 到账三方对账，产出可核对的结论",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "rtv.reconcile",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "supplier.credit_query",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.rtv"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "supplier.credit_query"
+        ],
+        "resolved_count": 1,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 15,
+        "skills_without_impl": []
+      }
+    },
+    {
+      "role": "rtv_settlement",
+      "agent_id": "rtv-settlement",
+      "duty": "轮询取得终态回执（credited 与 settled 都只能由观察得到）",
+      "model_tier": "light",
+      "max_risk": "M",
+      "max_self_repair": 0,
+      "write_scope": [
+        "artifact"
+      ],
+      "allowed_skills": [
+        {
+          "name": "rtv.compensate",
+          "implemented": true,
+          "version": "1.0.0"
+        },
+        {
+          "name": "rtv.observe",
+          "implemented": true,
+          "version": "1.0.0"
+        }
+      ],
+      "allowed_tools": [
+        {
+          "name": "ap.adjust_query",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.rtv"
+        },
+        {
+          "name": "supplier.credit_query",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.rtv"
+        },
+        {
+          "name": "supplier.rma_submit",
+          "implemented": true,
+          "backing": "local",
+          "module": "maos.tools.rtv"
+        }
+      ],
+      "assembly": {
+        "resolved": [
+          "ap.adjust_query",
+          "supplier.credit_query",
+          "supplier.rma_submit"
+        ],
+        "resolved_count": 3,
+        "authorized_without_impl": [],
+        "authorized_without_impl_count": 0,
+        "implemented_without_authorization_count": 13,
         "skills_without_impl": []
       }
     },
@@ -1116,7 +1386,7 @@
           "sandbox"
         ],
         "authorized_without_impl_count": 1,
-        "implemented_without_authorization_count": 11,
+        "implemented_without_authorization_count": 16,
         "skills_without_impl": []
       }
     }

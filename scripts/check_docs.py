@@ -162,6 +162,16 @@ ALLOW_MISSING: dict[str, str] = {
         "同类：docs/BACKLOG.md 里 claim/refund 两域 SQL 样板去重那一条提议的下沉落点，"
         "原文是「它就该下沉成 … 这样的基础设施」，属待建，且明写「上第三个域之前再决定」",
     "scripts/gen_room_transcript.py": "BACKLOG 提议收编的脚本，尚未建",
+    "maos/tests/test_refund_agent_shell.py":
+        "docs/five-roles-accuracy-test-plan.md 第 2 步的待建产出（L2 壳守卫，"
+        "A-1..A-7 参数化跑五岗）",
+    "maos/tests/test_roundtable_fidelity_live.py":
+        "同一份方案第 4 步的待建产出（L3 真模型忠实度）；_live 后缀沿用 "
+        "test_pg_store_live.py 的惯例，没有外部依赖就 skip",
+    "scripts/roundtable_fidelity_report.py":
+        "同上，第 4 步的待建报告生成器，产出 evidence/fidelity/<日期>/",
+    "maos/tests/test_refund_cross_stage.py":
+        "同一份方案第 5 步的待建产出（L4 端到端联判）",
     # —— 反例：这个文件**存在**才是 bug ——
     "maos/agents/_sandbox_stub.py":
         "docs/parallel/contracts.md 的反例（禁止另起本地桩），它不存在才是对的",

@@ -1675,6 +1675,15 @@ T27–T30 并轨（基线 `d98b9d1`，四轨源码零交集，只共享两份账
 | 2026-09-01 | P9 | 两份账本六轨各自尾部追加，逐轨合并时五次冲突 | 脚本化解冲突：两段全保留，HEAD 段在前、分支段在后 | 纯追加型冲突，两边内容互不重叠；解完核验 `## task-T55`..`T60` 六个小节齐全、零冲突标记残留 |
 | 2026-09-01 | P9 | `providers` / `routing` / `capability.profiles` 三个模块整合后生产侧仍零引用 | 如实留着，不在整合期顺手接线 | 「只造零件不接线」是派单定的范围，三轨的 BACKLOG 各自记了这条。整合期擅自接线等于把一轨的活塞进合并提交里，出问题时分不清是谁的 |
 
+## task-T64（RTV 域五个薄壳 Agent 与场景 11）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-02 | P9 | 契约 C-R7 给 `rtv_settlement` 两个 skill（`rtv.observe` + `rtv.compensate`），可「该不该补偿」是一次业务判定，写进 `run()` 就破了薄壳 | **`run()` 只调 `rtv.observe`；`rtv.compensate` 由编排层用 `RtvSettlementAgent.identity` 经 `SkillInvoker` 发起**（`scenario_11.py::compensate`） | 补偿是**人做出决定之后**的动作，与 scenario_10 的口径一致。但**不另起第六个角色**：ap 域那条 `owner-role-unknown: ap.compensate` 就是「为补偿另造一个 identity」留下的；C-R7 已经把权限放进观察岗白名单，复用它既保住审计链（`SkillInvoked` 照落），又让「补偿是谁做的」只有一个答案 |
+| 2026-09-02 | P9 | 派单 §5.5 第 3 条要「五个 Agent 模块里不出现 `credited` / `settled` 字面量」，可 C-R7 的 `rtv_settlement` **duty 原文**里就带着这两个词，且一字不许改 | **扫描时剔掉 `duty=` 那一整行，其余全扫**；duty 的字面量另由 `test_identity_matches_frozen_contract_c_r7` 逐字比对 | 两条判据各守一件事，合起来没有缺口：谁把判定塞进 duty 那行会被逐字比对抓到，塞在别处会被文本扫描抓到。若改成「允许出现但不许比较」，判据就得去解析语法，而那种判据自己会先出 bug |
+| 2026-09-02 | P9 | 五轨互不 import（C-R8），T61/T62/T63 的产出不在基线里，场景要不要跑真链路 | **契约级 stub 写在 `scenario_11.py` 内部**：表结构照 C-R1 抄、守卫照 C-R3 抄、六个 skill 的 name/version/owner_roles/depends_tools 照 C-R4 逐字填、五个工具名照 C-R5 | 注册表主键与真实现完全一致，整合期删掉 stub 类即可，调用点零改动 —— 这正是本轨要证明的「换域只换 Skill / ToolPort / 业务对象」。stub 放在场景文件内而不是另起模块：另起一个 `maos/domain/rtv_stub/` 会和 T61 的真目录撞名，且整合期容易漏删 |
+| 2026-09-02 | P9 | 六个 stub skill 用 `@register_skill` 在 **import 时**注册进全局 `SKILL_REGISTRY`，会让 `check_consistency()` 的结果随测试执行顺序变化 | **仍用 import 时注册，把顺序依赖如实记进 BACKLOG，不为了让快照稳定而改成延迟注册** | 延迟注册能让 `test_capability_profiles` 的快照稳定，但代价是「投放即注册」这条口径在本域不成立，整合期换真 skill 时调用点就不是零改动了 —— 而零改动正是本轨要买的东西。顺序依赖是 T58 那份快照对「进程级注册表」形状的不适应，该修的是那份快照的口径，不是本域的注册方式 |
+| 2026-09-02 | P9 | 新增 5 个角色打红 9 条存量测试，涉及 6 个**本轨白名单外**的文件 | **一处都不改，停手报告人类**（CLAUDE.md「不计入上限的四类」第 4 条） | 其中 `docs/agent-identity.md` 派单 §0.1 明令不许跑生成器、`evidence/capability-matrix.json` 禁止手改（铁律 3），这两处本轨**无论如何都绿不了**；剩下四处若自行刷数，会与 T61/T62/T63 在同一批文件上撞车。明细与两条可选路径见 BACKLOG `## task-T64` |
 ## task-T65（RTV SOP 文档与域可移植性论证，2026-09-02）
 
 | 日期 | Phase | 情境 | 选择 | 理由 |

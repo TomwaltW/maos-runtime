@@ -392,7 +392,7 @@ def _loads(raw, default=None):
         return default
 
 
-def collect_result(conn: sqlite3.Connection, *, scenario: int, exit_code: int,
+def collect_result(conn: sqlite3.Connection, *, scenario: int | str, exit_code: int,
                    wall_ms: int, provenance: dict[str, str]) -> dict:
     """终态 + 关键指标 + business_outcome。
 
@@ -720,12 +720,16 @@ def scenario_module_exists(n: int) -> bool:
     return importlib.util.find_spec(f"maos.flows.scenario_{n}") is not None
 
 
-def write_bundle(db_path: str, out_dir: str, *, scenario: int, exit_code: int,
+def write_bundle(db_path: str, out_dir: str, *, scenario: int | str, exit_code: int,
                  wall_ms: int, log: str, sha: str, secrets: dict[str, str]) -> dict:
     """把一个已经跑完的库写成一套证据文件，返回 trace bundle。
 
     与 ``build_scenario`` 分开是为了让测试能拿一个手搭的 fixture 库直接喂进来：
     否则测「第 2/3 项的正负例」就得先有退款场景，而那是别人的轨。
+
+    ``scenario`` 只是 ``result.json`` 里的一个标签，不参与任何判定，所以收 ``str``
+    —— ``build_contrast`` 一直传的就是 ``contrast-<组>``，``make_case_bundle.py``
+    传 ``case-<路径>``。注解从前写死 ``int`` 是与实际调用方不符的那一处。
     """
     from maos.obs import trace as trace_mod
 
@@ -901,38 +905,66 @@ def scan_aux_bundles(out_root: str) -> list[dict]:
 
     每个文件顺带记两件读者关心的事：出处首行有没有（``sourced``），
     以及它是不是字节扫描核验不了的图像（``secret_scan`` 见 ``scan_for_secrets``）。
+
+    **递归一层**（T114）：``evidence/case-real-01/`` 那样的束，文件全在
+    ``<束>/<路径>/`` 里，顶层只有一份 ``INDEX.json``。只登记顶层文件的话，
+    索引会把一个装着四条路径、二十多个文件的目录记成「文件 1」—— 漏登记了
+    整整四个子目录，而它自称是索引。只递归一层不是偷懒：再深一层是
+    ``scenario-*/runtime-*`` 那种由 ``produced`` 自己带出来的结构，
+    在这里重复登记会让同一份产物在索引里出现两次。
     """
     aux: list[dict] = []
     for name in sorted(os.listdir(out_root)):
         path = os.path.join(out_root, name)
         if not os.path.isdir(path) or name.startswith("scenario-") or name.startswith("."):
             continue
-        files = []
-        for fn in sorted(os.listdir(path)):
-            fp = os.path.join(path, fn)
-            if not os.path.isfile(fp):
+        files = _aux_files(path)
+        children = []
+        for child in sorted(os.listdir(path)):
+            child_path = os.path.join(path, child)
+            if not os.path.isdir(child_path) or child.startswith("."):
                 continue
-            unverifiable = is_unverifiable(fn)
-            sourced = None
-            if not unverifiable:
-                try:
-                    with open(fp, encoding="utf-8") as fh:
-                        sourced = fh.readline().startswith(HEADER_PREFIX)
-                except (OSError, UnicodeDecodeError):
-                    sourced = None
-            files.append({
-                "name": fn,
-                "bytes": os.path.getsize(fp),
-                "sourced": sourced,
-                "secret_scan": "无法核验（图像，密钥是像素不是字节）" if unverifiable else "可扫",
+            child_files = _aux_files(child_path)
+            children.append({
+                "name": child,
+                "dir": os.path.relpath(child_path, ROOT),
+                "file_count": len(child_files),
+                "files": child_files,
             })
-        aux.append({
+        entry = {
             "name": name,
             "dir": os.path.relpath(path, ROOT),
-            "file_count": len(files),
+            "file_count": len(files) + sum(c["file_count"] for c in children),
             "files": files,
-        })
+        }
+        if children:
+            entry["sub_bundles"] = children
+        aux.append(entry)
     return aux
+
+
+def _aux_files(directory: str) -> list[dict]:
+    """一个目录里的文件清单（不递归）。``scan_aux_bundles`` 的逐文件那一半。"""
+    files = []
+    for fn in sorted(os.listdir(directory)):
+        fp = os.path.join(directory, fn)
+        if not os.path.isfile(fp):
+            continue
+        unverifiable = is_unverifiable(fn)
+        sourced = None
+        if not unverifiable:
+            try:
+                with open(fp, encoding="utf-8") as fh:
+                    sourced = fh.readline().startswith(HEADER_PREFIX)
+            except (OSError, UnicodeDecodeError):
+                sourced = None
+        files.append({
+            "name": fn,
+            "bytes": os.path.getsize(fp),
+            "sourced": sourced,
+            "secret_scan": "无法核验（图像，密钥是像素不是字节）" if unverifiable else "可扫",
+        })
+    return files
 
 
 def _flag_suffix(info: dict) -> str:

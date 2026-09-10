@@ -150,8 +150,18 @@ class CodeRepoPatchSkill(Skill):
             raise ValueError(f"补丁集应为 JSON 对象，实际 {type(patch).__name__}")
 
         files = patch.get("files") or []
-        if not files:
-            raise ValueError("补丁集为空")
+        summary = patch.get("summary")
+        has_summary = isinstance(summary, str) and summary.strip()
+        if not files and not has_summary:
+            # **空补丁集 + 空 summary** 才是错误（模型什么都没产出）。空补丁集本身
+            # 是一个**合法结论**：定位/调查类任务的正确答案完全可能是「查过了，
+            # 没有要改的」，而验收标准往往就是这么写的（docs/BACKLOG.md:2293 实测：
+            # 模型逐字照做，反被这一句判成失败，配了 key 的机器上恒红）。口径与
+            # `agents/refund/policy_agent.py` 的模块 docstring 一致：「裁定为 reject
+            # 时不产出空产物、也不 failed —— 那是一个有效的业务结论，不是一次执行失败」。
+            raise ValueError("补丁集为空，且没有 summary 说明查了什么 —— "
+                             "分不清「查过了，没有要改的」与「模型没产出」")
+        patch["files"] = files      # 显式落成空 list：Gate 的 schema 闸查的是这个键在不在
         # diff 与 path 同等必校：output_schema 声明的是 {path:str,diff:str}，
         # 而代价落在零模型补偿链 —— artifacts.py 反向打补丁时拿不到 diff，
         # 补偿会「成功」地什么都没还原，是静默失败，不是报错。

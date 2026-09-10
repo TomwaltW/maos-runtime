@@ -238,7 +238,7 @@
 
 ### `sandbox.git_apply`
 
-声明：`maos/tools/sandbox.py:706`（`GIT_APPLY_PORT`）　入口实现：`maos/tools/sandbox.py:422`
+声明：`maos/tools/sandbox.py:716`（`GIT_APPLY_PORT`）　入口实现：`maos/tools/sandbox.py:422`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -247,14 +247,14 @@
 | `entry` | ③ 入口 | `maos.tools.sandbox.sandbox_git_apply` |
 | `params_schema` | ④ 入参 | `patch_set`: dict<br>`workdir`: str<br>`reverse`: bool（keyword-only）<br>`check_only`: bool（keyword-only） |
 | `returns_schema` | ⑤ 出参 | `ok`: bool<br>`error`: {stage,path,hunk,message} \| None |
-| `failure_modes` | ⑥ 失败形态 | · validate: 补丁集为空或 files 项缺 path/diff<br>· prepare: workdir 不存在或不是目录<br>· path_check: 触碰 infra/.github/secrets/tests 任一段<br>· conftest_guard: 任意层级的 conftest.py 新增或修改<br>· path_escape: 规范化后落在 workdir 之外<br>· apply: git apply 拒绝（error.hunk 带 git 报的行号） |
+| `failure_modes` | ⑥ 失败形态 | · validate: files 不是 list、空补丁集且没有 summary、或 files 项缺 path/diff<br>· prepare: workdir 不存在或不是目录<br>· path_check: 触碰 infra/.github/secrets/tests 任一段<br>· conftest_guard: 任意层级的 conftest.py 新增或修改<br>· path_escape: 规范化后落在 workdir 之外<br>· apply: git apply 拒绝（error.hunk 带 git 报的行号） |
 | `security_boundary` | ⑦ 安全边界 | 补丁只落在传入的 workdir 内；声明路径与 diff 正文里的路径都要过三条校验（受保护目录分段相等 / conftest.py 任意层级禁改 / workdir 内含性），任一条不过即拒，不重试、不降级 |
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-b |
 
 ### `sandbox.pytest_run`
 
-声明：`maos/tools/sandbox.py:730`（`PYTEST_RUN_PORT`）　入口实现：`maos/tools/sandbox.py:619`
+声明：`maos/tools/sandbox.py:740`（`PYTEST_RUN_PORT`）　入口实现：`maos/tools/sandbox.py:629`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

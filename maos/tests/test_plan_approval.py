@@ -797,12 +797,20 @@ def test_every_approval_event_hangs_on_a_span_tree(tmp_path):
 # ======================================================================
 # 9. 缺省零影响：不装它，什么都不变
 # ======================================================================
-def test_nothing_in_production_imports_the_approval_queue():
-    """没有任何生产模块 import 它 —— 这就是「缺省路径逐字节不变」的机器判据。
+#: 允许 import 计划审批队列的生产模块 —— **穷举**，多一个就红。
+#:
+#: 从前这里是空集合（「没有任何生产模块 import 它」）。T114 把停靠点接进了
+#: `custom_case.run_payload`，于是这条断言按它当初写下的意思红了一次，
+#: 而红的那一刻要回答的问题正是它逼出来的：**哪条链路从此要过人工审批**。
+#: 答案是自定义 case 那一条，且只在显式给了 `plan_approval=` 时生效 ——
+#: 缺省仍是 `create_plan` 紧接着 `start_plan`，一条审批事件都不落
+#: （机器判据在 `maos/tests/test_make_case_bundle.py` 的缺省零影响那一节）。
+#: 名单**只放这一个**：再有别的链路要接，仍然要在这里明确写下来。
+APPROVAL_QUEUE_IMPORTERS = frozenset({"maos/flows/custom_case.py"})
 
-    真要接进某个场景，是整合期主会话的事；那一天这条断言会红，红得应该 ——
-    它会逼人明确回答「哪条链路从此要过人工审批」，而不是让它悄悄生效。
-    """
+
+def test_only_the_declared_flow_imports_the_approval_queue():
+    """import 它的生产模块必须在 :data:`APPROVAL_QUEUE_IMPORTERS` 里 —— 穷举，不是白名单式放宽。"""
     offenders = []
     for path in sorted(MAOS_PKG.rglob("*.py")):
         if "tests" in path.parts:
@@ -815,9 +823,14 @@ def test_nothing_in_production_imports_the_approval_queue():
             elif isinstance(node, ast.ImportFrom) and not node.level:
                 module = node.module or ""
                 names = {module} | {f"{module}.{a.name}" for a in node.names}
-            if any(n.startswith("maos.runtime.plan_approval") for n in names):
-                offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
-    assert not offenders, f"计划审批被接进了生产路径：{offenders}"
+            if not any(n.startswith("maos.runtime.plan_approval") for n in names):
+                continue
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if rel not in APPROVAL_QUEUE_IMPORTERS:
+                offenders.append(f"{rel}:{node.lineno}")
+    assert not offenders, (
+        f"计划审批被接进了名单外的生产路径：{offenders}；"
+        f"要接就先把它写进 APPROVAL_QUEUE_IMPORTERS，并说清哪条链路从此要过人工审批")
 
 
 def test_a_plan_run_without_the_queue_logs_none_of_the_four_events():

@@ -1131,7 +1131,16 @@ def check_cost_attribution(cases: list[Case]) -> Check:
 #: 实跑时人工采集的，见 ``evidence/room/README.md`` 开头），对着它印
 #: ``make_evidence.py``，照做的人会发现那条命令根本不产这个目录 —— 提示指向一条
 #: 解决不了它的命令，比没有提示更坏（同 ``_DB_HINTS`` 对 ``scenario-R5`` 的处理）。
+#: 单案例束的目录前缀（`evidence/case-real-01/`，T114）。真模型那一跑出到
+#: ``<路径>-live/``，**核验一律跳过**：真模型每跑一次说的话都不一样，拿它当重放
+#: 比对的基准，第 4 项 trace-tree 会在没有任何 bug 的情况下红。
+CASE_BUNDLE_PREFIX = "case-"
+LIVE_SUFFIX = "-live"
+
 _PROVENANCE_HINT_DEFAULT = "在干净工作区上重跑 python3 scripts/make_evidence.py"
+#: 单案例束（T114）由另一条命令产。见 `provenance_hint`。
+_PROVENANCE_HINT_CASE = (
+    "在干净工作区上重跑 python3 scripts/make_case_bundle.py --all-paths")
 _PROVENANCE_HINTS = {
     "room": "在干净工作区上按 docs/matrix-room-runbook.md 重跑真房间"
             "（本束无生成器，截图与逐字记录靠人工采集）",
@@ -1174,7 +1183,14 @@ def touched_outside_evidence(base: str, head: str, root: str | None = None) -> b
 
 
 def provenance_hint(bundle: str) -> str:
-    """``bundle`` 这一束过期了该往哪走 —— 出处核查唯一的「下一步动作」。"""
+    """``bundle`` 这一束过期了该往哪走 —— 出处核查唯一的「下一步动作」。
+
+    单案例束（``case-*`` 与它的路径子目录）不由 ``make_evidence.py`` 产，指着那条
+    命令的人照做会拿到一模一样的报错再撞一次 —— 提示指向一条解决不了它的命令，
+    比没有提示更坏（口径同 ``_DB_HINTS`` 对 ``scenario-R5`` 的处理）。
+    """
+    if bundle.startswith(CASE_BUNDLE_PREFIX):
+        return _PROVENANCE_HINT_CASE
     return _PROVENANCE_HINTS.get(bundle, _PROVENANCE_HINT_DEFAULT)
 
 
@@ -1251,6 +1267,14 @@ def provenance_anchors(evidence_root: str) -> list[tuple[str, str]]:
         aux_index = os.path.join(directory, "INDEX.json")
         if os.path.exists(aux_index):
             anchors.append((name, aux_index))
+            # 单案例束（T114）**每条路径再取一次锚**：四条路径是四次独立的跑，
+            # 完全可能出自不同的 sha（补产一条时尤其如此）。只认束顶层那一份的话，
+            # 「其中一条路径是旧代码跑的」这件事一个字都不会说出来。
+            if name.startswith(CASE_BUNDLE_PREFIX):
+                for child in sorted(os.listdir(directory)):
+                    child_index = os.path.join(directory, child, "INDEX.json")
+                    if os.path.exists(child_index):
+                        anchors.append((f"{name}/{child}", child_index))
             continue
         for child in sorted(os.listdir(directory)):
             path = os.path.join(directory, child)
@@ -1397,6 +1421,8 @@ def check_case_outcome(cases: list[Case]) -> Check:
                 continue
             for row in reported:
                 _check_one_outcome(chk, case, plan_id, row)
+    for case in cases:
+        _check_case_bundle(chk, case)
     if chk.total == 0:
         # 不走 `_idle_skip`：它的补跑提示是 RAG 专用的（指向 scenario-R5），
         # 而四判据的素材在退款场景那两束里，指错方向的提示比没有提示更坏。
@@ -1404,6 +1430,64 @@ def check_case_outcome(cases: list[Case]) -> Check:
                  "四判据这一项判据一次都没执行 —— 跑 python3 scripts/make_evidence.py "
                  "产出场景 6/7 两束")
     return chk
+
+
+#: 单案例束比场景束多两份文件，本项对它们**扩覆盖**（T114）。不新增第 11 项 ——
+#: 分母仍是 10，`RESULT` 的形状不变（跨轨契约与 `docs/expected-metrics.json` 都写着 10）。
+_CASE_SKILLS = "skills.json"
+_CASE_HITL = "hitl-trace.json"
+
+#: 人做的那几类动作。**操作者非空**是它们够格叫 HITL 的唯一判据 ——
+#: 一条查不出是谁做的「人工审批」，与没有人工审批是一回事。
+_HUMAN_KINDS = frozenset({"plan_approval", "task_approval", "compensation"})
+
+
+def _check_case_bundle(chk: Check, case: Case) -> None:
+    """单案例束的两条扩覆盖判据。不是这种束就一条都不判（场景束没有这两个文件）。
+
+    1. **`skills.json` 里每个 `present=true` 的 `invocation_id` 都在 `event_log` 里回查得到。**
+       失败意味着：那份清单自称「这 8 个 skill 都跑过」，而其中某一条在库里根本
+       没有对应的调用记录 —— 清单是编的。这一条与第 1 项 hash-integrity 不同：
+       那个查的是 trace 与库对不对得上，这个查的是**摘要文件**与库对不对得上。
+    2. **`hitl-trace.json` 里每条人做的动作都带得出操作者。**
+       失败意味着：「谁批的」这一问答不出来，而返工 / HITL Trace 正是评委第二条
+       建议要看的东西。机器判的返工与转人工出口不在判据内（它们本来就没有操作者，
+       如实记 `actor="gate"`）。
+    """
+    skills_path = os.path.join(case.directory, _CASE_SKILLS)
+    hitl_path = os.path.join(case.directory, _CASE_HITL)
+    if not (os.path.exists(skills_path) and os.path.exists(hitl_path)):
+        return
+
+    recorded = {str(_loads(r[0], {}).get("invocation_id") or "")
+                for r in case.conn.execute(
+                    "SELECT detail FROM event_log WHERE event_type='SkillInvoked'")}
+    skills = load_evidence_json(skills_path, expect_sha=case.expect_sha)
+    listed = list(skills.get("contract_skills") or []) + \
+        list(skills.get("compensation_skills") or [])
+    for row in listed:
+        if not isinstance(row, dict) or not row.get("present"):
+            continue
+        invocation = str(row.get("invocation_id") or "")
+        label = f"{case.name} skill={row.get('skill')}"
+        if not invocation:
+            chk.bad(f"{label}: 自称跑过却没有 invocation_id —— 回查不到的调用不叫证据")
+            continue
+        if invocation not in recorded:
+            chk.bad(f"{label}: invocation_id={invocation} 在 event_log 里查不到 —— "
+                    f"skills.json 自称这个 skill 跑过，库里没有它的调用记录")
+            continue
+        chk.ok()
+
+    hitl = load_evidence_json(hitl_path, expect_sha=case.expect_sha)
+    for row in list(hitl.get("trace") or []):
+        if not isinstance(row, dict) or row.get("kind") not in _HUMAN_KINDS:
+            continue
+        if not str(row.get("operator") or "").strip():
+            chk.bad(f"{case.name} seq={row.get('seq')}: {row.get('event_type')} "
+                    f"是人做的动作却没有操作者 —— 「谁批的」答不出来")
+            continue
+        chk.ok()
 
 
 def _check_one_outcome(chk: Check, case: Case, plan_id: str, row: dict) -> None:
@@ -1494,6 +1578,40 @@ def resolve_db(evidence_root: str, scenario_dir: str, db_arg: str | None) -> str
     return os.path.join(scenario_dir, "maos.db")
 
 
+#: 一个目录够不够格当核验对象。三样缺一不可 —— 少了库就没有任何东西可重放，
+#: 少了 trace / result 就没有「证据说的」那一侧可比。
+_CASE_FILES = ("trace.json", "result.json", "maos.db")
+
+
+def _is_bundle(directory: str) -> bool:
+    return all(os.path.exists(os.path.join(directory, f)) for f in _CASE_FILES)
+
+
+def case_bundle_dirs(evidence_root: str) -> tuple[list[str], list[str]]:
+    """单案例束里够格核验的路径子目录，返回 ``(收进来的, 跳过的 -live)``。
+
+    **以路径子目录为单位，不以束为单位**：四条路径各有自己的库，合成一个 case
+    会让「失败路径全库无到账观察」这类判据读到顺利路径的数据 —— 而那种串味
+    不会报错，只会让判据悄悄变松。
+    """
+    taken: list[str] = []
+    skipped: list[str] = []
+    for name in sorted(os.listdir(evidence_root)):
+        bundle = os.path.join(evidence_root, name)
+        if not name.startswith(CASE_BUNDLE_PREFIX) or not os.path.isdir(bundle):
+            continue
+        for child in sorted(os.listdir(bundle)):
+            path = os.path.join(bundle, child)
+            if not os.path.isdir(path) or child.startswith("."):
+                continue
+            if child.endswith(LIVE_SUFFIX):
+                skipped.append(os.path.relpath(path, evidence_root))
+                continue
+            if _is_bundle(path):
+                taken.append(path)
+    return taken, skipped
+
+
 def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
     if not os.path.isdir(evidence_root):
         raise VerifyError(f"证据目录不存在: {evidence_root}")
@@ -1507,6 +1625,7 @@ def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
     dirs = [directory for scenario in dirs for directory in [scenario, *sorted(
         os.path.join(scenario, child) for child in os.listdir(scenario)
         if child.startswith("runtime-") and os.path.isdir(os.path.join(scenario, child)))]]
+    dirs += case_bundle_dirs(evidence_root)[0]
     expect_sha = evidence_sha(evidence_root)
     cases = []
     for d in dirs:
@@ -1570,7 +1689,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.domains:
         results.extend(domain_checks(cases))
     try:
-        return render(results, cases, args.json)
+        code = render(results, cases, args.json)
+        # 跳过的束**要点名**：静默跳过等于谎报（同文件头「SKIP 的纪律」）。
+        # `--json` 那一路不印 —— 那个模式的 stdout 是给机器解析的。
+        skipped_live = case_bundle_dirs(args.evidence)[1] if os.path.isdir(args.evidence) else []
+        if skipped_live and not args.json:
+            print(f"未核验（真模型束，重放比不了）：{', '.join(skipped_live)}")
+        return code
     finally:
         for c in cases:
             c.conn.close()

@@ -25,7 +25,9 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import logging
 import uuid
 from pathlib import Path
 from typing import Any
@@ -40,9 +42,12 @@ from maos.flows import contrast
 from maos.flows.common import build, dump, run_until_settled
 from maos.model.client import Tier, select_model_client
 from maos.runtime.gate import HumanApprovalQueue
+from maos.runtime.plan_approval import PlanApprovalQueue
 from maos.skills.builtin.refund import _common as C
 from maos.skills.builtin.refund import snapshot_check
 from maos.skills.invoker import SkillInvoker
+
+log = logging.getLogger("maos.custom_case")
 from maos.tools import order as order_tools
 from maos.tools.gateway import MockGateway
 
@@ -246,6 +251,205 @@ def _reject_case(store, tenant_id: str, case_id: str, who: str) -> dict | None:
         reason=f"{who} 驳回本次退款申请")
 
 
+# ------------------------------------------------------------------- 圆桌五岗
+#: 圆桌上真正会在**本案的库里**留痕的两个 skill（跨轨契约 §G 的第 2、4 个）。
+#: `maos/roundtable/stages.py` 调它们走的是一个用完即弃的 `:memory:` 库
+#: （`_memory_store()`），于是房间里说得出「证据齐 / 风险低」，而这一跑的
+#: `event_log` 里一条 `SkillInvoked` 都没有 —— 8 个 skill 只数得到 6 个。
+SEAT_SKILLS = (("refund_evidence", "refund.evidence_check"),
+               ("refund_risk", "refund.risk_screen"))
+
+
+class _SilentVoice:
+    """一张只记账、不进房间的嘴，顶 `hiclaw.room_voices.Voice` 的位（跨轨契约 §1.3）。
+
+    不复用 `scripts/room_team_smoke.py` 的 `_LocalVoices`：那是脚本层的件，
+    `maos/**` 不许把 `scripts/` 当上游（依赖方向同 `obs/trace.py` 的规矩）。
+    """
+
+    def __init__(self, agent_id: str, title: str, said: list) -> None:
+        self.agent_id, self.title, self._said = agent_id, title, said
+        self.user_id, self.own_identity = "", False
+
+    def say(self, text: str) -> None:
+        self._said.append({"agent_id": self.agent_id, "title": self.title, "text": text})
+
+    def say_with_actions(self, text: str, actions) -> None:      # noqa: ANN001
+        """按钮不进逐字记录 —— 它不是这一岗说的话（口径同 `team._say`）。"""
+        self.say(text)
+
+
+class _SilentVoices:
+    """`VoiceSet` 的假件：任何 agent_id 都给得出一张嘴，**永不抛**（同真件语义）。"""
+
+    def __init__(self, titles: dict | None = None) -> None:
+        self._titles = dict(titles or {})
+        self.said: list[dict] = []
+
+    def voice(self, agent_id: str) -> _SilentVoice:
+        return _SilentVoice(agent_id, self._titles.get(agent_id, agent_id), self.said)
+
+    def bot_users(self) -> frozenset:
+        return frozenset()
+
+    def close(self) -> None:
+        return None
+
+
+def build_roundtable(model, voices, store):                       # noqa: ANN001
+    """探参构造 `RefundRoundtable`：认 `store=` 就传，不认就不传。
+
+    写法照 `hiclaw/room_ingress.py::_build_team`。**非探不可**：圆桌落库（T113）
+    与本模块是两条并行的轨，直接传 `store=` 在它并入之前是 `TypeError`，
+    而那一刻的症状是「圆桌起不动」—— 拿一个可选参数换掉整段圆桌，比不传更糟。
+    """
+    from maos.roundtable.team import RefundRoundtable
+
+    params = inspect.signature(RefundRoundtable).parameters
+    kwargs: dict[str, Any] = {"ledger_loader": lambda: {}}
+    takes_store = "store" in params
+    if takes_store:
+        kwargs["store"] = store
+    else:
+        log.info("圆桌引擎不认 store= 参数（T113 尚未并入），本轮圆桌事件不落库")
+    return RefundRoundtable(model, voices, **kwargs), takes_store
+
+
+def _seat_skill_traces(store, payload: dict, seed: dict, rules: list[dict],
+                       *, plan_id: str, trace_id: str, requested_at: str) -> list[dict]:
+    """让证据岗与风险岗那两个只读 skill 在**真库**上各留一次痕。
+
+    入参形状逐字照 `maos/roundtable/stages.py::_evidence_check` / `_risk_screen`
+    —— 两处拼法不同源的症状是「房间说缺照片、束里说证据齐」，而两边各自都不报错。
+    这一步**不改任何业务状态**：两个 skill 的 `write_scope` 都只有 artifact。
+    """
+    from maos.roundtable.team import identity_of
+
+    rows = [r for r in (payload.get("order_snapshot") or [])
+            if isinstance(r, dict) and str(r.get("order_id")) == str(seed["order_id"])]
+    order = rows[0] if rows else {}
+    facts = json.loads(order.get("payload_json") or "{}") if order else {}
+    customer_id = str(facts.get("customer_id") or "")
+    all_orders = [r for r in (payload.get("order_snapshot") or []) if isinstance(r, dict)]
+    kin = [r for r in all_orders
+           if str(json.loads(r.get("payload_json") or "{}").get("customer_id") or "")
+           == customer_id] if customer_id else ([order] if order else [])
+
+    inputs = {
+        "refund.evidence_check": {
+            "case_seed": seed,
+            "customer_evidence": payload.get("customer_evidence") or [],
+            "rules": list(rules),
+            "order_facts": {k: facts[k] for k in ("logistics", "qc_report") if k in facts},
+            "requested_at": requested_at,
+        },
+        "refund.risk_screen": {
+            "case_seed": seed, "order": order, "customer_orders": kin,
+            "refund_history": payload.get("refund_history") or [],
+            "requested_at": requested_at,
+        },
+    }
+    out = []
+    for role, skill in SEAT_SKILLS:
+        res = SkillInvoker(identity_of(role), store).invoke(
+            skill, inputs[skill],
+            extras={"plan_id": plan_id, "trace_id": trace_id, "task_id": ""})
+        out.append({"skill": skill, "role": role, "status": res.status,
+                    "error": res.error, "invocation_id": res.invocation_id})
+    return out
+
+
+def run_roundtable(store, payload: dict, seed: dict, rules: list[dict], *,
+                   plan_id: str, trace_id: str, requested_at: str,
+                   model=None) -> dict:                           # noqa: ANN001
+    """规划之前先开一次圆桌：五岗依次发言，主席合议出一张批复建议卡。
+
+    返回**观测到的事实**（谁说了话、是不是模型说的、合议出了什么），不含任何期望值。
+    圆桌是旁路观察者：它炸了不该让这一单跑不下去（同 `ingress/router._fire` 的口径），
+    所以整段兜异常，失败只记一行 `error` 并照常往下走。
+
+    `model=None` 时五岗走事实卡兜底（`Speaker.live` 为假）；给真客户端就是真发言。
+    """
+    result: dict[str, Any] = {"ran": False, "store_param": False, "seats": [],
+                              "verdict": None, "skills": [], "error": None}
+    try:
+        from maos.ingress.router import preflight
+        from maos.roundtable.team import TITLES
+        from maos.roundtable.verdict import decide
+
+        voices = _SilentVoices(TITLES)
+        team, result["store_param"] = build_roundtable(model, voices, store)
+        checked = preflight(payload)
+        reports = team.on_preflight(payload=payload, checked=checked, ledger={},
+                                    evidence=list(payload.get("customer_evidence") or []),
+                                    requested_by=APPROVER)
+        result["seats"] = [{
+            "agent_id": r.agent_id, "title": r.title,
+            "spoken_by_model": bool(r.spoken_by_model),
+            "fallback_reason": r.fallback_reason, "speech": r.speech,
+        } for r in reports]
+        card = decide(reports, case_id=str(checked.get("case_id") or ""))
+        result["verdict"] = {
+            "recommend": card.recommend, "approver_role": card.approver_role,
+            "blockers": list(card.blockers), "headline": card.headline,
+            "amount_preview": card.amount_preview,
+        }
+        result["transcript"] = list(voices.said)
+        result["ran"] = True
+    except Exception as exc:                            # noqa: BLE001 —— 见 docstring
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        log.warning("圆桌这一段没跑成（%s），本单照常往下走", result["error"])
+
+    # 两个只读 skill 的留痕**独立兜异常**：五岗说没说话与 skill 有没有留下审计行
+    # 是两件事，混成一句会指错方向（口径同 `router._attach_verdict`）。
+    try:
+        result["skills"] = _seat_skill_traces(
+            store, payload, seed, rules,
+            plan_id=plan_id, trace_id=trace_id, requested_at=requested_at)
+    except Exception as exc:                            # noqa: BLE001
+        result["skills_error"] = f"{type(exc).__name__}: {exc}"
+        log.warning("圆桌两个 skill 没能在真库留痕（%s）", result["skills_error"])
+    return result
+
+
+# --------------------------------------------------------------- 计划审批停靠
+#: `plan_approval` 的三个取值。缺省 `None` = 不停靠，`create_plan` 之后直接
+#: `start_plan`，与本模块此前的行为**逐字节相同**。
+APPROVAL_MODES = ("approve", "reject", "reject_then_approve")
+
+
+def stop_for_plan_approval(store, cp, plan_id: str, *, mode: str, operator: str,
+                           feedback: str) -> dict:
+    """在 `create_plan` 与 `start_plan` 之间停一下，把计划交给人。
+
+    这正是 `maos/runtime/plan_approval.py` 的模块 docstring 点名的接线位置：
+    全仓场景 `create_plan` 之后**立刻** `start_plan`，PENDING 这个状态在生产路径上
+    从来没有停留过一个瞬间。本函数补的就是那一瞬间，**一行内核都不改**。
+
+    `reject_then_approve` 演的是两级驳回里的第一级：人驳回一次并留下反馈
+    （基线上没接 replanner，所以方案原样留着，见 `PlanApprovalQueue.reject`），
+    再看一眼之后放行 —— 计划本身跑得动，这一单该不该退是后面那道人工闸的事。
+
+    返回这一停靠点上发生过什么；`started` 为假时调用方**不许**再自己 `start_plan`。
+    """
+    if mode not in APPROVAL_MODES:
+        raise ValueError(f"plan_approval 只能是 {list(APPROVAL_MODES)}，实际 {mode!r}")
+    queue = PlanApprovalQueue(store, cp)
+    out: dict[str, Any] = {"mode": mode, "operator": operator,
+                           "preview": queue.preview(plan_id), "rounds": []}
+    if mode in ("reject", "reject_then_approve"):
+        out["rounds"].append({"decision": "reject", "operator": operator,
+                              "feedback": feedback,
+                              "accepted": queue.reject(plan_id, operator, feedback)})
+    if mode in ("approve", "reject_then_approve"):
+        out["rounds"].append({"decision": "approve", "operator": operator,
+                              "accepted": queue.approve(plan_id, operator)})
+    # 驳回之后 plan 仍停在 PENDING（本轨的题眼）—— 没批准就是没开跑。
+    out["started"] = any(r["decision"] == "approve" and r["accepted"] for r in out["rounds"])
+    out["plan_state"] = store.get_plan(plan_id)["state"]
+    return out
+
+
 # ----------------------------------------------------------------- DAG 补支付段
 def _with_payment(tasks: list[dict], *, seed: dict, gateway: str,
                   drift: bool = False) -> list[dict]:
@@ -326,13 +530,32 @@ def _blocked_reason(cp, plan_id: str, task_id: str) -> str:
 # --------------------------------------------------------------------- 跑一次
 def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = None,
                 matrix: bool = False, verbose: bool = True,
-                allow_degraded: bool = False, drift: bool = False) -> dict:
+                allow_degraded: bool = False, drift: bool = False,
+                roundtable: bool = False, roundtable_model=None,   # noqa: ANN001
+                plan_approval: str | None = None,
+                approval_operator: str = APPROVER,
+                plan_feedback: str = "",
+                reject_roles: tuple[str, ...] = ()) -> dict:
     """跑一份自定义 case，返回**观测到的事实**（不含任何期望值）。
 
     `drift=True` 注入一次外部改单（`--drift`）：订单系统的版本被推高一格，
     于是付款之前那一步 `refund.snapshot_check` 会报漂移，付款任务停在 BLOCKED
     等人。**业务状态一个字节都不会因此改变**（铁律 8）——漂移是「停下来问人」，
     不是一个新的业务状态。
+
+    `roundtable=True` 在规划**之前**开一次五岗圆桌（T114）：五岗发言 + 主席合议，
+    另让证据岗、风险岗那两个只读 skill 在真库上各留一次痕。缺省 `False` ——
+    圆桌是旁路，`scripts/run_case.py` 那条命令一个字节不变。
+
+    `plan_approval` 在 `create_plan` 与 `start_plan` 之间插一个人工停靠点
+    （取值见 `APPROVAL_MODES`）。缺省 `None` = 不停靠，两句紧挨着，与从前逐字节相同。
+    驳回而没有随后的批准时，plan 停在 PENDING，DAG 一个任务都不派发 —— 那正是
+    这个停靠点存在的理由，不是一次失败。
+
+    `reject_roles` 是**逐岗**的人工闸决定：命中的角色在 BLOCKED 上被驳回，其余照
+    `approve` 走。缺省空元组 = 全按 `approve`，行为不变。它存在的理由只有一个：
+    网关明确失败时，人在付款闸上该做的是**不放行**（钱没退出去，不能签「这一步完成了」），
+    而核算那一步照常批 —— 一个全局布尔表达不了「这一步批、那一步不批」。
     """
     seed = fixtures.case_seed_of(payload)
     tenant_id, case_id = str(seed["tenant_id"]), str(seed["case_id"])
@@ -380,6 +603,13 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     verdict = contrast.evaluate_eligibility(view["rules"], reason_code=str(seed["reason_code"]),
                                             elapsed_days=days)
 
+    # ---- 圆桌五岗（T114）：排 DAG 之前先让五个岗位各说一句，主席合议出建议卡 ----
+    # 位置在规划**之前**不是随手排的：圆桌回答的是「这一单该不该退、谁来拍板」，
+    # 那正是计划长什么样的前提。排完 DAG 再开会，会开成一场对既成事实的复述。
+    table = run_roundtable(store, payload, seed, view["rules"], plan_id=plan_id,
+                           trace_id=trace_id, requested_at=requested_at,
+                           model=roundtable_model) if roundtable else None
+
     # `_signals_of` 刻意直接复用：工单那条信号的口径（标题/正文由 case 数据推出，
     # 不现编情节）就在它里面，另抄一份就是第二套口径。
     tasks = _with_payment(
@@ -396,7 +626,30 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
         "tenant_id": tenant_id, "biz_type": C.BIZ_TYPE, "channel_id": seed["channel_id"],
         "sku": seed["sku"], "plan_id": plan_id, "trace_id": trace_id})
     cp.create_plan(goal=goal, trace_id=trace_id, plan_id=plan_id, tasks=planned)
-    cp.start_plan(plan_id)
+
+    # ---- 计划审批停靠（T114）：人批准了才许开跑 ----
+    # 缺省 `plan_approval=None` 时这一段退化成原来那一句 `start_plan` —— 不停靠、
+    # 不落任何审批事件，`scripts/run_case.py` 的七条老测试因此一条都不受影响。
+    # 变量名**不叫 approval**：下面那段人工审批循环里 `approval` 已经是
+    # 「一条 approval_record」了，重名会让计划级的这一份被逐轮覆盖掉，
+    # 而两者都是 dict、都不报错，症状只是束里 `plan_approval` 恒为 null。
+    plan_stop = None
+    if plan_approval is None:
+        cp.start_plan(plan_id)
+    else:
+        plan_stop = stop_for_plan_approval(
+            store, cp, plan_id, mode=plan_approval, operator=approval_operator,
+            feedback=plan_feedback or "计划先给人看一眼：请说明这一单为什么该走人工闸")
+        if not plan_stop["started"]:
+            # 人驳回了且没有随后的批准：**这里就是终点**。往下跑一步都等于
+            # 把「人否决了」演成「人否决了但照样开跑」。
+            if verbose:
+                dump(cp, plan_id, f"自定义 case {case_id}（计划被驳回，未开跑）")
+            return _observe(store, cp, plan_id, seed=seed, view=view, directives=directives,
+                            verdict=verdict, days=days, paid_at=paid_at,
+                            requested_at=requested_at, approvals=[], approve=approve,
+                            human_exits=[], snapshot=snapshot, roundtable=table,
+                            plan_stop=plan_stop)
     run_until_settled(bus, gate, cp, plan_id)
 
     # ---- 人工审批：停在 BLOCKED 的任务都在等人，CLI 代跑人的那一半 ----
@@ -439,12 +692,17 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
                     })
                 continue
             acted = True
+            # 逐岗决定：全局 `approve` 之上再让 `reject_roles` 收窄一次。
+            # 判在这里而不是在调用方，是因为「这一批停下来等人的任务」只有这个
+            # 循环见得到 —— 调用方拿不到 blocked 列表，也就无从逐条表态。
+            ok = approve and blocked["role"] not in reject_roles
             human_exits.append({
                 "task_id": blocked["task_id"], "title": blocked["title"],
+                "role": blocked["role"],
                 "why": _blocked_reason(cp, plan_id, blocked["task_id"]),
-                "decision": "approved" if approve else "rejected",
+                "decision": "approved" if ok else "rejected",
             })
-            if approve:
+            if ok:
                 # 顺序不可换：先落 approval_record（人的决定），再放行任务 ——
                 # payment.execute 会核对审批记录，没有它就拒绝发起付款。
                 approval = C.record_approval(
@@ -483,13 +741,14 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     return _observe(store, cp, plan_id, seed=seed, view=view, directives=directives,
                     verdict=verdict, days=days, paid_at=paid_at, requested_at=requested_at,
                     approvals=approvals, approve=approve, human_exits=human_exits,
-                    snapshot=snapshot)
+                    snapshot=snapshot, roundtable=table, plan_stop=plan_stop)
 
 
 def _observe(store, cp, plan_id: str, *, seed: dict, view: dict, directives: dict,
              verdict: dict, days: int, paid_at: str, requested_at: str,
              approvals: list[dict], approve: bool, human_exits: list[dict],
-             snapshot: dict) -> dict:
+             snapshot: dict, roundtable: dict | None = None,
+             plan_stop: dict | None = None) -> dict:
     """把这一跑的事实收成一份字典。只读库，不做任何判定。"""
     tenant_id, case_id = str(seed["tenant_id"]), str(seed["case_id"])
 
@@ -511,6 +770,10 @@ def _observe(store, cp, plan_id: str, *, seed: dict, view: dict, directives: dic
         e for e in cp.store.list_event_log(plan_id)
         if e.get("event_type") == snapshot_check.EVENT_SNAPSHOT_DRIFT]
     return {
+        # 两个可选停靠点的观测。**没开就是 None，不是空 dict** —— 读的人要分得清
+        # 「这一跑没接圆桌」与「接了但五岗一句话都没说」，后者是 bug。
+        "roundtable": roundtable,
+        "plan_approval": plan_stop,
         "snapshot_check": {
             "drift": bool(snapshot["drift"]),
             "snapshot_version": snapshot["snapshot_version"],

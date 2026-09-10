@@ -445,8 +445,18 @@ def sandbox_git_apply(
     并集不是冗余：numstat 对 rename 只报目标，`_diff_targets` 才看得见源路径。
     """
     files = patch_set.get("files") if isinstance(patch_set, dict) else None
-    if not isinstance(files, list) or not files:
-        return _error("validate", None, None, "补丁集为空，或 files 不是非空 list")
+    if not isinstance(files, list):
+        return _error("validate", None, None, "files 不是 list")
+    if not files:
+        # 空补丁集**带 summary** 就是一个合法结论（「查过了，没有要改的」），
+        # 落盘动作是零个文件 —— 而零个文件的落盘天然成功。空 summary 仍判错：
+        # 分不清结论与「模型没产出」的话，后者会以「成功地什么都没做」收场。
+        # 判据与 `skills/builtin/code_repo_patch.py` 那一处同源（docs/BACKLOG.md:2293）。
+        summary = patch_set.get("summary") if isinstance(patch_set, dict) else None
+        if isinstance(summary, str) and summary.strip():
+            return {"ok": True, "error": None}
+        return _error("validate", None, None,
+                      "补丁集为空且没有 summary —— 分不清「没有要改的」与「没产出」")
 
     base = os.path.realpath(workdir)
     if not os.path.isdir(base):
@@ -711,7 +721,7 @@ GIT_APPLY_PORT = ToolPort(
                    "reverse": "bool（keyword-only）", "check_only": "bool（keyword-only）"},
     returns_schema={"ok": "bool", "error": "{stage,path,hunk,message} | None"},
     failure_modes=[
-        "validate: 补丁集为空或 files 项缺 path/diff",
+        "validate: files 不是 list、空补丁集且没有 summary、或 files 项缺 path/diff",
         "prepare: workdir 不存在或不是目录",
         "path_check: 触碰 infra/.github/secrets/tests 任一段",
         "conftest_guard: 任意层级的 conftest.py 新增或修改",

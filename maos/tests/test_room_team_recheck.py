@@ -41,13 +41,15 @@ EVIDENCE = CUSTOM / "evidence"
 SMOKE = ROOT / "scripts" / "room_team_smoke.py"
 
 #: `python3 scripts/room_team_smoke.py`（不带任何参数）的 stdout 指纹，
-#: 2026-09-05 在基线 c2f06cc 上实跑所得。本轨改的是**另外**几条路：
-#: 不带 `--recheck` 的那条一个字节都不许动。
+#: 2026-09-10 在 7bb29ab + 字段归属表那笔改动上实跑所得（上一版 7ca73cc0…
+#: 是 2026-09-05 在 c2f06cc 上取的）。指纹这次是**该变的**：`SYSTEM_TMPL` 加了
+#: 字段归属表与群内发言规则，事实卡跟着去掉了三处「见规则审核岗」的指路、
+#: 两条 skill 装载状态帖，受理岗的封顶那句也从「会封顶到实付」收回成只标记触发。
 #:
 #: 它红了先看 `test_recheck_without_evidence_says_so_and_changes_nothing_else`：
 #: 那条给的是能读的 diff，这条只说「变了」。只有这一条红、那条绿，说明动的
 #: 不是本轨（多半是圆桌引擎那侧改了发言措辞），去看 git log 再判断。
-PLAIN_STDOUT_MD5 = "7ca73cc07835406df944ccf79ce3e0b2"
+PLAIN_STDOUT_MD5 = "29ad038142bb50492f20d01182603348"
 
 #: 演示语料里配得上证据的行数：0004 一行 + 0006 两行（`refund-requests-team.csv`）。
 #: 0005 那两行故意一张图都不配 —— 它是 `need_more` 唯一的演出场地。

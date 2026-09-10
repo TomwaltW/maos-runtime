@@ -201,7 +201,11 @@ def facts_intake(payload: dict, checked: dict, evidence_count: int,
     if round_no >= 2:
         lines.append(f"本单第 {round_no} 轮（上一轮之后有新证据进来，按当前材料重新过一遍）")
     if over_paid:
-        lines.append("申报金额高于订单实付，核算会封顶到实付")
+        # **只标记触发，不解释封顶怎么算、封到哪个数**（`SYSTEM_TMPL` 字段归属表：
+        # 封顶标记归受理岗，封顶后的应退金额归财务执行岗，逐单预演完才给）。
+        # 两岗都说一句「封到实付」的症状：财务预演出来的数与受理岗的口头算法一旦
+        # 差一分钱（优惠券、运费另算），房间里就得当场对账，而受理岗手上根本没有账。
+        lines.append("申报金额高于订单实付，本单触发封顶")
     return "\n".join(lines), {
         "order_id": order_id, "sku": case.get("sku"),
         "amount_paid": amount_paid, "amount_claimed": amount_claimed,
@@ -492,8 +496,110 @@ def sheet_stats(rows: list[dict]) -> dict:
 
 
 def _pending_line(stats: dict) -> str:
+    """待放行那一句。**超过 :data:`ROW_CAP` 单就不逐个念 case_id。**
+
+    50 行的表跑下来是 46 个 `RC-ORD-…`，连成一行 900 多字符 —— 房间里读不完，
+    更要紧的是它把「哪几单不能过、为什么」这类真问题挤到了看不见的地方。
+    数字照报（放行要按它对账），清单指回申请表回帖：那一份是逐行全的，且带每单的判据。
+    **只有规则岗念这一句**：待放行数是它的裁定结果，下游转抄一遍就成了复述（规则 2）。
+    句尾不带「这里不重复」这类交代 —— 那是关于协作本身的元话语（规则 3）。
+    """
     ids = stats["pending_case_ids"]
-    return f"待放行 {len(ids)} 单：{'、'.join(ids) or '无'}"
+    if not ids:
+        return "待放行 0 单：无"
+    if len(ids) > ROW_CAP:
+        return f"待放行 {len(ids)} 单：case_id 逐行在申请表回帖里"
+    return f"待放行 {len(ids)} 单：{'、'.join(ids)}"
+
+
+#: 逐条清单最多列几条。房间里是一条消息（Matrix 单事件 64 KB），50 行全列会把它撑爆，
+#: 而读的人也读不完。超出的**说出来**并指回申请表回帖 —— 那一份是逐行全的。
+ROW_CAP = 12
+
+
+def _clip(items: list[str]) -> list[str]:
+    """给逐条清单加盖子。
+
+    截掉的**不报数字**：那个差值不在入参里（本模块的数字必须是 rows 的子集，
+    见 :func:`numbers_in`），为它多加一个计数器也不值 —— 人要的是
+    「还有，去回帖里看」，不是又一个要对账的数。
+    """
+    if len(items) <= ROW_CAP:
+        return items
+    return items[:ROW_CAP] + ["  · 余下的同样在申请表回帖里逐行写着，这里不重复"]
+
+
+def _who(row: dict) -> str:
+    """一行的身份：行号 + 订单号（+ 诉求原文）。三处都取原值，不补不猜。"""
+    line = row.get("line")
+    order = str(row.get("order_id") or "").strip() or "（无订单号）"
+    reason = str(row.get("reason_raw") or "").strip()
+    head = f"第 {line} 行 {order}" if line is not None else order
+    return f"{head}（{reason}）" if reason else head
+
+
+def _joined(values: object) -> str:
+    return "；".join(str(x).strip() for x in (values or []) if str(x).strip())
+
+
+def _problem_lines(rows: list[dict]) -> list[str]:
+    """表格填错、压根没进预检的行 —— 逐条写清是哪一行、错在哪。
+
+    与 `sheet_stats` 的 `problem_rows` 同一个筛法（排掉带 `error` 的），
+    两处筛法不同的症状是「卡上说填错 3 行、底下只列出 2 行」。
+    """
+    out: list[str] = []
+    for r in rows or []:
+        if not isinstance(r, dict) or r.get("error") or not r.get("problems"):
+            continue
+        out.append(f"  · {_who(r)}：{_joined(r.get('problems'))}")
+    return _clip(out)
+
+
+def _error_lines(rows: list[dict]) -> list[str]:
+    """进了预检才抛错的行。与上一条分开摆：表填得对、是我们这边没跑通，
+    催人改表是把人指向一个不存在的问题。"""
+    out: list[str] = []
+    for r in rows or []:
+        if not isinstance(r, dict) or not r.get("error"):
+            continue
+        out.append(f"  · {_who(r)}：{r['error']}")
+    return _clip(out)
+
+
+def _warning_lines(rows: list[dict]) -> list[str]:
+    """带提示但不阻断的行。它们照走，但老板该知道 ——「申报超实付、核算按实付封顶」
+    就是一句会改变到账金额的提示，只报「6 行带提示」等于没说。"""
+    out: list[str] = []
+    for r in rows or []:
+        if not isinstance(r, dict) or not r.get("warnings"):
+            continue
+        out.append(f"  · {_who(r)}：{_joined(r.get('warnings'))}")
+    return _clip(out)
+
+
+def _rejects(rows: list[dict]) -> list[dict]:
+    return [r for r in rows or []
+            if isinstance(r, dict) and isinstance(r.get("checked"), dict)
+            and str(r["checked"].get("decision") or "") == "reject"]
+
+
+def _reject_lines(rows: list[dict]) -> list[str]:
+    """裁定驳回的单 —— **逐条附上判据**。
+
+    老板问的从来不是「几单不能过」，是「为什么这单不能过」。`checked["why"]`
+    与 `checked["deciding_rule"]` 是 preflight 当时算出来的原话
+    （如「AS-001@v1 窗口 30 天，第 55 天申请，55 > 30」），照搬不改写：
+    这一层改写一次，房间里的说法就和申请表回帖对不上了。
+    """
+    out: list[str] = []
+    for r in _rejects(rows):
+        c = r["checked"]
+        why = str(c.get("why") or "").strip()
+        basis = str(c.get("deciding_rule") or "").strip()
+        tail = f"{why}；依据 {basis}" if basis and why else (why or basis)
+        out.append(f"  · {_who(r)}：{tail}" if tail else f"  · {_who(r)}：裁定驳回")
+    return _clip(out)
 
 
 def facts_sheet_intake(rows: list[dict]) -> tuple[str, dict]:
@@ -510,6 +616,19 @@ def facts_sheet_intake(rows: list[dict]) -> tuple[str, dict]:
         f"另有 {stats['warning_rows']} 行带提示（不阻断）",
         "填错的行不会进入后续环节，改好再拖一次表即可",
     ]
+    # 计数之后**逐条写清是哪一行、错在哪**。只报数的症状（2026-09-10 的房间）：
+    # 老板问「哪几单不行」，五岗只答得出一个数，人得自己回去翻回帖找 ——
+    # 而这些行的问题本来就在入参里（`router._sheet_rows` 的 problems / error / warnings）。
+    # 只列**有情况的**行：跑通的没什么可说，列出来只会把消息撑爆。
+    problems = _problem_lines(rows)
+    if problems:
+        lines += ["", "表格填错、没进预检的行（改好再拖一次表）："] + problems
+    errors = _error_lines(rows)
+    if errors:
+        lines += ["", "进了预检才失败的行（表没填错，是这边没跑通）："] + errors
+    warned = _warning_lines(rows)
+    if warned:
+        lines += ["", "带提示但不阻断的行（照走，只是要知道）："] + warned
     return "\n".join(lines), stats
 
 
@@ -524,6 +643,10 @@ def facts_sheet_policy(rows: list[dict]) -> tuple[str, dict]:
         f"{stats['invalid']} 行预检失败，这两类都没有裁定",
         _pending_line(stats),
     ]
+    # 「为什么这单不能过」是老板真正要的那句，判据在 `checked` 里现成 —— 照搬。
+    rejects = _reject_lines(rows)
+    if rejects:
+        lines += ["", "驳回的单，逐条判据："] + rejects
     return "\n".join(lines), stats
 
 
@@ -532,11 +655,17 @@ def facts_sheet_evidence(rows: list[dict]) -> tuple[str, dict]:
 
     stats = sheet_stats(rows)
     loaded = registry.get("refund.evidence_check") is not None
+    # 分母（`need_evidence` / `reject`）取自规则岗已发布的同一份 `sheet_stats`，
+    # 不在这一层重算 —— 口径对齐是 `SYSTEM_TMPL` 群内发言规则第 5 条。
     lines = [
         f"进入证据核验范围的有 {stats['need_evidence']} 单（裁定驳回的 {stats['reject']} 单不看证据）",
-        "证据核验 skill 已装载，逐单预检时按单核验" if loaded
-        else "证据核验 skill 未装载，这一批的证据无法核验，请人工过目",
     ]
+    # 装载成功不写进事实卡：它是进度不是结论，念出来就是一条空状态帖（规则 4）。
+    # 未装载相反 —— 「这一批没核验过」会改变主管的动作，属于本岗的结论，必须发。
+    if not loaded:
+        lines.append("证据核验 skill 未装载，这一批的证据无法核验，请人工过目")
+    # 驳回单号**不在这里点名**：那份清单和判据规则岗已经逐条发过，下游转抄一遍
+    # 等于同一件事在房间里出现四次（规则 2）。本岗只留自己新产生的范围计数。
     return "\n".join(lines), {**stats, "skill_loaded": loaded}
 
 
@@ -547,19 +676,20 @@ def facts_sheet_risk(rows: list[dict]) -> tuple[str, dict]:
     loaded = registry.get("refund.risk_screen") is not None
     lines = [
         f"待筛查 {stats['valid']} 单，其中 {stats['approve']} 单已裁定批准、会走到付款",
-        "风险筛查 skill 已装载，逐单预检时按单筛查" if loaded
-        else "风险筛查 skill 未装载，这一批未经风险筛查，放行前请人工看一眼客户历史",
     ]
+    if not loaded:                                  # 理由同证据岗：只发未装载
+        lines.append("风险筛查 skill 未装载，这一批未经风险筛查，放行前请人工看一眼客户历史")
     return "\n".join(lines), {**stats, "skill_loaded": loaded}
 
 
 def facts_sheet_finance(rows: list[dict]) -> tuple[str, dict]:
     stats = sheet_stats(rows)
+    # 整表合计归本岗，但要等所有单预演完才允许发（`SYSTEM_TMPL` 的字段归属表）。
+    # 表这一阶段还没逐单预演，所以不给合计 —— 也**不在事实卡里解释为什么不给**：
+    # 那句解释念进群就是一条关于协作本身的元话语（规则 3）。
+    # 驳回单号与待放行数同理不再转抄，规则岗已经连着判据逐条发过（规则 2）。
     lines = [
         f"需要核算的有 {stats['approve']} 单，驳回的 {stats['reject']} 单无需核算",
-        "整表核算金额要逐单预演才算得出来，这里不给合计 —— 合计一个没预演过的数字，"
-        "群里会当成已经算完的账",
-        _pending_line(stats),
     ]
     return "\n".join(lines), stats
 

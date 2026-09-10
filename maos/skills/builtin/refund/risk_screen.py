@@ -210,9 +210,13 @@ class RefundRiskScreenSkill(Skill):
 
         if signals["amount_over_paid"]:
             score += self.W_OVER_PAID
+            # 尾巴**不带「核算会按实付封顶」**：那是在解释别人的算法。风险信号是
+            # 「申报高于实付、比值多少」，封顶怎么算、封出多少归财务执行岗
+            # （`SYSTEM_TMPL` 的字段归属表）。留着的症状是风险岗和财务岗在群里
+            # 各说一遍封顶，而只有财务岗手上有账。
             reasons.append(
                 f"申报金额 {amount_claimed:.2f} 高于订单实付 {amount_paid:.2f}"
-                f"（比值 {signals['amount_ratio']:.2f}），核算会按实付封顶")
+                f"（比值 {signals['amount_ratio']:.2f}）")
 
         multi = signals["multi_order_same_account"]
         if multi >= self.MULTI_ORDER_AT:

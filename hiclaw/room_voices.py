@@ -40,6 +40,7 @@ import os
 from typing import Any, Protocol
 
 from hiclaw.matrix_bus import (ENV_HOMESERVER, ENV_ROOM_ID, ENV_TOKEN, ENV_USER,
+                               html_block,
                                MatrixBusConfig, describe_exc, open_channel)
 
 log = logging.getLogger("maos.room_voices")
@@ -228,11 +229,16 @@ class RoomVoice:
         房间里看到的头像是 `maos-bot`，不写清是谁说的就分不出来。
         """
         esc = html.escape
+        # 正文走 `html_block` 而不是光 `esc`：五岗的发言里有逐条清单，
+        # 单靠转义会把 `\n` 原样留在 HTML 里，浏览器当空白折叠掉 ——
+        # 房间里看到的是几十条挤成一段（见 `html_block` 的 docstring）。
+        # 名牌那两段仍走 `esc`：它们是单行，且不该被缩进处理碰。
+        body = html_block(text)
         if self.own_identity:
-            return text, f"<p>{esc(text)}</p>"
+            return text, f"<p>{body}</p>"
         return (f"【{self.title} · {self.agent_id}】 {text}",
                 f"<p><strong>{esc(self.title)}</strong> "
-                f"<code>{self.agent_id}</code><br/>{esc(text)}</p>")
+                f"<code>{self.agent_id}</code><br/>{body}</p>")
 
     def say(self, text: str) -> None:
         plain, html_body = self._render(text)

@@ -46,6 +46,12 @@ GOOD = (HEADER
         + "ORD-2026-0001,质量问题,6800,2026-07-10,\n"
         + "ORD-2026-0003,七天无理由,,2026-08-25,金额留空\n")
 
+#: 一批一驳。`GOOD` 两行都批准，验不出「驳回的单子在事实里怎么说」——
+#: 而房间里被问住的恰恰是那一档（见文件末尾那条测试）。
+MIXED = (HEADER
+         + "ORD-2026-0001,质量问题,6800,2026-07-10,质保内，批准\n"
+         + "ORD-2026-0002,七天无理由,1280,2026-08-15,付款第 55 天，超 AS-001@v1 的 30 天窗口\n")
+
 
 class _Adapter:
     name = CHANNEL_FEISHU
@@ -522,3 +528,33 @@ def test_sheet_summary_is_remembered_per_chat(tmp_path):
     assert "bad-requests.csv" in note and "3 行填错" in note and "2 行预检完成" in note
     # 判不准要**说成判不准**：混进「填错」里，回话器会跟着劝人去改一张没填错的表。
     assert "1 行诉求类型判不准" in note
+# --------------------------------------------------------------------------
+# 「哪几单不能过」要答得出单号
+# --------------------------------------------------------------------------
+def test_chat_facts_name_the_rejected_orders_not_just_their_count(tmp_path):
+    """喂给回话器的【事实】要按裁定结论分组，且**逐单报出来**。
+
+    真实症状（2026-09-10 的房间）：50 行表跑完，boss 问「给我看哪四单不能过」，
+    机器人只能答「具体是哪四单，得看申请表里的逐行结论」。它答得忠实 ——
+    那时事实里 50 单混在「本会话待放行的预检」一句底下、每行不带结论，
+    模型只能从计数推出「4 单没批准」，报不出是哪四单（铁律 8：模型只能在事实里说话）。
+
+    数据一直都在：`Ticket.checked` 是建这个待办时那次 preflight 的返回。
+    这条测试钉的是「说出来了」，不是措辞本身。
+    """
+    adapter = _Adapter({"k": MIXED.encode("utf-8")})
+    router = _router(tmp_path, adapter)
+    router.handle(_inbound("k", "mixed.csv"))
+
+    facts = router._chat_facts(InboundMessage(
+        channel=CHANNEL_FEISHU, chat_id="oc_1", sender="ou_boss",
+        text="哪几单不能过", msg_id="m2"))
+
+    assert "本会话预检裁定驳回、不予退款的 1 单（无需放行）：" in facts
+    assert "RC-ORD-2026-0002  ORD-2026-0002（七天无理由）" in facts
+    assert "本会话预检裁定批准、待放行的 1 单" in facts
+    assert "RC-ORD-2026-0001  ORD-2026-0001（质量问题）" in facts
+
+    # 驳回的不许混进「待放行」那一段：说成待放行，人会以为这一单也在等他点头。
+    approved = facts.split("裁定批准、待放行")[1].split("本会话预检裁定驳回")[0]
+    assert "RC-ORD-2026-0002" not in approved

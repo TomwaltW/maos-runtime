@@ -48,7 +48,13 @@ SCOPE_MARKERS = (
 )
 
 #: 本轨（T78）白名单内、已补口径的语料。
+#:
+#: `scenarios/bulk/ledger-bulk.json` 是**生成产物**（`scenarios/bulk/generate.py`），
+#: 不是手写语料，但照样列在这里：这条判据认的是「文件里有没有非空 `policy_rule`」，
+#: 生成的规则一样会被人拿着编号去对照。抬头那句口径由生成器写进 `_rule_no_scope`，
+#: 改生成器时会连着改。删掉 bulk 目录的话本条会报「缺失」—— 那时把这一行一起删。
 COVERED = {
+    "scenarios/bulk/ledger-bulk.json",
     "scenarios/custom/ledger.json",
     "scenarios/refund/cases/case_r4a.json",
     "scenarios/refund/cases/case_r4b.json",

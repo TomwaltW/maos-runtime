@@ -222,12 +222,18 @@ def test_frequency_window_does_not_count_records_outside_30_days(invoker):
 
 
 def test_claim_above_paid_flags_amount_over_paid(invoker):
-    """申报高于实付：`amount_over_paid` 成立且比值 > 1。"""
+    """申报高于实付：`amount_over_paid` 成立且比值 > 1。
+
+    理由里给的是**信号**（申报高于实付、比值多少），**不提封顶** —— 封顶怎么算、
+    封出多少归财务执行岗（`SYSTEM_TMPL` 的字段归属表）。风险岗替它解释一遍，
+    群里就有两个岗在说同一件事，而只有财务岗手上有账。
+    """
     out = _run(invoker, _payload(case_seed=_seed(amount_claimed=1200.0)))
     assert out["signals"]["amount_over_paid"] is True
     assert out["signals"]["amount_ratio"] > 1.0
     assert out["score"] == RefundRiskScreenSkill.W_OVER_PAID
-    assert any("封顶" in r for r in out["reasons"])
+    assert any("高于订单实付" in r for r in out["reasons"])
+    assert not any("封顶" in r for r in out["reasons"]), "封顶归财务执行岗，风险岗不解释"
 
 
 def test_customer_id_is_read_from_order_payload_json(invoker):

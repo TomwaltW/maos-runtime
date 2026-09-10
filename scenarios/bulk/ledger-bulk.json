@@ -1,0 +1,1117 @@
+{
+ "_note": "批量演示底账 —— 由 scenarios/bulk/generate.py 生成，勿手改。改数据请改生成器再重跑，手改的那一行下次重跑就没了。",
+ "_provenance": {
+  "generated_by": "scenarios/bulk/generate.py",
+  "seed": 20260910,
+  "today": "2026-09-10T00:00:00+00:00",
+  "orders": 60
+ },
+ "_rule_no_scope": "本文件的 AS-00x 编号只在租户 tnt-demo 内有意义 ——跨语料引用规则号前先看租户。",
+ "gateway": {
+  "settle_after": 2,
+  "fail_with": null
+ },
+ "tenant": [
+  {
+   "tenant_id": "tnt-demo",
+   "name": "示例精密制造",
+   "region": "cn-hangzhou"
+  }
+ ],
+ "channel": [
+  {
+   "tenant_id": "tnt-demo",
+   "channel_id": "ch-online",
+   "kind": "marketplace",
+   "name": "官方自营旗舰店"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "channel_id": "ch-tmall",
+   "kind": "marketplace",
+   "name": "天猫企业购旗舰店"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "channel_id": "ch-dealer",
+   "kind": "dealer",
+   "name": "华东区一级代理"
+  }
+ ],
+ "product_snapshot": [
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-BRG-6204",
+   "version": 1,
+   "name": "深沟球轴承 6204",
+   "category": "bearing",
+   "warranty_months": 12,
+   "payload_json": "{\"unit_price_range\": [28, 96]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-BRG-6308",
+   "version": 1,
+   "name": "深沟球轴承 6308",
+   "category": "bearing",
+   "warranty_months": 12,
+   "payload_json": "{\"unit_price_range\": [85, 240]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-FLG-DN80",
+   "version": 1,
+   "name": "碳钢平焊法兰 DN80",
+   "category": "flange",
+   "warranty_months": 24,
+   "payload_json": "{\"unit_price_range\": [62, 130]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-FLG-DN150",
+   "version": 1,
+   "name": "不锈钢对焊法兰 DN150",
+   "category": "flange",
+   "warranty_months": 24,
+   "payload_json": "{\"unit_price_range\": [210, 460]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-GSK-DN80",
+   "version": 1,
+   "name": "缠绕垫片 DN80",
+   "category": "gasket",
+   "warranty_months": 6,
+   "payload_json": "{\"unit_price_range\": [5, 14]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-ORING-45",
+   "version": 1,
+   "name": "氟橡胶 O 型圈 45mm",
+   "category": "seal",
+   "warranty_months": 6,
+   "payload_json": "{\"unit_price_range\": [2, 9]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-SEAL-90",
+   "version": 1,
+   "name": "骨架油封 90mm",
+   "category": "seal",
+   "warranty_months": 12,
+   "payload_json": "{\"unit_price_range\": [95, 180]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-CPL-ML95",
+   "version": 1,
+   "name": "梅花弹性联轴器 ML95",
+   "category": "coupling",
+   "warranty_months": 12,
+   "payload_json": "{\"unit_price_range\": [320, 780]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-RDC-NMRV63",
+   "version": 1,
+   "name": "蜗轮减速机 NMRV63",
+   "category": "reducer",
+   "warranty_months": 24,
+   "payload_json": "{\"unit_price_range\": [860, 1680]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-MTR-Y2-90L",
+   "version": 1,
+   "name": "三相异步电机 Y2-90L",
+   "category": "motor",
+   "warranty_months": 24,
+   "payload_json": "{\"unit_price_range\": [620, 1450]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-SNS-PT100",
+   "version": 1,
+   "name": "铂电阻温度传感器 PT100",
+   "category": "sensor",
+   "warranty_months": 12,
+   "payload_json": "{\"unit_price_range\": [86, 260]}"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "sku": "SKU-CYL-SC63",
+   "version": 1,
+   "name": "标准气缸 SC63x200",
+   "category": "cylinder",
+   "warranty_months": 36,
+   "payload_json": "{\"unit_price_range\": [180, 420]}"
+  }
+ ],
+ "order_snapshot": [
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1000",
+   "version": 1,
+   "sku": "SKU-BRG-6204",
+   "amount_paid": 78.26,
+   "paid_at": "2026-07-08T16:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-07-15T16:00:00+00:00\", \"tracking_no\": \"SF-5164-1244-2503\"}, \"qc_report\": {\"issued_at\": \"2026-07-17T16:00:00+00:00\", \"report_no\": \"QC-2026-0717-051\", \"result\": \"pass\"}, \"qty\": 2, \"unit_price\": 39.13}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1001",
+   "version": 1,
+   "sku": "SKU-BRG-6308",
+   "amount_paid": 1652.0,
+   "paid_at": "2025-10-20T07:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"qty\": 10, \"unit_price\": 165.2}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1002",
+   "version": 1,
+   "sku": "SKU-FLG-DN80",
+   "amount_paid": 38564.37,
+   "paid_at": "2025-11-12T20:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2025-11-21T20:00:00+00:00\", \"tracking_no\": \"SF-8873-9288-3778\"}, \"qty\": 50, \"unit_price\": 80.71}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1003",
+   "version": 1,
+   "sku": "SKU-FLG-DN150",
+   "amount_paid": 62114.44,
+   "paid_at": "2025-11-06T16:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2025-11-12T16:00:00+00:00\", \"tracking_no\": \"SF-4564-3503-8547\"}, \"qc_report\": {\"issued_at\": \"2025-11-21T16:00:00+00:00\", \"report_no\": \"QC-2025-1121-031\", \"result\": \"pass\"}, \"qty\": 10, \"unit_price\": 212.03}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1004",
+   "version": 1,
+   "sku": "SKU-GSK-DN80",
+   "amount_paid": 38226.28,
+   "paid_at": "2026-01-06T07:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"顺丰速运\", \"signed_at\": \"2026-01-12T07:00:00+00:00\", \"tracking_no\": \"SF-7326-8066-9444\"}, \"qty\": 50, \"unit_price\": 11.79}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1005",
+   "version": 1,
+   "sku": "SKU-ORING-45",
+   "amount_paid": 777.0,
+   "paid_at": "2025-12-08T17:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2025-12-11T17:00:00+00:00\", \"tracking_no\": \"SF-9570-9566-4662\"}, \"qty\": 100, \"unit_price\": 7.77}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1006",
+   "version": 1,
+   "sku": "SKU-SEAL-90",
+   "amount_paid": 426.84,
+   "paid_at": "2026-05-14T19:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"qc_report\": {\"issued_at\": \"2026-05-23T19:00:00+00:00\", \"report_no\": \"QC-2026-0523-005\", \"result\": \"defect\"}, \"qty\": 4, \"unit_price\": 106.71}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1007",
+   "version": 1,
+   "sku": "SKU-CPL-ML95",
+   "amount_paid": 78540.7,
+   "paid_at": "2026-05-03T17:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"qty\": 10, \"unit_price\": 350.59}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1008",
+   "version": 1,
+   "sku": "SKU-RDC-NMRV63",
+   "amount_paid": 5039.44,
+   "paid_at": "2026-03-30T14:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"顺丰速运\", \"signed_at\": \"2026-04-02T14:00:00+00:00\", \"tracking_no\": \"SF-7069-1788-7050\"}, \"qc_report\": {\"issued_at\": \"2026-04-14T14:00:00+00:00\", \"report_no\": \"QC-2026-0414-094\", \"result\": \"defect\"}, \"qty\": 4, \"unit_price\": 1259.86}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1009",
+   "version": 1,
+   "sku": "SKU-MTR-Y2-90L",
+   "amount_paid": 16462.8,
+   "paid_at": "2026-05-28T21:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-06-04T21:00:00+00:00\", \"tracking_no\": \"SF-4909-3194-6840\"}, \"qty\": 20, \"unit_price\": 823.14}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1010",
+   "version": 1,
+   "sku": "SKU-SNS-PT100",
+   "amount_paid": 1342.8,
+   "paid_at": "2026-03-13T06:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-03-19T06:00:00+00:00\", \"tracking_no\": \"SF-5969-1753-1181\"}, \"qty\": 12, \"unit_price\": 111.9}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1011",
+   "version": 1,
+   "sku": "SKU-CYL-SC63",
+   "amount_paid": 4038.78,
+   "paid_at": "2026-08-17T22:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-08-24T22:00:00+00:00\", \"tracking_no\": \"SF-8382-3671-5578\"}, \"qc_report\": {\"issued_at\": \"2026-08-30T22:00:00+00:00\", \"report_no\": \"QC-2026-0830-039\", \"result\": \"defect\"}, \"qty\": 20, \"unit_price\": 251.81}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1012",
+   "version": 1,
+   "sku": "SKU-BRG-6204",
+   "amount_paid": 5844.0,
+   "paid_at": "2026-04-18T05:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2026-04-24T05:00:00+00:00\", \"tracking_no\": \"SF-2959-1039-4837\"}, \"qty\": 120, \"unit_price\": 48.7}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1013",
+   "version": 1,
+   "sku": "SKU-BRG-6308",
+   "amount_paid": 88247.28,
+   "paid_at": "2026-09-06T11:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-09-09T11:00:00+00:00\", \"tracking_no\": \"SF-8515-7864-5980\"}, \"qty\": 4, \"unit_price\": 211.7}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1014",
+   "version": 1,
+   "sku": "SKU-FLG-DN80",
+   "amount_paid": 25863.61,
+   "paid_at": "2026-03-10T04:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"qty\": 24, \"unit_price\": 78.84}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1015",
+   "version": 1,
+   "sku": "SKU-FLG-DN150",
+   "amount_paid": 2609.8,
+   "paid_at": "2026-03-19T23:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"qty\": 200, \"unit_price\": 425.78}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1016",
+   "version": 1,
+   "sku": "SKU-GSK-DN80",
+   "amount_paid": 2348.0,
+   "paid_at": "2026-02-06T01:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"qc_report\": {\"issued_at\": \"2026-02-15T01:00:00+00:00\", \"report_no\": \"QC-2026-0215-059\", \"result\": \"defect\"}, \"qty\": 200, \"unit_price\": 11.74}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1017",
+   "version": 1,
+   "sku": "SKU-ORING-45",
+   "amount_paid": 105787.5,
+   "paid_at": "2026-04-02T11:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-04-08T11:00:00+00:00\", \"tracking_no\": \"SF-6392-4230-6189\"}, \"qc_report\": {\"issued_at\": \"2026-04-19T11:00:00+00:00\", \"report_no\": \"QC-2026-0419-049\", \"result\": \"defect\"}, \"qty\": 50, \"unit_price\": 5.79}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1018",
+   "version": 1,
+   "sku": "SKU-SEAL-90",
+   "amount_paid": 26296.0,
+   "paid_at": "2026-08-08T04:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"qc_report\": {\"issued_at\": \"2026-08-21T04:00:00+00:00\", \"report_no\": \"QC-2026-0821-042\", \"result\": \"defect\"}, \"qty\": 200, \"unit_price\": 131.48}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1019",
+   "version": 1,
+   "sku": "SKU-CPL-ML95",
+   "amount_paid": 58956.0,
+   "paid_at": "2026-08-14T11:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"qty\": 120, \"unit_price\": 491.3}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1020",
+   "version": 1,
+   "sku": "SKU-RDC-NMRV63",
+   "amount_paid": 2343.43,
+   "paid_at": "2026-03-03T03:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2026-03-07T03:00:00+00:00\", \"tracking_no\": \"SF-5505-5516-5728\"}, \"qty\": 200, \"unit_price\": 1339.59}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1021",
+   "version": 1,
+   "sku": "SKU-MTR-Y2-90L",
+   "amount_paid": 985.48,
+   "paid_at": "2025-12-06T16:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2025-12-09T16:00:00+00:00\", \"tracking_no\": \"SF-3812-3143-3895\"}, \"qty\": 60, \"unit_price\": 952.0}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1022",
+   "version": 1,
+   "sku": "SKU-SNS-PT100",
+   "amount_paid": 97342.59,
+   "paid_at": "2026-03-21T11:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-03-24T11:00:00+00:00\", \"tracking_no\": \"SF-7691-7558-4621\"}, \"qty\": 1, \"unit_price\": 252.59}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1023",
+   "version": 1,
+   "sku": "SKU-CYL-SC63",
+   "amount_paid": 123572.61,
+   "paid_at": "2026-07-24T23:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-07-27T23:00:00+00:00\", \"tracking_no\": \"SF-4901-2124-5206\"}, \"qc_report\": {\"issued_at\": \"2026-08-05T23:00:00+00:00\", \"report_no\": \"QC-2026-0805-033\", \"result\": \"defect\"}, \"qty\": 10, \"unit_price\": 234.56}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1024",
+   "version": 1,
+   "sku": "SKU-BRG-6204",
+   "amount_paid": 112293.75,
+   "paid_at": "2026-02-07T15:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2026-02-15T15:00:00+00:00\", \"tracking_no\": \"SF-5551-1577-8777\"}, \"qty\": 12, \"unit_price\": 85.19}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1025",
+   "version": 1,
+   "sku": "SKU-BRG-6308",
+   "amount_paid": 569.16,
+   "paid_at": "2026-01-26T14:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"logistics\": {\"carrier\": \"顺丰速运\", \"signed_at\": \"2026-01-31T14:00:00+00:00\", \"tracking_no\": \"SF-1396-1926-2808\"}, \"qty\": 4, \"unit_price\": 142.29}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1026",
+   "version": 1,
+   "sku": "SKU-FLG-DN80",
+   "amount_paid": 2348.16,
+   "paid_at": "2026-08-21T15:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-08-29T15:00:00+00:00\", \"tracking_no\": \"SF-4081-5214-2605\"}, \"qc_report\": {\"issued_at\": \"2026-09-07T15:00:00+00:00\", \"report_no\": \"QC-2026-0907-016\", \"result\": \"pass\"}, \"qty\": 24, \"unit_price\": 97.84}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1027",
+   "version": 1,
+   "sku": "SKU-FLG-DN150",
+   "amount_paid": 5965.44,
+   "paid_at": "2026-04-22T21:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"logistics\": {\"carrier\": \"顺丰速运\", \"signed_at\": \"2026-04-24T21:00:00+00:00\", \"tracking_no\": \"SF-8768-8831-6948\"}, \"qty\": 24, \"unit_price\": 248.56}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1028",
+   "version": 1,
+   "sku": "SKU-GSK-DN80",
+   "amount_paid": 100952.31,
+   "paid_at": "2026-04-26T05:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2026-04-30T05:00:00+00:00\", \"tracking_no\": \"SF-8460-6629-7271\"}, \"qty\": 60, \"unit_price\": 11.98}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1029",
+   "version": 1,
+   "sku": "SKU-ORING-45",
+   "amount_paid": 126699.54,
+   "paid_at": "2026-07-07T23:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-07-16T23:00:00+00:00\", \"tracking_no\": \"SF-3379-1106-1377\"}, \"qty\": 20, \"unit_price\": 4.85}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1030",
+   "version": 1,
+   "sku": "SKU-SEAL-90",
+   "amount_paid": 2500.08,
+   "paid_at": "2026-05-10T15:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-05-13T15:00:00+00:00\", \"tracking_no\": \"SF-3387-8675-6933\"}, \"qc_report\": {\"issued_at\": \"2026-05-19T15:00:00+00:00\", \"report_no\": \"QC-2026-0519-003\", \"result\": \"defect\"}, \"qty\": 24, \"unit_price\": 104.17}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1031",
+   "version": 1,
+   "sku": "SKU-CPL-ML95",
+   "amount_paid": 3111.52,
+   "paid_at": "2026-02-21T16:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-02-24T16:00:00+00:00\", \"tracking_no\": \"SF-6414-6279-5885\"}, \"qty\": 4, \"unit_price\": 777.88}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1032",
+   "version": 1,
+   "sku": "SKU-RDC-NMRV63",
+   "amount_paid": 10202.96,
+   "paid_at": "2026-01-01T16:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-01-10T16:00:00+00:00\", \"tracking_no\": \"SF-1920-1393-6024\"}, \"qty\": 8, \"unit_price\": 1275.37}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1033",
+   "version": 1,
+   "sku": "SKU-MTR-Y2-90L",
+   "amount_paid": 32823.5,
+   "paid_at": "2026-06-07T10:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-06-11T10:00:00+00:00\", \"tracking_no\": \"SF-5243-7802-8513\"}, \"qc_report\": {\"issued_at\": \"2026-06-13T10:00:00+00:00\", \"report_no\": \"QC-2026-0613-090\", \"result\": \"defect\"}, \"qty\": 50, \"unit_price\": 656.47}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1034",
+   "version": 1,
+   "sku": "SKU-SNS-PT100",
+   "amount_paid": 125935.55,
+   "paid_at": "2025-11-26T06:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"qc_report\": {\"issued_at\": \"2025-12-14T06:00:00+00:00\", \"report_no\": \"QC-2025-1214-084\", \"result\": \"pass\"}, \"qty\": 2, \"unit_price\": 209.82}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1035",
+   "version": 1,
+   "sku": "SKU-CYL-SC63",
+   "amount_paid": 2292.64,
+   "paid_at": "2026-08-02T12:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-08-06T12:00:00+00:00\", \"tracking_no\": \"SF-8490-1490-3901\"}, \"qc_report\": {\"issued_at\": \"2026-08-16T12:00:00+00:00\", \"report_no\": \"QC-2026-0816-010\", \"result\": \"defect\"}, \"qty\": 8, \"unit_price\": 286.58}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1036",
+   "version": 1,
+   "sku": "SKU-BRG-6204",
+   "amount_paid": 1229.8,
+   "paid_at": "2025-11-27T03:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2025-11-30T03:00:00+00:00\", \"tracking_no\": \"SF-9050-5767-8393\"}, \"qty\": 20, \"unit_price\": 61.49}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1037",
+   "version": 1,
+   "sku": "SKU-BRG-6308",
+   "amount_paid": 53161.65,
+   "paid_at": "2026-01-22T21:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-01-31T21:00:00+00:00\", \"tracking_no\": \"SF-8517-6281-9027\"}, \"qty\": 4, \"unit_price\": 155.06}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1038",
+   "version": 1,
+   "sku": "SKU-FLG-DN80",
+   "amount_paid": 44496.98,
+   "paid_at": "2026-01-21T23:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-01-30T23:00:00+00:00\", \"tracking_no\": \"SF-2121-4667-3051\"}, \"qty\": 12, \"unit_price\": 78.69}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1039",
+   "version": 1,
+   "sku": "SKU-FLG-DN150",
+   "amount_paid": 16220.0,
+   "paid_at": "2025-11-29T02:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"qty\": 50, \"unit_price\": 324.4}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1040",
+   "version": 1,
+   "sku": "SKU-GSK-DN80",
+   "amount_paid": 501.0,
+   "paid_at": "2026-05-07T06:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-05-13T06:00:00+00:00\", \"tracking_no\": \"SF-1720-3010-2824\"}, \"qty\": 60, \"unit_price\": 8.35}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1041",
+   "version": 1,
+   "sku": "SKU-ORING-45",
+   "amount_paid": 313.0,
+   "paid_at": "2026-04-20T17:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"logistics\": {\"carrier\": \"顺丰速运\", \"signed_at\": \"2026-04-24T17:00:00+00:00\", \"tracking_no\": \"SF-9951-2422-8306\"}, \"qty\": 50, \"unit_price\": 6.26}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1042",
+   "version": 1,
+   "sku": "SKU-SEAL-90",
+   "amount_paid": 142282.54,
+   "paid_at": "2025-10-24T20:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2025-11-02T20:00:00+00:00\", \"tracking_no\": \"SF-3028-9636-8053\"}, \"qty\": 12, \"unit_price\": 148.73}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1043",
+   "version": 1,
+   "sku": "SKU-CPL-ML95",
+   "amount_paid": 9319.0,
+   "paid_at": "2026-06-26T01:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-07-02T01:00:00+00:00\", \"tracking_no\": \"SF-2333-1041-8063\"}, \"qty\": 20, \"unit_price\": 465.95}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1044",
+   "version": 1,
+   "sku": "SKU-RDC-NMRV63",
+   "amount_paid": 11133.8,
+   "paid_at": "2026-02-12T16:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-02-18T16:00:00+00:00\", \"tracking_no\": \"SF-4948-6743-7582\"}, \"qty\": 10, \"unit_price\": 1113.38}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1045",
+   "version": 1,
+   "sku": "SKU-MTR-Y2-90L",
+   "amount_paid": 1135.98,
+   "paid_at": "2026-03-27T12:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"qty\": 1, \"unit_price\": 1135.98}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1046",
+   "version": 1,
+   "sku": "SKU-SNS-PT100",
+   "amount_paid": 914.84,
+   "paid_at": "2026-01-04T22:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-01-10T22:00:00+00:00\", \"tracking_no\": \"SF-5746-5948-2864\"}, \"qc_report\": {\"issued_at\": \"2026-01-22T22:00:00+00:00\", \"report_no\": \"QC-2026-0122-022\", \"result\": \"defect\"}, \"qty\": 4, \"unit_price\": 228.71}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1047",
+   "version": 1,
+   "sku": "SKU-CYL-SC63",
+   "amount_paid": 15176.5,
+   "paid_at": "2026-01-06T01:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"qty\": 50, \"unit_price\": 303.53}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1048",
+   "version": 1,
+   "sku": "SKU-BRG-6204",
+   "amount_paid": 20450.57,
+   "paid_at": "2026-08-12T05:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-08-20T05:00:00+00:00\", \"tracking_no\": \"SF-4319-3385-2146\"}, \"qty\": 40, \"unit_price\": 58.61}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1049",
+   "version": 1,
+   "sku": "SKU-BRG-6308",
+   "amount_paid": 40792.23,
+   "paid_at": "2025-12-12T22:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2025-12-20T22:00:00+00:00\", \"tracking_no\": \"SF-1469-8943-1093\"}, \"qc_report\": {\"issued_at\": \"2025-12-22T22:00:00+00:00\", \"report_no\": \"QC-2025-1222-041\", \"result\": \"defect\"}, \"qty\": 4, \"unit_price\": 171.61}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1050",
+   "version": 1,
+   "sku": "SKU-FLG-DN80",
+   "amount_paid": 219.74,
+   "paid_at": "2026-01-30T11:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"qty\": 2, \"unit_price\": 109.87}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1051",
+   "version": 1,
+   "sku": "SKU-FLG-DN150",
+   "amount_paid": 2469.28,
+   "paid_at": "2026-04-13T18:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-04-19T18:00:00+00:00\", \"tracking_no\": \"SF-9545-1993-6593\"}, \"qty\": 8, \"unit_price\": 308.66}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1052",
+   "version": 1,
+   "sku": "SKU-GSK-DN80",
+   "amount_paid": 94751.26,
+   "paid_at": "2026-05-20T01:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"中通快运\", \"signed_at\": \"2026-05-29T01:00:00+00:00\", \"tracking_no\": \"SF-2717-3408-2842\"}, \"qty\": 4, \"unit_price\": 9.15}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1053",
+   "version": 1,
+   "sku": "SKU-ORING-45",
+   "amount_paid": 137335.38,
+   "paid_at": "2026-05-23T08:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"qty\": 24, \"unit_price\": 7.41}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1054",
+   "version": 1,
+   "sku": "SKU-SEAL-90",
+   "amount_paid": 84834.68,
+   "paid_at": "2026-02-08T08:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"京东物流\", \"signed_at\": \"2026-02-15T08:00:00+00:00\", \"tracking_no\": \"SF-6909-6696-3166\"}, \"qty\": 4, \"unit_price\": 157.45}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1055",
+   "version": 1,
+   "sku": "SKU-CPL-ML95",
+   "amount_paid": 4309.33,
+   "paid_at": "2026-08-02T15:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0057\", \"qty\": 100, \"unit_price\": 350.57}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1056",
+   "version": 1,
+   "sku": "SKU-RDC-NMRV63",
+   "amount_paid": 3176.84,
+   "paid_at": "2026-06-26T18:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 2,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0061\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-07-05T18:00:00+00:00\", \"tracking_no\": \"SF-7404-2280-9066\"}, \"qc_report\": {\"issued_at\": \"2026-07-06T18:00:00+00:00\", \"report_no\": \"QC-2026-0706-041\", \"result\": \"defect\"}, \"qty\": 200, \"unit_price\": 1176.14}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1057",
+   "version": 1,
+   "sku": "SKU-MTR-Y2-90L",
+   "amount_paid": 114404.88,
+   "paid_at": "2026-01-28T16:00:00+00:00",
+   "channel_id": "ch-online",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0073\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-01-31T16:00:00+00:00\", \"tracking_no\": \"SF-5645-8302-9022\"}, \"qty\": 2, \"unit_price\": 894.73}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1058",
+   "version": 1,
+   "sku": "SKU-SNS-PT100",
+   "amount_paid": 68640.02,
+   "paid_at": "2026-03-13T05:00:00+00:00",
+   "channel_id": "ch-tmall",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0088\", \"logistics\": {\"carrier\": \"跨越速运\", \"signed_at\": \"2026-03-19T05:00:00+00:00\", \"tracking_no\": \"SF-5424-6751-1354\"}, \"qty\": 8, \"unit_price\": 201.07}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "order_id": "ORD-2026-1059",
+   "version": 1,
+   "sku": "SKU-CYL-SC63",
+   "amount_paid": 15780.5,
+   "paid_at": "2026-03-24T08:00:00+00:00",
+   "channel_id": "ch-dealer",
+   "policy_version_at_order": 1,
+   "payload_json": "{\"customer_id\": \"CUS-2026-0094\", \"qty\": 50, \"unit_price\": 315.61}",
+   "read_at": "2026-09-10T00:00:00+00:00"
+  }
+ ],
+ "policy_rule": [
+  {
+   "tenant_id": "tnt-demo",
+   "rule_no": "AS-001",
+   "version": 1,
+   "title": "无理由退货期（30 天）",
+   "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 30, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+   "effective_from": "2025-01-01T00:00:00+00:00",
+   "effective_to": null,
+   "channel_scope": "*",
+   "sku_scope": "*"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "rule_no": "AS-001",
+   "version": 2,
+   "title": "无理由退货期收窄至 15 天并扣 2% 手续费",
+   "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 15, \"refund_ratio\": \"0.98\", \"rule_kind\": \"no_reason_return\"}",
+   "effective_from": "2026-06-01T00:00:00+00:00",
+   "effective_to": null,
+   "channel_scope": "*",
+   "sku_scope": "*"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "rule_no": "AS-002",
+   "version": 1,
+   "title": "质保期内质量问题全额退",
+   "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+   "effective_from": "2025-01-01T00:00:00+00:00",
+   "effective_to": null,
+   "channel_scope": "*",
+   "sku_scope": "*"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "rule_no": "AS-002",
+   "version": 2,
+   "title": "质保期内质量问题全额退（含上门检测费）",
+   "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+   "effective_from": "2026-06-01T00:00:00+00:00",
+   "effective_to": null,
+   "channel_scope": "*",
+   "sku_scope": "*"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "rule_no": "AS-003",
+   "version": 1,
+   "title": "发错货全额退并免手续费",
+   "body": "{\"applies_when\": {\"reason_code\": [\"wrong_item\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"wrong_item\"}",
+   "effective_from": "2025-01-01T00:00:00+00:00",
+   "effective_to": null,
+   "channel_scope": "*",
+   "sku_scope": "*"
+  }
+ ],
+ "customer": [
+  {
+   "tenant_id": "tnt-demo",
+   "customer_id": "CUS-2026-0042",
+   "name": "杭州锐驰机电有限公司"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "customer_id": "CUS-2026-0057",
+   "name": "宁波恒信传动设备有限公司"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "customer_id": "CUS-2026-0061",
+   "name": "苏州华工自动化科技有限公司"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "customer_id": "CUS-2026-0073",
+   "name": "台州百晟液压件厂"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "customer_id": "CUS-2026-0088",
+   "name": "无锡中远流体设备有限公司"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "customer_id": "CUS-2026-0094",
+   "name": "常州精锐工业装备有限公司"
+  }
+ ],
+ "refund_history": [
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1000-H1",
+   "order_id": "ORD-2026-1000",
+   "customer_id": "CUS-2026-0042",
+   "amount": 37.05,
+   "status": "settled",
+   "decided_at": "2026-04-06T16:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1001-H2",
+   "order_id": "ORD-2026-1001",
+   "customer_id": "CUS-2026-0057",
+   "amount": 0.0,
+   "status": "rejected",
+   "decided_at": "2025-04-15T07:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1003-H3",
+   "order_id": "ORD-2026-1003",
+   "customer_id": "CUS-2026-0073",
+   "amount": 53644.18,
+   "status": "pending",
+   "decided_at": "2025-06-16T16:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1009-H4",
+   "order_id": "ORD-2026-1009",
+   "customer_id": "CUS-2026-0073",
+   "amount": 0.0,
+   "status": "rejected",
+   "decided_at": "2026-03-14T21:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1012-H5",
+   "order_id": "ORD-2026-1012",
+   "customer_id": "CUS-2026-0042",
+   "amount": 0.0,
+   "status": "rejected",
+   "decided_at": "2026-03-26T05:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1015-H6",
+   "order_id": "ORD-2026-1015",
+   "customer_id": "CUS-2026-0073",
+   "amount": 0.0,
+   "status": "rejected",
+   "decided_at": "2026-02-08T23:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1026-H7",
+   "order_id": "ORD-2026-1026",
+   "customer_id": "CUS-2026-0061",
+   "amount": 1932.25,
+   "status": "settled",
+   "decided_at": "2026-06-14T15:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1031-H8",
+   "order_id": "ORD-2026-1031",
+   "customer_id": "CUS-2026-0057",
+   "amount": 825.73,
+   "status": "settled",
+   "decided_at": "2025-12-26T16:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1037-H9",
+   "order_id": "ORD-2026-1037",
+   "customer_id": "CUS-2026-0057",
+   "amount": 26035.31,
+   "status": "settled",
+   "decided_at": "2025-12-29T21:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1038-H10",
+   "order_id": "ORD-2026-1038",
+   "customer_id": "CUS-2026-0061",
+   "amount": 0.0,
+   "status": "rejected",
+   "decided_at": "2025-07-18T23:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1039-H11",
+   "order_id": "ORD-2026-1039",
+   "customer_id": "CUS-2026-0073",
+   "amount": 6134.06,
+   "status": "settled",
+   "decided_at": "2025-08-14T02:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1042-H12",
+   "order_id": "ORD-2026-1042",
+   "customer_id": "CUS-2026-0042",
+   "amount": 0.0,
+   "status": "rejected",
+   "decided_at": "2025-06-24T20:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1045-H13",
+   "order_id": "ORD-2026-1045",
+   "customer_id": "CUS-2026-0073",
+   "amount": 489.83,
+   "status": "settled",
+   "decided_at": "2025-12-02T12:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1049-H14",
+   "order_id": "ORD-2026-1049",
+   "customer_id": "CUS-2026-0057",
+   "amount": 32351.59,
+   "status": "settled",
+   "decided_at": "2025-08-19T22:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1050-H15",
+   "order_id": "ORD-2026-1050",
+   "customer_id": "CUS-2026-0061",
+   "amount": 187.16,
+   "status": "settled",
+   "decided_at": "2025-07-18T11:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1055-H16",
+   "order_id": "ORD-2026-1055",
+   "customer_id": "CUS-2026-0057",
+   "amount": 0.0,
+   "status": "rejected",
+   "decided_at": "2026-06-08T15:00:00+00:00"
+  },
+  {
+   "tenant_id": "tnt-demo",
+   "case_id": "RC-ORD-2026-1057-H17",
+   "order_id": "ORD-2026-1057",
+   "customer_id": "CUS-2026-0073",
+   "amount": 66670.55,
+   "status": "settled",
+   "decided_at": "2025-10-02T16:00:00+00:00"
+  }
+ ]
+}

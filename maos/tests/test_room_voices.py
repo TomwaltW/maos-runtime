@@ -568,3 +568,46 @@ def test_verdict_card_tolerates_a_verdict_missing_every_field():
     plain, _ = render_verdict_card(messy)
     assert plain.split("\n") == ["合议结论缺失", "  依据：",
                                   "    规则审核岗：批准", "    42"]
+def test_multiline_speech_keeps_its_line_breaks_in_html(fake_nio):
+    """逐条清单在 ``formatted_body`` 里必须各占一行 —— 两种形态都要。
+
+    Matrix 的 ``body`` 是纯文本，``\n`` 在里面就是换行；而 ``formatted_body`` 是
+    HTML，``\n`` 只是空白，浏览器会折叠掉。症状是一份排好的清单在 Element 里
+    流成一大段、`· 第 10 行 …· 第 18 行 …` 首尾相接（2026-09-10 的房间实测）——
+    **发送侧一切正常**，日志里看不出来，只有人盯着房间才发现。
+
+    钉的是「换行进了 html」，不是具体几个 ``<br/>``：名牌那一份自己也带一个。
+    """
+    speech = ("结论一句。\n"
+              "\n"
+              "驳回的 2 单：\n"
+              "· 第 10 行 ORD-A：超窗\n"
+              "· 第 18 行 ORD-B：超窗")
+
+    main = _Channel()
+    voices = open_voices(main, agent_ids=("refund-intake", "refund-policy"),
+                         titles=TITLES,
+                         env=_env(refund_intake=(INTAKE_MXID, SENTINEL_TOKEN)))
+    try:
+        voices.voice("refund-intake").say(speech)       # 独立账号
+        own = fake_nio.instances[-1].sent[-1]
+        assert own["body"] == speech, "plain 那份原样，换行本来就是换行"
+        assert "<br/>· 第 10 行 ORD-A：超窗<br/>· 第 18 行 ORD-B：超窗" in own["formatted_body"]
+        assert "\n" not in own["formatted_body"], "html 里不许留裸换行 —— 它会被折叠"
+
+        voices.voice("refund-policy").say(speech)       # 代言
+        plain, html = main.sent[-1]
+        assert plain.endswith(speech), "plain 那份原样"
+        assert "<br/>· 第 10 行 ORD-A：超窗<br/>· 第 18 行 ORD-B：超窗" in html
+    finally:
+        voices.close()
+
+
+def test_html_block_keeps_escaping_and_indent():
+    """`html_block` 一次干三件事：转义、换行、缩进。少哪一样都不报错。"""
+    from hiclaw.matrix_bus import html_block
+
+    assert html_block("对比 <b>实付</b> & 申报") == "对比 &lt;b&gt;实付&lt;/b&gt; &amp; 申报"
+    assert html_block("头一行\n  缩进两格") == "头一行<br/>&nbsp;&nbsp;缩进两格"
+    # 单行不带换行时与光转义等价 —— 已有那几条钉单行的测试因此不受影响。
+    assert html_block("一句话") == "一句话"

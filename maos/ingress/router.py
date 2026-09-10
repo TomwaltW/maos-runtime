@@ -928,8 +928,37 @@ class IngressRouter:
                 and not t.expired(self.ticket_ttl)]
         lines.append("")
         if live:
-            lines.append("本会话待放行的预检（审批人发 /approve <case_id> 才会执行）：")
-            lines += [f"  · {t.case_id}  {t.summary}  由 {t.requested_by} 提交" for t in live]
+            # 按**裁定结论**分组，而不是把预检过的单子一律叫「待放行」。
+            # 原来 50 单混在一句底下、每行也不带结论，于是「哪几单没批准」这个问题
+            # 模型手里没有答案 —— 它只能从计数推出「4 单没批准」，报不出是哪四单，
+            # 只好让人回去翻申请表回帖。数据一直都在（`Ticket.checked` 是建这个待办
+            # 时那次 preflight 的返回），缺的只是把它说出来。
+            # 结论中文一律走 `rr.DECISION_CN`，不在这一层另写一份映射 ——
+            # 两套口径的症状是同一单在回帖里叫「驳回」、模型嘴里叫「拒绝」。
+            groups: dict[str, list[Ticket]] = {}
+            for t in live:
+                groups.setdefault(str((t.checked or {}).get("decision") or ""), []).append(t)
+            # 固定顺序：批准在前、驳回在后，其余按出现顺序跟在后面。
+            # 靠 dict 的插入序会让同一批单子在两次问话里排出不同的样子。
+            ordered = ["approve", "reject"] + [d for d in groups
+                                               if d not in ("approve", "reject")]
+            for decision in ordered:
+                items = groups.get(decision)
+                if not items:
+                    continue
+                cn = rr.DECISION_CN.get(decision, decision or "未裁定")
+                if decision == "approve":
+                    head = (f"本会话预检裁定{cn}、待放行的 {len(items)} 单"
+                            "（审批人发 /approve <case_id> 才会执行）：")
+                elif decision == "reject":
+                    # 驳回的单子也留着待办（`handle_refund` 那句「如仍要走一次」），
+                    # 但它不是「待放行」—— 说成待放行会让人以为这几单也在等他点头。
+                    head = f"本会话预检裁定{cn}、不予退款的 {len(items)} 单（无需放行）："
+                else:
+                    head = f"本会话预检裁定「{cn}」的 {len(items)} 单："
+                lines.append(head)
+                lines += [f"  · {t.case_id}  {t.summary}  由 {t.requested_by} 提交"
+                          for t in items]
         else:
             lines.append("本会话当前没有待放行的预检")
         waiting = len(self.pending_evidence.peek(msg.channel, msg.chat_id))

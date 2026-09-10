@@ -314,3 +314,89 @@ def test_all_rows_misfiled_is_not_reported_as_zero_problems() -> None:
     assert near_5.search(policy), policy
     # 两张卡说的是同一件事，就不许出现一张说 5、另一张说 0。
     assert "0 行因" not in policy and "填错的 0 行" not in intake
+# --------------------------------------------------------------------------
+# 事实卡要说清「哪一行、为什么」，不能只报数
+# --------------------------------------------------------------------------
+def test_sheet_facts_spell_out_which_row_and_why(approved: tuple[dict, dict],
+                                                 rejected: tuple[dict, dict]) -> None:
+    """填错的行与驳回的单，都要逐条写出行号 / 单号 / 原因。
+
+    真房间 2026-09-10 的现场：50 行表跑完，五岗只念得出「驳回 4 行」，
+    老板追问「哪四单不能过」，一岗都答不上来 —— 判据本来就在 `checked["why"]` 里，
+    只是没进事实卡。而 R1 的约束是「模型只许复述事实卡」：卡里没有的它编不出来，
+    也**不该**编。所以这是事实卡的缺口，不是文案问题。
+    """
+    ok_payload, ok_checked = approved
+    no_payload, no_checked = rejected
+    rows = [
+        {"line": 2, "order_id": ORDER, "reason_raw": "质量问题", "payload": ok_payload,
+         "checked": ok_checked, "error": None, "problems": [], "warnings": []},
+        {"line": 3, "order_id": ORDER, "reason_raw": "无理由", "payload": no_payload,
+         "checked": no_checked, "error": None, "problems": [],
+         "warnings": ["申报 9999 超过订单实付 6800，核算时会按实付封顶"]},
+        {"line": 4, "order_id": "ORD-9999", "reason_raw": "坏了", "payload": None,
+         "checked": None, "error": None,
+         "problems": ["底账里没有订单 ORD-9999"], "warnings": []},
+        {"line": 5, "order_id": ORDER, "reason_raw": "质量问题", "payload": ok_payload,
+         "checked": None, "error": "预检失败：底账政策视图读不到",
+         "problems": [], "warnings": []},
+    ]
+
+    intake, _ = stages.facts_sheet_intake(rows)
+    # 填错的行：行号、单号、原因，三样都要在同一行上。
+    assert "· 第 4 行 ORD-9999（坏了）：底账里没有订单 ORD-9999" in intake
+    # 「进了预检才失败」与「表就填错了」分开摆：后者要人改表，前者不是人的错。
+    assert "· 第 5 行" in intake and "预检失败：底账政策视图读不到" in intake
+    # 不阻断的提示也要点名 —— 只说「1 行带提示」等于没说，而封顶会改变到账金额。
+    assert "· 第 3 行" in intake and "按实付封顶" in intake
+
+    policy, _ = stages.facts_sheet_policy(rows)
+    why = str(no_checked.get("why") or "").strip()
+    assert why, "语料本身要带判据，否则这条测试什么都没钉住"
+    # 判据**照搬**，不在事实卡这一层改写：改写一次，房间里的说法就和回帖对不上了。
+    assert f"· 第 3 行 {ORDER}（无理由）：{why}" in policy
+
+    # 下游三岗**连单号都不转抄**：驳回清单和判据规则岗已经连在一起发过一次，
+    # 下游再点一遍名，同一件事就在房间里出现了四回（`SYSTEM_TMPL` 群内发言规则 2）。
+    # 各岗只留自己新产生的那个范围计数，指路句同样不许有（规则 1、2）。
+    for build in (stages.facts_sheet_evidence, stages.facts_sheet_risk,
+                  stages.facts_sheet_finance):
+        facts, _ = build(rows)
+        assert ORDER not in facts, f"{build.__name__} 又把规则岗的驳回清单抄了一遍"
+        assert why not in facts, f"{build.__name__} 把规则岗的判据又抄了一遍"
+        assert "见规则审核岗" not in facts, f"{build.__name__} 还在往规则岗指路"
+
+
+def test_long_lists_are_capped_and_point_back_to_the_reply() -> None:
+    """清单有盖子：Matrix 一条消息装不下 50 行，读的人也读不完。
+
+    截断**说出来**并指回申请表回帖（那份是逐行全的），不报截掉了几行 ——
+    那个差值不在入参里，报出去就破了「数字都是 rows 的子集」这条。
+    """
+    rows = [{"line": i, "order_id": f"ORD-2026-{i:04d}", "reason_raw": "质量问题",
+             "payload": None, "checked": None, "error": None,
+             "problems": ["底账里没有这个订单"], "warnings": []}
+            for i in range(2, 2 + stages.ROW_CAP + 5)]
+
+    intake, _ = stages.facts_sheet_intake(rows)
+    listed = [ln for ln in intake.splitlines() if ln.startswith("  · 第 ")]
+    assert len(listed) == stages.ROW_CAP
+    assert "余下的同样在申请表回帖里逐行写着" in intake
+    # 计数照报：截断的是清单，不是数字。
+    assert f"表格填错没进预检 {stages.ROW_CAP + 5} 行" in intake
+
+
+def test_pending_line_stops_listing_case_ids_when_there_are_many() -> None:
+    """待放行 46 单时不逐个念 case_id：连成一行 900 多字符，房间里读不完。
+
+    这一句现在**只有规则岗念**（财务岗转抄一遍就是复述上游裁定，见群内发言规则 2），
+    句尾也不许再带「这里不重复」那类交代 —— 那是关于协作本身的元话语（规则 3）。
+    """
+    few = stages._pending_line({"pending_case_ids": ["RC-A", "RC-B"]})
+    assert "RC-A、RC-B" in few
+
+    many = [f"RC-ORD-{i}" for i in range(stages.ROW_CAP + 1)]
+    long = stages._pending_line({"pending_case_ids": many})
+    assert f"待放行 {len(many)} 单" in long
+    assert "RC-ORD-0" not in long, "超过盖子就不许逐个念"
+    assert "申请表回帖" in long, "不念清单，就得说清去哪儿看"

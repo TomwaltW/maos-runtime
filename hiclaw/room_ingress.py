@@ -48,7 +48,8 @@ from maos.core.store import SqliteStore
 from maos.ingress.chat import ChatResponder
 from maos.ingress.contracts import CHANNEL_MATRIX, Attachment, InboundMessage, OutboundMessage
 from maos.ingress.router import DEFAULT_LEDGER, IngressRouter, render_roster
-from hiclaw.matrix_bus import MatrixBusConfig, describe_exc, open_channel
+from hiclaw.matrix_bus import (MatrixBusConfig, describe_exc, html_block,
+                               open_channel)
 
 log = logging.getLogger("maos.room_ingress")
 
@@ -70,18 +71,11 @@ CHUNK_CHARS = 20_000
 ENV_TEAM_PACE_MS = "MAOS_TEAM_PACE_MS"
 
 
-def _html_block(text: str) -> str:
-    """把回帖正文转成 formatted_body：缩进与换行都留住，长行仍能自动折行。
-
-    不用 ``<pre>`` —— 它保住缩进的代价是浏览器一律不折行，于是一段没有换行的
-    长正文（闲聊回话正是这样）会摊成一条横向长条，Element 里左右两头都被裁掉
-    （2026-09-06 实测）。``<br/>`` 负责换行，行首 ``&nbsp;`` 负责缩进，两样都要。
-    """
-    lines = []
-    for line in _esc(text).split("\n"):
-        stripped = line.lstrip(" ")
-        lines.append("&nbsp;" * (len(line) - len(stripped)) + stripped)
-    return "<br/>".join(lines)
+#: 正文转 formatted_body。实现在 `hiclaw/matrix_bus.py` —— 发声面
+#: （`room_voices.RoomVoice._render`）要用同一份，而它 import 不了本模块
+#: （本模块 import 它）。两份实现的症状：一边修好了换行、另一边没有，
+#: 而房间里两条消息看着一样是从同一个程序发出来的。
+_html_block = html_block
 
 
 def split_message(text: str, limit: int = CHUNK_CHARS) -> list[str]:
@@ -261,8 +255,10 @@ class _ProxyVoice:
 
     def say(self, text: str) -> None:
         plain = f"【{self.title} · {self.agent_id}】 {text}"
+        # 正文走 `html_block`（转义 + 换行 + 缩进），与 `room_voices.RoomVoice._render`
+        # 同一份 —— 这是兜底形态，不该比正主少一样。
         html = (f"<p><strong>{_esc(self.title)}</strong> "
-                f"<code>{self.agent_id}</code><br/>{_esc(text)}</p>")
+                f"<code>{self.agent_id}</code><br/>{html_block(text)}</p>")
         self._channel.send(plain, html)
 
 

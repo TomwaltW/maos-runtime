@@ -130,6 +130,9 @@ class PaymentObserveSkill(Skill):
             # 观察本身仍要留痕，否则「网关说失败了」这件事只活在日志里。
             self._record_failure(store, tenant_id, case_id, request_id, receipt,
                                  invocation_id)
+            self._attach_observation_ref(store, extras, tenant_id=tenant_id,
+                                         case_id=case_id, request_id=request_id,
+                                         observed_state="failed")
             return self._out(receipt, case["biz_status"], settled=False,
                              needs_compensation=True, invocation_id=invocation_id,
                              poll_count=poll_count)
@@ -157,11 +160,35 @@ class PaymentObserveSkill(Skill):
             observation=observation,
             reason=f"网关回执 settled（问了 {poll_count} 次，code={receipt.get('code')}）")
 
+        self._attach_observation_ref(store, extras, tenant_id=tenant_id,
+                                     case_id=case_id, request_id=request_id,
+                                     observed_state=status)
         return self._out(receipt, case["biz_status"], settled=True,
                          needs_compensation=False, invocation_id=invocation_id,
                          poll_count=poll_count)
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _attach_observation_ref(store, extras: dict, *, tenant_id: str, case_id: str,
+                                request_id: str, observed_state: str) -> None:
+        """把这次观察挂成一条 `business_ref`（T116）。
+
+        **只在真的落了观察行之后调** —— 上面那条「到顶仍非终态」的早退路径一行观察
+        都不写，那里挂引用就是挂了一条指不到任何行的引用。这不是洁癖：
+        `payment_observation` 是「退款已到账」这句话唯一的 basis（跨轨契约 §D），
+        一条指空的引用会让「查得到到账凭据」在巡检里报绿而实际上什么都没有。
+
+        `object_version` 恒 0：这张表**没有版本列**，它一次观察一行、
+        主键里带着 `observed_at`，「第几次观察」由那个时刻本身记着。
+        """
+        plan_id = str(extras.get("plan_id") or "")
+        task_id = str(extras.get("task_id") or "")
+        if not plan_id or not task_id:
+            return
+        objects.attach_business_ref(
+            store, plan_id=plan_id, task_id=task_id, tenant_id=tenant_id,
+            object_type="payment_observation", object_id=request_id,
+            purpose=f"网关终态观察（{observed_state}）—— 到账结论的唯一依据")
     @staticmethod
     def _record_failure(store, tenant_id: str, case_id: str, request_id: str,
                         receipt: dict, invocation_id: str) -> None:

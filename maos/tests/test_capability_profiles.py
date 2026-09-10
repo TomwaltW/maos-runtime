@@ -58,6 +58,12 @@ BASELINE: frozenset[tuple[str, str]] = frozenset({
     ("skill-unowned", "claim.compensate"),
     ("skill-unowned", "kb.sink"),
     ("skill-unowned", "refund.compensate"),
+    # T116：`refund.snapshot_check` 与上面四条同类 —— 它由 `flows/*` 经一个
+    # 专用 identity 直接调（口径同 `scenario_7.COMPENSATION_IDENTITY`），
+    # 那个 identity 不进 AGENT_POOL，所以体检机看不到持有者。
+    # 处置记在 `docs/BACKLOG.md` 的 `## task-t116`：要真正有主，得让某个
+    # 退款域 Agent 把它收进 allowed_skills，而那是整合期的事。
+    ("skill-unowned", "refund.snapshot_check"),
     ("owner-roles-mismatch", "issue.aggregate"),
     ("owner-roles-mismatch", "policy.match"),
     ("owner-roles-mismatch", "req.normalize"),
@@ -189,7 +195,7 @@ def test_findings_group_counts() -> None:
         "tool-not-declared": 2,          # 甲：coding / testing 的 sandbox
         "depends-tool-missing": 2,       # 丙：code.repo-patch / test.verify（与甲同源）
         "owner-role-unknown": 1,         # 乙：ap.compensate -> ap_compensation
-        "skill-unowned": 4,              # 乙：四个 skill 没有任何角色持有
+        "skill-unowned": 5,              # 乙：五个 skill 没有任何角色持有（T116 +1）
         "owner-roles-mismatch": 3,       # 乙：自述与实际持有者不等
         # 丁 depends-tool-not-allowed 当前 0 条，所以不出现在这张表里
     }

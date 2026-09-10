@@ -29,6 +29,7 @@ from . import payment_observe  # noqa: F401 —— payment.observe
 from . import policy  # noqa: F401 —— policy.match
 from . import reason_classify  # noqa: F401 —— refund.reason_classify（T101）
 from . import risk_screen  # noqa: F401 —— refund.risk_screen
+from . import snapshot_check  # noqa: F401 —— refund.snapshot_check (T116: 付款前读外部当前版本)
 
 #: 本域 skill 的名字清单，测试与场景按它做存在性断言，不在各处抄字面量。
 REFUND_SKILLS = (
@@ -42,4 +43,5 @@ REFUND_SKILLS = (
     "refund.evidence_check",
     "refund.risk_screen",
     "refund.reason_classify",
+    "refund.snapshot_check",
 )

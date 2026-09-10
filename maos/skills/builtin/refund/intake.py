@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from maos.domain.refund import guard, objects
+from maos.domain.refund import case_pack, guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.invoker import SkillInvoker
 from maos.skills.registry import register_skill
@@ -92,6 +92,26 @@ def _applicant_of(payload: dict) -> dict | None:
         raise ValueError(
             "applicant_ref 缺 doc_no：审批单没有单号就没有可引用的外部对象")
     return dict(raw)
+
+
+def _product_version(store, tenant_id: str, sku: str) -> int | None:
+    """本案 SKU 的商品快照版本 —— 取库里最大的那一版。查不到返回 None。
+
+    与政策规则的取法（`objects.policy_rules_at_order` 按 `version <= pinned`）
+    刻意不同：政策有「下单当时锁定哪一版」这个外部事实可依（`order_snapshot`
+    上就有 `policy_version_at_order`），而商品快照没有对应的锁定字段。
+    在没有锁定依据的地方硬造一个（比如"取 ≤ 订单版本的那一版"）是把两个不相干的
+    版本维度焊在一起，那种错没有症状 —— 只是质保月数悄悄取错了一版。
+
+    真要做到「按下单当时的商品快照判质保」，得先有一个 `product_version_at_order`
+    之类的外部事实。已记 `docs/BACKLOG.md` 的 `## task-t116`。
+    """
+    rows = objects.query(
+        store,
+        "SELECT MAX(version) AS v FROM product_snapshot WHERE tenant_id=? AND sku=?",
+        (tenant_id, sku))
+    v = rows[0]["v"] if rows else None
+    return int(v) if v is not None else None
 
 
 def _applicant_purpose(applicant: dict) -> str:
@@ -192,14 +212,25 @@ class RefundIntakeSkill(Skill):
         )
 
         # ---- 证据落库 --------------------------------------------------------
+        # `version` 是 T116 加的列：同一份证据（同 evidence_id）被重新提交时
+        # ——换了更清晰的照片、补了原始文件——主键不变、内容变了，那是同一个对象的
+        # 第二版。版本号**不进出参的 evidence dict**：那份 dict 的键集合有
+        # `test_refund_intake_evidence_kind.py` 逐键钉着，加一个键就是把老调用方
+        # 的形状改了。它落在库里与 `business_ref.object_version` 上，读得到。
         evidence = _evidence_of(signals)
+        evidence_versions: dict[str, int] = {}
         for ev in evidence:
+            version = case_pack.next_version(
+                store, "customer_evidence", tenant_id=case["tenant_id"],
+                case_id=case["case_id"], column="version",
+                evidence_id=ev["evidence_id"])
+            evidence_versions[ev["evidence_id"]] = version
             objects.execute(
                 store,
                 "INSERT OR REPLACE INTO customer_evidence (tenant_id, case_id, evidence_id,"
-                " kind, uri, digest, submitted_at) VALUES (?,?,?,?,?,?,?)",
+                " kind, uri, digest, submitted_at, version) VALUES (?,?,?,?,?,?,?,?)",
                 (case["tenant_id"], case["case_id"], ev["evidence_id"], ev["kind"],
-                 ev["uri"], ev["digest"], C.now_iso()),
+                 ev["uri"], ev["digest"], C.now_iso(), version),
             )
 
         # ---- DAG -> 业务对象：只存引用，不存副本 ------------------------------
@@ -210,6 +241,23 @@ class RefundIntakeSkill(Skill):
             store, plan_id=plan_id, task_id=task_id, tenant_id=case["tenant_id"],
             object_type="order_snapshot", object_id=case["order_id"],
             object_version=case["order_version"], purpose="退款依据的订单快照")
+        # 商品快照（T116）：质保期判定的依据在它的 `warranty_months` 上，
+        # 所以它和订单快照一样是**裁定依据**，一样要带版本挂上去。
+        # 查不到就不挂 —— 挂一条指不到任何行的引用，比不挂更坏（见
+        # `attach_business_ref` 的 docstring：只存引用，读的时候一定读到当前那一份）。
+        product_version = _product_version(store, case["tenant_id"], case["sku"])
+        if product_version is not None:
+            objects.attach_business_ref(
+                store, plan_id=plan_id, task_id=task_id, tenant_id=case["tenant_id"],
+                object_type="product_snapshot", object_id=case["sku"],
+                object_version=product_version, purpose="质保期判定依据的商品快照")
+        # 客户证据（T116）：一份一条引用，带各自的版本。
+        for ev in evidence:
+            objects.attach_business_ref(
+                store, plan_id=plan_id, task_id=task_id, tenant_id=case["tenant_id"],
+                object_type="customer_evidence", object_id=ev["evidence_id"],
+                object_version=evidence_versions[ev["evidence_id"]],
+                purpose=f"客户提交的{ev['kind']}证据")
         if applicant is not None:
             objects.attach_business_ref(
                 store, plan_id=plan_id, task_id=task_id, tenant_id=case["tenant_id"],

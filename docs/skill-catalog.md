@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-注册表里共 **40 个 skill / 40 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
+注册表里共 **41 个 skill / 41 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
 
 失败策略取值域冻结为 `retry`、`fallback`、`escalate`（maos/skills/contract.py:16）。
 
@@ -42,9 +42,10 @@
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:363` |
 | `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:65` |
 | `refund.evidence_check` | `1.0.0` | 制造售后退款域 | `refund_evidence` | escalate | （空） | `maos/skills/builtin/refund/evidence_check.py:109` |
-| `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:110` |
+| `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:130` |
 | `refund.reason_classify` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤1 次） | （空） | `maos/skills/builtin/refund/reason_classify.py:141` |
 | `refund.risk_screen` | `1.0.0` | 制造售后退款域 | `refund_risk` | escalate | （空） | `maos/skills/builtin/refund/risk_screen.py:46` |
+| `refund.snapshot_check` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `order.query` | `maos/skills/builtin/refund/snapshot_check.py:51` |
 | `req.normalize` | `1.0.0` | 软件交付域 | `manager` | retry（≤1 次） | （空） | `maos/skills/builtin/req_normalize.py:51` |
 | `rtv.compensate` | `1.0.0` | 软件交付域 | `rtv_settlement` | escalate | `supplier.rma_submit` | `maos/skills/builtin/rtv/compensate.py:41` |
 | `rtv.dispose` | `1.0.0` | 软件交付域 | `rtv_disposition` | escalate | （空） | `maos/skills/builtin/rtv/dispose.py:50` |
@@ -439,7 +440,7 @@
 | :-- | :-- | :-- |
 | `purpose` | ① 用途 | 通知客户退款处理结果，记 notification；ack 缺失记 needs_followup 但不阻塞 |
 | `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`content`: str（通知正文；缺省按案子状态生成）<br>`channel`: str（默认 sms）<br>`ack`: bool\|str（可选：客户回执时间或 True） |
-| `output_schema` | ③ 输出 | `notification`: dict{tenant_id,case_id,channel,content_digest,sent_at,ack_at}<br>`acked`: bool<br>`needs_followup`: bool（ack 缺失即 True，但不阻塞 Plan）<br>`invocation_id`: str |
+| `output_schema` | ③ 输出 | `notification`: dict{tenant_id,case_id,channel,content_digest,sent_at,ack_at,revision}<br>`public_status`: str（对外三态投影，跨轨契约 §D 的五个字面值之一；此刻没有可对外说的三态时为空串，正文回落内部措辞）<br>`acked`: bool<br>`needs_followup`: bool（ack 缺失即 True，但不阻塞 Plan）<br>`invocation_id`: str |
 | `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
 | `depends_tools` | ⑤ 依赖工具 | （空） |
 | `failure_policy` | ⑥ 失败策略 | retry |
@@ -535,7 +536,7 @@
 
 ### refund.intake @ 1.0.0
 
-实现：`RefundIntakeSkill` @ `maos/skills/builtin/refund/intake.py:110`
+实现：`RefundIntakeSkill` @ `maos/skills/builtin/refund/intake.py:130`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -583,6 +584,23 @@
 | `security_boundary` | ⑦ 安全边界 | 只读入参，不写库、不调模型、不读文件、不碰附件字节；只产出观察与推断（level / score / reasons），不改任何业务状态、不做放行裁定 |
 | `reuse_note` | ⑧ 复用说明 | 任何「按历史行为给一个可解释分档」的场景都可照此写：权重与阈值全在类属性上，调判据不改代码；理由逐条对应一个信号，可直接摆给人看 |
 | `owner_roles` | ⑨ 归属角色 | `refund_risk` |
+
+### refund.snapshot_check @ 1.0.0
+
+实现：`RefundSnapshotCheckSkill` @ `maos/skills/builtin/refund/snapshot_check.py:51`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 付款前读订单系统的当前版本，与本案锁定的订单快照版本比对；不一致即报漂移并落 SnapshotDrift 事件（不改任何业务状态） |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`order_system`: str（已 register_order_system 的名字；缺省 demo-orders）<br>`order_id`: str（可选；缺省取本案 refund_case.order_id）<br>`order_version`: int（可选；缺省取本案 refund_case.order_version） |
+| `output_schema` | ③ 输出 | `drift`: bool（True = 手上的快照版本与外部当前版本对不上，或订单读不到）<br>`snapshot_version`: int（MAOS 手上这份 order_snapshot 的版本）<br>`current_version`: int\|None（外部当前版本；读不到为 None）<br>`current_status`: str（外部订单状态；读不到为空串）<br>`current_amount`: str（外部订单金额；读不到为空串）<br>`snapshot_amount`: str（手上快照里的 amount_paid）<br>`updated_at`: str（外部上次改这笔单的时刻）<br>`reason`: str（漂移的一句话说明；无漂移为空串）<br>`read_error`: str（读订单失败时的原始异常文本；成功为空串）<br>`checked_at`: str<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id` |
+| `depends_tools` | ⑤ 依赖工具 | `order.query` |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读 order_snapshot / refund_case，只调 order.query（工具侧只读，没有改单入口）；**不写任何业务表、不改 biz_status**（铁律 8/9）；漂移的处置是落一条 SnapshotDrift 事件并把判断交给调用方，由它走既有的 gate_needs_human 出口转人工 —— 不加新状态、不加新迁移 |
+| `reuse_note` | ⑧ 复用说明 | 任何「执行前先确认外部依据没变」的场景都可照此写：读当前版本、比对、不一致就停下来问人，不自动按新版往下跑 |
+| `owner_roles` | ⑨ 归属角色 | `refund_payment` |
 
 ### req.normalize @ 1.0.0
 
@@ -746,4 +764,4 @@
 - **回滚**：旧版本从不被覆盖，`get(name, "1.0.0")` 永远拿得到当年那一个。在册版本用 `versions(name)` 列（maos/skills/registry.py:84）。升级期间在跑的旧 Plan 因此行为可复现 —— 这是保留历史版本的**唯一**理由。
 - **质量评估**：每次调用落一条 `SkillInvoked`，`detail` 带 `status` / `duration_ms` / `input_digest` / `output_hash` / `usage`；按 `skill + version` 聚合 event_log 即可得到成功率与耗时分布，无需另建埋点。证据侧由 `scripts/verify.py` 第 1 项做哈希一致性重放。
 
-当前在册的 40 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。
+当前在册的 41 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。

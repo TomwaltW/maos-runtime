@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from maos.domain.refund import guard, objects
+from maos.domain.refund import case_pack, guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
 
@@ -149,6 +149,12 @@ class FinanceSettleSkill(Skill):
             "excluded_rules": excluded,
         }
 
+        # `revision` 是 T116 加的列：这张表主键是 `(tenant_id, case_id)`，
+        # 二次核算会 `INSERT OR REPLACE` 把前一版**挤掉** —— 修订号是那条被挤掉的
+        # 链上唯一留下来的东西。所以它必须取 `MAX(revision)+1` 而不是行数+1
+        # （行数恒为 1，第三次核算会与第二次撞号，见 `case_pack.next_version`）。
+        revision = case_pack.next_version(store, "finance_entry",
+                                          tenant_id=tenant_id, case_id=case_id)
         entry = {
             "tenant_id": tenant_id,
             "case_id": case_id,
@@ -158,17 +164,32 @@ class FinanceSettleSkill(Skill):
             "checked_by": getattr(getattr(ctx, "identity", None), "agent_id", "") or
                           self.contract.name,
             "checked_at": C.now_iso(),
+            "revision": revision,
         }
 
         # 库表与产物同一份数据：下面这两处都用 entry，谁也不许各造一份（F-1 反例）。
         objects.execute(
             store,
             "INSERT OR REPLACE INTO finance_entry (tenant_id, case_id, amount_approved,"
-            " breakdown_json, rule_refs, checked_by, checked_at) VALUES (?,?,?,?,?,?,?)",
+            " breakdown_json, rule_refs, checked_by, checked_at, revision)"
+            " VALUES (?,?,?,?,?,?,?,?)",
             (entry["tenant_id"], entry["case_id"], entry["amount_approved"],
              entry["breakdown_json"], entry["rule_refs"], entry["checked_by"],
-             entry["checked_at"]),
+             entry["checked_at"], entry["revision"]),
         )
+
+        # ---- DAG -> 业务对象（T116）------------------------------------------
+        # 核算是十类业务对象里的一类，之前一条引用都没有 —— 只能靠 artifact 里的
+        # case_id 间接找。挂上之后「哪个 Task 产出了本案的核算、第几版」查得到。
+        extras = getattr(ctx, "extras", None) or {}
+        plan_id = str(extras.get("plan_id") or "")
+        task_id = str(extras.get("task_id") or "")
+        if plan_id and task_id:
+            objects.attach_business_ref(
+                store, plan_id=plan_id, task_id=task_id, tenant_id=tenant_id,
+                object_type="finance_entry", object_id=case_id,
+                object_version=revision,
+                purpose=f"本案的财务核算（第 {revision} 版，核准 {approved}）")
 
         return {
             "finance_entry": entry,

@@ -58,6 +58,9 @@ COVERED = {
     "scenarios/custom/ledger.json",
     "scenarios/refund/cases/case_r4a.json",
     "scenarios/refund/cases/case_r4b.json",
+    # T116 的十类齐单案例包。租户只有 tnt-mfg-a，policy_rule 八行逐字段取自
+    # policy/policy_rules.json（唯一事实源），抬头 `_rule_no_scope` 已写。
+    "scenarios/refund/cases/case_real_01.json",
     "scenarios/refund/policy/policy_rules.json",
 }
 

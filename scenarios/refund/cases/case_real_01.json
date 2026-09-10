@@ -1,0 +1,288 @@
+{
+  "_note": "十类业务对象齐备的**单案例包**（T116）。与 case_r3/r4/r6 那五份对照 case 的分工是硬的：那五份各自只放一个变量、带 `_expected` 判据、由 flows/contrast.py 跑；本文件不做对照，它回答的是另一个问题——「同一个业务案例，十类对象长什么样、怎么串起来」。入口是 python3 scripts/run_case.py scenarios/refund/cases/case_real_01.json，加载与校验在 maos/domain/refund/case_pack.py。\n\n剧情：华东精密制造经由区域经销商售出一台无刷角磨机，客户签收后第 15 天报质量问题（空载异响 + 转速不稳）。证据四份：开箱视频、故障照片两张、购买凭证。订单下单时锁定政策 v2，命中 AS-002@v2「质保期内质量问题全额退」，全额 1280.00 原路退回；经销渠道另命中 AS-004@v2，因此多一步渠道商核销、审批人是区域经理。\n\n**本文件是占位数据**：真案例由人类在 2026-09-14 提供，届时**只换数据不改结构**。哪些字段是构造的、真数据来了怎么替，见 `_placeholder_fields` 与 scenarios/refund/README.md 的「脱敏规范」一节。",
+
+  "_provenance": "按行业惯例构造的合成数据，**不得作为真实企业数据引用**。policy_rule 八行逐字段取自 scenarios/refund/policy/policy_rules.json（唯一事实源，README 自校验第 3 条守着两处不分叉），tenant / channel 两块同样取自那里。网关错误码与回执语义取自支付宝开放平台 alipay.trade.refund 官方错误码表（出处见 maos/tools/gateway_codes.py 的 SOURCES / SRC_REFUND_API 常量）。",
+
+  "_rule_no_scope": "本文件的 AS-00x 编号只在租户 tnt-mfg-a 范围内有意义。同一个编号在别的租户语料里指的是另一条规则 —— 跨语料引用规则号前先看租户。具体地：本文件的 AS-003 是「人为损坏免责」（rule_kind=artificial_damage_exclusion），而 scenarios/custom/ledger.json 里租户 tnt-demo 的 AS-003 是「发错货全额退」（rule_kind=wrong_item）—— 两者毫无关系。对照表见 scenarios/refund/README.md。",
+
+  "_ten_objects": "十类业务对象与本文件顶层块的对应（评委第二条建议的原话顺序）。清单的机器版在 maos/domain/refund/case_pack.py::TEN_OBJECTS，缺一块 load_case_pack() 当场抛：1 退款申请 -> case；2 订单与商品快照 -> order_snapshot + product_snapshot；3 质保与退货规则 -> policy_rule；4 客户证据 -> customer_evidence；5 主管审批 -> approval_record；6 财务核算 -> finance_entry；7 退款请求 -> refund_request；8 支付网关观察 -> payment_observation；9 客户通知 -> notification；10 人工补偿 -> compensation_record。",
+
+  "_expected_blocks": "后六块（approval_record / finance_entry / refund_request / payment_observation / notification / compensation_record）是**预期值，不灌库** —— 它们由流程真跑出来。灌进去等于替流程把答案先写好，跑完再比对就永远一致，一条不会失败的验收比没有验收更坏。分界钉在 case_pack.EXPECTED_BLOCKS，并由 case_pack.assert_expected_blocks_are_not_seeded() 守着。运行时才知道的值（request_id / content_digest / actor_invocation_id / 各 *_at 时刻）在预期块里写成 `<runtime>` 占位，比对时按键跳过。",
+
+  "_placeholder_fields": "换真案例时要改的构造字段，逐条列出以免漏改：① 客户身份四项在 order_snapshot[0].payload_json 里（customer_name / phone / address / receipt_no），**已按 README 的脱敏规范打码**；② order_id / case_id / sku 三个编号是编的；③ 金额 1280.00 与 paid_at / requested_at 两个时刻是编的（窗口结论随它们变）；④ 证据的 uri 与 digest 是编的（oss:// 路径与 sha256:demo-* 前缀都不是真的）；⑤ 审批人姓名（approval_record[].approver）是编的。**不要动的**：policy_rule 八行（取自唯一事实源）、tenant / channel 两块、以及所有列名。",
+
+  "requested_at": "2026-09-04T03:30:00+00:00",
+
+  "gateway": {
+    "settle_after": 2,
+    "fail_with": null
+  },
+
+  "tenant": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "name": "华东精密制造（租户 A）",
+      "region": "cn-hangzhou"
+    }
+  ],
+
+  "channel": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "channel_id": "ch-online",
+      "kind": "marketplace",
+      "name": "官方自营旗舰店"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "channel_id": "ch-dealer",
+      "kind": "dealer",
+      "name": "区域经销商"
+    }
+  ],
+
+  "product_snapshot": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "sku": "SKU-AG-125B",
+      "version": 1,
+      "name": "无刷角磨机 125mm",
+      "category": "power_tool",
+      "warranty_months": 24,
+      "payload_json": "{\"rated_power_w\": 1050, \"no_load_rpm\": 11000, \"brushless\": true}"
+    }
+  ],
+
+  "order_snapshot": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "order_id": "ORD-2026-AG-0413",
+      "version": 1,
+      "sku": "SKU-AG-125B",
+      "amount_paid": 1280.0,
+      "paid_at": "2026-08-20T02:00:00+00:00",
+      "channel_id": "ch-dealer",
+      "policy_version_at_order": 2,
+      "payload_json": "{\"address\": \"浙江省杭州市余杭区****\", \"customer_name\": \"王**\", \"delivered_at\": \"2026-08-23T08:10:00+00:00\", \"phone\": \"138****6021\", \"receipt_no\": \"DL-2026-****-0413\"}",
+      "read_at": "2026-09-04T03:29:00+00:00"
+    }
+  ],
+
+  "policy_rule": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-001",
+      "version": 1,
+      "title": "无理由退货期（30 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"deduct_fee\": \"0\", \"no_reason_days\": 30, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-001",
+      "version": 2,
+      "title": "无理由退货期（收紧至 7 天）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"no_reason_return\"]}, \"changed_from_v1\": \"no_reason_days 30 -> 7\", \"deduct_fee\": \"0\", \"no_reason_days\": 7, \"refund_ratio\": \"1\", \"rule_kind\": \"no_reason_return\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-002",
+      "version": 1,
+      "title": "质保期内质量问题全额退",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-002",
+      "version": 2,
+      "title": "质保期内质量问题全额退（增质检前置）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"quality_defect\"]}, \"changed_from_v1\": \"新增 require_inspection 前置\", \"deduct_fee\": \"0\", \"refund_ratio\": \"1\", \"require_inspection\": true, \"rule_kind\": \"quality_within_warranty\", \"warranty_basis\": \"product_snapshot.warranty_months\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-003",
+      "version": 1,
+      "title": "人为损坏免责（需图片举证）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"artificial_damage\"]}, \"deduct_fee\": \"0\", \"effect\": \"exclude\", \"evidence_source\": \"customer_evidence\", \"min_evidence_count\": 1, \"refund_ratio\": \"0\", \"requires_evidence_kinds\": [\"image\"], \"rule_kind\": \"artificial_damage_exclusion\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-003",
+      "version": 2,
+      "title": "人为损坏免责（举证收紧：图片或视频 ≥2）",
+      "body": "{\"applies_when\": {\"reason_code\": [\"artificial_damage\"]}, \"changed_from_v1\": \"min_evidence_count 1 -> 2，kinds 增加 video\", \"deduct_fee\": \"0\", \"effect\": \"exclude\", \"evidence_source\": \"customer_evidence\", \"min_evidence_count\": 2, \"refund_ratio\": \"0\", \"requires_evidence_kinds\": [\"image\", \"video\"], \"rule_kind\": \"artificial_damage_exclusion\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "*",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-004",
+      "version": 1,
+      "title": "经销渠道差异（增渠道商核销，区域经理审批）",
+      "body": "{\"approver_role\": \"region_manager\", \"channel_kind\": \"dealer\", \"deduct_fee\": \"0\", \"extra_tasks\": [{\"owner_role\": \"refund_channel\", \"task_key\": \"dealer_writeoff\", \"title\": \"渠道商核销\"}], \"refund_ratio\": \"1\", \"rule_kind\": \"channel_variance\"}",
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "ch-dealer",
+      "sku_scope": "*"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "rule_no": "AS-004",
+      "version": 2,
+      "title": "经销渠道差异（核销 + 双人审批）",
+      "body": "{\"approver_role\": \"region_manager\", \"changed_from_v1\": \"新增 dual_approval\", \"channel_kind\": \"dealer\", \"deduct_fee\": \"0\", \"dual_approval\": true, \"extra_tasks\": [{\"owner_role\": \"refund_channel\", \"task_key\": \"dealer_writeoff\", \"title\": \"渠道商核销\"}], \"refund_ratio\": \"1\", \"rule_kind\": \"channel_variance\"}",
+      "effective_from": "2026-06-01T00:00:00+00:00",
+      "effective_to": null,
+      "channel_scope": "ch-dealer",
+      "sku_scope": "*"
+    }
+  ],
+
+  "customer_evidence": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "evidence_id": "ev-real-01",
+      "kind": "video",
+      "uri": "oss://after-sales/RC-2026-0904-001/unboxing.mp4",
+      "digest": "sha256:demo-unboxing-01",
+      "submitted_at": "2026-09-04T03:31:00+00:00"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "evidence_id": "ev-real-02",
+      "kind": "image",
+      "uri": "oss://after-sales/RC-2026-0904-001/gearbox-noise-01.jpg",
+      "digest": "sha256:demo-gearbox-01",
+      "submitted_at": "2026-09-04T03:32:00+00:00"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "evidence_id": "ev-real-03",
+      "kind": "image",
+      "uri": "oss://after-sales/RC-2026-0904-001/rpm-unstable-02.jpg",
+      "digest": "sha256:demo-rpm-02",
+      "submitted_at": "2026-09-04T03:32:30+00:00"
+    },
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "evidence_id": "ev-real-04",
+      "kind": "document",
+      "uri": "oss://after-sales/RC-2026-0904-001/purchase-receipt.pdf",
+      "digest": "sha256:demo-receipt-04",
+      "submitted_at": "2026-09-04T03:33:00+00:00"
+    }
+  ],
+
+  "case": {
+    "tenant_id": "tnt-mfg-a",
+    "case_id": "RC-2026-0904-001",
+    "channel_id": "ch-dealer",
+    "order_id": "ORD-2026-AG-0413",
+    "order_version": 1,
+    "sku": "SKU-AG-125B",
+    "reason_code": "quality_defect",
+    "amount_claimed": 1280.0
+  },
+
+  "_dual_approval_note": "剧情上这一单该是「售后主管放行 + 财务复核」两个人签字，而下面的 approval_record 只有一条 —— 这不是漏写，是如实：命中的 AS-004@v2 确实带着 `dual_approval: true`，但那个键在 maos/**/*.py 里**没有任何消费方**（同 README 里 min_evidence_count 那一段的处境），所以流程只会落一条审批。预期块写实跑形态、不写剧情形态：写两条会让这份文件与库里对不上，而对不上的那一条恰恰是最该被人看见的差距。已记 docs/BACKLOG.md 的 ## task-t116。",
+
+  "approval_record": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "approver": "沈**（region_manager）",
+      "decision": "approved",
+      "reason": "金额与订单锁定的政策 v2 一致",
+      "decided_at": "<runtime>",
+      "revision": 1
+    }
+  ],
+
+  "finance_entry": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "amount_approved": 1280.0,
+      "breakdown_json": "<runtime>",
+      "rule_refs": "<runtime>",
+      "checked_by": "<runtime>",
+      "checked_at": "<runtime>",
+      "revision": 1
+    }
+  ],
+
+  "refund_request": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "request_id": "<runtime>",
+      "amount": 1280.0,
+      "gateway": "custom-case",
+      "idempotency_key": "rfd-tnt-mfg-a-RC-2026-0904-001",
+      "submitted_at": "<runtime>",
+      "version": 1
+    }
+  ],
+
+  "payment_observation": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "request_id": "<runtime>",
+      "gateway_code": "10000",
+      "raw_receipt_json": "<runtime>",
+      "observed_state": "settled",
+      "observed_at": "<runtime>",
+      "actor_invocation_id": "<runtime>"
+    }
+  ],
+
+  "notification": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "channel": "sms",
+      "content_digest": "<runtime>",
+      "sent_at": "<runtime>",
+      "ack_at": null,
+      "revision": 1
+    }
+  ],
+
+  "compensation_record": [
+    {
+      "tenant_id": "tnt-mfg-a",
+      "case_id": "RC-2026-0904-001",
+      "kind": "manual_ticket",
+      "detail_json": "<runtime>",
+      "executed_at": "<runtime>",
+      "operator": "<runtime>",
+      "revision": 1
+    }
+  ]
+}

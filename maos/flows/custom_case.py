@@ -26,23 +26,52 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
+from maos.agents.base import AgentIdentity
 from maos.agents.manager import ManagerAgent
 from maos.agents.refund import ROLE_FINANCE, ROLE_PAYMENT
 from maos.contracts.events import new_id
 from maos.contracts.states import TaskState
-from maos.domain.refund import fixtures, guard, objects
+from maos.domain.refund import case_pack, fixtures, guard, objects, projection
 from maos.flows import contrast
 from maos.flows.common import build, dump, run_until_settled
-from maos.model.client import select_model_client
+from maos.model.client import Tier, select_model_client
 from maos.runtime.gate import HumanApprovalQueue
 from maos.skills.builtin.refund import _common as C
+from maos.skills.builtin.refund import snapshot_check
+from maos.skills.invoker import SkillInvoker
+from maos.tools import order as order_tools
 from maos.tools.gateway import MockGateway
 
 #: 网关按名取：`task.inputs` 会被 json.dumps，实例塞不进去（`_common.py` 第 3 条）。
 GATEWAY_NAME = "custom-case"
+
+#: 订单系统按名取，同上。
+ORDER_SYSTEM_NAME = "custom-case-orders"
+
+SKILL_SNAPSHOT_CHECK = "refund.snapshot_check"
+
+#: 跑「执行前读外部当前版本」这一步的调用身份。
+#:
+#: 与 `scenario_7.COMPENSATION_IDENTITY` 同一条口径：这一步发生在**规划期**，
+#: 不属于任何一个 Agent 的 ctx —— 那时 DAG 还没排出来，付款岗自然也还没上场。
+#: 造一个最小授权的 identity 走 `SkillInvoker`，而不是直接 `Skill().run()`：
+#: 直接调就没有白名单校验、没有 SkillInvoked 审计行，「执行前真的读了一次」
+#: 这句话就只剩自述 —— 而那正是评委要看的那半句。
+SNAPSHOT_IDENTITY = AgentIdentity(
+    agent_id="refund-snapshot-check",
+    role="refund_payment",
+    duty="付款前读订单系统的当前版本，与本案锁定的快照比对",
+    allowed_skills=frozenset({SKILL_SNAPSHOT_CHECK}),
+    allowed_tools=frozenset({"order.query"}),
+    write_scope=frozenset(),                 # 只读：这一步一个业务表都不写
+    max_risk="L",
+    model_tier=Tier.LIGHT,
+    max_self_repair=0,
+)
 
 #: >1 才能证明「一次 query 不一定够」—— 终态是问出来的，不是一步返回的。
 DEFAULT_SETTLE_AFTER = 2
@@ -142,13 +171,95 @@ def _gateway_of(payload: dict, *, fail_with: str | None) -> MockGateway:
     return MockGateway(settle_after=settle_after, script=script)
 
 
+# --------------------------------------------------- 执行前读外部订单当前版本
+def _order_system_of(payload: dict, seed: dict, *, drift: bool) -> Any:
+    """按输入造订单系统。`drift=True` 时**注入一次外部改单**，版本推高一格。
+
+    外部账本的初值取自案子手上那份快照（同一个 order_id、同一个版本、同一个金额）
+    —— 「一致」这一档必须真的是一致，不是靠 mock 恰好返回了同一个数。
+    `--drift` 那一跑随后调 `amend()` 模拟「客服在退款跑到一半时改了订单」，
+    于是手上的 v1 与外部的 v2 对不上，而这个"对不上"是数据造成的、不是开关造成的。
+    """
+    rows = [r for r in (payload.get("order_snapshot") or [])
+            if str(r.get("order_id")) == str(seed["order_id"])]
+    row = rows[0] if rows else {}
+    system = order_tools.MockOrderSystem()
+    system.ext_order(
+        order_id=str(seed["order_id"]),
+        version=int(row.get("version") or seed["order_version"]),
+        status=order_tools.ORDER_PAID,
+        amount=f"{float(row.get('amount_paid') or 0):.2f}",
+        updated_at=str(row.get("paid_at") or C.now_iso()),
+    )
+    if drift:
+        system.amend(str(seed["order_id"]), status=order_tools.ORDER_AMENDED,
+                     updated_at=C.now_iso())
+    return system
+
+
+def check_snapshot(store, seed: dict, *, plan_id: str, trace_id: str) -> dict:
+    """付款之前先问一次订单系统：我手上这版快照，外面还是不是这一版？
+
+    返回 `refund.snapshot_check` 的出参。**这一步不改任何业务状态**（铁律 8/9）——
+    漂移的处置在调用方：把付款任务的 `effect_risk` 提到 `H`，走既有的
+    `AWAITING_REVIEW -> BLOCKED`（`gate_needs_human`）出口停下来等人。
+    不加新状态、不加新迁移。
+
+    跑在**规划之前**：DAG 的形状取决于漂不漂移，所以这一步必须早于组装 tasks。
+    那时 `refund.intake` 还没建案，所以订单号与版本从 `case_seed` 上显式给
+    （skill 支持这条路径，见它的 run() 注释）。
+    """
+    invoker = SkillInvoker(SNAPSHOT_IDENTITY, store)
+    res = invoker.invoke(SKILL_SNAPSHOT_CHECK, {
+        "tenant_id": str(seed["tenant_id"]), "case_id": str(seed["case_id"]),
+        "order_system": ORDER_SYSTEM_NAME,
+        "order_id": str(seed["order_id"]),
+        "order_version": int(seed["order_version"]),
+    }, extras={"plan_id": plan_id, "trace_id": trace_id, "task_id": ""})
+    if res.status != "ok" or not isinstance(res.output, dict):
+        # 读不出来**不当作一致**：这一步的全部意义就是不放过「依据可能变了」。
+        raise RuntimeError(
+            f"{SKILL_SNAPSHOT_CHECK} 没产出结果：{res.error}；"
+            "执行前读不到订单当前版本时不许默认放行")
+    return res.output
+
+
+#: 人做的状态推进在审计链上的 actor 名。**不借用任何 skill 的名字** ——
+#: 借了就等于让一次人工决定挂在一个它没参与的 skill 名下，
+#: 而 `verify.py` 的 authoritative-fact 那一项正是按 actor 对账的。
+HUMAN_ACTOR = "human.approval"
+
+
+def _reject_case(store, tenant_id: str, case_id: str, who: str) -> dict | None:
+    """主管驳回之后把业务对象推到 `rejected`。已经是终态就什么都不做。
+
+    `rejected` 不在 `guard.AUTHORITATIVE_STATES` 里（那里只有 `settled`），
+    所以人的决定写得进去 —— 权威在外部的是「钱到没到账」，不是「我们批不批」。
+    迁移 `submitted -> rejected` / `approved -> rejected` 本来就在
+    `guard.BIZ_STATUS_FLOW` 里，本函数一条新迁移都不加（铁律 9）。
+    """
+    case = guard.get_case(store, tenant_id, case_id)
+    if case is None or case["biz_status"] not in ("submitted", "approved"):
+        return None
+    return guard.update_biz_status(
+        store, tenant_id, case_id, "rejected", HUMAN_ACTOR, uuid.uuid4().hex,
+        reason=f"{who} 驳回本次退款申请")
+
+
 # ----------------------------------------------------------------- DAG 补支付段
-def _with_payment(tasks: list[dict], *, seed: dict, gateway: str) -> list[dict]:
+def _with_payment(tasks: list[dict], *, seed: dict, gateway: str,
+                  drift: bool = False) -> list[dict]:
     """在核算之后、通知之前插入支付任务。裁定为 reject 时原样返回。
 
     形状照 `flows/scenario_6.py` 的 TASK_PAYMENT：同样**只带网关名不带金额** ——
     申报金额只挂在核算那一步，别的退款任务带上它，就会被第六道闸要求交一份
     自己根本产不出的 finance_entry，闸恒 blocker。
+
+    `drift=True` 时给它挂 `effect_risk="H"`：产物落地（真的把钱退出去）在依据
+    可能已经变了的情况下就是不可逆的高风险动作，Gate 过了也不自动放行。走的是
+    **既有**的那条出口（`control_plane.on_review_verdict` 里 `effect_risk in
+    NEEDS_HUMAN_APPROVAL` 那一支 -> `AWAITING_REVIEW -> BLOCKED`），
+    一个新状态、一条新迁移都没加（铁律 9）。
     """
     finance = next((t for t in tasks if t["role"] == ROLE_FINANCE), None)
     if finance is None:
@@ -163,6 +274,8 @@ def _with_payment(tasks: list[dict], *, seed: dict, gateway: str) -> list[dict]:
         "acceptance": ["发起后不得写 settled", "终态必须由 query 观察得到"],
         "depends_on": [finance["task_id"]], "risk_level": "M",
     }
+    if drift:
+        payment["effect_risk"] = "H"
     notify["depends_on"] = [payment["task_id"]]
     out = list(tasks)
     out.insert(out.index(notify), payment)
@@ -213,8 +326,14 @@ def _blocked_reason(cp, plan_id: str, task_id: str) -> str:
 # --------------------------------------------------------------------- 跑一次
 def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = None,
                 matrix: bool = False, verbose: bool = True,
-                allow_degraded: bool = False) -> dict:
-    """跑一份自定义 case，返回**观测到的事实**（不含任何期望值）。"""
+                allow_degraded: bool = False, drift: bool = False) -> dict:
+    """跑一份自定义 case，返回**观测到的事实**（不含任何期望值）。
+
+    `drift=True` 注入一次外部改单（`--drift`）：订单系统的版本被推高一格，
+    于是付款之前那一步 `refund.snapshot_check` 会报漂移，付款任务停在 BLOCKED
+    等人。**业务状态一个字节都不会因此改变**（铁律 8）——漂移是「停下来问人」，
+    不是一个新的业务状态。
+    """
     seed = fixtures.case_seed_of(payload)
     tenant_id, case_id = str(seed["tenant_id"]), str(seed["case_id"])
 
@@ -237,6 +356,17 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
 
     C.reset_gateways()
     C.register_gateway(GATEWAY_NAME, _gateway_of(payload, fail_with=fail_with))
+    order_tools.reset_order_systems()
+    order_tools.register_order_system(
+        ORDER_SYSTEM_NAME, _order_system_of(payload, seed, drift=drift))
+
+    # id 先生成：下面的 snapshot_check 跑在 `create_plan` **之前**，不先拿到 id，
+    # 它落的 SkillInvoked / ToolInvoked / SnapshotDrift 就只能挂空串，
+    # 成为 trace 里认领不了的游离事件（口径同 `scenario_6` 那段注释）。
+    trace_id, plan_id = new_id("trace"), new_id("plan")
+
+    # ---- 执行前读外部订单当前版本（T116）：付款之前先确认依据没变 ----
+    snapshot = check_snapshot(store, seed, plan_id=plan_id, trace_id=trace_id)
 
     # ---- 规划期读政策：版本锁定 + 渠道过滤，全走冻结口径 ----
     view = contrast.policy_view(store, tenant_id=tenant_id, order_id=str(seed["order_id"]),
@@ -255,13 +385,12 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     tasks = _with_payment(
         contrast.plan_tasks(seed=seed, signals=contrast._signals_of(payload),
                             directives=directives, decision=verdict["decision"]),
-        seed=seed, gateway=GATEWAY_NAME)
+        seed=seed, gateway=GATEWAY_NAME, drift=bool(snapshot["drift"]))
     script["用户请求"] = json.dumps({"tasks": tasks}, ensure_ascii=False)
 
     # ---- Manager 零改动复用：为代码域写的规划器，在退款域照样规划 DAG ----
     goal = contrast.GOAL_TEMPLATE.format(**{k: seed[k] for k in
                                             ("tenant_id", "channel_id", "reason_code")})
-    trace_id, plan_id = new_id("trace"), new_id("plan")
     mgr = ManagerAgent(model, store=store)
     planned = mgr.plan(goal, context={
         "tenant_id": tenant_id, "biz_type": C.BIZ_TYPE, "channel_id": seed["channel_id"],
@@ -279,11 +408,37 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     approvals: list[dict] = []
     human_exits: list[dict] = []
     who = f"{APPROVER}（{directives['approver_role']}）"
+    # 漂移之后**一个都不代跑放行**。
+    #
+    # CLI 代的是「主管照常审批」这一半，而"订单被人改过了，这笔还退不退"不是照常
+    # 审批 —— 那要人去订单系统核对之后才谈得上。代跑它等于把「停下来问人」演成
+    # 「问了个寂寞」。
+    #
+    # **扣住的是核算那一步，而不是付款那一步**，这一点很要紧：`effect_risk=H` 的
+    # 判定发生在 Gate **之后**（`control_plane.on_review_verdict` 里 verdict=="pass"
+    # 那一支），也就是任务已经跑完了才停下来等人放行产物。而退款域的付款任务在
+    # **执行时**就把钱退出去了 —— 只给付款任务挂 `effect_risk=H`，结果是钱照退、
+    # 然后停在 BLOCKED，漂移检查等于什么都没拦住。核算是付款的前置，扣住它，
+    # 付款任务就停在 PENDING 压根不派发，`biz_status` 停在 submitted。
+    # （派单验收 3 的字面是「付款任务落 BLOCKED」，本轨做不到那个字面 + 钱不退
+    #  两全，取了后者 —— 详见 docs/DECISIONS.md 的 ## task-t116。）
+    held_for_drift: set[str] = set()
     for _ in range(MAX_APPROVAL_ROUNDS):
         pending = hq.pending(plan_id)
         if not pending:
             break
+        acted = False
         for blocked in pending:
+            if snapshot["drift"]:
+                if blocked["task_id"] not in held_for_drift:
+                    held_for_drift.add(blocked["task_id"])
+                    human_exits.append({
+                        "task_id": blocked["task_id"], "title": blocked["title"],
+                        "why": _blocked_reason(cp, plan_id, blocked["task_id"]),
+                        "decision": "held_for_drift",
+                    })
+                continue
+            acted = True
             human_exits.append({
                 "task_id": blocked["task_id"], "title": blocked["title"],
                 "why": _blocked_reason(cp, plan_id, blocked["task_id"]),
@@ -292,25 +447,49 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
             if approve:
                 # 顺序不可换：先落 approval_record（人的决定），再放行任务 ——
                 # payment.execute 会核对审批记录，没有它就拒绝发起付款。
-                approvals.append(C.record_approval(
+                approval = C.record_approval(
                     store, tenant_id=tenant_id, case_id=case_id, approver=who,
-                    decision="approved", reason=f"金额与订单锁定的政策 v{view['pinned']} 一致"))
+                    decision="approved", reason=f"金额与订单锁定的政策 v{view['pinned']} 一致")
+                # T116：补修订号 + 把审批挂成一条 business_ref。审批是人的动作，
+                # 落在哪个 Task 上只有这里知道（`_common.record_approval` 拿不到 DAG）。
+                case_pack.stamp_approval_revision(
+                    store, approval, plan_id=plan_id, task_id=blocked["task_id"])
+                approvals.append(approval)
                 hq.decide(blocked["task_id"], approved=True, operator=who,
                           note=f"按 {directives['approver_role']} 权限放行")
             else:
+                # 驳回同样是人的决定，同样要留痕并挂引用 —— 只是不放行任务。
+                # 不落这一条的话，「谁在什么时候驳回了这笔」在库里查不到，
+                # 而客户投诉时要对的第一件事就是它。
+                approval = C.record_approval(
+                    store, tenant_id=tenant_id, case_id=case_id, approver=who,
+                    decision="rejected", reason="主管驳回")
+                case_pack.stamp_approval_revision(
+                    store, approval, plan_id=plan_id, task_id=blocked["task_id"])
+                # 业务对象跟着人的决定走（T116）：状态机里 `submitted -> rejected`
+                # 一直在（`guard.BIZ_STATUS_FLOW`），但**整个退款域没有任何一处写它**
+                # —— 于是驳回之后案子仍停在 submitted，对外投影只能说「还在核定」，
+                # 而实际上已经不予退款了。`rejected` 不是权威终态（那只有 settled），
+                # 所以人的动作写得进去；actor 写成 human.approval 而不是某个 skill，
+                # 因为做这个决定的是人，审计链上不该挂在一个它没参与的 skill 名下。
+                _reject_case(store, tenant_id, case_id, who)
                 hq.decide(blocked["task_id"], approved=False, operator=who, note="主管驳回")
+        if not acted:
+            break                          # 剩下的全被漂移扣住，再跑一轮也是同一批
         run_until_settled(bus, gate, cp, plan_id)
 
     if verbose:
         dump(cp, plan_id, f"自定义 case {case_id}")
     return _observe(store, cp, plan_id, seed=seed, view=view, directives=directives,
                     verdict=verdict, days=days, paid_at=paid_at, requested_at=requested_at,
-                    approvals=approvals, approve=approve, human_exits=human_exits)
+                    approvals=approvals, approve=approve, human_exits=human_exits,
+                    snapshot=snapshot)
 
 
 def _observe(store, cp, plan_id: str, *, seed: dict, view: dict, directives: dict,
              verdict: dict, days: int, paid_at: str, requested_at: str,
-             approvals: list[dict], approve: bool, human_exits: list[dict]) -> dict:
+             approvals: list[dict], approve: bool, human_exits: list[dict],
+             snapshot: dict) -> dict:
     """把这一跑的事实收成一份字典。只读库，不做任何判定。"""
     tenant_id, case_id = str(seed["tenant_id"]), str(seed["case_id"])
 
@@ -319,10 +498,33 @@ def _observe(store, cp, plan_id: str, *, seed: dict, view: dict, directives: dic
 
     entries = q("SELECT * FROM finance_entry WHERE tenant_id=? AND case_id=?")
     breakdown = json.loads(entries[0]["breakdown_json"]) if entries else {}
-    obs = q("SELECT * FROM payment_observation WHERE tenant_id=? AND case_id=?")
+    obs = q("SELECT * FROM payment_observation WHERE tenant_id=? AND case_id=?"
+            " ORDER BY observed_at")
     notes = q("SELECT * FROM notification WHERE tenant_id=? AND case_id=?")
+    approval_rows = q("SELECT * FROM approval_record WHERE tenant_id=? AND case_id=?"
+                      " ORDER BY decided_at")
     case = guard.get_case(store, tenant_id, case_id) or {}
+    # 对外三态由 `projection.public_status` 唯一产出（跨轨契约 §D）——
+    # 这里**不另拼一句话**：拼第二处的症状是两个出口对同一个案子说得不一样，
+    # 而其中一句迟早会在没有观察行的时候说出「已到账」（铁律 8）。
+    drift_events = [
+        e for e in cp.store.list_event_log(plan_id)
+        if e.get("event_type") == snapshot_check.EVENT_SNAPSHOT_DRIFT]
     return {
+        "snapshot_check": {
+            "drift": bool(snapshot["drift"]),
+            "snapshot_version": snapshot["snapshot_version"],
+            "current_version": snapshot["current_version"],
+            "reason": snapshot["reason"],
+            "events": len(drift_events),
+        },
+        "public_status": projection.public_status(
+            str(case.get("biz_status") or ""),
+            bool(q("SELECT request_id FROM refund_request"
+                   " WHERE tenant_id=? AND case_id=? LIMIT 1")),
+            projection.observed_state_of(obs)),
+        "approval_revisions": [int(r["revision"]) for r in approval_rows],
+        "approval_decisions": [str(r["decision"]) for r in approval_rows],
         "case_id": case_id, "tenant_id": tenant_id,
         "channel_id": str(seed["channel_id"]), "reason_code": str(seed["reason_code"]),
         "amount_claimed": seed.get("amount_claimed"),
@@ -345,6 +547,10 @@ def _observe(store, cp, plan_id: str, *, seed: dict, view: dict, directives: dic
         "notifications": [{"channel": n.get("channel"), "acked": bool(n.get("ack_at"))}
                           for n in notes],
         "business_refs": len(objects.list_business_refs(store, plan_id=plan_id)),
+        # 十类业务对象的覆盖体检（T116）。算在 `case_pack.ref_coverage` 一处，
+        # 验收命令 / CLI 输出 / 测试读的都是它 —— 三处各算一遍的话，
+        # 「resolved 10/10」这句话迟早在某一处说错。
+        "business_ref_coverage": case_pack.ref_coverage(store, plan_id=plan_id),
         "plan_id": plan_id, "plan_state": cp.store.get_plan(plan_id)["state"],
         "tasks": [{"task_id": t["task_id"], "role": t["role"], "title": t["title"],
                    "state": t["state"], "attempt": t["attempt"]}

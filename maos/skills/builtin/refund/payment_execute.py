@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 
-from maos.domain.refund import guard, objects
+from maos.domain.refund import case_pack, guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
 from maos.tools.gateway import GATEWAY_REFUND_PORT, register_gateway as register_tool_gateway
@@ -137,12 +137,18 @@ class PaymentExecuteSkill(Skill):
                 "网关在 refund() 里直接返回了终态 settled —— "
                 "这会让「观察与推断分离」失去落点，检查网关实现")
 
+        # `version` 是 T116 加的列。换渠道重发时 `UNIQUE (tenant_id, idempotency_key)`
+        # 会把上一行挤掉（幂等键恒为 `(tenant, case)`，见 `idempotency_key_of`），
+        # 于是"这个案子发起过几次退款请求"这条链只剩版本号记得住。
+        request_version = case_pack.next_version(
+            store, "refund_request", tenant_id=tenant_id, case_id=case_id,
+            column="version")
         objects.execute(
             store,
             "INSERT OR REPLACE INTO refund_request (tenant_id, case_id, request_id, amount,"
-            " gateway, idempotency_key, submitted_at) VALUES (?,?,?,?,?,?,?)",
+            " gateway, idempotency_key, submitted_at, version) VALUES (?,?,?,?,?,?,?,?)",
             (tenant_id, case_id, receipt["request_id"], float(entry["amount_approved"]),
-             gateway_name, key, C.now_iso()),
+             gateway_name, key, C.now_iso(), request_version),
         )
 
         plan_id = str(extras.get("plan_id") or "")
@@ -160,10 +166,15 @@ class PaymentExecuteSkill(Skill):
                 "DELETE FROM business_ref WHERE plan_id=? AND task_id=? AND tenant_id=?"
                 " AND object_type='refund_request' AND object_id<>?",
                 (plan_id, task_id, tenant_id, receipt["request_id"]))
+            # T116 起这条引用**带版本**：`refund_request` 进了
+            # `objects._VERSIONED_REF_TABLES`，resolve 会按 `AND version=?` 收窄。
+            # 不带的话 `object_version` 默认 0，而表上的版本从 1 起 —— 引用当场
+            # 指不到，而且是静默的（`resolve_business_ref` 返回 None，不抛）。
             objects.attach_business_ref(
                 store, plan_id=plan_id, task_id=task_id, tenant_id=tenant_id,
                 object_type="refund_request", object_id=receipt["request_id"],
-                purpose="向网关发起的退款请求")
+                object_version=request_version,
+                purpose=f"向网关发起的退款请求（第 {request_version} 次）")
 
         # ---- 状态推进：受理 -> 处理中，**到此为止** ---------------------------
         if case["biz_status"] == "approved":

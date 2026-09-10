@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from maos.domain.refund.case_pack import TEN_OBJECTS  # noqa: E402
 from maos.flows.custom_case import CaseFileError, RoomNotConnected, run_file  # noqa: E402
 
 BAR = "=" * 68
@@ -70,11 +71,25 @@ def _fmt_notify(row: dict) -> str:
     return f"{len(notes)} 条，{acked}"
 
 
+def _fmt_snapshot(row: dict) -> str:
+    """执行前那一次外部读取。**一致也要打出来** —— 只在漂移时才出现的一行，
+    等于让人无从知道「不漂的时候到底读没读」，而"读了一次"正是要证明的那件事。"""
+    chk = row.get("snapshot_check") or {}
+    if not chk:
+        return "未执行"
+    head = f"手上 v{chk['snapshot_version']} vs 外部 v{chk['current_version']}"
+    if not chk.get("drift"):
+        return f"{head} —— 一致，放行"
+    return (f"{head} —— **漂移**，SnapshotDrift 事件 {chk.get('events', 0)} 条；"
+            f"{chk.get('reason', '')}")
+
+
 def report(row: dict) -> None:
     """人话摘要。每一行都是**从库里读出来的事实**，不是流程自述。"""
     print(f"\n{BAR}\n自定义 case {row['case_id']} · 处置结果\n{BAR}")
     print(f"  诉求      : {row['reason_code']}，申报 {row['amount_claimed']}"
           f"，付款 {row['paid_at'][:10]} -> 第 {row['elapsed_days']} 天申请")
+    print(f"  执行前读单: {_fmt_snapshot(row)}")
     print(f"  适用政策  : v{row['pinned_policy_version']}（下单锁定），"
           f"命中 {', '.join(row['matched_rules']) or '无'}")
     print(f"  裁定      : {row['decision']} —— {row['why']}")
@@ -82,11 +97,22 @@ def report(row: dict) -> None:
     if not exits:
         print("  人工介入  : 无 —— 没有任务停下来等人")
     else:
-        verb = "放行" if row["approved"] else "驳回"
+        # 三档分开数，不合并成一个「全部 X」：`held_for_drift` 那一档是**没有人做过
+        # 决定**（CLI 不代跑它，等真人去订单系统核对），把它说成「驳回」或「放行」
+        # 都是替人宣布了一个他还没做的决定。
+        held = [e for e in exits if e.get("decision") == "held_for_drift"]
+        decided = [e for e in exits if e.get("decision") != "held_for_drift"]
         who = row["approvals"][0] if row["approvals"] else row["approver_role"]
-        print(f"  人工介入  : {len(exits)} 次转人工，全部{verb}（{who}）")
+        parts = []
+        if decided:
+            parts.append(f"{len(decided)} 次由{who}"
+                         + ("放行" if row["approved"] else "驳回"))
+        if held:
+            parts.append(f"{len(held)} 次**扣住等人**（快照漂移未澄清，CLI 不代跑）")
+        print(f"  人工介入  : {len(exits)} 次转人工 —— " + "、".join(parts))
         for e in exits:
-            print(f"              · {e['title']} —— {e['why']}")
+            mark = "⏸ " if e.get("decision") == "held_for_drift" else ""
+            print(f"              · {mark}{e['title']} —— {e['why']}")
     if row["extra_tasks"]:
         print(f"  政策附加  : {', '.join(row['extra_tasks'])}（由命中规则展开）")
     print(f"  核准金额  : {_fmt_amount(row)}")
@@ -94,9 +120,48 @@ def report(row: dict) -> None:
     print(f"  业务状态  : {row['biz_status']}"
           f"（settled 只可能由 payment.observe 写入，"
           f"本次 settled 观察 {row['settled_observations']} 条）")
+    # 内部七态与对外三态分两行打：它们本就是两个口径，挤成一行会让人以为
+    # 「对外那句是 biz_status 的翻译」——而它不是，它还要看有没有观察行（铁律 8）。
+    print(f"  对客口径  : {row['public_status'] or '（此刻没有可对外说的三态）'}"
+          f"（唯一产出处 projection.public_status）")
+    revisions = row.get("approval_revisions") or []
+    decisions = row.get("approval_decisions") or []
+    print(f"  主管审批  : {len(revisions)} 条 —— "
+          + ("、".join(f"第 {v} 版 {d}" for v, d in zip(revisions, decisions)) or "无"))
     print(f"  客户通知  : {_fmt_notify(row)}")
     print(f"  Plan      : {row['plan_state']}，{len(row['tasks'])} 个任务，"
           f"business_ref {row['business_refs']} 条")
+    _report_coverage(row)
+
+
+def _report_coverage(row: dict) -> None:
+    """十类业务对象的引用体检，逐条打出来。
+
+    **逐条打而不是只报一个数**：「resolved 10/10」这句话要经得起当场核 ——
+    评委问「客户证据挂在哪个 Task 上、是第几版」时，答案得在屏幕上，
+    不是「代码里有」。计算在 `case_pack.ref_coverage()` 一处，这里只渲染。
+    """
+    cov = row.get("business_ref_coverage")
+    if not cov:
+        return
+    print(f"\n  业务对象引用: 十类覆盖 {cov['covered']}/{cov['total_types']}，"
+          f"{cov['resolved']}/{cov['total']} 条 resolve 得到")
+    for label, types in TEN_OBJECTS:
+        cells = []
+        for object_type in types:
+            slot = cov["by_type"].get(object_type)
+            if not slot:
+                cells.append(f"{object_type}=—")
+                continue
+            versions = slot["versions"]
+            ver = ("v" + "/v".join(str(v) for v in sorted(versions))) if versions else "无版本"
+            cells.append(f"{object_type} {slot['resolved']}/{slot['refs']} 条（{ver}）")
+        mark = "·" if all(cov["by_type"].get(t, {}).get("resolved") for t in types) else "✗"
+        print(f"      {mark} {label}：{'；'.join(cells)}")
+    if cov["missing_types"]:
+        print(f"      未挂上引用：{', '.join(cov['missing_types'])}")
+    if cov["dangling"]:
+        print(f"      **悬空引用 {len(cov['dangling'])} 条**：{cov['dangling']}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,6 +172,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="主管驳回而不是放行（缺省放行）")
     parser.add_argument("--fail-with", metavar="CODE", default=None,
                         help="给网关注入错误码，如 ACQ.SYSTEM_ERROR；码必须在 gateway_codes 里")
+    parser.add_argument("--drift", action="store_true",
+                        help="注入一次**外部改单**：订单系统的版本被推高一格，"
+                             "于是付款前那一步 refund.snapshot_check 报漂移，"
+                             "付款任务停在 BLOCKED 等人（业务状态不因此改变）")
     parser.add_argument("--json", metavar="OUT", default=None,
                         help="把结果另存成 JSON")
     parser.add_argument("--matrix", action="store_true",
@@ -124,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         row = run_file(args.case, approve=not args.reject, fail_with=args.fail_with,
                        matrix=args.matrix, verbose=not args.quiet,
-                       allow_degraded=args.allow_degraded)
+                       allow_degraded=args.allow_degraded, drift=args.drift)
     except CaseFileError as exc:
         print(f"输入有问题：{exc}", file=sys.stderr)
         return 2

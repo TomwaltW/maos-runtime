@@ -45,11 +45,13 @@ from maos.agents.refund import ROLE_FINANCE, ROLE_INTAKE, ROLE_PAYMENT, ROLE_POL
 from maos.agents.reviewer import ReviewerAgent, review_after_gate
 from maos.contracts.events import new_id
 from maos.contracts.states import PlanState
-from maos.domain.refund import guard, objects
+from maos.domain.refund import case_pack, guard, objects, projection
 from maos.flows.common import build, dump, run_until_settled
+from maos.flows.custom_case import ORDER_SYSTEM_NAME, check_snapshot
 from maos.model.client import select_model_client
 from maos.runtime.gate import HumanApprovalQueue
 from maos.skills.builtin.refund import _common as C
+from maos.tools import order as order_tools
 from maos.tools.gateway import MockGateway
 
 # ---------------------------------------------------------------------- 常量
@@ -266,6 +268,18 @@ def run(*, matrix: bool = False) -> int:
     C.reset_gateways()
     C.register_gateway(GATEWAY_NAME, MockGateway(settle_after=SETTLE_AFTER))
 
+    # 订单系统同样按名取（T116）。本场景演的是**顺利路径**，所以外部版本与手上那份
+    # 快照一致 —— 一致这一档也要真的读一次，只在漂移时才去读，等于让「执行前读了
+    # 当前版本」这句话在顺利路径上没有任何证据。漂移那一档由
+    # `scripts/run_case.py --drift` 演，不塞进本场景：本场景的验收之一是
+    # 「连跑两次输出逐条一致」，而漂移会改变 Plan 的收敛形态。
+    order_tools.reset_order_systems()
+    orders = order_tools.MockOrderSystem()
+    orders.ext_order(order_id=ORDER_ID, version=ORDER_VERSION,
+                     status=order_tools.ORDER_PAID, amount=f"{AMOUNT_PAID:.2f}",
+                     updated_at=PAID_AT)
+    order_tools.register_order_system(ORDER_SYSTEM_NAME, orders)
+
     # —— Manager 零改动复用：为代码域写的规划器，在退款域照样规划 DAG ——
     # **带 store 构造**：不带的话 SkillInvoker.store is None，规划前检索恒返回空，
     # `MAOS_KB_ENABLED` 对这条链路没有任何影响。接上之后检索真的发生，
@@ -282,6 +296,19 @@ def run(*, matrix: bool = False) -> int:
     # 游离事件（docs/BACKLOG.md `## task-X4` 第 2 条）。归属不是硬凑的 ——
     # 这次检索检的正是这个 Plan 该怎么排。
     plan_id = new_id("plan")
+
+    # —— 执行前读外部订单当前版本（T116）：付款之前先确认依据没变 ——
+    # 跑在 create_plan 之前，与规划期检索同一个位置：那时 `refund.intake` 还没建案，
+    # 订单号与版本从场景常量给（skill 支持这条路径）。**这一步不改任何业务状态**。
+    snapshot = check_snapshot(
+        store,
+        {"tenant_id": TENANT_ID, "case_id": CASE_ID, "order_id": ORDER_ID,
+         "order_version": ORDER_VERSION},
+        plan_id=plan_id, trace_id=trace_id)
+    assert not snapshot["drift"], (
+        f"顺利路径不该有快照漂移：{snapshot['reason']}；"
+        "漂移那一档由 scripts/run_case.py --drift 演，不在本场景里")
+
     mgr = ManagerAgent(model, store=store)
     kb_context = {"tenant_id": TENANT_ID, "biz_type": C.BIZ_TYPE,
                   "channel_id": CHANNEL_ID, "sku": SKU,
@@ -307,8 +334,13 @@ def run(*, matrix: bool = False) -> int:
 
     # —— 审批是**人**的动作：先落 approval_record，再放行任务 ——
     # 顺序不可换：payment.execute 会核对审批记录，没有它就拒绝发起付款。
-    C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID, approver=APPROVER,
-                      decision="approved", reason="金额与订单锁定的政策 v1 一致")
+    approval = C.record_approval(store, tenant_id=TENANT_ID, case_id=CASE_ID,
+                                 approver=APPROVER, decision="approved",
+                                 reason="金额与订单锁定的政策 v1 一致")
+    # T116：补修订号 + 把审批挂成一条 business_ref。审批是人的动作，落在哪个 Task 上
+    # 只有这里知道（`_common.record_approval` 拿不到 DAG）。
+    case_pack.stamp_approval_revision(store, approval, plan_id=plan_id,
+                                      task_id=blocked["task_id"])
     hq.decide(blocked["task_id"], approved=True, operator=APPROVER, note="已核对金额与政策版本")
     run_until_settled(bus, gate, cp, plan_id)
 

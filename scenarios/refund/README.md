@@ -40,7 +40,41 @@ scenarios/refund/
   cases/case_r4a.json            对照组 R4 · 渠道维度 · 自营
   cases/case_r4b.json            对照组 R4 · 渠道维度 · 经销（多一个核销任务）
   cases/case_r6.json             对照组 R6 · 政策版本维度 · 快照 v1 vs 最新 v2
+  cases/case_real_01.json        单案例包 · **十类业务对象齐备**（T116，非对照）
 ```
+
+`case_real_01.json` 与前五份的分工是硬的：那五份各自只放一个变量、带 `_expected` 判据、由 `flows/contrast.py` 跑，回答「结论对不对」；它不做对照，回答的是「**同一个业务案例，十类对象长什么样、怎么串起来**」。加载与校验在 `maos/domain/refund/case_pack.py`，入口：
+
+```bash
+python3 scripts/run_case.py scenarios/refund/cases/case_real_01.json
+python3 scripts/run_case.py scenarios/refund/cases/case_real_01.json --drift     # 注入一次外部改单
+python3 scripts/run_case.py scenarios/refund/cases/case_real_01.json --reject    # 主管驳回
+```
+
+## 脱敏规范
+
+> **给拿到真案例的人**：下面这张表是「照这个规则替换即可」的形式。真数据到手之后按它逐字段打码，
+> **打完码再进仓库**——原始件一律不进 git，也不进 `evidence/`。
+> `case_real_01.json` 里的客户身份四项已经按这张表打过码，可以直接照着形状抄。
+
+| 字段 | 在哪 | 打码规则 | 打完的样子 |
+| :-- | :-- | :-- | :-- |
+| 客户姓名 | `order_snapshot[].payload_json.customer_name` | **保留姓，名全部替成 `*`**，一个字一个星 | `王小明` → `王**` |
+| 手机号 | `order_snapshot[].payload_json.phone` | 保留**前 3 后 4**，中间 4 位替成 `****` | `13812346021` → `138****6021` |
+| 收货地址 | `order_snapshot[].payload_json.address` | 保留到**区/县**一级，其后整段替成 `****`（不保留门牌、楼栋、路名） | `浙江省杭州市余杭区文一西路 969 号` → `浙江省杭州市余杭区****` |
+| 订单号 | `order_snapshot[].order_id`、`case.order_id` | **整体替成编造号**，保留前缀与位数；两处必须换成同一个值 | `2026082012345678` → `ORD-2026-AG-0413` |
+| 单据号 / 快递单号 | `order_snapshot[].payload_json.receipt_no` 等 | 保留**前缀与末 4 位**，中段替成 `****` | `DL-2026-88231-0413` → `DL-2026-****-0413` |
+| 金额 | `amount_paid` / `amount_claimed` | **数量级保留、末两位归零或换成邻近值**；同一案子里所有金额按同一个系数改，否则核算对不上 | `1287.35` → `1280.00` |
+| 证据 URI | `customer_evidence[].uri` | 换成 `oss://after-sales/<脱敏 case_id>/<描述性文件名>`，**不要留真实 bucket 与签名参数** | `https://real-bucket…?sig=…` → `oss://after-sales/RC-2026-0904-001/unboxing.mp4` |
+| 证据摘要 | `customer_evidence[].digest` | 换成 `sha256:demo-<描述>-<序号>`，**不要留真实文件的哈希**（真哈希可反查原件） | `sha256:9f2a…` → `sha256:demo-unboxing-01` |
+| 案件号 | `case.case_id` 及所有块里的 `case_id` | 换成 `RC-<日期>-<序号>`；**全文件统一替换**，漏一处就把两个案子串成一个 | `AS20260904000137` → `RC-2026-0904-001` |
+| 审批人 | `approval_record[].approver` | 同客户姓名规则，另在括号里保留**角色**（角色不是隐私，且政策判定要用） | `沈思锴（region_manager）` |
+
+三条一起守，缺一条这份规范就漏：
+
+1. **同一个值全文件统一替换。** `case_id` / `order_id` 在十一个块里都出现，替漏一处的症状是「引用指不到对象」——`case_pack.ref_coverage()` 会数出悬空引用，但那已经是跑完之后了。
+2. **不要动列名，也不要动 `policy_rule` 那几行。** 政策规则的唯一事实源是 `policy/policy_rules.json`（自校验第 3 条守着两处不分叉），真案例只换**数据**不换**结构**。
+3. **金额与日期改了，结论就会跟着变。** 窗口判定按 `paid_at` 与 `requested_at` 现算天数，核算按 `amount_paid` 封顶 —— 这两组改完之后要重跑一次 `run_case.py` 看裁定是不是还是预期的那个，别默认它不变。
 
 五份 case 的形状照 `maos/tests/fixtures/refund/case_r1.json`：顶层键即表名，`_` 前缀键是元数据，`case` 键是 `guard.create_case` 的入参。`maos/tests/test_refund_domain.py::_seed()` 那段盲插循环可以逐行不改地读它们。
 

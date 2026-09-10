@@ -152,14 +152,24 @@ def _has_column(store: Any, table: str, column: str) -> bool:
 #: 重建某张表」时从它现取，不要在步骤里另抄一份建表语句 —— 抄一份的后果是哪天有人
 #: 改了 schema.sql，老库重建出来的表和新库不是同一张表，而两边都不报错）。
 #:
-#: **当前是空的，这是对的**：T26 只装机制，一列都没改（BACKLOG `## task-T17` 第 2 条
-#: 原话「建议在往退款域加第一列之前做」）。凭空造一次迁移等于给老库跑一段没人验证过
-#: 的搬运，风险白担。
+#: T26 装完机制之后一直是空的（BACKLOG `## task-T17` 第 2 条原话「建议在往退款域加
+#: 第一列之前做」）。**T116 是第一次往退款域加列**，于是有了第 1 步。
 #:
 #: 加一步就在末尾追加一条，**不要改已有的那几条** —— 已经跑过的库不会再跑一遍它们，
 #: 改了等于新老库形状分叉。每一步都必须**自带探针**、在已是目标形状的库上是 no-op：
 #: 新库靠这条（新库刚建完记账表同样是空的，只看版本号会把新库也当老库去 ALTER）。
-_MIGRATIONS: tuple[tuple[int, str, Any], ...] = ()
+#: 第 1 步的探针在 `case_pack.ensure_t116_schema()` 里（逐列 `_has_column`）。
+#:
+#: 步骤函数写成 `__import__` 而不是模块顶部 import，两个理由：
+#: ① `case_pack` 要 import 本模块（它的所有 SQL 都从这里过），顶部 import 会成环；
+#: ② 跨轨契约 §A 把本文件切成两半，T116 只许动这三个模块级常量 —— 在文件里另起一个
+#:    转发函数就越界了。整合期两条约束都消失，届时可以换回普通 import。
+_MIGRATIONS: tuple[tuple[int, str, Any], ...] = (
+    (1, "t116: 六类业务对象加 version/revision 列（schema_p10_t116.sql）",
+     lambda store, script: __import__(
+         "maos.domain.refund.case_pack", fromlist=["migration_step"]
+     ).migration_step(store, script)),
+)
 
 #: 退款域 schema 的当前版本。跟着 `_MIGRATIONS` 算，**不手写** —— 手写的那份迟早和
 #: 实际步骤对不上，而对不上的症状是「迁移悄悄不跑了」。
@@ -269,15 +279,63 @@ def resolve_business_ref(store: Any, ref: dict) -> dict | None:
     return rows[0] if rows else None
 
 
-#: object_type -> (表名, 主键列名)
+#: object_type -> (表名, 主键列名)。**十类业务对象全覆盖**（T116）。
+#:
+#: 清单与 `case_pack.TEN_OBJECTS` 一一对应：那边是评委原话的十项（「订单与商品快照」
+#: 算一项），这边是它们落到库里的十一张表。少一条的症状不是报错，是
+#: `resolve_business_ref` 静默返回 None —— 于是「这个 Task 引用了哪个业务对象」
+#: 这句话在那一类上永远答不出来，而 T120 的 `evidence_complete` 判据
+#: （跨轨契约 §E：十类都能 resolve）会永远算不出 complete。
+#:
+#: **主键列的取法分两种**，不是随手挑的：
+#:
+#: · 有自己的对象 id 的（`order_id` / `sku` / `rule_no` / `evidence_id` /
+#:   `request_id` / `content_digest`）就用它，引用精确到那一个对象；
+#: · 以 `(tenant_id, case_id)` 为粒度的（`approval_record` / `finance_entry` /
+#:   `compensation_record`）用 `case_id` —— 这几张表的主键里带的是
+#:   `decided_at` / `executed_at` / `kind` 这类**动作时刻**，没有稳定的对象 id 可指。
+#:   引用因此指向「本案的审批 / 核算 / 补偿」这件事，**第几次**由
+#:   `business_ref.object_version` 记（见下面 `_VERSIONED_REF_TABLES` 那段）。
+#:
+#: `applicant_ref` 是个特例，它**指向外部系统里的一份审批单**（供应链退款，
+#: 见 `skills/builtin/refund/intake.py::_applicant_of`）。库里没有、也不该有那份单子
+#: （铁律 8：权威事实归外部），所以它映射到 `business_ref` 表**自己**：
+#: resolve 取回的是那条引用行 —— 「我们引用了这份外部单据、于何时、为什么」，
+#: 这正是 MAOS 对一个纯外部对象所能提供的全部事实。
+#: T116 之前它压根不在本表里，resolve 恒 None，而那个 None 与「对象丢了」
+#: 长得一模一样 —— 两件事必须分得开，否则悬空引用的巡检永远有一条假阳性
+#: （处置理由已记 `docs/DECISIONS.md` 的 `## task-t116`）。
 _REF_TARGETS: dict[str, tuple[str, str]] = {
-    "refund_case":      ("refund_case", "case_id"),
-    "order_snapshot":   ("order_snapshot", "order_id"),
-    "product_snapshot": ("product_snapshot", "sku"),
-    "policy_rule":      ("policy_rule", "rule_no"),
-    "refund_request":   ("refund_request", "request_id"),
+    "refund_case":         ("refund_case", "case_id"),
+    "order_snapshot":      ("order_snapshot", "order_id"),
+    "product_snapshot":    ("product_snapshot", "sku"),
+    "policy_rule":         ("policy_rule", "rule_no"),
+    "customer_evidence":   ("customer_evidence", "evidence_id"),
+    "approval_record":     ("approval_record", "case_id"),
+    "finance_entry":       ("finance_entry", "case_id"),
+    "refund_request":      ("refund_request", "request_id"),
+    "payment_observation": ("payment_observation", "request_id"),
+    "notification":        ("notification", "content_digest"),
+    "compensation_record": ("compensation_record", "case_id"),
+    "applicant_ref":       ("business_ref", "object_id"),
 }
-_VERSIONED_REF_TABLES = {"order_snapshot", "product_snapshot", "policy_rule"}
+
+#: 引用带版本收窄的表。`resolve_business_ref` 见到它们会补一句 `AND version=?`，
+#: 于是「拿旧版本的引用去指当前对象」会**指不到**，而不是悄悄指到新版上。
+#:
+#: **这里只放列名恰好是 `version` 的表** —— 那句 SQL 里的列名是写死的。
+#: T116 加的六列有一半叫 `revision`（`approval_record` / `finance_entry` /
+#: `notification` / `compensation_record`），它们**不进本集合**：进了会拼出
+#: `AND version=?`，撞 no such column，而症状是那四类引用全部 resolve 失败。
+#:
+#: 两个名字的分界见 `schema_p10_t116.sql` 抬头：`version` 是「同一个对象的第 N 版
+#: 事实」（同一行内容变了），`revision` 是「同一件事的第 N 次做」（表上各占一行）。
+#: 后者的修订号照样写进 `business_ref.object_version`，只是 resolve 不拿它收窄 ——
+#: 收窄的前提是「同一个 key 下有多版可选」，而那四张表本来就是一次一行。
+#: 把 SQL 改成按表取列名是整合期的事（`resolve_business_ref` 不是本轨可动的面），
+#: 已记 `docs/BACKLOG.md` 的 `## task-t116`。
+_VERSIONED_REF_TABLES = {"order_snapshot", "product_snapshot", "policy_rule",
+                         "customer_evidence", "refund_request"}
 
 
 # ------------------------------------------------------------------ 政策版本

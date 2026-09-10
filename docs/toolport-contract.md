@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **16 个**已实现工具，分布在 `rtv`、`ap`、`investigation`、`gateway`、`git_tool`、`claim`、`sandbox` 七处。
+工具是 Agent 唯一能碰外部世界的地方，所以声明比 Skill 更严。`ToolPort` 是九要素 dataclass（maos/tools/port.py:22，冻结契约附录 A-6），当前扫到 **17 个**已实现工具，分布在 `rtv`、`ap`、`investigation`、`gateway`、`git_tool`、`order`、`claim`、`sandbox` 八处。
 
 ## 九要素
 
@@ -188,6 +188,22 @@
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-mcp |
 
+### `order.query`
+
+声明：`maos/tools/order.py:231`（`ORDER_QUERY_PORT`）　入口实现：`maos/tools/order.py:222`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `name` | ① 名称 | order.query |
+| `purpose` | ② 用途 | 执行前读订单系统里的**当前版本** —— 用来比对 MAOS 手上那份快照有没有过期 |
+| `entry` | ③ 入口 | `maos.tools.order.order_query` |
+| `params_schema` | ④ 入参 | `system_name`: str（已 register_order_system 的名字；实例由工具侧持有）<br>`order_id`: str |
+| `returns_schema` | ⑤ 出参 | `order_id`: str<br>`version`: int（外部系统的当前版本）<br>`status`: paid\|shipped\|cancelled\|amended<br>`amount`: str（金额不进浮点）<br>`updated_at`: str（外部上次改这笔单的时刻） |
+| `failure_modes` | ⑥ 失败形态 | · LookupError: system_name 没有登记过 —— **不兜底成默认订单系统**<br>· KeyError: 订单系统里没有这笔单 —— **不兜底成一个 v1 的空订单**，那会把「订单不见了」伪装成「版本一致，放行」<br>· version 高于手上的快照：**不是本工具的错**，是漂移。判据在 refund.snapshot_check，处置是转人工，不是自动重读快照往下跑 |
+| `security_boundary` | ⑦ 安全边界 | 只读。MAOS 不持有订单的权威事实（铁律 8），本工具只产生**观察记录**：没有任何改单入口挂在 ToolPort 上（MockOrderSystem.amend 模拟的是外部世界的动作，只给测试与演示注入用）；读到的版本一律如实返回，本工具不判漂移、不改任何业务状态 |
+| `rate_limit` | ⑧ 限流 | （未设限） |
+| `owner` | ⑨ 属主 | task-t116 |
+
 ### `payer.query`
 
 声明：`maos/tools/claim.py:462`（`PAYER_QUERY_PORT`）　入口实现：`maos/tools/claim.py:421`
@@ -299,4 +315,4 @@ python3 -m maos.tools.mcp.server --root scenarios/fixture-repo  # 手工起 serv
 python3 -m pytest maos/tests/test_mcp_transport.py maos/tests/test_mcp_git_tool.py -q
 ```
 
-其余 15 个工具的 `entry` 仍是进程内函数 —— **这是刻意的，不是没来得及**：`sandbox.*` 的隔离论证（容器 `--network none --read-only`）独立成立，换传输层要重新论证一遍等价性而收益为零；`gateway.*` 则把 `GatewayPort` 活对象当参数传，跨进程前必须先重构成「server 侧持有 gateway」。两条都记在 `docs/BACKLOG.md`。
+其余 16 个工具的 `entry` 仍是进程内函数 —— **这是刻意的，不是没来得及**：`sandbox.*` 的隔离论证（容器 `--network none --read-only`）独立成立，换传输层要重新论证一遍等价性而收益为零；`gateway.*` 则把 `GatewayPort` 活对象当参数传，跨进程前必须先重构成「server 侧持有 gateway」。两条都记在 `docs/BACKLOG.md`。

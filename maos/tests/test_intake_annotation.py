@@ -61,9 +61,17 @@ def test_adding_the_table_did_not_touch_the_migration_ledger():
 
     自作主张补一条迁移，会让 `refund_schema_version` 的版本号与实际形状对不上 ——
     而那种对不上的症状是「迁移悄悄不跑了」，没有任何报错。
+
+    **T116 之前这条断言写的是 `_MIGRATIONS == ()`**，因为当时整个退款域一列都没改过。
+    T116 加了六列（`schema_p10_t116.sql`），迁移表于是不再是空的 —— 那是**加列**该有的
+    样子，与本条要守的「加表不该有迁移」不是一回事。所以判据从「迁移表是空的」
+    收窄到「没有为 `intake_annotation` 而设的步骤」：原意图一个字没变，
+    只是不再顺带把「别人加了列」也判成违规。
     """
     store = _store()
-    assert objects._MIGRATIONS == (), "只加表不改列，`_MIGRATIONS` 不该多出步骤"
+    for _version, label, _step in objects._MIGRATIONS:
+        assert "intake_annotation" not in label, (
+            f"迁移步骤 {label!r} 是为 intake_annotation 设的 —— 只加表不改列，不该有迁移")
     assert objects.applied_schema_version(store) == objects.REFUND_SCHEMA_VERSION
 
 

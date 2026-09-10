@@ -197,7 +197,15 @@ def test_output_without_applicant_ref_stays_identical_to_baseline(invoker, store
         assert set(ev) == BASELINE_EV_KEYS | {"kind_raw"}
         assert ev["kind"] == ev["kind_raw"] == "image", "场景 6 本就写的是规范值"
     refs = objects.list_business_refs(store, plan_id="plan-t77", task_id="task-t77")
-    assert {r["object_type"] for r in refs} == {"refund_case", "order_snapshot"}
+    # **T116 之前这里是 `== {"refund_case", "order_snapshot"}`**：当时受理只挂两类。
+    # T116 把 `business_ref` 扩到十类全覆盖（评委第二条建议：DAG/Task/Artifact 要
+    # 直接引用这些业务对象及其版本），受理这一步因此多挂商品快照与逐份客户证据。
+    # 本条要守的是「不给审批单时**不许出现 applicant_ref**」，不是「引用只有两类」——
+    # 所以判据钉在这一句上，再逐字列出 T116 之后应有的四类。
+    kinds = {r["object_type"] for r in refs}
+    assert "applicant_ref" not in kinds, "没给审批单却落了审批单引用"
+    assert kinds == {"refund_case", "order_snapshot", "product_snapshot",
+                     "customer_evidence"}
 
 
 def test_applicant_ref_is_attached_as_business_ref(invoker, store):

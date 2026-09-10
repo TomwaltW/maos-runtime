@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import json
 
-from maos.domain.refund import guard, objects
+from maos.domain.refund import case_pack, guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
 
@@ -166,9 +166,24 @@ class RefundCompensateSkill(Skill):
             "requests": [r["request_id"] for r in requests],
             "opened_at": now,
         }
-        self._record(store, tenant_id=tenant_id, case_id=case_id,
-                     kind=KIND_MANUAL_TICKET, detail=ticket,
-                     executed_at=now, operator=operator)
+        ticket_revision = self._record(store, tenant_id=tenant_id, case_id=case_id,
+                                       kind=KIND_MANUAL_TICKET, detail=ticket,
+                                       executed_at=now, operator=operator)
+
+        # ---- T116 段：DAG -> 业务对象。人工补偿是十类里的最后一类 -------------
+        # 挂在工单那一条上（`object_version` 取它的修订号）：一次补偿会落两行
+        # （作废请求 + 人工工单），而对外要指的是**人接手的那一件**。
+        # object_id 用 case_id 而不是 ticket_id：`compensation_record` 的主键是
+        # `(tenant, case, kind, executed_at)`，`ticket_id` 只在 detail_json 里，
+        # 拿它当 object_id 会让 `resolve_business_ref` 的 `WHERE case_id=?` 查不着。
+        plan_id_ref = str(extras.get("plan_id") or case.get("plan_id") or "")
+        task_id_ref = str(extras.get("task_id") or "")
+        if plan_id_ref and task_id_ref:
+            objects.attach_business_ref(
+                store, plan_id=plan_id_ref, task_id=task_id_ref, tenant_id=tenant_id,
+                object_type="compensation_record", object_id=case_id,
+                object_version=ticket_revision,
+                purpose=f"域内补偿收口（工单 {ticket['ticket_id']}，第 {ticket_revision} 次）")
 
         # ---- 第三步：推进业务状态。guard 是唯一入口，越权写 settled 会被它拦 ----
         case = guard.update_biz_status(
@@ -239,12 +254,24 @@ class RefundCompensateSkill(Skill):
 
     @staticmethod
     def _record(store, *, tenant_id: str, case_id: str, kind: str, detail: dict,
-                executed_at: str, operator: str) -> None:
+                executed_at: str, operator: str) -> int:
+        """落一条补偿记录，返回它的修订号。
+
+        ---- T116 段：`revision` 列 ----
+        修订号**按 kind 各自成链**（作废请求 / 人工工单是两件不同的事，各数各的）。
+        一个案子可能补偿两次 —— 第一次工单没解决、人工重新发起又失败 ——
+        而这张表主键里带着 `executed_at`，两次各占一行；修订号让「这是第几次
+        对本案做这类补偿」查得到，光看时刻戳还得自己排序数一遍。
+        """
+        revision = case_pack.next_version(store, "compensation_record",
+                                          tenant_id=tenant_id, case_id=case_id,
+                                          kind=kind)
         objects.execute(
             store,
             "INSERT OR REPLACE INTO compensation_record (tenant_id, case_id, kind,"
-            " detail_json, executed_at, operator) VALUES (?,?,?,?,?,?)",
+            " detail_json, executed_at, operator, revision) VALUES (?,?,?,?,?,?,?)",
             (tenant_id, case_id, kind,
              json.dumps(detail, ensure_ascii=False, sort_keys=True),
-             executed_at, operator),
+             executed_at, operator, revision),
         )
+        return revision

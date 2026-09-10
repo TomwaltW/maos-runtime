@@ -377,16 +377,25 @@ def test_contrast_never_enters_the_default_eight_bundle_set():
 # 12. 灌数据：晋升规则分流
 # ---------------------------------------------------------------------------
 def test_history_corpus_is_split_by_promotion_rule_not_copied_verbatim():
-    """24 条历史案例按 `outcome` 分流，不是照抄语料里的 kind。
+    """24 条历史案例按 `outcome` 分流，落库结果与语料侧标好的 kind **逐条一致**。
 
-    语料里 24 条的 `kind` 全是 `history_case`（数据侧只记「这是一条历史案例」）。
-    落库时按「外部结果明不明确」分流，与 `guardrails.classify_case` 同一份口径。
+    装载侧这一刀（`fixtures.seed_history_kb` 按 `outcome` 判）与
+    `guardrails.classify_case` 同一份口径，T118 之后仍然在，只是不再是唯一那道防线：
+    语料侧从前一律写 `history_case`，靠这一刀补；现在语料自己就标对了
+    （`test_kb_corpus.py::test_failed_history_cases_are_labelled_failure_hint_in_the_corpus_itself`）。
+
+    两处都在，就得验它们**说的是同一件事** —— 这比原来只验「装载侧分流了」更硬：
+    哪天有人只改一边，下面第一条断言当场红，而不是等到某条检索悄悄多召回几条失败案例。
     """
     from maos.kb import experiment
 
     raw = experiment._checked_rows(
         experiment.load_corpus("history/history_cases.json"), "kb_doc", kb.DOC_COLUMNS)
-    assert {r["kind"] for r in raw} == {kb.KIND_HISTORY_CASE}, "语料侧的 kind 变了"
+    for row in raw:
+        expected = (kb.KIND_FAILURE_HINT if row["outcome"] == kb.OUTCOME_FAILED
+                    else kb.KIND_HISTORY_CASE)
+        assert row["kind"] == expected, \
+            f"{row['doc_id']}：语料侧的 kind 与装载侧的分流口径对不上"
     want_failed = sum(1 for r in raw if r["outcome"] == kb.OUTCOME_FAILED)
 
     store = SqliteStore()

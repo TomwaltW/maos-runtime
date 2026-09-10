@@ -53,7 +53,23 @@ KIND_POLICY = "policy"
 KIND_HISTORY_CASE = "history_case"
 KIND_FAILURE_HINT = "failure_hint"
 KIND_ERROR_CODE_PLAYBOOK = "error_code_playbook"
-VALID_KINDS = (KIND_POLICY, KIND_HISTORY_CASE, KIND_FAILURE_HINT, KIND_ERROR_CODE_PLAYBOOK)
+
+# T118 补的四类，凑齐评委点名的九类面向 workflow 规划的流程知识。
+# 前四类覆盖「售后政策及生效范围」「历史退款原因」「支付错误码」「超时与补偿路径」，
+# 下面四类补上「任务拆分」「人工驳回」「客户沟通结果」「真实到账结果」
+# （「产品与渠道差异」走 `policy` 的渠道 / 品类变体，不另立一类 ——
+# 它讲的是同一条规则在不同渠道上落地的差异，不是另一种知识）。
+#: 任务拆分模式：一条流程的步骤形状与依赖边，事实字段已剔除。
+KIND_TASK_PATTERN = "task_pattern"
+#: 人工驳回：谁驳的、按哪条政策驳的、缺的是哪份材料、复议走哪条路。
+KIND_REJECTION = "rejection"
+#: 客户沟通结果：通知发了没、客户 ack 没、有没有二次沟通。
+KIND_COMMS_RESULT = "comms_result"
+#: 真实到账结果：观察行的终态与耗时。**记的是观察，不是我们写定的状态**（铁律 8）。
+KIND_ARRIVAL_RESULT = "arrival_result"
+
+VALID_KINDS = (KIND_POLICY, KIND_HISTORY_CASE, KIND_FAILURE_HINT, KIND_ERROR_CODE_PLAYBOOK,
+               KIND_TASK_PATTERN, KIND_REJECTION, KIND_COMMS_RESULT, KIND_ARRIVAL_RESULT)
 
 OUTCOME_SUCCESS = "success"
 OUTCOME_FAILED = "failed"
@@ -61,6 +77,14 @@ VALID_OUTCOMES = (OUTCOME_SUCCESS, OUTCOME_FAILED)
 
 #: 只有这几类进「规划正例」。failure_hint 只用来提示哪类组合需要额外步骤，
 #: 它**不是**正例（晋升规则见 guardrails.classify_case）。
+#:
+#: **T118 补的四类一个都没进来，是有意的**：`apply_suggestions` 会把正例文档 body 里的
+#: `steps` 并进当前 DAG，所以这张表决定的是「哪类知识有权改计划的形状」。
+#: `rejection` 是负例（那一单没退成），`comms_result` / `arrival_result` 是观察结果
+#: 而不是可照做的流程 —— 三者都不该有这个权力。`task_pattern` 则是**够格但尚未启用**：
+#: 它的 body 就是步骤清单（键名与 `guardrails._steps_of` 对齐），要启用只需把它加进
+#: 本元组这一处，但那会改变现有场景的 DAG 形状，属于 T119（Manager 规划面）的判断，
+#: 不是语料轨能替它定的。
 POSITIVE_KINDS = (KIND_POLICY, KIND_HISTORY_CASE, KIND_ERROR_CODE_PLAYBOOK)
 
 KB_ENABLED_ENV = "MAOS_KB_ENABLED"

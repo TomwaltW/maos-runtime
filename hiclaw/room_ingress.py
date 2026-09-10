@@ -584,10 +584,21 @@ def wire(channel, *, room_id: str, ledger_path=DEFAULT_LEDGER,   # noqa: ANN001
     ``team`` 原样透传给 router，缺省不接 —— 接不接圆桌是 `main` 的决定。
     """
     adapter = MatrixRoomAdapter(channel)
-    store = SqliteStore(":memory:")
+    # `MAOS_INGRESS_DB` 指一个文件时，这一轮房间的事件链**跑完还在**（跨轨契约 §F）：
+    # `:memory:` 的库随进程消失，于是「五岗到底调了什么、说了什么」演完就没了，
+    # 评委只看得到截图。`init_schema()` 全是 `CREATE TABLE IF NOT EXISTS`，
+    # 对已经存在的文件库是幂等的 —— 重启一次房间不会清掉上一轮的账。
+    store = SqliteStore(os.environ.get("MAOS_INGRESS_DB") or ":memory:")
     store.init_schema()
     router = IngressRouter({adapter.name: adapter}, store=store,
                            ledger_path=ledger_path, chat=chat, team=team)
+    # router 的构造里已经对 `team` 调过一次 `attach_store`，这里是第二道：
+    # `wire()` 也接受**不经 router 构造**传进来的圆桌（测试里就这么用），
+    # 而漏接的症状是房间照跑、事件表一行没有，没有任何测试会红。
+    # `_ChairTeam` 靠 `__getattr__` 把这个方法转交给里面那个真圆桌。
+    attach_store = getattr(team, "attach_store", None)
+    if attach_store is not None:
+        attach_store(store)
     seq = {"n": 0}
 
     def _next(tag: str) -> str:

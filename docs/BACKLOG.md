@@ -2295,3 +2295,13 @@ python3 scripts/gen_docs.py --check →  3 份文档与代码逐字节一致  ex
 | 2026-09-10 | p9 | 补件页的 `router.handle` 跑在 HTTP 线程上，与 Matrix 监听的 worker 线程可能**同时**进 router：`_tickets` 有锁、`_pending` 是线程本地、`SqliteStore` 有 RLock，但 `handle` 整体不是原子的（同一单一边在复检一边被 /approve） | 演示场景下人一次只做一件事，实际撞上的概率很低；撞上时最坏是两条回帖交错 | 要根治就在 `IngressRouter.handle` 外面加一把全局锁（`server.py` 的单 worker 已是同一取向）；不在本轮范围 |
 | 2026-09-10 | p9 | 下游三岗的逐单清单与按钮都以 `ROW_CAP`(=12) 封顶：50 行表里缺材料超过 12 单时，第 13 单起没有按钮、也不在清单里，只有一句「余下的…补材料时本岗逐单再报」 | 大表演示时缺件多的那些单要靠拖图（文件名带订单号）或 `/refund` 单独起单才会被点名 | 可以按单另发一条「缺件清单」消息（Matrix 单事件 64 KB 够装 50 行），把清单与发言分开；本轮没做是因为一条消息 12 个按钮已是可读上限 |
 | 2026-09-10 | p9 | 证据岗整表卡的缺口措辞照搬 skill 的 `gaps`（「缺少 image 类证据」），`image` 没翻成中文；按钮文案已翻（「上传照片」） | 老板读到「image 类证据」要转一下 | 翻译的落点在 `evidence_check._gaps`（skill 出参是「人话」的承诺），改那里单案卡、整表卡一起变；属 skill 面，不在本轮范围 |
+
+## task-t113（圆桌落库之后的范围外发现，2026-09-10）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-10 | p10 | `model_usage` 表没有一列能放 `model_call_id`，互查只能按 `(plan_id, agent_role)` 的写入顺序对齐（见 DECISIONS ## task-t113 第 2 条） | 并发跑同一 case 的同一座位时理论上会错位（真房间里一次只过一单，实际撞不上）；读的人要知道这条口径才查得动 | `maos/core/store.py` 现有表冻结（铁律 1）。哪天有一次「允许给冻结表加列」的整体决策，给 `model_usage` 加一列 `call_id TEXT`，互查就从顺序变成等值 —— 不在本轨范围 |
+| 2026-09-10 | p10 | `RefundRoundtable._tenant_of_plan` 是一个只增不减的 dict：常驻房间每过一个新 case 多一条（`plan_id -> tenant_id`，几十字节） | 演示与真房间的量级下可以忽略；跑几个月的进程会慢慢涨 | 圆桌真的常驻起来之后换成 LRU（或干脆让 `verdict_of` 的调用方把 tenant 传进来）；本轮不做 |
+| 2026-09-10 | p10 | `hiclaw/room_ingress.py::wire()` 与 `IngressRouter.__init__` 各调一次 `attach_store` | 同一个 store 调两次是幂等的，只是读代码的人会问「为什么两遍」（两处都有注释说明） | 整合期若确认 `wire()` 之外没有别的建圆桌路径，去掉 `wire()` 里那一处 |
+| 2026-09-10 | p10 | 圆桌的 `model_usage` 行 `trace_id` 恒为空串，于是 `trace.json` 的 `summary.model_calls` 会把圆桌与 DAG 的调用加在一起，而 `attributed_model_calls` 只数 DAG 的 | 「本次演示烧了多少 token」这个数现在含圆桌；看板上要分开报时得自己按 `call_site = maos/roundtable/speaker.py::Speaker.complete` 过滤 | T114 把圆桌事件并进证据束时，顺手在成本那一段按 call_site 拆一行「其中圆桌」 |
+| 2026-09-10 | p10 | `speaker.Speaker.complete` 只在**成功**的模型调用上记账；`complete()` 抛异常那次不落 `model_call_failure`（`record_model_failure` 存在但本轨没接） | 圆桌的失败调用在成本表里看不见，「网关抖了几次」这个问题在圆桌这一侧答不了 | 接 `record_model_failure` 是几行的事，但它要一个新的判据（失败行的 call_site 同样要登记），留给整合期或专门一轨 |

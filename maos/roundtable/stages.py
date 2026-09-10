@@ -144,12 +144,36 @@ def _identity_of(role: str):                            # noqa: ANN001, ANN201
     return identity_of(role)
 
 
-def _invoke(role: str, skill_name: str, payload: dict, *, task_id: str):
-    """按名调一个 skill。取不到类时 invoker 自己回 `skill_not_found:<name>`。"""
+def _invoke(role: str, skill_name: str, payload: dict, *, task_id: str,
+            store=None, plan_id: str = PREVIEW_PLAN_ID):     # noqa: ANN001
+    """按名调一个 skill。取不到类时 invoker 自己回 `skill_not_found:<name>`。
+
+    `store=None`（缺省）时 `SkillInvoker._settle` 第一行就早退，一条
+    `SkillInvoked` 都不落 —— 这正是 T113 之前证据里两个 skill **零调用记录**的
+    原因。接上 store 之后 `input_digest` / `output_hash` / `invocation_id`
+    全由 invoker 自己写：**在圆桌这一层另算一份的症状**是两份哈希哪天分叉了，
+    `scripts/verify.py` 第 1 项还是绿的（它比的是自己算的那一份）。
+
+    `plan_id` 缺省仍是 `PREVIEW_PLAN_ID`：没有 store 时它落不下库，值是多少
+    都无所谓；有 store 时由圆桌传 `roundtable:<case_id>` 进来（契约 §B）。
+    """
     from maos.skills.invoker import SkillInvoker
-    return SkillInvoker(_identity_of(role)).invoke(
+    return SkillInvoker(_identity_of(role), store=store).invoke(
         skill_name, payload,
-        extras={"plan_id": PREVIEW_PLAN_ID, "task_id": task_id})
+        extras={"plan_id": plan_id, "task_id": task_id})
+
+
+def _sheet_task_id(what: str, row: dict) -> str:
+    """整表模式逐单调用的 `task_id`：`sheet-<what>-<行号>-<订单号>`。
+
+    **不是 task 表里的 task_id**，圆桌一个 task 都不建 —— 它是 `SkillInvoked`
+    那一行的可读定位，用来回答「第 7 行那单核验了没有」。`scripts/verify.py`
+    第 8 项 b 条只查 `model_usage.task_id`（那一路我们恒留 None），不查 event_log，
+    所以这个字面量不会去撞 task 表。
+    """
+    line = row.get("line") if isinstance(row, dict) else None
+    order_id = str((row or {}).get("order_id") or "")
+    return f"sheet-{what}-{line if line is not None else '?'}-{order_id or '?'}"
 
 
 def _memory_store():
@@ -250,8 +274,13 @@ def facts_policy(checked: dict) -> tuple[str, dict]:
 
 
 def facts_evidence(payload: dict, checked: dict, ledger: dict,
-                   added: int = 0) -> tuple[str, dict]:
+                   added: int = 0, *, store=None,        # noqa: ANN001
+                   plan_id: str = PREVIEW_PLAN_ID) -> tuple[str, dict]:
     """证据核验岗：随案材料够不够、与订单事实自不自洽。
+
+    `store` / `plan_id` **只管落不落 `SkillInvoked`**，事实卡一个字都不受影响；
+    两个都带默认值，理由同下面 `facts_sheet_evidence` 里 `ledger` 那一条
+    （少一个默认值就是 `TypeError` 落进 router 的 except，圆桌静默哑掉）。
 
     skill 没装载是**主路径而不是边角**：整合前 `refund.evidence_check` 根本不在
     注册表里。没装载就照实说没装载，仍然发一条言 —— 一个岗位在房间里凭空消失，
@@ -274,7 +303,7 @@ def facts_evidence(payload: dict, checked: dict, ledger: dict,
         return ("证据核验 skill 未装载（refund.evidence_check 不在注册表里），"
                 "本单证据无法核验，随案材料请人工过目"), {"verdict": "unavailable"}
 
-    res = _evidence_check(payload, checked, ledger)
+    res = _evidence_check(payload, checked, ledger, store=store, plan_id=plan_id)
 
     if res.status != "ok" or not isinstance(res.output, dict):
         return (f"证据核验失败：refund.evidence_check: {res.error or '出参不是 dict'}，"
@@ -311,9 +340,16 @@ def facts_evidence(payload: dict, checked: dict, ledger: dict,
     return "\n".join(lines), out
 
 
-def _evidence_check(payload: dict, checked: dict, ledger: dict | None):  # noqa: ANN201
+def _evidence_check(payload: dict, checked: dict, ledger: dict | None, *,
+                    store=None, plan_id: str = PREVIEW_PLAN_ID,   # noqa: ANN001
+                    task_id: str = "preview-evidence"):
     """跑一次 `refund.evidence_check`。**单案与整表共用这一份入参拼法** —— 两处各拼
-    一份的症状是「/refund 说缺照片、读表说证据齐」，而两边各自都不报错。"""
+    一份的症状是「/refund 说缺照片、读表说证据齐」，而两边各自都不报错。
+
+    落库归属三个参一路从 `facts_evidence` / `facts_sheet_evidence` 传下来；
+    `task_id` 整表模式带行号与订单号，单案维持原来那个字面量（改了它，
+    单案那条路上已经跑过的证据束里的 task_id 就与新库对不上）。
+    """
     from maos.domain.refund import fixtures
 
     seed = fixtures.case_seed_of(payload)
@@ -329,7 +365,7 @@ def _evidence_check(payload: dict, checked: dict, ledger: dict | None):  # noqa:
         "rules": _rules_of(payload),
         "order_facts": order_facts,
         "requested_at": str(checked.get("requested_at") or ""),
-    }, task_id="preview-evidence")
+    }, task_id=task_id, store=store, plan_id=plan_id)
 
 
 def _material_gaps(out: dict, *, order_id: str, case_id: str, line,   # noqa: ANN001
@@ -355,7 +391,9 @@ def _material_gaps(out: dict, *, order_id: str, case_id: str, line,   # noqa: AN
     }]
 
 
-def _risk_screen(payload: dict, checked: dict, ledger: dict | None):  # noqa: ANN201
+def _risk_screen(payload: dict, checked: dict, ledger: dict | None, *,
+                 store=None, plan_id: str = PREVIEW_PLAN_ID,      # noqa: ANN001
+                 task_id: str = "preview-risk"):
     """跑一次 `refund.risk_screen`。单案与整表共用，理由同 `_evidence_check`。"""
     from maos.domain.refund import fixtures
 
@@ -378,18 +416,23 @@ def _risk_screen(payload: dict, checked: dict, ledger: dict | None):  # noqa: AN
         "customer_orders": customer_orders,
         "refund_history": (ledger or {}).get("refund_history") or [],
         "requested_at": str(checked.get("requested_at") or ""),
-    }, task_id="preview-risk")
+    }, task_id=task_id, store=store, plan_id=plan_id)
 
 
-def facts_risk(payload: dict, checked: dict, ledger: dict) -> tuple[str, dict]:
-    """风险反欺诈岗：这个客户、这一单，有没有重复退款或异常频次。"""
+def facts_risk(payload: dict, checked: dict, ledger: dict, *,
+               store=None,                              # noqa: ANN001
+               plan_id: str = PREVIEW_PLAN_ID) -> tuple[str, dict]:
+    """风险反欺诈岗：这个客户、这一单，有没有重复退款或异常频次。
+
+    `store` / `plan_id` 的口径同 `facts_evidence`：只管落不落 `SkillInvoked`。
+    """
     from maos.skills import registry
 
     if registry.get("refund.risk_screen") is None:
         return ("风险筛查 skill 未装载（refund.risk_screen 不在注册表里），"
                 "本单风险未经筛查，放行前请人工看一眼客户历史"), {"level": "unavailable"}
 
-    res = _risk_screen(payload, checked, ledger)
+    res = _risk_screen(payload, checked, ledger, store=store, plan_id=plan_id)
 
     if res.status != "ok" or not isinstance(res.output, dict):
         return (f"风险筛查失败：refund.risk_screen: {res.error or '出参不是 dict'}，"
@@ -738,7 +781,9 @@ def _valid_rows(rows: list[dict]) -> list[dict]:
             and isinstance(r.get("checked"), dict) and isinstance(r.get("payload"), dict)]
 
 
-def facts_sheet_evidence(rows: list[dict], ledger: dict | None = None) -> tuple[str, dict]:
+def facts_sheet_evidence(rows: list[dict], ledger: dict | None = None, *,
+                         store=None,                    # noqa: ANN001
+                         plan_id: str = PREVIEW_PLAN_ID) -> tuple[str, dict]:
     """证据核验岗对一张表：**逐单真跑** `refund.evidence_check`，不再只报一个范围计数。
 
     2026-09-10 的房间：这一岗的事实卡只有「进入证据核验范围的有 8 单」一行，
@@ -777,7 +822,11 @@ def facts_sheet_evidence(rows: list[dict], ledger: dict | None = None) -> tuple[
     fail_lines: list[str] = []
     for r in _approved_rows(rows):
         checked = r["checked"]
-        res = _evidence_check(r["payload"], checked, ledger)
+        # 逐单一条 `SkillInvoked`，`task_id` 带行号与订单号 —— 整表十几单共用一个
+        # `preview-evidence` 的话，库里那十几行除了 digest 长得一模一样，
+        # 「第 7 行那单核验了没有」这个问题就答不了。
+        res = _evidence_check(r["payload"], checked, ledger, store=store,
+                              plan_id=plan_id, task_id=_sheet_task_id("evidence", r))
         if res.status != "ok" or not isinstance(res.output, dict):
             data["evidence_failed"] += 1
             fail_lines.append(f"  · {_who(r)}：核验失败（{res.error or '出参不是 dict'}），请人工过目")
@@ -815,7 +864,9 @@ def facts_sheet_evidence(rows: list[dict], ledger: dict | None = None) -> tuple[
     return "\n".join(lines), data
 
 
-def facts_sheet_risk(rows: list[dict], ledger: dict | None = None) -> tuple[str, dict]:
+def facts_sheet_risk(rows: list[dict], ledger: dict | None = None, *,
+                     store=None,                        # noqa: ANN001
+                     plan_id: str = PREVIEW_PLAN_ID) -> tuple[str, dict]:
     """风险反欺诈岗对一张表：**逐单真跑** `refund.risk_screen`，中高风险的逐条点名。
 
     低风险的单只计数不点名 —— 12 行「低风险」在房间里是一堵墙，而人要看的是
@@ -837,7 +888,8 @@ def facts_sheet_risk(rows: list[dict], ledger: dict | None = None) -> tuple[str,
     flagged_lines: list[str] = []
     fail_lines: list[str] = []
     for r in _valid_rows(rows):
-        res = _risk_screen(r["payload"], r["checked"], ledger)
+        res = _risk_screen(r["payload"], r["checked"], ledger, store=store,
+                           plan_id=plan_id, task_id=_sheet_task_id("risk", r))
         out = res.output if res.status == "ok" and isinstance(res.output, dict) else None
         level = str((out or {}).get("level") or "")
         if out is None or level not in LEVEL_CN:

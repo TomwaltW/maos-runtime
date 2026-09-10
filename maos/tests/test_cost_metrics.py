@@ -50,6 +50,7 @@ from maos.model.client import (GatewayModelClient, ModelResponse, ScriptedModelC
 from maos.obs import trace as trace_mod
 from maos.obs.call_sites import (REGISTER_HINT, REGISTERED_CALL_SITES, unregistered,
                                  unregistered_in_store)
+from maos.roundtable import speaker as roundtable_speaker_mod
 from maos.skills.builtin import code_repo_patch as code_repo_patch_mod
 from maos.skills.builtin import req_normalize as req_normalize_mod
 from maos.skills.builtin import sheet_header_map as sheet_header_map_mod
@@ -562,6 +563,7 @@ def test_registered_call_sites_are_byte_for_byte_the_ones_in_the_source():
         code_repo_patch_mod.CALL_SITE,
         reason_classify_mod.CALL_SITE,
         sheet_header_map_mod.CALL_SITE,
+        roundtable_speaker_mod.CALL_SITE,
     }
     assert set(REGISTERED_CALL_SITES) == from_source, (
         "登记表与源头对不上了（漂了或漏登记）：\n"

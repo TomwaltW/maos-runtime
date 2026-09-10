@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -471,13 +472,28 @@ def test_roundtable_package_does_not_import_hiclaw() -> None:
             assert banned not in text, f"{path.name} 里出现了 {banned}"
 
 
+#: 本包里 `time.` 唯一许可的用法。T113 给圆桌的模型调用记账要掐时
+#: （`speaker.Speaker.complete` 的 `latency_ms`），而**掐时不是节奏**：它一秒都不停。
+#: 判据从「不许 import time」收到这里，是因为原来那个字面量把「测量」和「停顿」
+#: 判成了同一件事 —— 而放宽成「随便用 time」会让 `time.sleep` 从正门走进来。
+ALLOWED_TIME_ATTRS = frozenset({"perf_counter"})
+
+
 def test_roundtable_package_never_sleeps() -> None:
-    """节奏由注入方决定（契约 §3）：本包不许 import `time`、不许自己 sleep。
+    """节奏由注入方决定（契约 §3）：本包不许自己 sleep，`time` 只许拿来掐时。
 
     自己 sleep 的代价不是慢一点 —— 是 `maos/tests` 与冒烟脚本跟着变慢，
     而它们跑得快正是这个包能被反复跑的原因。
+
+    两条断言缺一不可：只查 `sleep(` 挡不住 `time.sleep` 之外的等待
+    （`monotonic` 上的忙等一样是停顿），只查 `time.` 的属性挡不住
+    `from time import sleep`。
     """
     for path in sorted(ROUNDTABLE_DIR.glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        for banned in ("import time", "sleep("):
-            assert banned not in text, f"{path.name} 里出现了 {banned}"
+        assert "sleep(" not in text, f"{path.name} 里出现了 sleep("
+        used = set(re.findall(r"\btime\.(\w+)", text)) - ALLOWED_TIME_ATTRS
+        assert not used, (
+            f"{path.name} 用了 time.{'、time.'.join(sorted(used))} —— "
+            f"本包只许 time.{'/'.join(sorted(ALLOWED_TIME_ATTRS))}（掐时），"
+            f"停顿一律走注入方的 pace 回调")

@@ -279,6 +279,12 @@ class IngressRouter:
         #: 圆桌观察者（`maos.roundtable.team.RefundRoundtable`）。**缺省不装**，
         #: 装上之后预检 / 申请表 / 放行各多一次旁路发言，见模块抬头。
         self.team = team
+        # 圆桌与 router 共用同一个 store：圆桌是先建出来才传得进来的（房间入口那侧
+        # 在 `wire()` 之前就要 `_build_team`），所以接线只能在这里补。**探到才调** ——
+        # 还没有这个方法的圆桌版本照旧跑，只是它的事件链不落库。
+        attach_store = getattr(team, "attach_store", None)
+        if attach_store is not None:
+            attach_store(store)
         #: 每个会话最近一张申请表的一行摘要，喂给回话器当【事实】。
         self._last_sheet: dict[tuple[str, str], str] = {}
         self._lock = threading.Lock()

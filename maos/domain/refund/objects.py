@@ -13,12 +13,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import re
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from maos.domain._dbport import DomainConn
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
@@ -38,27 +38,40 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _conn(store: Any) -> sqlite3.Connection:
-    """取底层连接。只认暴露了 `_conn` 的 Store 实现（当前是 `SqliteStore`）。"""
-    conn = getattr(store, "_conn", None)
-    if conn is None:
-        raise TypeError(
-            f"{type(store).__name__} 没有暴露 sqlite 连接，退款域的新增表无处落库。"
-            " 换后端时在这里加一条分支，不要去改冻结的 store.py。"
-        )
-    return conn
+def _domain(store: Any) -> DomainConn:
+    """本域这一次调用该用哪条连接 —— 由 `MAOS_DOMAIN_BACKEND` 决定。
+
+    缺省 `sqlite`，行为与 T115 之前逐字节一致（同一条 `store._conn`、同一把
+    `store._lock`）；配成 `postgres` 时走 `MAOS_PG_DSN` 那条连接，拿不到库一律抛
+    `PgBackendUnavailable`，**绝不回落 sqlite**。翻译与语义对齐都在 `_dbport` 里，
+    本文件只管把四件事（连接 / 执行 / 事务 / 建表）交给它。
+    """
+    return DomainConn.open(store)
+
+
+def _conn(store: Any) -> Any:
+    """取底层连接。
+
+    返回的东西**必须长得像 `sqlite3.Connection`**（`execute` / `commit` /
+    `rollback` / `executescript`）—— `guard.py` 直接拿它写「回执与状态同事务」那
+    一段，而 guard.py 是铁律 8 的落点，本轨一个字都不动。PG 分支返回的是
+    `_dbport._PgConnection`，形状逐个方法对齐。
+    """
+    return _domain(store).raw
 
 
 def lock_of(store: Any) -> Any:
-    """借 Store 自己的锁。
+    """借这条连接自己的锁。
 
     `SqliteStore` 的连接是**共享**的（`check_same_thread=False` + 一把 RLock）。
     退款域绕过 store.py 直接用这条连接，就必须一并用它那把锁：否则别的线程在
     `insert_task` 里一次 `commit()`，就把 guard 这边只写了回执、还没改状态的
     事务提交掉了 —— 「settled 与回执同事务」当场破，而且是偶发的。
+
+    PG 分支同理：psycopg 的连接不是线程安全的，而本进程共用一条（`_dbport`
+    按 DSN 缓存），所以那边自带一把 RLock，这条语义两个后端都保住。
     """
-    lock = getattr(store, "_lock", None)
-    return lock if lock is not None else contextlib.nullcontext()
+    return _domain(store).lock
 
 
 def _guarded(sql: str) -> str:
@@ -72,17 +85,12 @@ def _guarded(sql: str) -> str:
 
 def execute(store: Any, sql: str, params: tuple | list = ()) -> None:
     """退款域的写入口径。对 `refund_case` 的写入一律拒绝。"""
-    conn = _conn(store)
-    with lock_of(store):
-        conn.execute(_guarded(sql), tuple(params))
-        conn.commit()
+    _domain(store).execute(_guarded(sql), tuple(params))
 
 
 def query(store: Any, sql: str, params: tuple | list = ()) -> list[dict]:
     """退款域的读取口径。读不设限 —— 守的是写入方，不是读取方。"""
-    with lock_of(store):
-        rows = _conn(store).execute(sql, tuple(params)).fetchall()
-    return [dict(r) for r in rows]
+    return _domain(store).query(sql, tuple(params))
 
 
 # ------------------------------------------------------------------ schema 迁移
@@ -109,22 +117,17 @@ def _atomic(store: Any, statements: list[tuple[str, tuple]]) -> None:
     拿事务，不是为了拿豁免权：真有哪一步要搬 `refund_case` 的数据，这里当场响、由人
     决定怎么办，比静默放行一条旁路强。ALTER TABLE 不在 `_guarded()` 的拦截面上，
     所以「给 refund_case 加列」这类正常迁移不受影响。
+
+    两个后端同一套 SAVEPOINT 语义，实现收在 `_dbport.DomainConn.atomic()` 里 ——
+    上面那两段理由在 PG 上一条不少：PG 里一条语句失败会把整个事务打进 aborted 态，
+    而 `ROLLBACK TO` 正是它在那个态下还执行得了的少数几条语句之一。
     """
     for sql, _params in statements:
         _guarded(sql)
-    conn = _conn(store)
-    with lock_of(store):
-        conn.execute(f"SAVEPOINT {_MIGRATE_SAVEPOINT}")
-        try:
-            for sql, params in statements:
-                conn.execute(sql, tuple(params))
-        except BaseException:
-            conn.execute(f"ROLLBACK TO {_MIGRATE_SAVEPOINT}")
-            conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
-            conn.rollback()
-            raise
-        conn.execute(f"RELEASE {_MIGRATE_SAVEPOINT}")
-        conn.commit()
+    conn = _domain(store)
+    with conn.atomic(_MIGRATE_SAVEPOINT):
+        for sql, params in statements:
+            conn.execute(sql, tuple(params))
 
 
 def _has_column(store: Any, table: str, column: str) -> bool:
@@ -201,12 +204,13 @@ def ensure_schema(store: Any) -> None:
     对已经存在的表一个字都改不动；`_migrate()` 那段才管「表在但形状旧」。
     只有第一段的时候，改列是静默无效的 —— 加表可以（新表直接生效），改列不行：
     `IF NOT EXISTS` 直接跳过，跑起来一切正常，直到某条 INSERT 报 no such column。
+
+    **`schema.sql` 仍然只有一份**（SQLite 方言）：PG 后端上由
+    `_dbport.to_pg_ddl()` 现翻。手抄一份 PG DDL 的话，别的轨往本域加了表之后
+    两边就会漂，而漂了只在配了 PG 的机器上、只在跑到那张表时才炸。
     """
     script = _SCHEMA_PATH.read_text(encoding="utf-8")
-    conn = _conn(store)
-    with lock_of(store):
-        conn.executescript(script)
-        conn.commit()
+    _domain(store).executescript(script)
     _migrate(store, script)
 
 

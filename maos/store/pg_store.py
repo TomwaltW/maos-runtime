@@ -62,10 +62,12 @@ token**，「退款政策超时未到账」整条是一个词 —— 查「退�
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterator
 
 log = logging.getLogger("maos.store.pg")
 
@@ -82,6 +84,23 @@ DEFAULT_CONNECT_TIMEOUT = 5
 #: 文本检索配置。缺省 `simple`；装了中文分词扩展的部署把它指过去即可。
 FTS_CONFIG_ENV = "MAOS_PG_FTS_CONFIG"
 DEFAULT_FTS_CONFIG = "simple"
+
+#: **方言开关**：打开之后本层接收 SQLite 方言的 SQL（`?` 占位符、
+#: `INSERT OR REPLACE`、SQLite DDL），发出去之前现翻成 PG 方言。缺省**关**。
+#:
+#: 为什么是开关而不是无条件翻译（这是对 `docs/DECISIONS.md` 2026-08-29 那条
+#: 「不翻译」的**有条件**修订，理由记在 DECISIONS 的 `## task-t115` 小节）：
+#:
+#: · 那条决策的理由今天仍然成立 —— `?` 同时是 PG 的 jsonb 算子，字符串字面量里的
+#:   `?` 更不能动。所以翻译器是**按引号状态扫一遍**的（`_dbport.translate_placeholders`），
+#:   不是 `str.replace`；`WHERE note LIKE '%?%'` 逐字保住，有测试钉着。
+#: · 缺省关着，`maos/tests/test_pg_store_live.py` 那条「`?` 要报得说人话」的断言
+#:   逐字不变，别的调用方也一个字节都不受影响。
+#: · 打开它是为了**知识层**：`kb_doc` 的建表、写入（`kb.upsert_doc`）与阶段一
+#:   预过滤都是同一份 SQLite 方言的 SQL，它们跨轨契约里不归本轨改。不给这个开关，
+#:   「知识层跑在 PolarDB 上」就只能靠在 `maos/kb/**` 里散着写方言分支 —— 那是
+#:   把一处收口换成十处分叉。
+SQLITE_DIALECT_ENV = "MAOS_PG_SQLITE_DIALECT"
 
 #: HNSW 的检索深度。**必须显式设**，不能吃服务端缺省 —— 这是本文件最容易
 #: 无声退化的一处。
@@ -166,6 +185,15 @@ class PgBackendUnavailable(NotImplementedError):
     """
 
 
+#: 布尔环境变量认的关值。与 `kb.kb_enabled()` 同一份口径，只是方向相反：
+#: 这个开关缺省**关**，所以认的是开值。
+_TRUE_VALUES = ("1", "true", "yes", "on")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUE_VALUES
+
+
 def _redact(text: str) -> str:
     """把驱动报错里可能夹带的凭证抹掉再往上带（铁律 6）。"""
     out = str(text)
@@ -213,12 +241,38 @@ def _check_placeholders(sql: str, params: tuple) -> None:
         )
 
 
+#: PG 侧那份「翻译器翻不出来」的 DDL。
+_PG_SCHEMA_PATH = Path(__file__).with_name("pg_schema.sql")
+
+#: `kb_extra_statements()` 要滤掉的语句。建扩展要高权限账号（云上普通账号建不了，
+#: 见 deploy/polardb-live.md §1.3），挂在建表路径上会让整个知识层在那种实例上起不来。
+_EXTENSION_HEAD = re.compile(r"^\s*CREATE\s+EXTENSION\b", re.IGNORECASE)
+
+
+def kb_extra_statements() -> list[str]:
+    """`pg_schema.sql` 里知识层建表要跟着跑的那几条，已滤掉 `CREATE EXTENSION`。
+
+    单一事实源：这几条 DDL 只写在 `pg_schema.sql` 里，Python 侧不另抄一份 ——
+    抄一份的后果是「手跑那份文件」与「ensure_schema 自动跑的那份」形状不同，
+    而两边都不报错。
+    """
+    from maos.domain import _dbport                # noqa: PLC0415 —— 惰性，理由同 _dialect
+
+    text = _PG_SCHEMA_PATH.read_text(encoding="utf-8")
+    return [s for s in _dbport.split_statements(text) if not _EXTENSION_HEAD.match(s)]
+
+
 class PgStorePort:
     """StorePort 的 PG 实现。F-2 五个签名逐字未动，只往里填实现。"""
 
-    def __init__(self, dsn: str | None = None) -> None:
+    def __init__(self, dsn: str | None = None, *,
+                 sqlite_dialect: bool | None = None) -> None:
         self.dsn = dsn if dsn is not None else os.environ.get(DSN_ENV, "")
         self._conn: Any = None
+        #: 见 `SQLITE_DIALECT_ENV`。显式传就用传的，否则读环境变量，缺省关。
+        self.sqlite_dialect = (
+            _env_flag(SQLITE_DIALECT_ENV) if sqlite_dialect is None else bool(sqlite_dialect))
+        self._pk_cache: dict[str, tuple[str, ...]] = {}
 
     def __repr__(self) -> str:
         # 只报有没有，不报是什么 —— DSN 里通常带口令。
@@ -226,19 +280,72 @@ class PgStorePort:
 
     # -- StorePort 五方法（F-2 冻结签名）---------------------------------------
     def execute(self, sql: str, params: tuple) -> None:
-        _check_placeholders(sql, params)
+        sql, bound = self._dialect(sql, params)
+        if not sql.strip():
+            # 翻译之后是空的 —— 只有一种来路：FTS5 虚表那条整段跳过了
+            # （`_dbport._fts5_skip`）。psycopg 对空语句会抛「can't execute an
+            # empty query」，那句话离真正的原因很远，所以在这里收掉。
+            return
         conn = self.connect()
         with conn.cursor() as cur:
-            cur.execute(sql, tuple(params))
+            cur.execute(sql, bound)
 
     def query(self, sql: str, params: tuple) -> list[dict]:
-        _check_placeholders(sql, params)
+        sql, bound = self._dialect(sql, params)
+        if not sql.strip():
+            return []
         conn = self.connect()
         with conn.cursor() as cur:
-            cur.execute(sql, tuple(params))
+            cur.execute(sql, bound)
             if cur.description is None:
                 return []
             return [dict(row) for row in cur.fetchall()]
+
+    # -- 方言 ------------------------------------------------------------------
+    def _dialect(self, sql: str, params: tuple) -> tuple[str, tuple | None]:
+        """方言开关关着就原样过（只做那条说人话的占位符检查）；开着就现翻。
+
+        翻译之后**参数为空时递 `None` 而不是 `()`**：psycopg 只在传了参数的那次
+        调用里解析 `%`，递空元组会让它去解析建表 DDL 里的 `%`（`DEFAULT '100%'`
+        这种），报一句与真正原因毫不相干的 `unsupported format character`。
+        """
+        bound = tuple(params or ())
+        if not self.sqlite_dialect:
+            _check_placeholders(sql, bound)
+            return sql, bound
+        from maos.domain import _dbport            # noqa: PLC0415 —— 惰性，见下
+
+        # 惰性 import：`maos.store` 是内核侧的可插拔面，模块级依赖 `maos.domain`
+        # 会把业务域挂到内核的 import 图上（铁律 9 那句「内核对 domain 零依赖」）。
+        # 翻译器住在 `_dbport` 是因为退款域那条路也要用同一份，两处各一份必漂。
+        return _dbport.to_pg_sql(
+            sql, self.primary_key, with_params=bool(bound)), (bound or None)
+
+    def primary_key(self, table: str) -> tuple[str, ...]:
+        """一张表的主键列，按主键内的列序。查一次记一次。
+
+        `INSERT OR REPLACE` 翻成 `ON CONFLICT (...)` 要它。**从系统目录现查**，
+        不在代码里另抄一份：抄一份的后果是别的轨改了主键之后两边悄悄对不上。
+        """
+        if table in self._pk_cache:
+            return self._pk_cache[table]
+        from maos.domain import _dbport            # noqa: PLC0415
+
+        keys = tuple(str(r["name"]) for r in self._raw_query(_dbport._PK_SQL, (table,)))
+        self._pk_cache[table] = keys
+        return keys
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[None]:
+        """一组语句同生共死。**不在 F-2 五方法里**，是知识层的能力探测项。
+
+        `maos/kb/__init__.py` 的 `_atomic()` 硬要求端口有它（迁移中途失败会让库
+        停在半成品上，那种失效没有症状），`upsert_doc()` 则是有就用、没有就退化
+        成逐条提交。本层连接是 `autocommit=True`，psycopg 的 `transaction()` 在
+        autocommit 下照样显式开一个事务块，语义与 SQLite 适配器那份一致。
+        """
+        with self.connect().transaction():
+            yield
 
     def fts_search(self, table: str, field: str, q: str, limit: int) -> list[tuple[str, float]]:
         _ident("表", table)
@@ -400,6 +507,22 @@ class PgStorePort:
         return _ident("文本检索配置", raw)
 
     # -- 内部 ------------------------------------------------------------------
+    def _raw_query(self, sql: str, params: tuple) -> list[dict]:
+        """本层**自己拼的** SQL 直接发，不过方言翻译。
+
+        本模块内部生成的 SQL（两条检索通道、主键目录查询）本来就是 PG 方言：
+        `%s` 占位符、`::vector` 转换、`ts_rank(...)`。再过一遍
+        SQLite→PG 的翻译只会把 `%s` 的 `%` 转义成 `%%`，报一句
+        「0 placeholders but N parameters」—— 那句话完全不提示是自己把自己翻坏了。
+        方言开关管的是**调用方递进来**的 SQL，不管本层自己写的。
+        """
+        conn = self.connect()
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            if cur.description is None:
+                return []
+            return [dict(row) for row in cur.fetchall()]
+
     def _search_query(
         self, sql: str, params: tuple, *, table: str, field: str
     ) -> list[dict]:
@@ -411,7 +534,7 @@ class PgStorePort:
         """
         psycopg = _driver()
         try:
-            return self.query(sql, params)
+            return self._raw_query(sql, params)
         except psycopg.errors.UndefinedFunction as exc:
             raise LookupError(
                 f"{table}.{field} 的检索通道走不通：{exc}。向量通道需要先在这个库上"

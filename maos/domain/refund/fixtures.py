@@ -29,6 +29,24 @@
 **为什么在装载侧分流而不是在检索侧过滤**：写错 kind 的条目查得出来但归不了类，
 而错误发生在写入侧、暴露在几周后的检索侧，是最难回溯的一类脏数据（`kb/schema.sql`
 把取值域写进 CHECK 也是这个理由）。
+
+## 两个后端（T115 起）
+
+本模块**自己不认后端**，一行方言分支都没有 —— 这是刻意的。灌哪儿由下面两个开关
+各管一半，而这两半是分开的，别指望一个开关搬走所有东西：
+
+| 灌的东西 | 落在哪 | 谁决定 |
+|---|---|---|
+| `seed_case` / `seed_policy_corpus`（退款域那几张业务表） | `MAOS_DOMAIN_BACKEND` | `objects.execute` → `maos/domain/_dbport.py` |
+| `seed_history_kb` / `seed_policy_kb`（`kb_doc`） | 传进来的 `store` 是什么 | `kb.port_of(store)` |
+
+也就是说：`MAOS_DOMAIN_BACKEND=postgres` 时业务表进 PG，而 `kb_doc` 仍跟着
+`store` 走（核心 `SqliteStore` 就还在 SQLite）。要把知识也灌进 PG，传一个
+`PgStorePort` 进来（`MAOS_STORE_BACKEND=postgres` + `MAOS_PG_SQLITE_DIALECT=1`）。
+
+把这两半焊成一个开关是**错的**：内核那四张表（plan/task/artifact/event_log）本期
+不上 PG，而 `kb.upsert_doc` 与 `objects.execute` 拿的是同一个 `store` 参数 ——
+一个开关搬走所有东西的话，`store` 到底该是谁就没有答案了。
 """
 
 from __future__ import annotations
@@ -172,6 +190,10 @@ def seed_history_kb(store: Any) -> dict[str, int]:
 
     `embedding` 语料里恒为 null，落库时按当前嵌入实现现算 —— 语料里预置一串数
     等于把「用哪个嵌入模型」这个决定提前做掉。
+
+    `store` 可以是核心 `SqliteStore`，也可以是 `PgStorePort`（后者要开
+    `MAOS_PG_SQLITE_DIALECT`，本函数递给 `kb` 的 SQL 是 SQLite 方言的）——
+    见模块 docstring 那张表。
     """
     from maos import kb
     from maos.kb import retriever

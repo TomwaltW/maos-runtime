@@ -94,6 +94,84 @@ pip install "psycopg[binary]"
 
 ---
 
+## 退款域上 PolarDB —— 三步（T115）
+
+上面那三步搬的是**地基**（`StorePort` 的两条检索通道）。退款那 16 张业务表原本
+硬绑在 SQLite 上：`objects._conn()` 直接取 `SqliteStore._conn`，取不到就抛
+`TypeError`。这一节讲怎么把**业务纵切**也搬过去。
+
+> **地基通了 ≠ 业务域跑得起来。** 中间隔着三样东西：CHECK 约束落没落、
+> 受理幂等是不是真幂等、以及「回执与终态同事务」这条铁律 8 的落点成不成立。
+> 前两步各自能全绿而这三样全错，且都不报错。
+
+### 第 1 步 · 换后端开关
+
+```bash
+export MAOS_DOMAIN_BACKEND=postgres
+export MAOS_PG_DSN='postgresql://<user>:<pass>@<host>:<port>/<db>'
+```
+
+缺省是 `sqlite`，行为与 T115 之前**逐字节一致**。配成 `postgres` 却拿不到库
+（没装驱动 / 没配 DSN / 连不上），一律抛 `PgBackendUnavailable`，**不回落 sqlite**。
+
+拼错一个字母也抛（只认 `sqlite` / `postgres` 两个字面量）—— 静默跑 sqlite
+比报错难查一个量级：你会以为在验 PG，其实一行 PG 代码都没执行。
+
+### 第 2 步 · 建表（**不要手抄 DDL**）
+
+```python
+from maos.domain.refund import objects
+objects.ensure_schema(store)          # 16 张表 + 索引，幂等，可连跑
+```
+
+DDL 只有一份，就是 SQLite 方言的 `maos/domain/refund/schema.sql`；PG 侧由
+`maos/domain/_dbport.py::to_pg_ddl()` **现翻**。
+
+**不要在 PG 那边另存一份手抄的 DDL。** 往这个域加表加列的轨不止一条，手抄的那份
+一落地就漂，而漂了只在配了 PG 的机器上、只在跑到那张表时才炸
+（`relation does not exist`）。翻译器认不出来的构造会当场抛 `UnsupportedDdlError`
+并带上原文那一行 —— 那才是「该往哪儿加」的信号。它认的子集与边界见
+`maos/tests/test_ddl_translate.py`（44 条，不需要 PG，进缺省全量）。
+
+知识层的 `kb_doc` 同理：
+
+```bash
+export MAOS_STORE_BACKEND=postgres
+export MAOS_PG_SQLITE_DIALECT=1       # 让 PgStorePort 收 SQLite 方言的 SQL
+```
+```python
+from maos import kb
+from maos.store import create_store
+kb.ensure_schema(create_store())      # kb_doc + kb_schema_version + PG 侧那几条
+```
+
+### 第 3 步 · 验
+
+```bash
+python3 scripts/polardb_smoke.py --local        # 六步，第 6 步是退款域 case 往返
+MAOS_PG_DSN=... python3 -m pytest maos/tests -q -k pg
+```
+
+冒烟脚本**不 import maos**（一台只有 psycopg、没有本仓库的机器上也能跑），
+所以第 6 步用的是带 `maos_smoke_` 前缀的靶表，不碰真的 `refund_case`。
+
+### ⚠️ 持久库上连跑演示场景要先清场
+
+`maos/flows/scenario_6.py` 的 `case_id` / `order_id` 是**写死的**（`case-s6-0001`），
+因为「连跑两次输出逐条一致」是它的验收之一。SQLite 那边每次都是 `:memory:` 新库，
+所以看不出问题；PolarDB 是持久库，第二次跑会撞上第一次留下的那条 case ——
+它已经是 `settled`，而 `submitted -> approved` 从终态迁不过去，于是场景 6 报
+`BizStatusTransitionError`。
+
+这不是缺陷，是「演示场景用固定 id」与「持久库」两件事的正常结果。连跑前清一次即可：
+
+```sql
+DELETE FROM payment_observation WHERE tenant_id = 'tnt-mfg-001';
+DELETE FROM refund_case         WHERE tenant_id = 'tnt-mfg-001';
+```
+
+---
+
 ## 已实测
 
 环境：本机 Docker `pgvector/pgvector:pg16`，2026-08-29。
@@ -270,10 +348,22 @@ LookupError: 查询串含中日韩字符，而当前文本检索配置是 PG 内
 
 ### 2. 占位符方言：`?` vs `%s`
 
-SQLite 用 `?`，PG 用 `%s`。**本层不做自动翻译** —— `?` 同时是 PG 的 jsonb 算子，
-字符串字面量里的 `?` 更不能动，机器改写迟早改错一条而且没有症状。换后端时调用方
-自己改 SQL；传了参数却还写着 `?` 的话，本层抛一条说人话的 `ValueError`，
-而不是让 psycopg 报一句语法错。
+SQLite 用 `?`，PG 用 `%s`。**缺省仍然不做自动翻译** —— `?` 同时是 PG 的 jsonb 算子，
+字符串字面量里的 `?` 更不能动，粗暴的 `str.replace` 迟早改错一条而且没有症状。
+传了参数却还写着 `?` 的话，本层抛一条说人话的 `ValueError`，而不是让 psycopg
+报一句语法错。
+
+**T115 起多了一个开关**：`MAOS_PG_SQLITE_DIALECT=1` 让 `PgStorePort` 收 SQLite 方言
+的 SQL（`?` 占位符、`INSERT OR REPLACE`、SQLite DDL），发出去之前现翻。缺省**关**，
+关着的时候行为一个字节不变。
+
+翻译器不是 `str.replace`：它**按引号状态扫一遍**，`WHERE note LIKE '%?%'` 里那个
+`?` 逐字保住（`maos/tests/test_ddl_translate.py` 钉着）。`INSERT OR REPLACE` 的
+冲突目标从 PG 的系统目录**现查主键**，不在代码里另抄一份。
+
+打开它是为了知识层：`kb_doc` 的建表、写入与阶段一预过滤都是同一份 SQLite 方言的
+SQL。不给这个开关，「知识层跑在 PolarDB 上」就只能靠在 `maos/kb/**` 里散着写方言
+分支 —— 那是把一处收口换成十处分叉。
 
 ### 3. 分数不可跨后端比较：`ts_rank` 与 `bm25` 不是同一把尺子
 
@@ -303,14 +393,51 @@ SQLite 侧逐行比对，能点名 `id=d3` 那行；PG 侧由 pgvector 在查询
 
 ### 6. 表达式索引绑死了 FTS 配置
 
-`pg_schema.sql` 里的 GIN 索引建在 `to_tsvector('simple', body)` 上。换了
-`MAOS_PG_FTS_CONFIG` 之后查询用的是新配置，**这条索引就用不上了**，退化成顺序扫描
-—— 不报错，只是慢。换配置就照 `pg_schema.sql` 的注释再建一条对应的索引。
+`pg_schema.sql` 里的 GIN 索引建在 `to_tsvector('simple', title)` 与
+`to_tsvector('simple', body)` 上（T115 起两列各一条 —— F-2 的 `fts_search` 一次
+只认一列，检索器每列各问一次，只给 body 建索引的话标题那一次退化成顺序扫描）。
+换了 `MAOS_PG_FTS_CONFIG` 之后查询用的是新配置，**这两条索引就用不上了**，
+同样退化成顺序扫描 —— 不报错，只是慢。换配置就照 `pg_schema.sql` 的注释再建两条。
 
-### 7. `kb_doc` 的主键与 F-2 的 `id` 约定对不上
+### 7. ~~`kb_doc` 的主键与 F-2 的 `id` 约定对不上~~（T115 已解决，留档）
 
-F-2 约定「源表主键，列名固定为 `id`」，而 `maos/kb/schema.sql` 的 `kb_doc` 主键是
-`(tenant_id, doc_id)`。所以 `pg_schema.sql` 给的是**符合 F-2 的参考形状**
-（`kb_doc_pg`），不是 `kb_doc` 的翻译版。知识层要接 PG 得先对齐这个口径 ——
-那是另一轨的线，不在本轨范围。同一个错配在 SQLite 侧同样存在
-（`retriever.py` 注释里写着两条通道都抛 `LookupError`），不是 PG 带来的新问题。
+原状：F-2 约定「源表主键，列名固定为 `id`」，而 `maos/kb/schema.sql` 的 `kb_doc`
+主键是 `(tenant_id, doc_id)`。所以 `pg_schema.sql` 当时给的是**符合 F-2 的参考形状**
+`kb_doc_pg`，不是 `kb_doc` 的翻译版。
+
+后来 T13 给 `kb_doc` 补了 `id` 生成列（`tenant_id || ':' || doc_id`），T115 又把
+`kb_doc` 真的建到了 PG 上（`VIRTUAL` 生成列翻成 PG 的 `STORED`）。于是
+`kb_doc_pg` 成了一张没有租户列、没人写也没人读的重复表，**已退役**
+（`maos/store/pg_schema.sql` 里有退役说明）。
+
+> `deploy/polardb-live.md` 里那些提到 `kb_doc_pg` 的实测读数**一字未动**（铁律 3）：
+> 那是 2026-08-30 在云上那张表上量到的，表不再随代码交付，读数仍然是当时的读数。
+
+### 8. PG 上 `kb_doc.embedding` 是 TEXT，向量通道走不通
+
+`kb_doc.embedding` 在 SQLite 侧是 TEXT（存 JSON 数组文本），翻到 PG 仍然是 TEXT ——
+这是「一份 DDL 两个后端」的直接后果，也是刻意的：形状不一样就不叫同构。
+
+代价是 pgvector 的 `<=>` 在这一列上用不了，`vector_search` 抛 `LookupError`，
+检索器退化成纯 Python 余弦。**召回照常，只是不走索引**，且退化会告警一次。
+全文那条通道不受影响（`kb_doc` 上有 tsvector GIN 索引，走的是 `body` / `title`）。
+
+要在 PG 上真用 HNSW，得给 PG 侧单开一列 `vector(64)` 并在写入侧双写 —— 那就是
+两个后端形状分叉，不是 T115 该拍的板。已记 `docs/BACKLOG.md` 的 `## task-t115`。
+
+### 9. `workflow_version` 的类型：SQLite 收、PG 拒
+
+`scenarios/refund/history/history_cases.json` 那 24 条历史案例的 `workflow_version`
+是 `"1.0.0"` 这样的语义化版本串，而 `kb_doc.workflow_version` 声明的是 `INTEGER`。
+
+SQLite 的**类型亲和性**把它照单收下（存成文本），PG 直接拒：
+`invalid input syntax for type integer: "1.0.0"`。所以
+`fixtures.seed_history_kb()` 今天在 PG 上灌不进去。
+
+这不是「PG 太严」——它是 SQLite 替我们藏了几个月的一处数据缺陷：
+`retriever.prefilter` 拿 `workflow_version = ?` 去比的时候，比的是字符串还是整数
+取决于**当初存进去的是什么**，而两边都不报错。
+
+修它要改语料或改列类型，两者都在 T115 白名单外，已记 `docs/BACKLOG.md` 的
+`## task-t115` 第 1 条，并由 `maos/tests/test_kb_pg_prefilter.py` 里一条
+`xfail(strict=True)` 钉着 —— 改对了那条会「意外通过」而报错，逼人回来摘掉豁免。

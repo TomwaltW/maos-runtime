@@ -271,25 +271,12 @@ def test_chinese_query_degrades_instead_of_pretending(pg: PgStorePort) -> None:
 
 
 # --------------------------------------------------------------- 6. 靶场
-@pytest.mark.xfail(
-    strict=True,
-    reason="语料的 workflow_version 是 '1.0.0' 这类语义化版本串，而 kb_doc 那一列"
-           " 声明的是 INTEGER。SQLite 靠类型亲和性静默收下，PG 当场拒。"
-           " 修它要改 scenarios/refund/history/history_cases.json 或"
-           " maos/kb/schema.sql，两个都在 T115 白名单外 —— 见 docs/BACKLOG.md"
-           " 的 ## task-t115 第 1 条。修好之后本条会转绿（strict），到时候把"
-           " xfail 摘掉即可。")
 def test_fixtures_seed_history_kb_lands_on_postgres(pg: PgStorePort) -> None:
     """`fixtures.seed_history_kb()` 把 24 条历史案例灌进 PG 的 `kb_doc`（派单 §3.5）。
 
-    **本条当前是预期失败**，而且失败得有价值：它是本轨挖出来的一处真分歧 ——
-    同一份语料在 SQLite 上灌得进去、在 PolarDB 上灌不进去，而在换后端之前
-    没有任何东西会告诉你这件事。9/18 真跑日要用到这 24 条历史，所以它必须有
-    一条红着的测试钉在这里，而不是只写在文档里。
-
-    `strict=True` 是刻意的：语料或列类型哪天改对了，本条会由 xfail 变成
-    「意外通过」而报错，逼人回来把这层壳摘掉 —— 而不是让一条已经不成立的
-    豁免一直挂着。
+    T115 时本条是 strict xfail：语料的 `workflow_version` 是 '1.0.0' 这类版本串，
+    PG 的 INTEGER 列当场拒。T118 把语料整数化（1.0.0 -> 1、1.1.0 -> 2）之后它转绿，
+    整合期（2026-09-10）按 strict 的约定把壳摘掉 —— 24 条历史在 PG 上真灌得进去了。
 
     分流口径不因换后端而变：`outcome='success'` -> `history_case`（规划正例），
     `failed` -> `failure_hint`（**不是**正例）。

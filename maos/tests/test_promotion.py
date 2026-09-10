@@ -78,14 +78,44 @@ def _seed_case(store, *, biz_status_hint: str = "submitted") -> dict:
         " rule_refs, checked_by, checked_at) VALUES (?,?,?,?,?,?,?)",
         (TENANT, CASE, 6800.0, "{}", json.dumps([RULE]), "finance",
          "2026-07-09T00:00:00+00:00"))
-    # 四类引用**全挂上**：`evidence_complete` 要求 `outcome.EVIDENCE_REF_TYPES` 里的
+    # 整合期（T116 合入后）清单补到十类：剩下几张表也各落一行最小记录。
+    objects.execute(
+        store,
+        "INSERT INTO product_snapshot (tenant_id, sku, version, name, category,"
+        " warranty_months, payload_json) VALUES (?,?,?,?,?,?,?)",
+        (TENANT, SKU, 1, "无刷角磨机", "电动工具", 12, "{}"))
+    objects.execute(
+        store,
+        "INSERT INTO customer_evidence (tenant_id, case_id, evidence_id, kind, uri,"
+        " digest, submitted_at) VALUES (?,?,?,?,?,?,?)",
+        (TENANT, CASE, "ev-seed", "image", "file:///ev-seed.jpg", "sha256:ev-seed",
+         "2026-07-08T00:00:00+00:00"))
+    objects.execute(
+        store,
+        "INSERT INTO approval_record (tenant_id, case_id, approver, decision, reason,"
+        " decided_at) VALUES (?,?,?,?,?,?)",
+        (TENANT, CASE, "supervisor", "approved", "", "2026-07-09T00:00:00+00:00"))
+    objects.execute(
+        store,
+        "INSERT INTO notification (tenant_id, case_id, channel, content_digest, sent_at,"
+        " ack_at) VALUES (?,?,?,?,?,?)",
+        (TENANT, CASE, "wecom", "digest-seed", "2026-07-09T00:30:00+00:00", None))
+    # 十类引用**全挂上**：`evidence_complete` 要求 `outcome.EVIDENCE_REF_TYPES` 里的
     # 每一类都 resolve 得到。少挂一类这一单就晋升不了，而那正是本文件要区分的另一档
     # （见 `test_success_needs_business_success_and_evidence_complete`）。
+    # `payment_observation` 那条引用指向 req-1：观察行由各用例的 `_observe` 落，
+    # 落了才 resolve 得到 —— 没观察的用例本来就不该判成证据完整。
     for object_type, object_id, version in (
             ("refund_case", CASE, 0),
             ("order_snapshot", ORDER, 1),
+            ("product_snapshot", SKU, 1),
             ("policy_rule", "AS-01", 1),
-            ("refund_request", "req-1", 0)):
+            ("customer_evidence", "ev-seed", 1),
+            ("approval_record", CASE, 1),
+            ("finance_entry", CASE, 1),
+            ("refund_request", "req-1", 1),
+            ("payment_observation", "req-1", 0),
+            ("notification", "digest-seed", 1)):
         objects.attach_business_ref(
             store, plan_id=PLAN, task_id="task-1", tenant_id=TENANT,
             object_type=object_type, object_id=object_id, object_version=version)

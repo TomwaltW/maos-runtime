@@ -196,7 +196,7 @@ def seed_history_kb(store: Any) -> dict[str, int]:
     见模块 docstring 那张表。
     """
     from maos import kb
-    from maos.kb import retriever
+    from maos.kb import promotion, retriever
 
     experiment = _experiment()
     payload = experiment.load_corpus(os.path.join("history", "history_cases.json"))
@@ -205,8 +205,7 @@ def seed_history_kb(store: Any) -> dict[str, int]:
     kb.ensure_schema(store)
     counted: dict[str, int] = {}
     for row in rows:
-        kind = (kb.KIND_HISTORY_CASE if row.get("outcome") == kb.OUTCOME_SUCCESS
-                else kb.KIND_FAILURE_HINT)
+        kind, _outcome = promotion.classify_corpus_row(row)   # 与运行时晋升同一面（T120）
         kb.upsert_doc(store, {
             **row,
             "kind": kind,

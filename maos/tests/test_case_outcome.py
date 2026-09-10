@@ -346,13 +346,14 @@ def test_empty_complaint_is_refused(store):
 # ======================================================================
 # 5. 清单常量与 schema
 # ======================================================================
-def test_evidence_ref_types_documents_the_t116_gap():
-    """清单常量当前 4 类，剩下 6 类等 T116 —— 两处加起来正好是契约 §E 的十类。"""
-    assert len(outcome.EVIDENCE_REF_TYPES) == 4
-    assert len(outcome.EVIDENCE_REF_TYPES_PENDING_T116) == 6
-    assert not set(outcome.EVIDENCE_REF_TYPES) & set(outcome.EVIDENCE_REF_TYPES_PENDING_T116)
-    assert len(set(outcome.EVIDENCE_REF_TYPES) | set(
-        outcome.EVIDENCE_REF_TYPES_PENDING_T116)) == 10
+def test_evidence_ref_types_cover_the_contract_ten():
+    """T116 合入后：十类恒要，人工补偿只在案子真走到补偿时才要 —— 顺利路径本就没有工单。"""
+    assert len(outcome.EVIDENCE_REF_TYPES) == 10
+    assert outcome.EVIDENCE_REF_TYPES_ON_COMPENSATION == ("compensation_record",)
+    assert "compensation_record" not in outcome.EVIDENCE_REF_TYPES
+    assert set(outcome.required_ref_types()) == set(outcome.EVIDENCE_REF_TYPES)
+    assert len(outcome.required_ref_types(compensated=True)) == 11
+    assert "compensation_record" in outcome.required_ref_types(compensated=True)
 
 
 def test_enum_domains_match_the_contract():

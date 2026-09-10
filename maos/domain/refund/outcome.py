@@ -38,13 +38,12 @@
 只是明确地失败了）；轮询到顶仍问不出终态是 `unknown`（**外部结果不明确**，那笔钱
 可能已经出去了）。把 unknown 当成 unsettled 会让账面上凭空少一笔。
 
-## evidence_complete 的清单跟着 `objects._REF_TARGETS` 走
+## evidence_complete 的清单：十类恒要，人工补偿按需
 
-契约 §E 写的是「十类业务对象的 `business_ref` 都能 resolve」，而当前
-`_REF_TARGETS` 只登记了 5 类 —— 补到 10 类是 T116 的活（与本轨并行，这一波还没合）。
-`required_ref_types()` 因此**读 `_REF_TARGETS` 而不是抄一份十项清单**：T116 合入那天
-它自动变成 10 类，不需要有人记得回来改这里。抄一份的后果是合完之后两处不一致，
-而症状是「证据其实齐了，晋升却一直不发生」，没有任何报错。
+契约 §E 写的是「十类业务对象的 `business_ref` 都能 resolve」。T116 合入后十类都挂得上，
+`EVIDENCE_REF_TYPES` 列的是每一单都要的十类；`compensation_record` 只在案子有补偿记录时
+才并进清单（`required_ref_types(compensated=True)`）—— 顺利路径本就没有工单，
+把它列为恒要会让每一单成功案例都判成证据不全、晋升恒不发生，而且没有任何报错。
 """
 
 from __future__ import annotations
@@ -264,41 +263,37 @@ def compute_case_outcome(
 
 
 #: `evidence_complete` 要求哪些业务对象类别都 resolve 得到 —— **一个清单常量，
-#: 改它就改判据**。契约 §E 写的是「十类」，这里当前只列 4 类，两处不一致是**故意的**：
+#: 改它就改判据**。T116 合入后（整合期 2026-09-10）补齐到契约 §E 的十类，分两档：
 #:
-#: · 十类里的六类（customer_evidence / approval_record / finance_entry /
-#:   product_snapshot / notification / compensation_record）现在压根挂不上
-#:   `business_ref` —— 补齐是 T116 的活（`_REF_TARGETS` / `_VERSIONED_REF_TABLES`
-#:   是它的白名单面），本波并行、尚未合入。
-#: · 所以本轨按**当前实际能 resolve 的类别**算（实跑：场景 6 与场景 7 的
-#:   `business_ref` 恰好就是这 4 类）。列十类的话每一单都会被判成证据不全，
-#:   晋升恒不发生，而症状是「代码全绿、知识库恒空」，没有任何报错。
+#: · 下面十类**每一单都要**：顺利路径跑完，这十类的 `business_ref` 都挂得上、都
+#:   resolve 得到（T116 实跑 `run_case.py` 20/20 条引用全部 resolve）。
+#: · `compensation_record`（人工补偿）**只在案子真走到补偿时才要**：顺利路径钱退成了，
+#:   本就没有工单 —— 把它列为恒要，等于把每一单成功案例都判成「证据不全」，晋升恒不
+#:   发生，而症状是「代码全绿、知识库恒空」，没有任何报错。
 #:
 #: **不读 `objects._REF_TARGETS` 自动跟随**：那张表登记的是「这个类型该去哪张表查」，
-#: 它已经有 5 项（含 `product_snapshot`），而第 5 项目前没有任何 skill 会挂上去 ——
-#: 跟着它走等于立刻多要一类要不到的证据。判据要跟的是「谁真的挂得上」，
-#: 不是「谁登记过」。整合期 T116 合入后把这个常量补到 10 类（已记 DECISIONS/BACKLOG）。
+#: 判据要跟的是「谁真的挂得上」，不是「谁登记过」。
 EVIDENCE_REF_TYPES: tuple[str, ...] = (
     "refund_case",
     "order_snapshot",
+    "product_snapshot",
     "policy_rule",
-    "refund_request",
-)
-
-#: T116 合入后要补进 `EVIDENCE_REF_TYPES` 的那六类。放在这里而不是只写在注释里，
-#: 是为了让「还差哪几类」在证据束与测试里读得到，不必去翻文档。
-EVIDENCE_REF_TYPES_PENDING_T116: tuple[str, ...] = (
     "customer_evidence",
     "approval_record",
     "finance_entry",
-    "product_snapshot",
+    "refund_request",
+    "payment_observation",
     "notification",
-    "compensation_record",
 )
 
+#: 第十类：只在案子有补偿记录时并进清单。
+EVIDENCE_REF_TYPES_ON_COMPENSATION: tuple[str, ...] = ("compensation_record",)
 
-def required_ref_types() -> tuple[str, ...]:
-    """`evidence_complete` 的清单。取值见 `EVIDENCE_REF_TYPES` 的注释。"""
+
+def required_ref_types(*, compensated: bool = False) -> tuple[str, ...]:
+    """`evidence_complete` 的清单。`compensated=True`（案子有补偿记录）时多要第十类。"""
+    if compensated:
+        return EVIDENCE_REF_TYPES + EVIDENCE_REF_TYPES_ON_COMPENSATION
     return EVIDENCE_REF_TYPES
 
 
@@ -345,14 +340,15 @@ def record_case_outcome(store: Any, *, tenant_id: str, case_id: str,
     """
     ensure_outcome_schema(store)
     previous = read_case_outcome(store, tenant_id=tenant_id, case_id=case_id)
+    compensations = _rows(store, "compensation_record", tenant_id, case_id)
     computed = compute_case_outcome(
         observations=_rows(store, "payment_observation", tenant_id, case_id),
         notifications=_rows(store, "notification", tenant_id, case_id),
         complaints=_rows(store, "complaint", tenant_id, case_id),
-        compensations=_rows(store, "compensation_record", tenant_id, case_id),
+        compensations=compensations,
         recorded_confirmation=(previous or {}).get("customer_confirmation"),
         resolved_ref_types=resolved_ref_types_of(store, plan_id=plan_id, tenant_id=tenant_id),
-        required_ref_types=required_ref_types(),
+        required_ref_types=required_ref_types(compensated=bool(compensations)),
     )
     row = _persist(store, tenant_id=tenant_id, case_id=case_id, computed=computed)
 

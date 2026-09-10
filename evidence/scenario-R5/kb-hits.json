@@ -1,9 +1,9 @@
-# generated at 2026-09-10T13:41:50.770441+00:00 from aea85d5fdf9672be67d8f1e23cba481f5d7ef70d
+# generated at 2026-09-10T14:13:31.940640+00:00 from f4ad8ddcb18c6c8a54efdb075888bd57c38a7a62
 {
   "hits": [
     {
       "seq": 48,
-      "plan_id": "plan_3ecbb23ad4d5",
+      "plan_id": "plan_b520dc813c84",
       "task_id": null,
       "detail": {
         "docs": [
@@ -20,45 +20,57 @@
             }
           },
           {
+            "doc_id": "kb-rj-mfga-003",
+            "score": 0.389036,
+            "title": "质保期内质量主张缺质检报告，按 AS-002 驳回",
+            "kind": "rejection",
+            "channels": {
+              "rule_no": 1.0,
+              "gateway_code": 0.0,
+              "fts": 0.0,
+              "vector": 0.19518
+            }
+          },
+          {
             "doc_id": "kb-policy-tnt-mfg-a-AS-002-v1",
-            "score": 0.410541,
+            "score": 0.360541,
             "title": "质保期内质量问题全额退",
             "kind": "policy",
             "channels": {
               "rule_no": 1.0,
               "gateway_code": 0.0,
-              "fts": 0.25,
+              "fts": 0.0,
               "vector": 0.052705
             }
           },
           {
-            "doc_id": "kb-policy-tnt-mfg-a-AS-004-v1",
-            "score": 0.15,
-            "title": "经销渠道差异（增渠道商核销，区域经理审批）",
+            "doc_id": "kb-pv-mfga-ch-online-sku-brg-6205",
+            "score": 0.208699,
+            "title": "渠道与产品差异：自营 x 轴承",
             "kind": "policy",
             "channels": {
               "rule_no": 0.0,
               "gateway_code": 0.0,
-              "fts": 0.75,
-              "vector": 0.0
+              "fts": 0.933333,
+              "vector": 0.110163
             }
           },
           {
-            "doc_id": "kb-policy-tnt-mfg-a-AS-001-v1",
-            "score": 0.1,
-            "title": "无理由退货期（30 天）",
-            "kind": "policy",
+            "doc_id": "kb-tp-mfga-happy-path",
+            "score": 0.19611,
+            "title": "顺利路径：受理→裁定→核算→支付→观察→通知",
+            "kind": "task_pattern",
             "channels": {
               "rule_no": 0.0,
               "gateway_code": 0.0,
-              "fts": 0.5,
-              "vector": 0.0
+              "fts": 0.866667,
+              "vector": 0.113881
             }
           }
         ],
-        "hit_count": 4,
-        "candidate_count": 5,
-        "duration_ms": 0.452,
+        "hit_count": 5,
+        "candidate_count": 25,
+        "duration_ms": 1.322,
         "query": {
           "tenant_id": "tnt-mfg-a",
           "biz_type": "refund",
@@ -76,15 +88,98 @@
           "vector": 0.2
         }
       }
+    },
+    {
+      "seq": 88,
+      "plan_id": "plan_b520dc813c84",
+      "task_id": null,
+      "detail": {
+        "docs": [
+          {
+            "doc_id": "kb-ecp-mfga-20000",
+            "score": 0.293785,
+            "title": "支付错误码 20000：服务不可用（sub_code: isp.unknow-e（retriable=True + outcome=unknown）",
+            "kind": "error_code_playbook",
+            "channels": {
+              "rule_no": 0.0,
+              "gateway_code": 1.0,
+              "fts": 0.0,
+              "vector": 0.218927
+            }
+          },
+          {
+            "doc_id": "kb-ecp-mfga-acq-refund-amt-not-equal-total",
+            "score": 0.089496,
+            "title": "支付错误码 ACQ.REFUND_AMT_NOT_EQUAL_TOTAL：退款金额超限（retriable=False + outcome=failed）",
+            "kind": "error_code_playbook",
+            "channels": {
+              "rule_no": 0.0,
+              "gateway_code": 0.0,
+              "fts": 0.0,
+              "vector": 0.447478
+            }
+          },
+          {
+            "doc_id": "kb-ecp-mfga-40005",
+            "score": 0.074759,
+            "title": "支付错误码 40005：调用频次超限（retriable=True + outcome=failed）",
+            "kind": "error_code_playbook",
+            "channels": {
+              "rule_no": 0.0,
+              "gateway_code": 0.0,
+              "fts": 0.0,
+              "vector": 0.373795
+            }
+          },
+          {
+            "doc_id": "kb-ecp-mfga-acq-seller-balance-not-enough",
+            "score": 0.070447,
+            "title": "支付错误码 ACQ.SELLER_BALANCE_NOT_ENOUGH：卖家余额不足（retriable=False + outcome=failed）",
+            "kind": "error_code_playbook",
+            "channels": {
+              "rule_no": 0.0,
+              "gateway_code": 0.0,
+              "fts": 0.0,
+              "vector": 0.352235
+            }
+          },
+          {
+            "doc_id": "kb-ecp-mfga-acq-trade-has-finished",
+            "score": 0.068825,
+            "title": "支付错误码 ACQ.TRADE_HAS_FINISHED：交易已完结（retriable=False + outcome=failed）",
+            "kind": "error_code_playbook",
+            "channels": {
+              "rule_no": 0.0,
+              "gateway_code": 0.0,
+              "fts": 0.0,
+              "vector": 0.344124
+            }
+          }
+        ],
+        "hit_count": 5,
+        "candidate_count": 11,
+        "duration_ms": 0.568,
+        "query": {
+          "tenant_id": "tnt-mfg-a",
+          "biz_type": "refund",
+          "gateway_code": "20000"
+        },
+        "weights": {
+          "rule_no": 0.35,
+          "gateway_code": 0.25,
+          "fts": 0.2,
+          "vector": 0.2
+        }
+      }
     }
   ],
   "kb_retrieve_invocations": [
     {
       "seq": 49,
-      "plan_id": "plan_3ecbb23ad4d5",
+      "plan_id": "plan_b520dc813c84",
       "task_id": null,
       "status": "ok",
-      "invocation_id": "39158059b33c43e8af93c1f43e512e18"
+      "invocation_id": "d39c22a37a814feea4dc3caa6b0d7aab"
     }
   ],
   "has_kb_doc_table": true,

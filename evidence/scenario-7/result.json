@@ -1,15 +1,15 @@
-# generated at 2026-09-10T13:41:50.354642+00:00 from aea85d5fdf9672be67d8f1e23cba481f5d7ef70d
+# generated at 2026-09-10T14:13:31.130607+00:00 from f4ad8ddcb18c6c8a54efdb075888bd57c38a7a62
 {
   "scenario": 7,
   "exit_code": 0,
-  "wall_ms": 407,
+  "wall_ms": 483,
   "plan_count": 2,
   "plans": [
     {
-      "plan_id": "plan_3c24d6452b63",
+      "plan_id": "plan_651659777b40",
       "goal": "处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常",
       "state": "FAILED",
-      "trace_id": "trace_f7d3084df8e0",
+      "trace_id": "trace_10a93f5b98fa",
       "tasks": [
         {
           "task_id": "task-s7-intake",
@@ -49,25 +49,28 @@
         }
       ],
       "metrics": {
-        "duration_ms": 69,
-        "event_count": 54,
+        "duration_ms": 71,
+        "event_count": 60,
         "event_types": {
           "PlanTransition": 4,
           "StateTransition": 23,
-          "SkillInvoked": 13,
+          "SkillInvoked": 15,
           "ArtifactSeeded": 1,
           "RefundBizStatusChanged": 3,
-          "ToolInvoked": 6,
+          "ToolInvoked": 7,
           "Replanned": 1,
           "CompensationExecuted": 1,
+          "ApprovalDenied": 1,
+          "CompensationAssigned": 1,
+          "CompensationResolved": 1,
           "CaseOutcomeComputed": 1,
           "CasePromoted": 1
         },
         "rework_count": 1,
         "replan_count": 1,
         "compensation_count": 0,
-        "skill_invocations": 13,
-        "tool_invocations": 6
+        "skill_invocations": 15,
+        "tool_invocations": 7
       },
       "business_outcome": {
         "status": "failed",
@@ -79,14 +82,14 @@
           {
             "tenant_id": "tnt-mfg-001",
             "case_id": "case-s7-0001",
-            "arrival": "unsettled",
-            "arrival_basis": "payment_observation:gw_601e09a0b1f34e1b@2026-09-10T13:41:50.248363+00:00",
+            "arrival": "settled",
+            "arrival_basis": "payment_observation:gw_88abfbb4140b4f53@2026-09-10T14:13:31.084718+00:00",
             "customer_confirmation": "none",
             "manual_correction": "compensated",
             "complaint": "none",
-            "evidence_complete": true,
-            "business_success": false,
-            "computed_at": "2026-09-10T13:41:50.323339+00:00",
+            "evidence_complete": false,
+            "business_success": true,
+            "computed_at": "2026-09-10T14:13:31.093108+00:00",
             "source": "case_outcome-table"
           }
         ],
@@ -95,10 +98,10 @@
       }
     },
     {
-      "plan_id": "plan_246c2e9c946d",
+      "plan_id": "plan_b90c75e68590",
       "goal": "处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在",
       "state": "FAILED",
-      "trace_id": "trace_32da9d55c726",
+      "trace_id": "trace_85273b1f0eb2",
       "tasks": [
         {
           "task_id": "task-s7b-intake",
@@ -138,7 +141,7 @@
         }
       ],
       "metrics": {
-        "duration_ms": 38,
+        "duration_ms": 45,
         "event_count": 35,
         "event_types": {
           "PlanTransition": 2,
@@ -166,13 +169,13 @@
             "tenant_id": "tnt-mfg-001",
             "case_id": "case-s7-0002",
             "arrival": "unsettled",
-            "arrival_basis": "payment_observation:gw_39749b3a9b174d18@2026-09-10T13:41:50.311483+00:00",
+            "arrival_basis": "payment_observation:gw_2e68f01790ab4459@2026-09-10T14:13:31.073228+00:00",
             "customer_confirmation": "none",
             "manual_correction": "none",
             "complaint": "none",
-            "evidence_complete": true,
+            "evidence_complete": false,
             "business_success": false,
-            "computed_at": "2026-09-10T13:41:50.332100+00:00",
+            "computed_at": "2026-09-10T14:13:31.106088+00:00",
             "source": "case_outcome-table"
           }
         ],
@@ -182,7 +185,7 @@
     }
   ],
   "totals": {
-    "event_count": 89,
+    "event_count": 95,
     "rework_count": 1,
     "replan_count": 1
   }

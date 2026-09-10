@@ -1,20 +1,25 @@
-# generated at 2026-09-10T00:06:25.356747+00:00 from c7d923dd1041e10bb870c9f8b7a3973ca80583a7
+# generated at 2026-09-10T14:13:40.323177+00:00 from f4ad8ddcb18c6c8a54efdb075888bd57c38a7a62
 {
   "experiment": "R5 · RAG 有无对照",
   "variable": "MAOS_KB_ENABLED=0 / 1，两段的计划脚本逐字节相同",
   "kb_funnel": {
-    "kb_doc_total": 17,
-    "same_tenant": 9,
-    "after_prefilter": 5,
+    "kb_doc_total": 110,
+    "same_tenant": 37,
+    "after_prefilter": 25,
     "by_kind": {
+      "arrival_result": 15,
+      "comms_result": 12,
+      "error_code_playbook": 33,
       "history_case": 1,
-      "policy": 16
+      "policy": 24,
+      "rejection": 13,
+      "task_pattern": 12
     },
     "corpus_root": "scenarios/refund"
   },
   "history_case": {
     "case_id": "case-r5-hist",
-    "plan_id": "plan_6db55e7857db",
+    "plan_id": "plan_7cfae5b8360f",
     "biz_status": "settled",
     "acked_notifications": 1,
     "promoted_doc": {
@@ -25,8 +30,9 @@
     }
   },
   "without_kb": {
-    "plan_id": "plan_146fd0eb0c01",
+    "plan_id": "plan_2a47849d24ea",
     "plan_state": "FAILED",
+    "trace_id": "trace_8017a98b3c3e",
     "tasks": [
       "受理多源退款诉求并聚合证据",
       "按下单锁定的政策版本裁定退款资格",
@@ -59,8 +65,9 @@
     "plan_done": false
   },
   "with_kb": {
-    "plan_id": "plan_eebd9f10e869",
+    "plan_id": "plan_9d03ad14ac09",
     "plan_state": "DONE",
+    "trace_id": "trace_0782e5a3bbfa",
     "tasks": [
       "受理多源退款诉求并聚合证据",
       "按下单锁定的政策版本裁定退款资格",
@@ -79,7 +86,7 @@
     "finance_gate": "pass",
     "rework_count": 0,
     "kb_retrieved_events": 1,
-    "kb_candidate_count": 5,
+    "kb_candidate_count": 25,
     "human_approval_stops": [
       "核算退款金额并写财务分录"
     ],
@@ -107,23 +114,95 @@
       "kind": "history_case"
     },
     {
+      "doc_id": "kb-rj-mfga-003",
+      "score": 0.389036,
+      "title": "质保期内质量主张缺质检报告，按 AS-002 驳回",
+      "kind": "rejection"
+    },
+    {
       "doc_id": "kb-policy-tnt-mfg-a-AS-002-v1",
-      "score": 0.410541,
+      "score": 0.360541,
       "title": "质保期内质量问题全额退",
       "kind": "policy"
     },
     {
-      "doc_id": "kb-policy-tnt-mfg-a-AS-004-v1",
-      "score": 0.15,
-      "title": "经销渠道差异（增渠道商核销，区域经理审批）",
+      "doc_id": "kb-pv-mfga-ch-online-sku-brg-6205",
+      "score": 0.208699,
+      "title": "渠道与产品差异：自营 x 轴承",
       "kind": "policy"
     },
     {
-      "doc_id": "kb-policy-tnt-mfg-a-AS-001-v1",
-      "score": 0.1,
-      "title": "无理由退货期（30 天）",
-      "kind": "policy"
+      "doc_id": "kb-tp-mfga-happy-path",
+      "score": 0.19611,
+      "title": "顺利路径：受理→裁定→核算→支付→观察→通知",
+      "kind": "task_pattern"
     }
   ],
+  "playbook_probe": {
+    "gateway_code": "20000",
+    "plan_id": "plan_9d03ad14ac09",
+    "docs": [
+      {
+        "doc_id": "kb-ecp-mfga-20000",
+        "score": 0.293785,
+        "title": "支付错误码 20000：服务不可用（sub_code: isp.unknow-e（retriable=True + outcome=unknown）",
+        "kind": "error_code_playbook",
+        "channels": {
+          "rule_no": 0.0,
+          "gateway_code": 1.0,
+          "fts": 0.0,
+          "vector": 0.218927
+        }
+      },
+      {
+        "doc_id": "kb-ecp-mfga-acq-refund-amt-not-equal-total",
+        "score": 0.089496,
+        "title": "支付错误码 ACQ.REFUND_AMT_NOT_EQUAL_TOTAL：退款金额超限（retriable=False + outcome=failed）",
+        "kind": "error_code_playbook",
+        "channels": {
+          "rule_no": 0.0,
+          "gateway_code": 0.0,
+          "fts": 0.0,
+          "vector": 0.447478
+        }
+      },
+      {
+        "doc_id": "kb-ecp-mfga-40005",
+        "score": 0.074759,
+        "title": "支付错误码 40005：调用频次超限（retriable=True + outcome=failed）",
+        "kind": "error_code_playbook",
+        "channels": {
+          "rule_no": 0.0,
+          "gateway_code": 0.0,
+          "fts": 0.0,
+          "vector": 0.373795
+        }
+      },
+      {
+        "doc_id": "kb-ecp-mfga-acq-seller-balance-not-enough",
+        "score": 0.070447,
+        "title": "支付错误码 ACQ.SELLER_BALANCE_NOT_ENOUGH：卖家余额不足（retriable=False + outcome=failed）",
+        "kind": "error_code_playbook",
+        "channels": {
+          "rule_no": 0.0,
+          "gateway_code": 0.0,
+          "fts": 0.0,
+          "vector": 0.352235
+        }
+      },
+      {
+        "doc_id": "kb-ecp-mfga-acq-trade-has-finished",
+        "score": 0.068825,
+        "title": "支付错误码 ACQ.TRADE_HAS_FINISHED：交易已完结（retriable=False + outcome=failed）",
+        "kind": "error_code_playbook",
+        "channels": {
+          "rule_no": 0.0,
+          "gateway_code": 0.0,
+          "fts": 0.0,
+          "vector": 0.344124
+        }
+      }
+    ]
+  },
   "conclusion": "关掉检索：计划漏排 ['refund_finance.refund_finance']，Plan 收在 FAILED（第六道闸 blocker，业务状态 submitted）；打开检索：命中历史案例补上 ['refund_finance.refund_finance'] 并接成付款的前置，Plan 收在 DONE（第六道闸 pass，业务状态 settled）。"
 }

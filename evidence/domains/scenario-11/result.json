@@ -1,15 +1,15 @@
-# generated at 2026-09-10T00:06:24.932100+00:00 from c7d923dd1041e10bb870c9f8b7a3973ca80583a7
+# generated at 2026-09-10T14:13:39.586966+00:00 from f4ad8ddcb18c6c8a54efdb075888bd57c38a7a62
 {
   "scenario": 11,
   "exit_code": 0,
-  "wall_ms": 418,
+  "wall_ms": 377,
   "plan_count": 1,
   "plans": [
     {
-      "plan_id": "plan_1787b783728a",
+      "plan_id": "plan_096f01c496b8",
       "goal": "支付长三角精密传动 2026-09 月结货款；付出后供应商申报重复支付，向付款行发起差错撤销并确认资金退回",
       "state": "DONE",
-      "trace_id": "trace_a6a6608216ea",
+      "trace_id": "trace_b271d741ab28",
       "tasks": [
         {
           "task_id": "task-s11-ap-intake",
@@ -85,12 +85,12 @@
         }
       ],
       "metrics": {
-        "duration_ms": 117,
-        "event_count": 61,
+        "duration_ms": 78,
+        "event_count": 62,
         "event_types": {
           "PlanTransition": 2,
           "StateTransition": 36,
-          "SkillInvoked": 9,
+          "SkillInvoked": 10,
           "ApBizStatusChanged": 3,
           "ToolInvoked": 7,
           "ArtifactSeeded": 1,
@@ -99,7 +99,7 @@
         "rework_count": 0,
         "replan_count": 0,
         "compensation_count": 0,
-        "skill_invocations": 9,
+        "skill_invocations": 10,
         "tool_invocations": 7
       },
       "business_outcome": {
@@ -111,7 +111,7 @@
             "kind": "resolution_observation",
             "case_id": "case-s11-inv-0001",
             "tenant_id": "tnt-mfg-x9",
-            "request_id": "clr_8f886c99c50a4221",
+            "request_id": "clr_c4722f9dcdfc4bbe",
             "poll_seq": 3,
             "message_type": "pacs.004.001.09",
             "confirmation_code": "",
@@ -119,29 +119,30 @@
             "return_reason_code": "CUST",
             "returned_amount": 91978.84,
             "observed_state": "returned",
-            "actor_invocation_id": "f9fa722958fd41979fd208ea5fee9350",
+            "actor_invocation_id": "a99881a7221245868792c28f7a5b4023",
             "provenance": "resolution_observation"
           },
           {
             "kind": "ap_payment_observation",
             "case_id": "case-s11-ap-0001",
             "tenant_id": "tnt-mfg-x9",
-            "instruction_id": "bkins-5fdd642b8d65",
+            "instruction_id": "bkins-1ef48d314303",
             "observed_state": "settled",
-            "bank_reference": "bkref-5fdd642b8d65",
+            "bank_reference": "bkref-1ef48d314303",
             "value_date": "2026-08-31",
-            "actor_invocation_id": "1a86fe6e3bc14f32a50e018d8978b7da",
+            "actor_invocation_id": "855cc53781d44643833b9d9c3cc02732",
             "provenance": "ap_payment_observation"
           }
         ],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     }
   ],
   "totals": {
-    "event_count": 61,
+    "event_count": 62,
     "rework_count": 0,
     "replan_count": 0
   }

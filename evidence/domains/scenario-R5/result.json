@@ -1,15 +1,15 @@
-# generated at 2026-09-10T00:06:25.355000+00:00 from c7d923dd1041e10bb870c9f8b7a3973ca80583a7
+# generated at 2026-09-10T14:13:40.321044+00:00 from f4ad8ddcb18c6c8a54efdb075888bd57c38a7a62
 {
   "scenario": "R5",
   "exit_code": 0,
-  "wall_ms": 393,
+  "wall_ms": 721,
   "plan_count": 3,
   "plans": [
     {
-      "plan_id": "plan_6db55e7857db",
+      "plan_id": "plan_7cfae5b8360f",
       "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
       "state": "DONE",
-      "trace_id": "trace_344ca301b732",
+      "trace_id": "trace_976d5c65700a",
       "tasks": [
         {
           "task_id": "task-hist-intake",
@@ -58,7 +58,7 @@
         }
       ],
       "metrics": {
-        "duration_ms": 49,
+        "duration_ms": 55,
         "event_count": 38,
         "event_types": {
           "PlanTransition": 2,
@@ -82,23 +82,71 @@
             "kind": "payment_observation",
             "case_id": "case-r5-hist",
             "tenant_id": "tnt-mfg-a",
-            "request_id": "gw_c1840ba0a69a4308",
+            "request_id": "gw_de2349232adb41ec",
             "gateway_code": "10000",
             "observed_state": "settled",
-            "actor_invocation_id": "498d3eb393504b2090ed365c9e3fd045",
+            "actor_invocation_id": "2d2f65ed9ece4902b7ca54472a66e591",
             "provenance": "payment_observation"
           }
         ],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [
+          {
+            "tenant_id": "tnt-mfg-a",
+            "case_id": "case-r5-hist",
+            "arrival": "settled",
+            "arrival_basis": "payment_observation:gw_de2349232adb41ec@2026-09-10T14:13:39.952134+00:00",
+            "customer_confirmation": "confirmed",
+            "manual_correction": "none",
+            "complaint": "none",
+            "evidence_complete": false,
+            "business_success": true,
+            "computed_at": null,
+            "evidence": {
+              "observation_count": 1,
+              "settled_observations": 1,
+              "required_ref_types": [
+                "approval_record",
+                "customer_evidence",
+                "finance_entry",
+                "notification",
+                "order_snapshot",
+                "payment_observation",
+                "policy_rule",
+                "product_snapshot",
+                "refund_case",
+                "refund_request"
+              ],
+              "resolved_ref_types": [
+                "finance_entry",
+                "notification",
+                "order_snapshot",
+                "payment_observation",
+                "policy_rule",
+                "product_snapshot",
+                "refund_case",
+                "refund_request"
+              ],
+              "missing_ref_types": [
+                "approval_record",
+                "customer_evidence"
+              ],
+              "open_complaints": 0,
+              "compensation_count": 0,
+              "note": "arrival 只由 payment_observation 的行决定，不从 biz_status 或任务状态反推（铁律 8）"
+            },
+            "source": "derived-at-export-time"
+          }
+        ],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     },
     {
-      "plan_id": "plan_146fd0eb0c01",
+      "plan_id": "plan_2a47849d24ea",
       "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
       "state": "FAILED",
-      "trace_id": "trace_4768d0226dbf",
+      "trace_id": "trace_8017a98b3c3e",
       "tasks": [
         {
           "task_id": "task-nokb-intake",
@@ -138,7 +186,7 @@
         }
       ],
       "metrics": {
-        "duration_ms": 11,
+        "duration_ms": 14,
         "event_count": 9,
         "event_types": {
           "PlanTransition": 2,
@@ -157,15 +205,63 @@
         "plan_state": "FAILED",
         "external_evidence": [],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [
+          {
+            "tenant_id": "tnt-mfg-a",
+            "case_id": "case-r5-nokb",
+            "arrival": "unknown",
+            "arrival_basis": "",
+            "customer_confirmation": "none",
+            "manual_correction": "none",
+            "complaint": "none",
+            "evidence_complete": false,
+            "business_success": false,
+            "computed_at": null,
+            "evidence": {
+              "observation_count": 0,
+              "settled_observations": 0,
+              "required_ref_types": [
+                "approval_record",
+                "customer_evidence",
+                "finance_entry",
+                "notification",
+                "order_snapshot",
+                "payment_observation",
+                "policy_rule",
+                "product_snapshot",
+                "refund_case",
+                "refund_request"
+              ],
+              "resolved_ref_types": [
+                "order_snapshot",
+                "product_snapshot",
+                "refund_case"
+              ],
+              "missing_ref_types": [
+                "approval_record",
+                "customer_evidence",
+                "finance_entry",
+                "notification",
+                "payment_observation",
+                "policy_rule",
+                "refund_request"
+              ],
+              "open_complaints": 0,
+              "compensation_count": 0,
+              "note": "arrival 只由 payment_observation 的行决定，不从 biz_status 或任务状态反推（铁律 8）"
+            },
+            "source": "derived-at-export-time"
+          }
+        ],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     },
     {
-      "plan_id": "plan_eebd9f10e869",
+      "plan_id": "plan_9d03ad14ac09",
       "goal": "处理客户对轴承订单的退款诉求：多源诉求已到，需按下单当时的政策核定并退款",
       "state": "DONE",
-      "trace_id": "trace_99de6c9aa6cb",
+      "trace_id": "trace_0782e5a3bbfa",
       "tasks": [
         {
           "task_id": "task-kb-intake",
@@ -186,7 +282,7 @@
           "effect_risk": "L"
         },
         {
-          "task_id": "task_19a568d6ef1f",
+          "task_id": "task_80d764acdc7d",
           "role": "refund_finance",
           "title": "核算退款金额并写财务分录",
           "state": "DONE",
@@ -215,9 +311,9 @@
       ],
       "metrics": {
         "duration_ms": 52,
-        "event_count": 40,
+        "event_count": 41,
         "event_types": {
-          "KbRetrieved": 1,
+          "KbRetrieved": 2,
           "SkillInvoked": 9,
           "PlanTransition": 2,
           "StateTransition": 21,
@@ -239,21 +335,69 @@
             "kind": "payment_observation",
             "case_id": "case-r5-kb",
             "tenant_id": "tnt-mfg-a",
-            "request_id": "gw_5c635c1790d84dca",
+            "request_id": "gw_31e7917a72c749b8",
             "gateway_code": "10000",
             "observed_state": "settled",
-            "actor_invocation_id": "e3187215aba743a892fd85a16d238468",
+            "actor_invocation_id": "870f649166904ec59e0fd4818eefa88e",
             "provenance": "payment_observation"
           }
         ],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [
+          {
+            "tenant_id": "tnt-mfg-a",
+            "case_id": "case-r5-kb",
+            "arrival": "settled",
+            "arrival_basis": "payment_observation:gw_31e7917a72c749b8@2026-09-10T14:13:40.297764+00:00",
+            "customer_confirmation": "none",
+            "manual_correction": "none",
+            "complaint": "none",
+            "evidence_complete": false,
+            "business_success": true,
+            "computed_at": null,
+            "evidence": {
+              "observation_count": 1,
+              "settled_observations": 1,
+              "required_ref_types": [
+                "approval_record",
+                "customer_evidence",
+                "finance_entry",
+                "notification",
+                "order_snapshot",
+                "payment_observation",
+                "policy_rule",
+                "product_snapshot",
+                "refund_case",
+                "refund_request"
+              ],
+              "resolved_ref_types": [
+                "finance_entry",
+                "notification",
+                "order_snapshot",
+                "payment_observation",
+                "policy_rule",
+                "product_snapshot",
+                "refund_case",
+                "refund_request"
+              ],
+              "missing_ref_types": [
+                "approval_record",
+                "customer_evidence"
+              ],
+              "open_complaints": 0,
+              "compensation_count": 0,
+              "note": "arrival 只由 payment_observation 的行决定，不从 biz_status 或任务状态反推（铁律 8）"
+            },
+            "source": "derived-at-export-time"
+          }
+        ],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     }
   ],
   "totals": {
-    "event_count": 87,
+    "event_count": 88,
     "rework_count": 0,
     "replan_count": 0
   }

@@ -1,15 +1,15 @@
-# generated at 2026-09-10T00:06:23.998199+00:00 from c7d923dd1041e10bb870c9f8b7a3973ca80583a7
+# generated at 2026-09-10T14:13:38.765937+00:00 from f4ad8ddcb18c6c8a54efdb075888bd57c38a7a62
 {
   "scenario": 9,
   "exit_code": 0,
-  "wall_ms": 399,
+  "wall_ms": 353,
   "plan_count": 2,
   "plans": [
     {
-      "plan_id": "plan_b1d557ce27c5",
+      "plan_id": "plan_e926c4bc845d",
       "goal": "处理一笔跨行重复支付差错：向清算方发起撤销并确认资金退回",
       "state": "DONE",
-      "trace_id": "trace_c9f6369c5f04",
+      "trace_id": "trace_fa028d941453",
       "tasks": [
         {
           "task_id": "task-s9-file",
@@ -49,19 +49,19 @@
         }
       ],
       "metrics": {
-        "duration_ms": 61,
-        "event_count": 31,
+        "duration_ms": 38,
+        "event_count": 32,
         "event_types": {
           "PlanTransition": 2,
           "StateTransition": 18,
-          "SkillInvoked": 4,
+          "SkillInvoked": 5,
           "InvestigationBizStatusChanged": 3,
           "ToolInvoked": 4
         },
         "rework_count": 0,
         "replan_count": 0,
         "compensation_count": 0,
-        "skill_invocations": 4,
+        "skill_invocations": 5,
         "tool_invocations": 4
       },
       "business_outcome": {
@@ -73,7 +73,7 @@
             "kind": "resolution_observation",
             "case_id": "case-s9-0001",
             "tenant_id": "tnt-bank-001",
-            "request_id": "clr_7d9f81bacd604c32",
+            "request_id": "clr_21023b366aa14d64",
             "poll_seq": 3,
             "message_type": "pacs.004.001.09",
             "confirmation_code": "",
@@ -81,20 +81,21 @@
             "return_reason_code": "CUST",
             "returned_amount": 12500.0,
             "observed_state": "returned",
-            "actor_invocation_id": "0223a08e88744ce6a4cd70c665556e67",
+            "actor_invocation_id": "ba4ed3b13ed34f6fb4d0fd8c0ced44da",
             "provenance": "resolution_observation"
           }
         ],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     },
     {
-      "plan_id": "plan_859a7c09c058",
+      "plan_id": "plan_acea90bac746",
       "goal": "处理第二笔跨行重复支付差错：清算方确认撤销但资金未退回",
       "state": "FAILED",
-      "trace_id": "trace_0675c7433dfd",
+      "trace_id": "trace_d782fc7f19bc",
       "tasks": [
         {
           "task_id": "task-s9b-file",
@@ -134,12 +135,12 @@
         }
       ],
       "metrics": {
-        "duration_ms": 58,
-        "event_count": 35,
+        "duration_ms": 40,
+        "event_count": 37,
         "event_types": {
           "PlanTransition": 2,
           "StateTransition": 18,
-          "SkillInvoked": 5,
+          "SkillInvoked": 7,
           "InvestigationBizStatusChanged": 3,
           "ToolInvoked": 6,
           "CompensationExecuted": 1
@@ -147,7 +148,7 @@
         "rework_count": 0,
         "replan_count": 0,
         "compensation_count": 0,
-        "skill_invocations": 5,
+        "skill_invocations": 7,
         "tool_invocations": 6
       },
       "business_outcome": {
@@ -156,13 +157,14 @@
         "plan_state": "FAILED",
         "external_evidence": [],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     }
   ],
   "totals": {
-    "event_count": 66,
+    "event_count": 69,
     "rework_count": 0,
     "replan_count": 0
   }

@@ -184,6 +184,20 @@ def port_of(store: Any) -> Any | None:
     return None
 
 
+def dialect_of(store: Any) -> str:
+    """这个 store 落在哪个方言上。不是 StorePort、或端口没实现 `dialect()`，一律 `sqlite`。
+
+    只给**建表与迁移**两条路径用，判的是「这一步在 PG 上要不要换个做法」——
+    换后端本身不该散成一堆分支，判据集中在这里一处，理由与 `port_of()` 那条一样。
+    读写口径不看它：那两条由端口自己翻方言（`PgStorePort` 的 `sqlite_dialect`）。
+    """
+    port = port_of(store)
+    if port is None:
+        return "sqlite"
+    getter = getattr(port, "dialect", None)
+    return str(getter()) if callable(getter) else "sqlite"
+
+
 def _conn(store: Any) -> sqlite3.Connection:
     """取底层连接。只认暴露了 `_conn` 的 Store 实现（当前是 `SqliteStore`）。
 
@@ -368,6 +382,15 @@ def _migrate_v1_row_id(store: Any, script: str) -> None:
     if not _has_column(store, "kb_doc", "id"):
         execute(store, "ALTER TABLE kb_doc ADD COLUMN id TEXT"
                        f" GENERATED ALWAYS AS ({DOC_ROW_ID_EXPR}) VIRTUAL")
+    if dialect_of(store) == "postgres":
+        # PG 上的 `kb_doc_fts` 是一张**普通镜像表**（`maos/store/pg_schema.sql` 建），
+        # 不是 FTS5 虚表 —— 它没有「加不了列」的限制，也没有旧形状要搬：这条迁移
+        # 治的是 T13 之前那批 SQLite 老库，而 PG 上第一张 kb_doc_fts 是 T115 才建的，
+        # 建出来就是目标形状。
+        #
+        # 不跳过的话这一步会去删表、再照 schema.sql 那条 FTS5 DDL 重建 —— 而翻译器
+        # 对 FTS5 是整段跳过，于是「删掉了、没建回来」，紧接着的重灌全部报表不存在。
+        return
     if not _has_column(store, "kb_doc_fts", "id"):
         rows = query(store, "SELECT tenant_id, doc_id, title, body FROM kb_doc"
                             " ORDER BY created_at, doc_id")
@@ -437,6 +460,14 @@ def ensure_schema(store: Any) -> None:
     if port is not None:
         for statement in _schema_statements(script):
             port.execute(statement, ())
+        if dialect_of(store) == "postgres":
+            # PG 上还差**翻译器翻不出来**的那几条：`kb_doc_fts` 镜像表（FTS5 虚表
+            # 整段跳过之后 `upsert_doc` 的第二条语句无处可落）与两条 tsvector GIN
+            # 索引。DDL 只写在 `maos/store/pg_schema.sql` 里一份，这里现取。
+            from maos.store.pg_store import kb_extra_statements  # noqa: PLC0415
+
+            for statement in kb_extra_statements():
+                port.execute(statement, ())
     else:
         conn = _conn(store)
         with lock_of(store):
@@ -446,6 +477,18 @@ def ensure_schema(store: Any) -> None:
 
 
 def has_kb_table(store: Any) -> bool:
+    """`kb_doc` 建了没有。两个后端各问各的目录 —— `sqlite_master` 是 SQLite 专属。
+
+    这是**建表路径的探针**（`retriever.prefilter` 拿它决定要不要查），不是读写
+    口径：问错目录的后果不是报错，是 PG 上恒答「没建」，于是阶段一恒返回空候选集
+    而检索照常「成功」—— 正是本仓库最不想要的那种无症状失效。
+    """
+    if dialect_of(store) == "postgres":
+        rows = query(
+            store,
+            "SELECT table_name AS name FROM information_schema.tables"
+            " WHERE table_schema = current_schema() AND table_name = 'kb_doc'")
+        return bool(rows)
     rows = query(
         store, "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_doc'")
     return bool(rows)

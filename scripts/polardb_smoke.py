@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""PolarDB PostgreSQL 版 / 本机 pgvector 的地基冒烟脚本。
+"""PolarDB PostgreSQL 版 / 本机 pgvector 的冒烟脚本。
 
 这个脚本回答一个问题，且只回答这一个问题：
-**给定一条 PostgreSQL 连接串，MAOS 的 PG 通道要用到的四样能力在这个实例上到底能不能用。**
+**给定一条 PostgreSQL 连接串，MAOS 要用到的能力在这个实例上到底能不能用。**
 
-四样能力 = 连得上、装得上 pgvector、全文检索跑得通、向量检索跑得通。
-第五步是把自己建的表删干净。
+前四步是**地基**：连得上、装得上 pgvector、全文检索跑得通、向量检索跑得通。
+第 5 步把自己建的表删干净。
+
+第 6 步（T115 加）是**业务纵切**：退款域建表 + 一条 case 往返。地基全绿不蕴含
+业务域跑得起来 —— 中间隔着 CHECK 约束落没落、受理幂等是不是真幂等、以及
+「回执与终态同事务」这条铁律 8 的落点在这台实例上成不成立。那三样才是评委那条
+「以售后退款作为首个 PolarDB 业务纵切」真正在问的东西。
 
 ## 为什么是独立脚本
 
@@ -39,14 +44,14 @@ DSN **只从环境变量读**，不接受命令行传入 —— 命令行会进 
 
 - 第 1 步（连接）失败时**只报驱动异常的类名**，不报 message ——
   多数驱动会把 host 拼进连接失败的 message 里。
-- 第 2-5 步是 SQL 层错误，message 有诊断价值（比如「装不上 vector 是权限问题
+- 第 2-6 步是 SQL 层错误，message 有诊断价值（比如「装不上 vector 是权限问题
   还是根本没这个扩展」正是本脚本最想知道的），所以报 message，但先过 _redact()。
 - _redact() 是双保险：既替换从 DSN 解析出的具体片段，也用正则兜底任何
   形如 scheme://...@... 的串。
 
 ## 退出码
 
-    0  五步全绿
+    0  六步全绿
     1  连上了，但有步骤失败
     2  没配 DSN（优雅退出，不抛栈）
     3  驱动没装
@@ -66,6 +71,10 @@ from urllib.parse import urlsplit
 # 自建对象统一用这个前缀，方便万一残留时人工辨认和清理。
 TABLE_FTS = "maos_smoke_fts"
 TABLE_VEC = "maos_smoke_vec"
+# 第 6 步的两张靶表。**刻意带前缀，不碰真的 refund_case / payment_observation** ——
+# 这个脚本可能被对着人家的生产实例跑，往真业务表里插一条 case 是不可接受的。
+TABLE_CASE = "maos_smoke_refund_case"
+TABLE_OBS = "maos_smoke_payment_observation"
 
 # 本机 compose 起 pgvector 时的缺省值。取自 deploy/docker-compose.yml 的
 # ${POSTGRES_USER:-maos} 那几行 —— 是公开的本地开发缺省值，不是秘密。
@@ -418,20 +427,186 @@ def step4_vector(conn, rep: Reporter) -> bool:
 
 def step5_cleanup(conn, rep: Reporter) -> bool:
     """清理自建表 —— 别在人家实例上留垃圾。"""
+    tables = (TABLE_FTS, TABLE_VEC, TABLE_OBS, TABLE_CASE)
     try:
         with conn.cursor() as cur:
-            cur.execute(f"DROP TABLE IF EXISTS {TABLE_FTS}")
-            cur.execute(f"DROP TABLE IF EXISTS {TABLE_VEC}")
-        rep.ok("5. 清理临时表", f"{TABLE_FTS} / {TABLE_VEC} 已删")
+            for table in tables:
+                cur.execute(f"DROP TABLE IF EXISTS {table}")
+        rep.ok("5. 清理临时表", " / ".join(tables) + " 已删")
         return True
     except Exception as exc:
         rep.fail("5. 清理临时表", _err(exc))
         return False
 
 
+# 第 6 步用到的 DDL。**照 maos/domain/refund/schema.sql 的形状写，但只取两张表**，
+# 且表名带 maos_smoke_ 前缀。这里的重复是有意的：本脚本**不 import maos**
+# （它要能在一台只有 psycopg、没有本仓库的机器上跑），所以拿不到翻译器。
+# 代价是这两段 DDL 与 schema.sql 会漂 —— 但漂了也只影响这一步的判据强度，
+# 不影响任何真表；真表的形状由 maos/tests/test_ddl_translate.py 钉着。
+_DDL_CASE = f"""
+CREATE TABLE {TABLE_CASE} (
+    tenant_id      TEXT NOT NULL,
+    case_id        TEXT NOT NULL,
+    amount_claimed double precision NOT NULL,
+    biz_status     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, case_id),
+    CHECK (biz_status IN ('submitted', 'approved', 'gateway_accepted',
+                          'processing', 'settled', 'rejected', 'compensated'))
+)
+"""
+_DDL_OBS = f"""
+CREATE TABLE {TABLE_OBS} (
+    tenant_id           TEXT NOT NULL,
+    case_id             TEXT NOT NULL,
+    request_id          TEXT NOT NULL,
+    gateway_code        TEXT NOT NULL,
+    observed_state      TEXT NOT NULL,
+    observed_at         TEXT NOT NULL,
+    actor_invocation_id TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, case_id, request_id, observed_at)
+)
+"""
+
+
+def step6_refund_case(conn, rep: Reporter) -> bool:
+    """退款域建表 + 一条 case 往返 —— 这一步验的是**业务纵切**，不是地基。
+
+    前五步证明的是「这台实例能当 MAOS 的库用」（连得上、有扩展、两条检索通道通）。
+    第 6 步补的是评委那条建议真正问的东西：**退款这个业务域跑不跑得起来**。
+
+    四个判据，逐条对应铁律 8 在 SQL 层的落点：
+
+      1. 建表 —— `CHECK` 约束真的落到 PG 上了（写一个不存在的状态要被库拒掉）。
+         约束掉了不报错，只是库上少了一道拦截，而那道拦截挡的正是「biz_status
+         写进一个不存在的状态」。
+      2. 受理幂等 —— `ON CONFLICT (tenant_id, case_id) DO NOTHING` 重放不覆盖。
+         用 DO NOTHING 而不是 DO UPDATE：后者会把已经推进的案子静悄悄倒回
+         submitted（`guard.create_case` 的 docstring 点名不许）。
+      3. **回执与终态同事务** —— 这是本步的题眼。settled 与它的 `payment_observation`
+         必须一起落、一起回滚；分成两笔提交的话，中间崩一次就留下「说到账了、
+         但没有任何回执」的案子，那正是铁律 8 要防的东西。所以这里显式关掉
+         autocommit 走一次真事务，并**故意让它中途失败一次**，验回滚。
+      4. 终态可读回 —— 事务提交之后，状态是 settled 且回执恰好一行。
+
+    **不 import maos**：这个脚本要能在一台只有 psycopg、没有本仓库的机器上跑
+    （运维拿去探实例通不通）。所以这里全是直连 SQL，DDL 也在本文件里另写一份，
+    理由见 `_DDL_CASE` 上面那段注释。
+    """
+    tenant, case = "tnt-smoke", "case-smoke-0001"
+    now = "2026-01-01T00:00:00+00:00"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {TABLE_OBS}")
+            cur.execute(f"DROP TABLE IF EXISTS {TABLE_CASE}")
+            cur.execute(_DDL_CASE)
+            cur.execute(_DDL_OBS)
+    except Exception as exc:
+        rep.fail("6. 退款域建表 + case 往返", _err(exc))
+        return False
+
+    # ① CHECK 约束真的在
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {TABLE_CASE} (tenant_id, case_id, amount_claimed,"
+                f" biz_status, created_at) VALUES (%s,%s,%s,%s,%s)",
+                (tenant, "case-bogus", 1.0, "teleported", now))
+        rep.fail("6. 退款域建表 + case 往返",
+                 "CHECK 约束没落到 PG 上：写进了一个不存在的 biz_status")
+        return False
+    except Exception:
+        pass                                  # 被库拒掉才是对的
+
+    try:
+        # ② 受理 + 重放幂等
+        with conn.cursor() as cur:
+            for _ in range(2):
+                cur.execute(
+                    f"INSERT INTO {TABLE_CASE} (tenant_id, case_id, amount_claimed,"
+                    f" biz_status, created_at) VALUES (%s,%s,%s,%s,%s)"
+                    f" ON CONFLICT (tenant_id, case_id) DO NOTHING",
+                    (tenant, case, 3200.0, "submitted", now))
+            cur.execute(f"SELECT count(*) FROM {TABLE_CASE} WHERE case_id = %s", (case,))
+            n_case = int(cur.fetchone()[0])
+        if n_case != 1:
+            rep.fail("6. 退款域建表 + case 往返", f"受理重放攒出了 {n_case} 行，应为 1")
+            return False
+
+        # 推进到 processing（这几步不涉及权威事实，逐条提交即可）
+        with conn.cursor() as cur:
+            for status in ("approved", "gateway_accepted", "processing"):
+                cur.execute(
+                    f"UPDATE {TABLE_CASE} SET biz_status = %s"
+                    f" WHERE tenant_id = %s AND case_id = %s", (status, tenant, case))
+
+        # ③ 同事务：先制造一次中途失败，验「回执落了但状态没改」不会留下来
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"INSERT INTO {TABLE_OBS} (tenant_id, case_id, request_id,"
+                    f" gateway_code, observed_state, observed_at, actor_invocation_id)"
+                    f" VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (tenant, case, "req-1", "0000", "settled", now, "inv-boom"))
+                cur.execute(f"UPDATE {TABLE_CASE} SET biz_status = %s"
+                            f" WHERE tenant_id = %s AND case_id = %s",
+                            ("teleported", tenant, case))       # CHECK 会拒
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) FROM {TABLE_OBS}")
+            leaked = int(cur.fetchone()[0])
+            conn.commit()
+        if leaked:
+            rep.fail("6. 退款域建表 + case 往返",
+                     f"事务回滚之后还剩 {leaked} 条回执 —— 回执与终态没有同生共死")
+            return False
+
+        # ③（续）正路：回执与 settled 同一笔提交
+        with conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {TABLE_OBS} (tenant_id, case_id, request_id,"
+                f" gateway_code, observed_state, observed_at, actor_invocation_id)"
+                f" VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (tenant, case, "req-1", "0000", "settled", now, "inv-ok"))
+            cur.execute(f"UPDATE {TABLE_CASE} SET biz_status = %s"
+                        f" WHERE tenant_id = %s AND case_id = %s",
+                        ("settled", tenant, case))
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        rep.fail("6. 退款域建表 + case 往返", _err(exc))
+        return False
+    finally:
+        conn.autocommit = True
+
+    # ④ 读回
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT biz_status FROM {TABLE_CASE}"
+                        f" WHERE tenant_id = %s AND case_id = %s", (tenant, case))
+            status = str(cur.fetchone()[0])
+            cur.execute(f"SELECT count(*) FROM {TABLE_OBS} WHERE case_id = %s", (case,))
+            n_obs = int(cur.fetchone()[0])
+    except Exception as exc:
+        rep.fail("6. 退款域建表 + case 往返", _err(exc))
+        return False
+
+    if status != "settled" or n_obs != 1:
+        rep.fail("6. 退款域建表 + case 往返",
+                 f"终态应为 settled + 1 条回执，实得 {status} + {n_obs} 条")
+        return False
+    rep.ok("6. 退款域建表 + case 往返",
+           f"CHECK 生效、受理幂等、回执与终态同事务；biz_status={status}，回执 {n_obs} 条")
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="PolarDB PostgreSQL 版 / 本机 pgvector 地基冒烟（五步）",
+        description="PolarDB PostgreSQL 版 / 本机 pgvector 冒烟（六步：五步地基 + 退款域纵切）",
     )
     parser.add_argument(
         "--dsn-env",
@@ -447,7 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     print("=" * 68)
-    print("PolarDB / pgvector 地基冒烟 —— 五步")
+    print("PolarDB / pgvector 冒烟 —— 六步（1-4 地基，6 退款域纵切，5 清理）")
+    # 第 5 步的编号在第 6 步之后打印，这是对的不是乱序：清理按定义必须最后跑，
+    # 而它的编号是既有证据里写死的，不为了好看去改。
     print("=" * 68)
 
     connect, driver = load_driver()
@@ -478,7 +655,7 @@ def main(argv: list[str] | None = None) -> int:
     conn = step1_connect(connect, dsn, rep := Reporter())
     if conn is None:
         print("-" * 68)
-        print(f"结论：{rep.summary()} —— 连不上，后面四步没跑。")
+        print(f"结论：{rep.summary()} —— 连不上，后面五步没跑。")
         return 1
 
     try:
@@ -489,6 +666,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # 扩展没装上时第 4 步必然失败，如实记为未跑，不伪装成通过。
             rep.fail("4. 向量 vector 列 + <=> 排序", "跳过：第 2 步没拿到 vector 扩展")
+        # 第 6 步排在清理前面：它自建自清的两张表也由第 5 步一并删掉。
+        step6_refund_case(conn, rep)
         step5_cleanup(conn, rep)
     finally:
         conn.close()

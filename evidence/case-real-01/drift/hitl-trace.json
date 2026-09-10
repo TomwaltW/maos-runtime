@@ -1,0 +1,45 @@
+# generated at 2026-09-10T16:19:00.609647+00:00 from 80301f8ba167e9f5c363306814426dbc710f0f8f
+{
+  "trace": [
+    {
+      "seq": 2,
+      "at": "2026-09-10T16:19:00.503767+00:00",
+      "kind": "drift",
+      "event_type": "SnapshotDrift",
+      "task_id": "",
+      "transition": "",
+      "operator": null,
+      "actor": "gate",
+      "note": "订单快照 v1 与外部当前 v2 不一致（外部状态 amended，上次改动 2026-09-10T16:19:00.503014+00:00）"
+    },
+    {
+      "seq": 8,
+      "at": "2026-09-10T16:19:00.559478+00:00",
+      "kind": "plan_approval",
+      "event_type": "PlanApproved",
+      "task_id": "",
+      "transition": "",
+      "operator": "沈思锴（after_sales_supervisor）",
+      "actor": "human",
+      "note": ""
+    },
+    {
+      "seq": 30,
+      "at": "2026-09-10T16:19:00.596022+00:00",
+      "kind": "blocked",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "transition": "AWAITING_REVIEW->BLOCKED [gate_needs_human]",
+      "operator": null,
+      "actor": "gate",
+      "note": "gate_needs_human"
+    }
+  ],
+  "count": 3,
+  "human_actions": 1,
+  "operators": [
+    "沈思锴（after_sales_supervisor）"
+  ],
+  "unattributed_human_actions": [],
+  "note": "每一条人做的动作都带操作者与时间；机器判的返工与转人工出口如实记 operator=null / actor=gate —— 把机器的动作记在人头上，「这一单人介入过几次」就永远算不准。unattributed_human_actions 非空即证据不合格（verify.py 第 10 项在核它）。"
+}

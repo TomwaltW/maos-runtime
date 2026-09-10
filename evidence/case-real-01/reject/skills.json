@@ -1,0 +1,127 @@
+# generated at 2026-09-10T16:19:01.055836+00:00 from 80301f8ba167e9f5c363306814426dbc710f0f8f
+{
+  "contract_skills": [
+    {
+      "skill": "refund.intake",
+      "present": true,
+      "invocation_id": "ef309de807784b85a20d41d9b2dcfe7e",
+      "input_digest": "66c6515300c0b449e662deaaae8f3ad71e7534985f34c9d45eb68fe12427eb42",
+      "output_hash": "6f23167ee1cc9613b19107cb015faab61c28f9ff47365c802ed0a07997aa68f4",
+      "version": "1.0.0",
+      "status": "ok",
+      "task_id": "task-rc-2026-0904-001-intake",
+      "invocations": 1
+    },
+    {
+      "skill": "refund.evidence_check",
+      "present": true,
+      "invocation_id": "79a4ed0da0f34c629e64325f308e6259",
+      "input_digest": "45042757293ba9c70cefe3fd98246e0954bbae20680ee2bf4cf625a72379521a",
+      "output_hash": "c26b23b0dc5ea420d4cbced6fede5ff3274d853d001a82072d44ab980d68152d",
+      "version": "1.0.0",
+      "status": "ok",
+      "task_id": "",
+      "invocations": 1
+    },
+    {
+      "skill": "policy.match",
+      "present": true,
+      "invocation_id": "0931b0bd772b48fb9b67e54d5aa842b9",
+      "input_digest": "232161205330f874055ece375fc1895a6a40d2c472516ce6c766dc867673cbaf",
+      "output_hash": "06bd8e3244a080e6fe450d0fbaa7329259117c026a12a5a0f221aeffc8706a53",
+      "version": "1.0.0",
+      "status": "ok",
+      "task_id": "task-rc-2026-0904-001-policy",
+      "invocations": 2
+    },
+    {
+      "skill": "refund.risk_screen",
+      "present": true,
+      "invocation_id": "055ce3dc83fd4187a3c8ec32f3fd352d",
+      "input_digest": "c117e9bd0a5837a5605201c0203eeb2e76aff5957a235b2ff157c0ac9821c7ba",
+      "output_hash": "9e8353e7990584d014a687bbab6101248592a54712c56901c4e729239faf43a5",
+      "version": "1.0.0",
+      "status": "ok",
+      "task_id": "",
+      "invocations": 1
+    },
+    {
+      "skill": "finance.settle",
+      "present": true,
+      "invocation_id": "172c1c06ca044705bfb2d8914c0de536",
+      "input_digest": "cdfb4a1111843df92cd3693695d0341c9a802a2c90d6849d01b41bd72e18d410",
+      "output_hash": "e79661325d5c7092550730555852783f591aac243d3ecfcd638e8223cbf4295a",
+      "version": "1.0.0",
+      "status": "ok",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "invocations": 1
+    },
+    {
+      "skill": "payment.execute",
+      "present": false,
+      "invocation_id": null,
+      "input_digest": null,
+      "output_hash": null,
+      "version": null,
+      "status": null,
+      "task_id": null,
+      "invocations": 0
+    },
+    {
+      "skill": "payment.observe",
+      "present": false,
+      "invocation_id": null,
+      "input_digest": null,
+      "output_hash": null,
+      "version": null,
+      "status": null,
+      "task_id": null,
+      "invocations": 0
+    },
+    {
+      "skill": "notify.customer",
+      "present": false,
+      "invocation_id": null,
+      "input_digest": null,
+      "output_hash": null,
+      "version": null,
+      "status": null,
+      "task_id": null,
+      "invocations": 0
+    }
+  ],
+  "present": 5,
+  "total": 8,
+  "compensation_skills": [
+    {
+      "skill": "refund.compensate",
+      "present": false,
+      "invocation_id": null,
+      "input_digest": null,
+      "output_hash": null,
+      "version": null,
+      "status": null,
+      "task_id": null,
+      "invocations": 0
+    },
+    {
+      "skill": "refund.compensation_close",
+      "present": false,
+      "invocation_id": null,
+      "input_digest": null,
+      "output_hash": null,
+      "version": null,
+      "status": null,
+      "task_id": null,
+      "invocations": 0
+    }
+  ],
+  "expect_compensation": false,
+  "other_invocations": [
+    "issue.aggregate",
+    "kb.retrieve",
+    "kb.sink",
+    "refund.snapshot_check"
+  ],
+  "note": "清单逐字取自跨轨契约 §G。present=false 是如实记录，不是缺数据：驳回的案子本来就走不到付款，网关成功的案子本来就不该有补偿。每个 present=true 的 invocation_id 都能在 event_log 里回查（verify.py 第 10 项对 case 束的扩覆盖就在核它）。"
+}

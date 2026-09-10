@@ -1,0 +1,57 @@
+# generated at 2026-09-10T16:19:01.056088+00:00 from 80301f8ba167e9f5c363306814426dbc710f0f8f
+{
+  "trace": [
+    {
+      "seq": 7,
+      "at": "2026-09-10T16:19:01.000761+00:00",
+      "kind": "plan_approval",
+      "event_type": "PlanRejected",
+      "task_id": "",
+      "transition": "",
+      "operator": "沈思锴（after_sales_supervisor）",
+      "actor": "human",
+      "note": "先说清这一单的风险档位与承接岗，再谈放行"
+    },
+    {
+      "seq": 8,
+      "at": "2026-09-10T16:19:01.002000+00:00",
+      "kind": "plan_approval",
+      "event_type": "PlanApproved",
+      "task_id": "",
+      "transition": "",
+      "operator": "沈思锴（after_sales_supervisor）",
+      "actor": "human",
+      "note": ""
+    },
+    {
+      "seq": 30,
+      "at": "2026-09-10T16:19:01.034455+00:00",
+      "kind": "blocked",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "transition": "AWAITING_REVIEW->BLOCKED [gate_needs_human]",
+      "operator": null,
+      "actor": "gate",
+      "note": "gate_needs_human"
+    },
+    {
+      "seq": 32,
+      "at": "2026-09-10T16:19:01.038052+00:00",
+      "kind": "task_approval",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "transition": "BLOCKED->FAILED [human_reject]",
+      "operator": "沈思锴（region_manager）",
+      "actor": "human",
+      "note": "主管驳回"
+    }
+  ],
+  "count": 4,
+  "human_actions": 3,
+  "operators": [
+    "沈思锴（after_sales_supervisor）",
+    "沈思锴（region_manager）"
+  ],
+  "unattributed_human_actions": [],
+  "note": "每一条人做的动作都带操作者与时间；机器判的返工与转人工出口如实记 operator=null / actor=gate —— 把机器的动作记在人头上，「这一单人介入过几次」就永远算不准。unattributed_human_actions 非空即证据不合格（verify.py 第 10 项在核它）。"
+}

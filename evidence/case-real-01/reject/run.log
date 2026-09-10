@@ -1,0 +1,60 @@
+# generated at 2026-09-10T16:19:01.049685+00:00 from 80301f8ba167e9f5c363306814426dbc710f0f8f
+INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
+INFO  maos.custom_case 圆桌引擎不认 store= 参数（T113 尚未并入），本轮圆桌事件不落库
+INFO  maos.roundtable 圆桌预检 case=RC-2026-0904-001 发起人=沈思锴 第 1 轮（本轮新增 0 份证据）
+INFO  maos.cp      创建计划 plan_0b4a24b541d0，共 6 个任务
+WARNING maos.plan_approval [plan_0b4a24b541d0] 未注入 replanner，驳回只留痕、不重出规格
+INFO  maos.cp      [task-rc-2026-0904-001-intake] PENDING -> DISPATCHED (dispatch)
+INFO  maos.plan_approval [plan_0b4a24b541d0] 沈思锴（after_sales_supervisor） 批准，6 个任务开跑
+INFO  maos.cp      [task-rc-2026-0904-001-intake] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-rc-2026-0904-001-intake] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-rc-2026-0904-001-intake] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-rc-2026-0904-001-intake] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-rc-2026-0904-001-policy] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-rc-2026-0904-001-policy] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-rc-2026-0904-001-policy] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-rc-2026-0904-001-policy] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-rc-2026-0904-001-policy] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-rc-2026-0904-001-dealer-writeoff] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-rc-2026-0904-001-dealer-writeoff] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-rc-2026-0904-001-dealer-writeoff] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-rc-2026-0904-001-dealer-writeoff] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-rc-2026-0904-001-dealer-writeoff] AWAITING_REVIEW -> DONE (gate_pass)
+INFO  maos.cp      [task-rc-2026-0904-001-finance] PENDING -> DISPATCHED (dispatch)
+INFO  maos.cp      [task-rc-2026-0904-001-finance] DISPATCHED -> RUNNING (claim)
+INFO  maos.cp      [task-rc-2026-0904-001-finance] RUNNING -> AWAITING_REVIEW (submit_result)
+INFO  maos.gate    [task-rc-2026-0904-001-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-rc-2026-0904-001-finance] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-rc-2026-0904-001-finance] 无补偿引用，跳过回滚
+INFO  maos.cp      [task-rc-2026-0904-001-finance] BLOCKED -> FAILED (human_reject)
+
+====================================================================
+自定义 case RC-2026-0904-001
+====================================================================
+Plan: FAILED  |  处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额
+  · 受理多源退款诉求并聚合证据                        DONE             attempt=1 risk=L
+  · 按下单锁定的政策版本裁定退款资格                     DONE             attempt=1 risk=L
+  · 渠道商核销                                DONE             attempt=1 risk=M
+  · 核算退款金额并写财务分录                         FAILED           attempt=1 risk=M
+  · 发起退款并观察网关终态                          PENDING          attempt=0 risk=M
+  · 通知客户裁定结果                             PENDING          attempt=0 risk=L
+  状态迁移轨迹:
+    task-rc-2026-0904-001-intake  PENDING          -> DISPATCHED       [dispatch]
+    task-rc-2026-0904-001-intake  DISPATCHED       -> RUNNING          [claim]
+    task-rc-2026-0904-001-intake  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-rc-2026-0904-001-intake  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-rc-2026-0904-001-policy  PENDING          -> DISPATCHED       [dispatch]
+    task-rc-2026-0904-001-policy  DISPATCHED       -> RUNNING          [claim]
+    task-rc-2026-0904-001-policy  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-rc-2026-0904-001-policy  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-rc-2026-0904-001-dealer-writeoff  PENDING          -> DISPATCHED       [dispatch]
+    task-rc-2026-0904-001-dealer-writeoff  DISPATCHED       -> RUNNING          [claim]
+    task-rc-2026-0904-001-dealer-writeoff  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-rc-2026-0904-001-dealer-writeoff  AWAITING_REVIEW  -> DONE             [gate_pass]
+    task-rc-2026-0904-001-finance  PENDING          -> DISPATCHED       [dispatch]
+    task-rc-2026-0904-001-finance  DISPATCHED       -> RUNNING          [claim]
+    task-rc-2026-0904-001-finance  RUNNING          -> AWAITING_REVIEW  [submit_result]
+    task-rc-2026-0904-001-finance  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
+    task-rc-2026-0904-001-finance  BLOCKED          -> FAILED           [human_reject]
+INFO  maos.finalizer [plan_0b4a24b541d0] case RC-2026-0904-001 -> ('failure_hint', 'failed')（到账=unknown）
+INFO  maos.finalizer [plan_0b4a24b541d0] 复盘完成，沉淀 1 条

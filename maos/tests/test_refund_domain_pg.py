@@ -374,7 +374,36 @@ def test_atomic_rolls_back_ddl_and_dml_together(pg_store: SqliteStore) -> None:
     assert rows == [], "回滚没把建表一起撤掉 —— 库停在半成品上了"
 
 
-# ------------------------------------------------------------------ 6. 靶场
+# ------------------------------------------------- 6. 加列助手（给同波次三轨用）
+def test_add_column_if_missing_on_postgres(pg_store: SqliteStore) -> None:
+    """`add_column_if_missing` 在 PG 上探得对、加得上、连跑是 no-op。
+
+    这个函数**当前没有调用方** —— 同波次的 T116/T117/T120 各自复制了一份私有版本，
+    整合期由主会话改成 import 这一个。没有调用方就意味着没有别的测试会踩到它，
+    所以它自己必须带一条：整合期发现它是坏的，比现在发现贵得多。
+
+    列声明只写一份 SQLite 方言的（`REAL`），PG 侧由同一个翻译器现翻成
+    `double precision` —— 与建表共用一份，两处不会漂。
+    """
+    conn = _dbport.DomainConn.open(pg_store)
+    conn.execute("DROP TABLE IF EXISTS t115_addcol")
+    conn.execute("CREATE TABLE t115_addcol (a TEXT)")
+
+    _dbport.add_column_if_missing(conn, "t115_addcol", "b", "REAL NOT NULL DEFAULT 0")
+    _dbport.add_column_if_missing(conn, "t115_addcol", "b", "REAL NOT NULL DEFAULT 0")
+
+    rows = conn.query(
+        "SELECT column_name AS name, data_type AS kind"
+        " FROM information_schema.columns"
+        " WHERE table_schema = current_schema() AND table_name = ?"
+        " ORDER BY ordinal_position", ("t115_addcol",))
+    conn.execute("DROP TABLE t115_addcol")
+
+    assert [r["name"] for r in rows] == ["a", "b"], "连跑两次加出了两列，或一列都没加"
+    assert rows[1]["kind"] == "double precision", "REAL 没翻成 PG 类型"
+
+
+# ------------------------------------------------------------------ 7. 靶场
 def test_fixtures_seed_case_lands_on_postgres(pg_store: SqliteStore) -> None:
     """`fixtures.seed_case()` 在 PG 后端上照样灌得进去（派单 §3.5）。"""
     payload = fixtures.load_case("case_r3a.json")

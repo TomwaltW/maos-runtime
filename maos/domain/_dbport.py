@@ -827,17 +827,24 @@ def add_column_if_missing(conn: DomainConn, table: str, col: str, decl: str) -> 
     `objects._has_column`）。
     """
     if conn.dialect == POSTGRES:
+        # 占位符写 `?` 不写 `%s`：这一层收的是 **SQLite 方言**，`%s` 会被
+        # `translate_placeholders` 当成字面量 `%` 转义成 `%%s`，然后 psycopg 报
+        # 「0 placeholders but 2 parameters」——而那句话完全不提示是方言写反了。
         rows = conn.query(
             "SELECT column_name FROM information_schema.columns"
-            " WHERE table_schema = current_schema() AND table_name = %s"
-            " AND column_name = %s",
+            " WHERE table_schema = current_schema() AND table_name = ?"
+            " AND column_name = ?",
             (table, col))
         if rows:
             return
-        column = _translate_column(f"{col} {decl}", origin=f"{table}.{col}")
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
-        return
+    else:
+        have = {r["name"] for r in conn.query(f"PRAGMA table_info({table})")}
+        if col in have:
+            return
 
-    have = {r["name"] for r in conn.query(f"PRAGMA table_info({table})")}
-    if col not in have:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    # 两个后端发同一句 SQLite 方言的 ALTER。**这里不预先翻译**：翻不翻是
+    # `_PgConnection.execute()` 的事，它见到 DDL 会走 `to_pg_ddl()`。
+    # 在这里先翻一遍的后果是翻两次 —— 第二次拿到的是已经翻好的
+    # `double precision`，而那不是翻译器认识的 SQLite 类型，当场抛
+    # `UnsupportedDdlError`，报错还指着一句本来没错的 DDL。
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")

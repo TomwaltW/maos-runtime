@@ -239,6 +239,28 @@ def test_upsert_without_primary_key_raises() -> None:
         rewrite_upsert("INSERT OR REPLACE INTO t (a) VALUES (?)", lambda _t: ())
 
 
+def test_add_column_if_missing_on_sqlite() -> None:
+    """加列助手的 sqlite 分支：探得对、加得上、连跑是 no-op。
+
+    这个函数当前没有调用方 —— 同波次的 T116/T117/T120 各自复制了一份私有版本，
+    整合期由主会话改成 import 这一个。没有调用方就没有别的测试会踩到它，
+    所以两个后端各带一条（PG 那条在 `test_refund_domain_pg.py`）。
+    """
+    from maos.core.store import SqliteStore
+    from maos.domain._dbport import DomainConn, add_column_if_missing
+
+    store = SqliteStore(":memory:")
+    store.init_schema()
+    conn = DomainConn.open(store)
+    conn.execute("CREATE TABLE t115_addcol (a TEXT)")
+
+    add_column_if_missing(conn, "t115_addcol", "b", "REAL NOT NULL DEFAULT 0")
+    add_column_if_missing(conn, "t115_addcol", "b", "REAL NOT NULL DEFAULT 0")
+
+    names = [r["name"] for r in conn.query("PRAGMA table_info(t115_addcol)")]
+    assert names == ["a", "b"], "连跑两次加出了两列，或一列都没加"
+
+
 def test_to_pg_sql_routes_ddl_and_dml_apart() -> None:
     """一个入口两条路：DDL 走翻译器，DML 走占位符 + upsert。"""
     assert to_pg_sql("CREATE TABLE t (a REAL)", lambda _t: (),

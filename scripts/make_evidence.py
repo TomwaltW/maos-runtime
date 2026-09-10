@@ -249,10 +249,49 @@ def evidence_header(path: str) -> str:
 # ---------------------------------------------------------------------------
 # 子进程模式：把场景跑进文件库
 # ---------------------------------------------------------------------------
+def finalize_business_outcomes(stores: list) -> None:
+    """场景跑完后把每个 Plan 过一遍 ``PlanFinalizer`` —— 业务四判据与自动晋升的执行点。
+
+    **为什么接在这里**：晋升钩子在 ``runtime/plan_finalizer.py::poll()`` 上，而全仓
+    只有 ``flows/scenario_5.py`` 调过 ``poll()``。场景 6/7 不调，于是 ``case_outcome``、
+    ``kb_doc(history_case|failure_hint)`` 与 ``failure_hint_index`` 在证据束里全是空的
+    —— 四判据只能靠导出时现算，聚合表则根本不存在。接在这一处，一次覆盖全部场景，
+    而 ``flows/**`` 一个字不动（那几个文件属于并行的别轨）。
+
+    **幂等由 store 的幂等闸兜着**：``poll()`` 先 claim 再干活，所以场景 5 自己已经
+    poll 过的那个 Plan 在这里直接短路，不会重复沉淀、也不会把失败聚合表的 count 多加一次。
+
+    失败只告警不上抛：证据束的主体（trace / result / 业务对象）与它无关，
+    因为晋升不成就产不出一整束证据是本末倒置。但也不能不出声。
+    """
+    from maos.runtime.plan_finalizer import PlanFinalizer
+
+    for store in stores:
+        try:
+            plan_ids = [r["plan_id"] for r in
+                        store._conn.execute("SELECT plan_id FROM plan ORDER BY created_at")]
+            for plan_id in plan_ids:
+                PlanFinalizer(store).poll(plan_id)
+        except Exception as exc:                       # noqa: BLE001 —— 见 docstring
+            print(f"  [WARN] 业务结果收口失败（{exc}），本束的 case_outcome 由导出时现算",
+                  file=sys.stderr)
+
+
 def run_child(scenario: int, db_path: str) -> int:
     """在**本进程**里把场景跑进 ``db_path``。只由 ``--_child`` 入口调用。"""
     import maos.flows.common as common
     from maos.core.store import SqliteStore
+
+    #: 这一跑建过的库。跑完要拿它们收口业务结果（见 finalize_business_outcomes），
+    #: 而 `build()` 建的 store 不经任何返回值传出来 —— 只能在工厂这一层记下。
+    stores: list = []
+
+    def tracked(factory):
+        def make(*args, **kwargs):
+            store = factory(*args, **kwargs)
+            stores.append(store)
+            return store
+        return make
 
     if scenario in (8, 9, 10):
         # 新域 run() 自己决定运行时隔离：8/10 的成功、失败路径各有一个库，
@@ -270,12 +309,14 @@ def run_child(scenario: int, db_path: str) -> int:
                 path = os.path.join(directory, "maos.db")
             return SqliteStore(path)
 
-        common.SqliteStore = runtime_store
+        common.SqliteStore = tracked(runtime_store)
     else:
-        common.SqliteStore = functools.partial(SqliteStore, db_path)
+        common.SqliteStore = tracked(functools.partial(SqliteStore, db_path))
     from maos.main import main as maos_main
 
-    return maos_main(["--scenario", str(scenario)])
+    rc = maos_main(["--scenario", str(scenario)])
+    finalize_business_outcomes(stores)
+    return rc
 
 
 #: 子进程把对照的观测与判据先落成这份**无出处首行**的原始 JSON，父进程读走后删掉，
@@ -460,11 +501,24 @@ def derive_business_outcome(conn, plan_id: str, plan_state: str, tables: set[str
                     "provenance": domain.observation_table,
                 })
 
+    # 判据三/四/五：业务结果四判据（到账 / 客户确认 / 人工纠错 / 投诉）。
+    # 退款域没落地的场景返回空列表，下面几支照旧 —— 软件域那几个场景的 business_outcome
+    # 一个字节都不变。
+    outcomes = case_outcomes(conn, plan_id, tables)
+    unsuccessful = [o for o in outcomes if not o["business_success"]]
+
     if plan_state == "FAILED":
         status, basis = "failed", "plan_failed"
     elif plan_state == "DONE":
-        status = "succeeded" if evidence else "undetermined"
-        basis = "external_evidence" if evidence else "no_external_evidence"
+        if not evidence:
+            status, basis = "undetermined", "no_external_evidence"
+        elif unsuccessful:
+            # **这一支是本轨的落点**：Plan 走到 DONE、外部判据也拿得出来，但四判据说
+            # 这单业务没成（钱没到账 / 客户提了异议 / 投诉还开着）。以前这里会一律写
+            # succeeded —— 那正是评委说的「所有 Agent 都回复完成不代表业务成功」。
+            status, basis = "undetermined", "business_outcome_not_successful"
+        else:
+            status, basis = "succeeded", "external_evidence"
     else:
         status, basis = "in_progress", "plan_not_terminal"
 
@@ -475,9 +529,111 @@ def derive_business_outcome(conn, plan_id: str, plan_state: str, tables: set[str
         "plan_state": plan_state,
         "external_evidence": evidence,
         "unaudited_evidence_count": len(unaudited),
+        "case_outcomes": outcomes,
         "source": "derived-from-db-at-export-time",
         "note": ("MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。"
-                 "本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"),
+                 "本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+                 "case_outcomes 里的 arrival 只由 payment_observation 的行决定，"
+                 "arrival_basis 指回具体那一行，可回查。"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 业务结果四判据（T120）
+# ---------------------------------------------------------------------------
+class _ReadOnlyStore:
+    """把导出器的只读连接包成 `domain.refund.objects` 认得的形状。
+
+    `objects.query()` / `resolve_business_ref()` 只要求对象上有 `_conn`
+    （`lock_of` 取不到 `_lock` 时退化成 nullcontext）。包一层就能**直接复用**那两个
+    函数，而不是在这里把 `object_type -> 表/主键` 的映射抄第二份 ——
+    抄一份的后果与 `collect_business_objects` 的 docstring 点名的是同一件事：
+    两份映射合并后行为不一致，而症状要到某个 object_type 加进来才暴露（T116 正在加）。
+
+    只读是**结构上**保证的：连接由 `connect_ro()` 以 `mode=ro` 打开，本类不提供
+    `_lock`，也没有任何写入口。证据生成器不该有能力改证据库。
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+
+def case_outcomes(conn: sqlite3.Connection, plan_id: str, tables: set[str]) -> list[dict]:
+    """这个 Plan 上每个退款 case 的四判据。退款域没落地就返回空列表。
+
+    **两个来源，优先已落库的那一行**：
+
+    · `case_outcome` 表里有行 -> 直接取。那是运行时（`PlanFinalizer.promote`）
+      算完落下的，带着它自己的 `computed_at`，是那一刻的结论。
+    · 表不在或没有对应行 -> 用**同一个纯函数** `compute_case_outcome()` 在导出时现算。
+      口径必然一致（同一份代码），差别只在算的时刻，所以 `source` 字段如实标出来。
+
+    退回到现算而不是留空，是因为四判据是**推导**出来的，不是外部系统的当前值：
+    库里的观察行在，结论就算得出来。留空会让「这一束证据没有四判据」与
+    「这一单确实没到账」在读者眼里长得一样，而那两件事差得很远。
+    """
+    if "refund_case" not in tables:
+        return []
+    try:
+        from maos.domain.refund import objects as refund_objects
+        from maos.domain.refund import outcome as refund_outcome
+    except ImportError:                                # 退款域未合入：不假装有数据
+        return []
+
+    store = _ReadOnlyStore(conn)
+    has_outcome_table = "case_outcome" in tables
+    out: list[dict] = []
+    for case in conn.execute(
+            "SELECT tenant_id, case_id FROM refund_case WHERE plan_id=? ORDER BY created_at",
+            (plan_id,)):
+        tenant_id, case_id = case["tenant_id"], case["case_id"]
+        stored = None
+        if has_outcome_table:
+            stored = conn.execute(
+                "SELECT * FROM case_outcome WHERE tenant_id=? AND case_id=?",
+                (tenant_id, case_id)).fetchone()
+        if stored is not None:
+            row = {k: stored[k] for k in stored.keys()}
+            row["source"] = "case_outcome-table"
+        else:
+            row = _derive_outcome(store, refund_objects, refund_outcome,
+                                  conn=conn, plan_id=plan_id,
+                                  tenant_id=tenant_id, case_id=case_id)
+            row["source"] = "derived-at-export-time"
+        row["evidence_complete"] = bool(row.get("evidence_complete"))
+        row["business_success"] = bool(row.get("business_success"))
+        out.append(row)
+    return out
+
+
+def _derive_outcome(store, refund_objects, refund_outcome, *, conn, plan_id: str,
+                    tenant_id: str, case_id: str) -> dict:
+    """导出时现算一个 case 的四判据。走纯函数，本函数只负责把行取齐。"""
+    def rows(table: str) -> list[dict]:
+        if table not in table_names(conn):
+            return []
+        return [dict(r) for r in conn.execute(
+            f"SELECT * FROM {table} WHERE tenant_id=? AND case_id=?", (tenant_id, case_id))]
+
+    resolved = {
+        ref["object_type"] for ref in refund_objects.list_business_refs(store, plan_id=plan_id)
+        if ref.get("tenant_id") == tenant_id and refund_objects.resolve_business_ref(store, ref)
+    }
+    computed = refund_outcome.compute_case_outcome(
+        observations=rows("payment_observation"),
+        notifications=rows("notification"),
+        complaints=rows("complaint"),
+        compensations=rows("compensation_record"),
+        resolved_ref_types=resolved,
+        required_ref_types=refund_outcome.required_ref_types(),
+    )
+    return {
+        "tenant_id": tenant_id, "case_id": case_id,
+        **{k: computed[k] for k in
+           ("arrival", "arrival_basis", "customer_confirmation", "manual_correction",
+            "complaint", "evidence_complete", "business_success")},
+        "computed_at": None,
+        "evidence": computed["evidence"],
     }
 
 

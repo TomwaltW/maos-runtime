@@ -20,10 +20,16 @@
 「什么样的案例够格进正例知识层」与「检索结果不许做什么」是同一个问题的两面：
 前者管入口，后者管出口。放同一个文件，改的时候两边一起看得见。
 
-规则按评委原话：只有**证据完整且外部结果明确**的案例才进默认知识层 ——
-有 `payment_observation`、`observed_state='settled'`、且有客户 ack。
-差一条都不进正例层；失败实例进 `failure_hint`，只用于提示「哪类渠道 / 支付返回 /
-政策组合需要额外步骤」，**不作为规划正例**。
+规则按评委原话：只有**证据完整且外部结果明确**的案例才进默认知识层。
+「外部结果明确」自 T120 起由四判据说了算（到账 / 客户确认 / 人工纠错 / 投诉，
+算在 `maos/domain/refund/outcome.py`），「证据完整」由业务对象引用能否 resolve
+说了算 —— 两者都成立才是正例。差一条都不进正例层；失败实例进 `failure_hint`，
+只用于提示「哪类渠道 / 支付返回 / 政策组合需要额外步骤」，**不作为规划正例**，
+并由 `maos/kb/promotion.py` 聚进 `failure_hint_index`。
+
+`classify_case` 保留了 T120 之前那条三判据路径（settled + 观察 + 客户 ack）作为回落：
+不给 `outcome` 入参时行为逐字节不变，老库与只想问「这条规则本身怎么判」的调用方
+（R5、护栏测试）不受影响。
 """
 
 from __future__ import annotations
@@ -360,28 +366,90 @@ def _kind_of(doc: dict) -> str | None:
 
 # ------------------------------------------------------------------ 晋升规则
 def classify_case(*, observations: list[dict], notifications: list[dict],
-                  case_row: dict | None) -> tuple[str, str] | None:
+                  case_row: dict | None,
+                  outcome: Any | None = None) -> tuple[str, str] | None:
     """一个已收口的 case 该进哪一类知识层。不够格返回 None。
 
-    · 证据完整且外部结果明确 -> `(history_case, success)`：有 payment_observation、
-      终态观察是 settled、且有客户 ack。**三条缺一不可** —— 少了 ack 就不是
-      「外部结果明确」，只是「我们这边做完了」。
+    · 证据完整且外部结果明确 -> `(history_case, success)`
     · 明确失败 / 已补偿 -> `(failure_hint, failed)`：只用于提示哪类组合需要
       额外步骤，不作为规划正例。
     · 其余（还没收口、观察不全、settled 却拿不出观察）-> None：不进知识层。
       **没结论的案例不是知识**，放进去就是拿半截事实去指导下一次规划；
       而 settled 却没有 settled 观察本身是权威事实边界被绕过的迹象，
       那种案例更不该被当成正例复制给下一单。
+
+    ## 两条判据面，取哪一条看 `outcome` 给没给
+
+    `outcome` 是 `case_outcome` 的那一行（`domain/refund/outcome.py` 算出来的
+    四判据）。**给了就按四判据判，没给就按老的三条判**：
+
+    · 四判据（T120 起的主路径）：`business_success && evidence_complete` 才是正例。
+      前者答「这单业务成了没有」（到账 + 客户没提异议 + 投诉没开着），后者答
+      「这单的证据全不全」。缺一不可 —— 只看前者会把一条查不到订单快照的成功案例
+      当成范本；只看后者会把材料齐全但钱压根没到账的案子当成正例。
+    · 三条（回落）：`biz_status == settled` + 有 settled 观察 + 有客户 ack。
+      `case_outcome` 表还没落地的老库、以及只想问「这条规则本身怎么判」的调用方
+      （R5、护栏测试）走这一条，行为与 T120 之前逐字节相同。
+
+    **两条路都要求拿得出 settled 观察**，而且都是从 `observations` 现数、不看
+    `outcome` 自报的 arrival：那一行是本系统自己算出来写的，拿它给自己背书就成了
+    自证。settled 却数不出 settled 观察，是权威事实边界被绕过的迹象（铁律 8）。
     """
     status = (case_row or {}).get("biz_status")
     settled_obs = [o for o in (observations or []) if o.get("observed_state") == "settled"]
     acked = [n for n in (notifications or []) if n.get("ack_at")]
+
+    if outcome is not None:
+        return _classify_by_outcome(outcome, status=status, settled_obs=settled_obs)
 
     if status == "settled" and settled_obs and acked:
         return kb.KIND_HISTORY_CASE, kb.OUTCOME_SUCCESS
     if status in ("rejected", "compensated"):
         return kb.KIND_FAILURE_HINT, kb.OUTCOME_FAILED
     return None
+
+
+#: 「明确失败」的 biz_status。与 `_classify_by_outcome` 的其余判据是**或**关系：
+#: 一单可以钱没到账（arrival=unsettled）但 biz_status 还停在 gateway_accepted，
+#: 那一样是可以拿去提示后来者的失败实例。
+FAILED_BIZ_STATUS = ("rejected", "compensated")
+
+
+def _classify_by_outcome(outcome: Any, *, status: Any,
+                         settled_obs: list[dict]) -> tuple[str, str] | None:
+    """四判据版的晋升规则。`outcome` 是 `case_outcome` 的一行（dict 或 Row）。
+
+    正例的三个条件全要：`business_success`、`evidence_complete`、**数得出 settled 观察**。
+    第三条不是前两条的重复 —— 前两条读的是算好的结论行，第三条回到原始观察重数一遍。
+
+    失败侧刻意放宽：只要外部结果**明确地不成功**（钱明确没到账 / 客户提了异议 /
+    投诉还开着 / 案子已驳回或已补偿），就值得聚成一条提示。
+    剩下的（到账状态 unknown 且案子还没收口）返回 None —— 那是「还没有结论」，
+    不是「失败」，`--stall` 那条路径正落在这一格。
+    """
+    if _flag(outcome, "business_success") and _flag(outcome, "evidence_complete") and settled_obs:
+        return kb.KIND_HISTORY_CASE, kb.OUTCOME_SUCCESS
+
+    definite_failure = (
+        _field(outcome, "arrival") == "unsettled"
+        or _field(outcome, "customer_confirmation") == "disputed"
+        or _field(outcome, "complaint") == "open"
+        or status in FAILED_BIZ_STATUS
+    )
+    return (kb.KIND_FAILURE_HINT, kb.OUTCOME_FAILED) if definite_failure else None
+
+
+def _field(outcome: Any, key: str) -> Any:
+    """从 `case_outcome` 那一行取一列。dict 与 sqlite3.Row 都收，取不到当 None。"""
+    try:
+        return outcome[key]
+    except (KeyError, IndexError, TypeError):
+        return getattr(outcome, key, None)
+
+
+def _flag(outcome: Any, key: str) -> bool:
+    """取一列并折成 bool。SQLite 里 0/1 是 INTEGER，直接判真会把 0 当假 —— 正是要的。"""
+    return bool(_field(outcome, key))
 
 
 def case_to_doc_body(tasks: list[dict], *, note: str = "") -> str:

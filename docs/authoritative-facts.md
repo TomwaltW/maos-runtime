@@ -187,6 +187,86 @@ sqlite3 <db> "select count(*) from event_log where event_type='CompensationExecu
 
 ---
 
+## 5b. 业务结果的四判据：到账 / 客户确认 / 人工纠错 / 投诉
+
+上一节说的是「问不出终态时系统什么都不写」。本节说的是它的另一半：**写下来的那些，
+分别归谁**。评委第三条原话：
+
+> 应以**退款到账、客户确认、人工纠错和投诉结果**验证整个 DAG。「所有 Agent 都回复
+> 完成」只表示协作结束，不代表业务成功。
+
+四判据落在 `case_outcome` 表（`maos/domain/refund/outcome.py`），取值域是跨轨契约的
+一部分，不许自造措辞：
+
+| 判据 | 取值 | 权威在谁手上 | 入口 |
+|---|---|---|---|
+| `arrival` | `settled` / `unsettled` / `unknown` | **支付网关** | `payment.observe` 写 `payment_observation` |
+| `customer_confirmation` | `confirmed` / `disputed` / `none` | 客户 | `scripts/case_inbound.py --confirm｜--dispute` |
+| `manual_correction` | `none` / `overridden` / `compensated` | 线下操作 | 补偿工单 / 人工回执 |
+| `complaint` | `none` / `open` / `closed` | 客户 | `scripts/case_inbound.py --complain` |
+
+```text
+business_success = (arrival == "settled") and (customer_confirmation != "disputed")
+                                          and (complaint != "open")
+```
+
+### `arrival` 只由 payment_observation 的行决定
+
+这是本节的题眼，也是这张表最容易写错的一处。`refund_case.biz_status` 上有一个
+`settled`，读它算 `arrival` 只要一行代码，还永远对得上账 —— 因为两者本来就是同一份
+数据的两次拷贝。但那样一来「到账」就退化成「我们自己认为到账了」：`biz_status` 是
+MAOS 的推断，`payment_observation` 才是网关给的观察。
+
+所以 `compute_case_outcome()` 的入参里**根本没有 `biz_status`**，只有观察行；
+`arrival_basis` 必须指回具体那一行：
+
+```text
+arrival_basis = payment_observation:<request_id>@<observed_at>
+```
+
+`unsettled` 与 `unknown` 也不许混：网关明确回了 `failed` 是 `unsettled`（外部结果明确，
+只是明确地失败了）；轮询到顶仍问不出终态是 `unknown`（**外部结果不明确**，那笔钱
+可能已经出去了）。把 `unknown` 当成 `unsettled`，账面上就会凭空少一笔。
+
+同理，**客户说收到了也换不来「到账」**：`--confirm` 只写 `customer_confirmation` 与
+`notification.ack_at`，一个字都不碰 `arrival`。确认过的案子照样可能 `arrival=unknown`
+—— 这不是矛盾，这正是四判据要分开的原因。
+
+### 「全 DONE 但业务没成功」跑得出来
+
+```bash
+env -u MAOS_LLM_API_KEY -u MAOS_LLM_BASE_URL -u MAOS_LLM_MODEL \
+  python3 scripts/run_case.py scenarios/custom/refund-case.json --stall
+```
+
+`--stall` 让 `MockGateway` 永不返终态、`payment.observe` 轮询到 `max_polls` 上限。
+于是**每个任务都走到 DONE、Plan 也是 DONE**，而 `payment_observation` 表是空的：
+
+```text
+  任务终态  : 5 个任务，全 DONE = True（DONE）
+  Plan      : DONE
+  支付观察  : 0 条 —— 轮询到 max_polls 上限仍非终态，`payment.observe` 一行都不写
+  到账      : unknown（依据 无观察行）
+  业务成功  : False
+```
+
+（本机实跑输出，`exit=0`。）这是「所有 Agent 都回复完成 ≠ 业务成功」最直白的一张证据：
+协作完成了，业务没有。
+
+### 核验器怎么验这条边界
+
+`scripts/verify.py` 第 10 项 `check_case_outcome`：四判据齐全且取值合法、
+`business_success` 等于那三个值算出来的、`arrival` 与库里的观察行**重新数一遍**对得上、
+`arrival == settled` 时 `arrival_basis` 回查得到那一行且它确实是 `settled`。
+第 6 项同时加了一口牙：**DONE 且 `arrival != settled` ⇒ 必须 `business_success=false`**。
+
+```bash
+sqlite3 <db> "select arrival, arrival_basis, business_success from case_outcome"
+sqlite3 <db> "select count(*) from payment_observation where observed_state='settled'"
+```
+
+---
+
 ## 6. 同一条边界在软件域的样子
 
 退款域的权威在支付网关；软件域的权威在**沙箱里真跑出来的 pytest 结果**：

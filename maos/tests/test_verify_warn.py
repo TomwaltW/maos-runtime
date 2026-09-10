@@ -148,11 +148,12 @@ def test_retired_warn_classes_stay_retired(verify_report):
             f"再出现是回归，不是已知缺口。")
 
 
-def test_verify_still_nine_of_nine(verify_report):
-    """收口 warn 的过程中一次都不许把判据判坏 —— 前八项全 PASS，一项都不许 SKIP。
+def test_verify_still_ten_of_ten(verify_report):
+    """收口 warn 的过程中一次都不许把判据判坏 —— 其余项全 PASS，一项都不许 SKIP。
 
     T29 把 `cost-attribution` 加成第 8 项后从 7 改到 8，T105 把 `provenance` 加成
-    第 9 项后从 8 改到 9（两次都经人类授权改本文件这一个函数，见 `docs/DECISIONS.md`）。
+    第 9 项后从 8 改到 9，T120 把 `case-outcome`（业务四判据）加成第 10 项后从 9 改到 10
+    （三次都经人类授权改本文件这一个函数，见 `docs/DECISIONS.md`）。
     这个数字是**下限守卫**：它防的是有人为了让某一项别红而把它从 `CHECKS` 里摘掉 ——
     那样屏幕上照旧一屏 PASS，判据却一次都不执行。
 
@@ -160,13 +161,17 @@ def test_verify_still_nine_of_nine(verify_report):
     fixture 现产在 `tmp`（`--out`），那里的证据没有出处可言 —— 判 SKIP 才是对的。
     钉住它的另一半用处在反方向：`provenance` 在这里变成 `PASS` 同样红，那意味着
     它把一束根本没有出处的证据判成了通过。
+
+    第 10 项在这里必须 **PASS** 而不是 SKIP：本 fixture 的证据束里有场景 6/7 两束，
+    退款 case 与 `payment_observation` 都在，四判据算得出来也回查得到。它变成 SKIP
+    就说明四判据在一束**该判得动**的证据上空转了。
     """
     by_key = {c["key"]: c["status"] for c in verify_report["checks"]}
     assert by_key.pop("provenance") == "SKIP", (
         "第 9 项在临时束上必须 SKIP：PASS 是误判通过，FAIL 是冤枉了没有出处可言的证据")
     bad = [k for k, s in by_key.items() if s != "PASS"]
     assert not bad, f"这些项不是 PASS：{bad}"
-    assert len(verify_report["checks"]) == 9, "核验器应恰好 9 项"
+    assert len(verify_report["checks"]) == 10, "核验器应恰好 10 项"
 
 
 # ===========================================================================

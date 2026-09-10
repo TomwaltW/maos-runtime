@@ -1,15 +1,15 @@
-# generated at 2026-09-06T12:09:50.839984+00:00 from 3cdd3445c81c8cda3c124cee4b71a075fa37a3a7
+# generated at 2026-09-10T13:32:12.260342+00:00 from 9050e91f9e5fad26744723066afd8ab6f3392f16
 {
   "scenario": 7,
   "exit_code": 0,
-  "wall_ms": 424,
+  "wall_ms": 446,
   "plan_count": 2,
   "plans": [
     {
-      "plan_id": "plan_79b0a2bd68da",
+      "plan_id": "plan_6c18722fb42b",
       "goal": "处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常",
       "state": "FAILED",
-      "trace_id": "trace_03caa077bb34",
+      "trace_id": "trace_a2b2546d2171",
       "tasks": [
         {
           "task_id": "task-s7-intake",
@@ -49,22 +49,24 @@
         }
       ],
       "metrics": {
-        "duration_ms": 71,
-        "event_count": 49,
+        "duration_ms": 63,
+        "event_count": 54,
         "event_types": {
           "PlanTransition": 4,
           "StateTransition": 23,
-          "SkillInvoked": 10,
+          "SkillInvoked": 13,
           "ArtifactSeeded": 1,
           "RefundBizStatusChanged": 3,
           "ToolInvoked": 6,
           "Replanned": 1,
-          "CompensationExecuted": 1
+          "CompensationExecuted": 1,
+          "CaseOutcomeComputed": 1,
+          "CasePromoted": 1
         },
         "rework_count": 1,
         "replan_count": 1,
         "compensation_count": 0,
-        "skill_invocations": 10,
+        "skill_invocations": 13,
         "tool_invocations": 6
       },
       "business_outcome": {
@@ -73,15 +75,30 @@
         "plan_state": "FAILED",
         "external_evidence": [],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [
+          {
+            "tenant_id": "tnt-mfg-001",
+            "case_id": "case-s7-0001",
+            "arrival": "unsettled",
+            "arrival_basis": "payment_observation:gw_15c8e63c254440cb@2026-09-10T13:32:12.151611+00:00",
+            "customer_confirmation": "none",
+            "manual_correction": "compensated",
+            "complaint": "none",
+            "evidence_complete": true,
+            "business_success": false,
+            "computed_at": "2026-09-10T13:32:12.225460+00:00",
+            "source": "case_outcome-table"
+          }
+        ],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     },
     {
-      "plan_id": "plan_bf5a7ad212ad",
+      "plan_id": "plan_5e1c62966b39",
       "goal": "处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在",
       "state": "FAILED",
-      "trace_id": "trace_a7918b80fe13",
+      "trace_id": "trace_58cb5a55c975",
       "tasks": [
         {
           "task_id": "task-s7b-intake",
@@ -121,19 +138,21 @@
         }
       ],
       "metrics": {
-        "duration_ms": 45,
-        "event_count": 31,
+        "duration_ms": 42,
+        "event_count": 35,
         "event_types": {
           "PlanTransition": 2,
           "StateTransition": 18,
-          "SkillInvoked": 7,
+          "SkillInvoked": 9,
           "RefundBizStatusChanged": 2,
-          "ToolInvoked": 2
+          "ToolInvoked": 2,
+          "CaseOutcomeComputed": 1,
+          "CasePromoted": 1
         },
         "rework_count": 0,
         "replan_count": 0,
         "compensation_count": 0,
-        "skill_invocations": 7,
+        "skill_invocations": 9,
         "tool_invocations": 2
       },
       "business_outcome": {
@@ -142,13 +161,28 @@
         "plan_state": "FAILED",
         "external_evidence": [],
         "unaudited_evidence_count": 0,
+        "case_outcomes": [
+          {
+            "tenant_id": "tnt-mfg-001",
+            "case_id": "case-s7-0002",
+            "arrival": "unsettled",
+            "arrival_basis": "payment_observation:gw_dad0a587bb104036@2026-09-10T13:32:12.211994+00:00",
+            "customer_confirmation": "none",
+            "manual_correction": "none",
+            "complaint": "none",
+            "evidence_complete": true,
+            "business_success": false,
+            "computed_at": "2026-09-10T13:32:12.235126+00:00",
+            "source": "case_outcome-table"
+          }
+        ],
         "source": "derived-from-db-at-export-time",
-        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。"
+        "note": "MAOS 只持有观察与推断，权威状态归外部系统（铁律 8）。本字段是导出时按库内观察推导的结论，不是外部系统的当前值。case_outcomes 里的 arrival 只由 payment_observation 的行决定，arrival_basis 指回具体那一行，可回查。"
       }
     }
   ],
   "totals": {
-    "event_count": 80,
+    "event_count": 89,
     "rework_count": 1,
     "replan_count": 1
   }

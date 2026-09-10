@@ -1,6 +1,79 @@
-# generated at 2026-09-06T12:09:50.841064+00:00 from 3cdd3445c81c8cda3c124cee4b71a075fa37a3a7
+# generated at 2026-09-10T13:32:12.261790+00:00 from 9050e91f9e5fad26744723066afd8ab6f3392f16
 {
-  "entries": [],
-  "count": 0,
+  "entries": [
+    {
+      "id": "kn_a5831fa4f70a",
+      "plan_id": "plan_6c18722fb42b",
+      "kind": "case",
+      "title": "处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常 —— FAILED",
+      "body": "目标：处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常\n结局：Plan FAILED，共 4 个任务、累计 5 次尝试。\n任务终态：受理多源退款诉求并聚合证据=DONE；按下单锁定的政策版本裁定退款资格=DONE；核算退款金额并写财务分录=DONE；发起退款并观察网关终态（改派备用渠道）=FAILED\n本轮累计 findings 1 条。",
+      "tags": [
+        "case",
+        "failed",
+        "refund_finance",
+        "refund_intake",
+        "refund_payment",
+        "refund_policy"
+      ],
+      "created_at": "2026-09-10T13:32:12.231285+00:00"
+    },
+    {
+      "id": "kn_4237dd0d75bc",
+      "plan_id": "plan_6c18722fb42b",
+      "kind": "rule",
+      "title": "gateway 闸是本轮最常被卡的一道（1 次）",
+      "body": "目标「处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常」执行中，gateway 闸累计判出 1 条 finding，是本轮占比最高的一道。典型问题：\n  · 网关回执 40005（调用频次超限）：retriable=True / outcome=failed —— 网关在入口就拒了，这一笔业务确定没执行，可以换渠道重发。官方处置：降低请求并发量\n下次规划同类任务时，把这条写进 acceptance 可以省掉一轮返工。",
+      "tags": [
+        "rule",
+        "gate",
+        "gateway"
+      ],
+      "created_at": "2026-09-10T13:32:12.232185+00:00"
+    },
+    {
+      "id": "kn_1a83ebb64718",
+      "plan_id": "plan_6c18722fb42b",
+      "kind": "rule",
+      "title": "治理动作留痕：重规划 1 次、补偿 1 次",
+      "body": "目标「处理客户对轴承订单的退款诉求：政策与金额均无异议，但支付渠道回执异常」触发过 1 次重规划、1 次补偿回滚。\n  · 补偿 task-s7-payment：ok=None error=None\n首版方案被判定走不通，说明规划阶段的验收标准不够具体。",
+      "tags": [
+        "rule",
+        "governance",
+        "replan",
+        "compensation"
+      ],
+      "created_at": "2026-09-10T13:32:12.232936+00:00"
+    },
+    {
+      "id": "kn_403a1367cb00",
+      "plan_id": "plan_5e1c62966b39",
+      "kind": "case",
+      "title": "处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在 —— FAILED",
+      "body": "目标：处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在\n结局：Plan FAILED，共 4 个任务、累计 4 次尝试。\n任务终态：受理第二笔退款诉求=DONE；按下单锁定的政策版本裁定退款资格=DONE；核算第二笔退款金额并写财务分录=DONE；发起第二笔退款并观察网关终态=FAILED\n本轮累计 findings 1 条。",
+      "tags": [
+        "case",
+        "failed",
+        "refund_finance",
+        "refund_intake",
+        "refund_payment",
+        "refund_policy"
+      ],
+      "created_at": "2026-09-10T13:32:12.238213+00:00"
+    },
+    {
+      "id": "kn_bb0e892498fc",
+      "plan_id": "plan_5e1c62966b39",
+      "kind": "rule",
+      "title": "gateway 闸是本轮最常被卡的一道（1 次）",
+      "body": "目标「处理第二笔轴承退款诉求：政策与金额均无异议，但网关判定该交易不存在」执行中，gateway 闸累计判出 1 条 finding，是本轮占比最高的一道。典型问题：\n  · 网关回执 ACQ.TRADE_NOT_EXIST（交易不存在）：retriable=False / outcome=failed —— 终态失败，原样重发没有意义，需转人工或改单。官方处置：检查交易号或商户订单号是否正确\n下次规划同类任务时，把这条写进 acceptance 可以省掉一轮返工。",
+      "tags": [
+        "rule",
+        "gate",
+        "gateway"
+      ],
+      "created_at": "2026-09-10T13:32:12.239007+00:00"
+    }
+  ],
+  "count": 5,
   "note": "来自 knowledge 表（D 轨 kb.sink 的真实沉淀）"
 }

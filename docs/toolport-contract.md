@@ -142,7 +142,7 @@
 
 ### `gateway.query`
 
-声明：`maos/tools/gateway.py:455`（`GATEWAY_QUERY_PORT`）　入口实现：`maos/tools/gateway.py:420`
+声明：`maos/tools/gateway.py:627`（`GATEWAY_QUERY_PORT`）　入口实现：`maos/tools/gateway.py:592`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -158,7 +158,7 @@
 
 ### `gateway.refund`
 
-声明：`maos/tools/gateway.py:425`（`GATEWAY_REFUND_PORT`）　入口实现：`maos/tools/gateway.py:406`
+声明：`maos/tools/gateway.py:597`（`GATEWAY_REFUND_PORT`）　入口实现：`maos/tools/gateway.py:578`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

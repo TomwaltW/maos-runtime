@@ -58,6 +58,11 @@ BASELINE: frozenset[tuple[str, str]] = frozenset({
     ("skill-unowned", "claim.compensate"),
     ("skill-unowned", "kb.sink"),
     ("skill-unowned", "refund.compensate"),
+    # T117：与紧邻那条**同一个理由** —— 补偿收口与工单关单都是「人的决定之后」的
+    # 动作，不属于任何 Agent，由编排层带一个最小授权 identity 调用
+    # （`scenario_7.COMPENSATION_IDENTITY` / `TICKET_DESK_IDENTITY`）。
+    # 给它安一个 Agent 只会让「补偿是谁做的」多一个含糊的答案。
+    ("skill-unowned", "refund.compensation_close"),
     ("owner-roles-mismatch", "issue.aggregate"),
     ("owner-roles-mismatch", "policy.match"),
     ("owner-roles-mismatch", "req.normalize"),
@@ -189,7 +194,7 @@ def test_findings_group_counts() -> None:
         "tool-not-declared": 2,          # 甲：coding / testing 的 sandbox
         "depends-tool-missing": 2,       # 丙：code.repo-patch / test.verify（与甲同源）
         "owner-role-unknown": 1,         # 乙：ap.compensate -> ap_compensation
-        "skill-unowned": 4,              # 乙：四个 skill 没有任何角色持有
+        "skill-unowned": 5,              # 乙：五个 skill 没有任何角色持有（T117 添的第五个）
         "owner-roles-mismatch": 3,       # 乙：自述与实际持有者不等
         # 丁 depends-tool-not-allowed 当前 0 条，所以不出现在这张表里
     }

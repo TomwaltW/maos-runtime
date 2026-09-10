@@ -41,8 +41,10 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
-from maos.domain.refund import guard, objects
+from maos.domain.refund import guard, objects, roles
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
 
@@ -75,6 +77,8 @@ class RefundCompensateSkill(Skill):
             "operator": "str（做出驳回/收口决定的人）",
             "reason": "str（为什么走补偿，原样进补偿记录与事件）",
             "assignee": "str（可选，人工工单的接单人，缺省同 operator）",
+            "assignee_role": "str（可选，工单承接岗，缺省 roles.DEFAULT_TICKET_ROLE；"
+                             "认目录写法与 verdict.py 那套写法两种）",
         },
         output_schema={
             "biz_status": "compensated",
@@ -152,9 +156,19 @@ class RefundCompensateSkill(Skill):
             revoked.append(detail)
 
         # ---- 第二步：开人工工单 —— 本系统能做的到此为止 ---------------------
+        # T117：工单从「一行记录」补成「一条闭环」。承接岗由角色目录决定
+        # （`roles.DEFAULT_TICKET_ROLE`），不在这里写死一个字符串 ——
+        # 写死之后换岗要改代码，而换岗是组织的事，不该是一次发版。
+        ensure_ticket_schema(store)
+        assignee = str(payload.get("assignee") or operator)
+        assignee_role = _opening_role(payload, assignee)
         ticket = {
-            "ticket_id": f"MT-{case_id}",
-            "assignee": str(payload.get("assignee") or operator),
+            "ticket_id": ticket_id_of(case_id),
+            "assignee": assignee,
+            # 承接**岗**。与 assignee 分开两个字段是本轨的题眼：接单的人会换、会休假、
+            # 会离职，而「这活归支付运维」不会跟着变。只记人名的工单，人一走就没人认领。
+            "assignee_role": assignee_role,
+            "assignee_role_title": roles.title_of(assignee_role),
             "case_id": case_id,
             "reason": reason,
             "last_observed_state": last_state,
@@ -169,6 +183,11 @@ class RefundCompensateSkill(Skill):
         self._record(store, tenant_id=tenant_id, case_id=case_id,
                      kind=KIND_MANUAL_TICKET, detail=ticket,
                      executed_at=now, operator=operator)
+        # 生命周期列与 detail_json 同一次开单落下。**列是权威，detail_json 是开单快照**：
+        # 后续 assign / resolve 只改列，不回头重写快照 —— 一份记录里两处都能改的话，
+        # 「工单现在归谁」就有了两个答案，而它们迟早不一致。
+        _update_ticket(store, tenant_id=tenant_id, case_id=case_id, executed_at=now,
+                       assignee_role=assignee_role, assignee=assignee, opened_at=now)
 
         # ---- 第三步：推进业务状态。guard 是唯一入口，越权写 settled 会被它拦 ----
         case = guard.update_biz_status(
@@ -248,3 +267,211 @@ class RefundCompensateSkill(Skill):
              json.dumps(detail, ensure_ascii=False, sort_keys=True),
              executed_at, operator),
         )
+
+
+# =====================================================================
+# T117 · 补偿工单的生命周期 —— 开单 / 派单 / 关单
+# =====================================================================
+#
+# 为什么这一段落在 `compensate.py` 而不是另起一个模块：工单是本 skill 开出来的，
+# 它的列义、缺省承接岗、单号规则都只有开单方说得清。派单与关单发生在别处
+# （`maos/ingress/outcome_commands.py` 与 `compensation_close.py`），但它们改的
+# 是同一行记录 —— 把写入口散到三个模块里，「工单现在是什么状态」就没有一处答得全。
+#
+# 事件名逐字对齐 p10 跨轨契约 §F。它们是 `event_log.event_type` 的**字符串**，
+# 不进 `maos/contracts/events.py`（铁律 1 冻结面），写法同 `RefundBizStatusChanged`。
+
+EVENT_COMPENSATION_ASSIGNED = "CompensationAssigned"
+EVENT_COMPENSATION_RESOLVED = "CompensationResolved"
+
+#: 人工处理完之后的两种结论。**这是工单自己的列，不是 `biz_status`**（铁律 9：
+#: 业务状态是业务对象自己的字段，不许往状态机里加新状态或新迁移）。
+#: 取值刻意与 `payment_observation.observed_state` 同形，但语义是「这张工单以什么
+#: 结论关闭」—— 钱到没到账的权威始终在那条观察行上，不在这一列。
+RESOLUTION_SETTLED = "settled"
+RESOLUTION_NOT_SETTLED = "not_settled"
+RESOLUTION_KINDS = (RESOLUTION_SETTLED, RESOLUTION_NOT_SETTLED)
+
+#: 单号前缀。`compensate` 开单、`/assign` 与 `/resolve` 按号找回同一行，
+#: 三处都从这里取，不各抄一份 f-string。
+TICKET_PREFIX = "MT-"
+
+#: DDL 片段（p10 跨轨契约 §B.1，每轨一个文件）。
+_SCHEMA_FRAGMENT = Path(objects.__file__).with_name("schema_p10_t117.sql")
+
+#: 从片段里认出 `ALTER TABLE <表> ADD COLUMN <列> <声明>;`。
+#:
+#: **为什么要解析而不是在这里再抄一份列清单**：抄两份的代价不是重复六行，是
+#: 两份迟早分叉，而分叉的症状是「片段里改了声明，库里的列还是老形状」——
+#: 不报错，只在某条 INSERT 撞上约束时才炸，离原因很远。片段是本仓库自己的文件、
+#: 不是外来输入，所以一条正则够用，不必上 SQL 解析器。
+_ADD_COLUMN = re.compile(
+    r"ALTER\s+TABLE\s+(?P<table>\w+)\s+ADD\s+COLUMN\s+(?P<col>\w+)\s+(?P<decl>[^;]+);",
+    re.IGNORECASE)
+
+
+def ticket_columns() -> tuple[tuple[str, str, str], ...]:
+    """片段里声明的加列清单，`(表, 列, 声明)` 三元组，按文件里的顺序。"""
+    script = _SCHEMA_FRAGMENT.read_text(encoding="utf-8")
+    return tuple((m.group("table"), m.group("col"), m.group("decl").strip())
+                 for m in _ADD_COLUMN.finditer(script))
+
+
+def _add_column_if_missing(conn, table: str, col: str, decl: str) -> None:
+    """加列助手，逐字取自 p10 跨轨契约 §B.2（SQLite 的 ADD COLUMN 没有 IF NOT EXISTS）。
+
+    T116 / T120 各有一份一模一样的，**整合期由主会话去重** —— 契约明写各轨不要
+    为这六行另建共享文件，那样三轨会在同一个新文件上撞车。
+    """
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
+def ensure_ticket_schema(store) -> None:
+    """保证工单的生命周期列在库上。幂等，可连跑；在首次使用时调用（契约 §B.1）。
+
+    刻意**不**去改 `objects.ensure_schema` / `schema.sql` 主文件：同期 T116 与 T120
+    也在往退款域加列，三轨同改一处主文件必冲突。代价是每轨自带一次探针，
+    那是并行的成本，不是设计意图。
+    """
+    conn = objects._conn(store)
+    with objects.lock_of(store):
+        for table, col, decl in ticket_columns():
+            _add_column_if_missing(conn, table, col, decl)
+        conn.commit()
+
+
+def ticket_id_of(case_id: str) -> str:
+    return f"{TICKET_PREFIX}{case_id}"
+
+
+def case_id_of_ticket(ticket_id: str) -> str:
+    """单号 -> 案号。认不出前缀就**原样返回**，让后面按案号查不到那一步去报错。
+
+    在这里抛「单号格式不对」是错的：前缀是我们自己定的实现细节，而人在房间里
+    打错的更可能是案号本身。让查不到的那一步报「没有这张工单」，报错信息才指得准。
+    """
+    text = str(ticket_id or "").strip()
+    return text[len(TICKET_PREFIX):] if text.startswith(TICKET_PREFIX) else text
+
+
+def _opening_role(payload: dict, assignee: str) -> str:
+    """开单时的承接岗。三档，从具体到缺省：
+
+    1. 调用方显式指了岗 —— 认目录写法与 `verdict.py` 那套写法两种；
+    2. 没指，但目录认得接单人 —— 用他所在的岗；
+    3. 都不是 —— `roles.DEFAULT_TICKET_ROLE`（支付运维）。
+
+    第 2 档不能省：`compensate` 缺省把工单派给**做出驳回决定的那个人**
+    （`test_compensation_failure.py` 钉着这条，理由是「他此刻最清楚上下文」），
+    而那个人常常是主管而不是支付运维。把他的岗写成支付运维，角色目录就在开单
+    这一步先说了一句假话。
+    """
+    want = str(payload.get("assignee_role") or "").strip()
+    if want:
+        return roles.canonical_role(want)
+    return roles.role_of(assignee) or roles.DEFAULT_TICKET_ROLE
+
+
+def _update_ticket(store, *, tenant_id: str, case_id: str, executed_at: str,
+                   **fields: str) -> None:
+    """改工单那一行的生命周期列。**只认本片段声明过的列名。**
+
+    白名单不是防注入的仪式（列名是本模块的字面量，不是外来输入），是防打错：
+    片段里改了列名而这里忘了跟，`UPDATE ... SET <老列名>=?` 会报 no such column，
+    报错指向 SQL 而不是指向「两处列清单分叉了」。白名单让它在拼 SQL 之前就响。
+    """
+    known = {col for _table, col, _decl in ticket_columns()}
+    unknown = sorted(set(fields) - known)
+    if unknown:
+        raise KeyError(f"{unknown} 不是 T117 片段声明过的工单列（已声明：{sorted(known)}）")
+    if not fields:
+        return
+    sets = ", ".join(f"{col}=?" for col in fields)
+    objects.execute(
+        store,
+        f"UPDATE compensation_record SET {sets}"
+        " WHERE tenant_id=? AND case_id=? AND kind=? AND executed_at=?",
+        (*fields.values(), tenant_id, case_id, KIND_MANUAL_TICKET, executed_at),
+    )
+
+
+def ticket_of(store, tenant_id: str, case_id: str) -> dict | None:
+    """取这个案子**最近**开的那张人工工单；没有返回 None。
+
+    按 `executed_at` 倒序取一行：一个案子理论上只补偿一次（`compensated` 是终态），
+    但补偿记录的主键含 `executed_at`，同一案子重跑会留下两行。取最新那行，
+    与 `_last_observed_state` 「按当前那一笔收窄」是同一个取向 ——
+    读到一张早就关掉的旧工单，比读不到工单更难查。
+    """
+    rows = objects.query(
+        store,
+        "SELECT * FROM compensation_record WHERE tenant_id=? AND case_id=? AND kind=?"
+        " ORDER BY executed_at DESC",
+        (tenant_id, case_id, KIND_MANUAL_TICKET))
+    return rows[0] if rows else None
+
+
+def require_ticket(store, tenant_id: str, case_id: str) -> dict:
+    """取工单，没有就抛。派单与关单都要先有单，**不许自动补开一张**：
+    没有工单意味着这个案子根本没走到补偿，那一步该由 `refund.compensate` 做。"""
+    ticket = ticket_of(store, tenant_id, case_id)
+    if ticket is None:
+        raise LookupError(
+            f"case={case_id}（tenant={tenant_id}）没有人工工单；"
+            "工单由 refund.compensate 在补偿收口时开出，这里不补开")
+    return ticket
+
+
+def assign_ticket(store, *, tenant_id: str, case_id: str, role: str,
+                  assignee: str = "") -> dict:
+    """把工单派给一个**岗**。接单人没指名就取该岗目录里的第一个（主责人）。
+
+    派的是岗不是人，理由同开单那一段：人会换，岗不会。指名到人是可选的收窄，
+    不是必需 —— 房间里打一句 `/assign MT-xxx payment_ops` 就该能派出去。
+    """
+    ticket = require_ticket(store, tenant_id, case_id)
+    want = roles.canonical_role(role)
+    accounts = roles.accounts_of(want)          # 认不出的岗在这里抛 UnknownRole
+    who = str(assignee or "").strip() or (accounts[0] if accounts else "")
+    if not who:
+        raise ValueError(
+            f"角色 {want!r} 的账号列表是空的，派不出去；"
+            "请在 scenarios/refund/roles.json 里给它登记账号")
+    _update_ticket(store, tenant_id=tenant_id, case_id=case_id,
+                   executed_at=ticket["executed_at"],
+                   assignee_role=want, assignee=who)
+    return require_ticket(store, tenant_id, case_id)
+
+
+def resolve_ticket(store, *, tenant_id: str, case_id: str, resolution_kind: str,
+                   observation_id: str, at: str = "") -> dict:
+    """关单。**要求带上回填的那条观察**，这是本轨最要紧的一条约束。
+
+    `observation_id` 必填且非空：一张说「已经退了」却指不到任何一条
+    `payment_observation` 的工单，就是把外部状态在第二处写死为终态（铁律 8）。
+    工单只留一个指针，钱到没到账的权威始终在那条观察行上。
+
+    已经关过的单不许再关一次：两次关单会静默盖掉第一条回填的观察，而那条观察
+    正是「人工处理完之后钱到底退没退」的唯一依据。要改结论请由人重开一张单。
+    """
+    ticket = require_ticket(store, tenant_id, case_id)
+    if str(ticket.get("resolved_at") or ""):
+        raise ValueError(
+            f"工单 {ticket_id_of(case_id)} 已于 {ticket['resolved_at']} 关闭"
+            f"（结论 {ticket.get('resolution_kind')!r}，观察 "
+            f"{ticket.get('resolution_observation_id')!r}）；"
+            "重复关单会盖掉已回填的观察，要改结论请重开一张工单")
+    if resolution_kind not in RESOLUTION_KINDS:
+        raise ValueError(f"关单结论只能是 {list(RESOLUTION_KINDS)}，实际 {resolution_kind!r}")
+    if not str(observation_id or "").strip():
+        raise ValueError(
+            "关单必须带上回填的 payment_observation 引用："
+            "指不到观察的结论就是替外部系统宣布终态（铁律 8）")
+    _update_ticket(store, tenant_id=tenant_id, case_id=case_id,
+                   executed_at=ticket["executed_at"],
+                   resolved_at=at or C.now_iso(),
+                   resolution_kind=resolution_kind,
+                   resolution_observation_id=str(observation_id))
+    return require_ticket(store, tenant_id, case_id)

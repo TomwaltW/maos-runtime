@@ -74,6 +74,52 @@ def html_block(text: str) -> str:
     return "<br/>".join(lines)
 
 
+#: 「上传材料」按钮的配色。Element 的富文本只认 `data-mx-bg-color` / `data-mx-color`
+#: 这两个属性（它会转成行内 style），不认 class、不认 style 本身 —— 这是 Matrix
+#: 消息里能做出「醒目按钮」的唯一办法。深橙底白字，深浅两套主题下都够扎眼。
+ACTION_BG = "#d9480f"
+ACTION_FG = "#ffffff"
+
+
+def html_actions(actions) -> str:                        # noqa: ANN001
+    """把发言后面的动作按钮渲染成 Element 认的 chip：``<a><span 底色>标签</span></a>``。
+
+    ``actions`` 是任何带 ``label`` / ``url`` 两个属性的对象（圆桌那侧是
+    `maos.roundtable.team.Action`；这里不 import 它 —— 本模块是最底层的件）。
+    label 与 url 都过转义：url 是本进程拼的，但 label 里带着订单号与诉求原文，
+    而诉求原文来自申请表 —— 一个 ``<`` 就能把整条 ``formatted_body`` 破掉。
+    """
+    chips = []
+    for action in actions or ():
+        label = _esc(str(getattr(action, "label", "") or ""))
+        url = _esc(str(getattr(action, "url", "") or ""))
+        if not label or not url:
+            continue
+        chips.append(f'<a href="{url}"><span data-mx-bg-color="{ACTION_BG}" '
+                     f'data-mx-color="{ACTION_FG}"><strong>&nbsp;📎 {label}&nbsp;'
+                     f'</strong></span></a>')
+    return " &nbsp; ".join(chips)
+
+
+def plain_actions(actions) -> str:                       # noqa: ANN001
+    """同一批按钮的纯文本形态（``body``，给不渲染 HTML 的客户端与日志）。一行一个。"""
+    lines = []
+    for action in actions or ():
+        label = str(getattr(action, "label", "") or "")
+        url = str(getattr(action, "url", "") or "")
+        if label and url:
+            lines.append(f"📎 {label}：{url}")
+    return "\n".join(lines)
+
+
+def with_actions(plain: str, html: str, actions) -> tuple[str, str]:   # noqa: ANN001
+    """把按钮接到一条已渲染好的发言后面：``(plain, html)`` 两份一起。没有按钮原样返回。"""
+    chips = html_actions(actions)
+    if not chips:
+        return plain, html
+    return f"{plain}\n{plain_actions(actions)}", f"{html}<p>{chips}</p>"
+
+
 # --------------------------------------------------------------------------
 # 配置（C-6 冻结：字段名、类型、env 来源逐字对应）
 # --------------------------------------------------------------------------

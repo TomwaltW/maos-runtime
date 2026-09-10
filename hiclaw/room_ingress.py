@@ -41,15 +41,17 @@ import inspect
 import logging
 import os
 import sys
+import threading
 import time
 from html import escape as _esc
+from urllib.parse import urlsplit
 
 from maos.core.store import SqliteStore
 from maos.ingress.chat import ChatResponder
 from maos.ingress.contracts import CHANNEL_MATRIX, Attachment, InboundMessage, OutboundMessage
 from maos.ingress.router import DEFAULT_LEDGER, IngressRouter, render_roster
 from hiclaw.matrix_bus import (MatrixBusConfig, describe_exc, html_block,
-                               open_channel)
+                               open_channel, with_actions)
 
 log = logging.getLogger("maos.room_ingress")
 
@@ -69,6 +71,18 @@ CHUNK_CHARS = 20_000
 #: 五岗依次发言的节奏（毫秒）。缺省 0 = 一次都不等。
 #: 🔴 缺省必须是 0：`maos/tests` 与 `scripts/room_team_smoke.py` 一秒都不许变慢。
 ENV_TEAM_PACE_MS = "MAOS_TEAM_PACE_MS"
+
+#: 补件页（`hiclaw/upload_server.py`）。`MAOS_UPLOAD_URL` 是房间里按钮指向的地址
+#: （人点开的那个，例如 http://127.0.0.1:8787），`MAOS_UPLOAD_BIND` 是本进程监听的
+#: host:port，缺省 `127.0.0.1:<URL 里的端口>`。URL 不配 = 不起补件页、不挂按钮，
+#: 房间行为与从前逐字一致 —— 补件页是旁路，缺它只是少一个按钮。
+ENV_UPLOAD_URL = "MAOS_UPLOAD_URL"
+ENV_UPLOAD_BIND = "MAOS_UPLOAD_BIND"
+#: Element 的地址（`deploy/synapse/up.sh` 写进 room.env 的那个），补件页结果页上
+#: 「回到房间」那条链接指向它。没配就不给这条链接。
+ENV_ELEMENT_URL = "MAOS_ELEMENT_URL"
+#: 补件页传上来的字节走这个渠道名取件（`WebUploadAdapter.name`）。
+CHANNEL_WEB_UPLOAD = "web-upload"
 
 
 #: 正文转 formatted_body。实现在 `hiclaw/matrix_bus.py` —— 发声面
@@ -160,24 +174,162 @@ def _open_voices(channel, *, agent_ids, titles):       # noqa: ANN001
     return open_voices(channel, agent_ids=agent_ids, titles=titles)
 
 
-def _build_team(model, voices, *, pace=None):           # noqa: ANN001
+def _build_team(model, voices, *, pace=None, upload_link=None):   # noqa: ANN001
     """圆桌本体（`RefundRoundtable`）。没装载返回 ``None``。
 
-    ``pace`` 是发言节奏回调（契约 §3），**按签名探再传**：合议轮还没并进来的
-    版本不认这个关键字，直接传会 `TypeError`，而那一刻的症状是「房间起不来」——
-    拿一个观感参数换掉整条命令面，比不等更糟。探不到就打一行说清为什么不等。
+    ``pace`` 是发言节奏回调（契约 §3），``upload_link`` 是「上传材料」按钮的地址
+    生成器；两个都**按签名探再传**：老版本的圆桌不认这些关键字，直接传会
+    `TypeError`，而那一刻的症状是「房间起不来」—— 拿一个观感参数换掉整条命令面，
+    比不等更糟。探不到就打一行说清为什么没生效。
     """
     try:
         from maos.roundtable.team import RefundRoundtable
     except ImportError as exc:
         log.warning("圆桌引擎未装载，单机器人模式（%s）", exc)
         return None
+    params = inspect.signature(RefundRoundtable).parameters
+    kwargs = {}
     if pace is not None:
-        if "pace" in inspect.signature(RefundRoundtable).parameters:
-            return RefundRoundtable(model, voices, pace=pace)
-        log.warning("圆桌引擎不认 pace= 参数（合议轮尚未并入），%s 本次不生效",
-                    ENV_TEAM_PACE_MS)
-    return RefundRoundtable(model, voices)
+        if "pace" in params:
+            kwargs["pace"] = pace
+        else:
+            log.warning("圆桌引擎不认 pace= 参数（合议轮尚未并入），%s 本次不生效",
+                        ENV_TEAM_PACE_MS)
+    if upload_link is not None:
+        if "upload_link" in params:
+            kwargs["upload_link"] = upload_link
+        else:
+            log.warning("圆桌引擎不认 upload_link= 参数，房间里不挂「上传材料」按钮，"
+                        "%s 本次不生效", ENV_UPLOAD_URL)
+    return RefundRoundtable(model, voices, **kwargs)
+
+
+def upload_config(env: dict | None = None) -> tuple[str, str]:
+    """补件页的 ``(按钮地址, 监听地址)``。没配 URL 返回 ``("", "")``。
+
+    监听地址缺省 ``127.0.0.1:<URL 里的端口>``，**不拿 URL 的 host 去 bind**：URL 是
+    给人的浏览器用的（可能是 `my-mac.local`、可能是一层反代），本进程该听在哪与它
+    无关。要对局域网开，`MAOS_UPLOAD_BIND=0.0.0.0:8787` 自己打开。
+    """
+    src = os.environ if env is None else env
+    url = str(src.get(ENV_UPLOAD_URL) or "").strip().rstrip("/")
+    if not url:
+        return "", ""
+    bind = str(src.get(ENV_UPLOAD_BIND) or "").strip()
+    if not bind:
+        parts = urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        bind = f"127.0.0.1:{port}"
+    return url, bind
+
+
+def _upload_link_of(base_url: str):                     # noqa: ANN001, ANN202
+    """按钮地址生成器。补件页模块没装载就不挂按钮（同其它可选件的退化口径）。"""
+    if not base_url:
+        return None
+    try:
+        from hiclaw.upload_server import make_upload_link
+    except ImportError as exc:
+        log.warning("补件页未装载，房间里不挂「上传材料」按钮（%s）", exc)
+        return None
+    return make_upload_link(base_url)
+
+
+class WebUploadAdapter:
+    """补件页传上来的字节的**取件件**。router 按附件的 ``channel`` 找到它。
+
+    形状照 `MatrixRoomAdapter`：只有 ``fetch`` 有实质实现。``send`` 是空的 —— 回帖
+    走消息本身的渠道（房间），补件页拿到的回执是 `router.handle` 的返回值。
+    字节按 key 暂存在内存里，取一次就删：补件页是同步等结果的，取不走的字节
+    只会是失败路径留下的，攒着没有意义。
+    """
+
+    name = CHANNEL_WEB_UPLOAD
+    configured = True
+
+    def __init__(self) -> None:
+        self._blobs: dict[str, bytes] = {}
+        self._lock = threading.Lock()
+        self._n = 0
+
+    def stash(self, data: bytes) -> str:
+        with self._lock:
+            self._n += 1
+            key = f"web-{self._n}-{len(data)}"
+            self._blobs[key] = data
+        return key
+
+    def fetch(self, att: Attachment) -> bytes:
+        with self._lock:
+            data = self._blobs.pop(att.file_key, None)
+        if data is None:
+            raise KeyError(f"补件页没有这份文件：{att.file_key}")
+        return data
+
+    def send(self, msg: OutboundMessage) -> None:
+        return None
+
+
+def start_uploads(router: IngressRouter, *, room_id: str, bind: str,
+                  back_url: str = ""):                  # noqa: ANN201
+    """起补件页，把上传接进 router 收附件那条链路。起不来记 WARNING、返回 ``None``。
+
+    每一次上传都变成一条**房间里的**入站消息（channel=matrix、chat_id=房间），
+    只是附件的取件件是 `WebUploadAdapter`。这样 router 那边的一切 —— 落盘、按文件名
+    定位订单、找这一单在办的待办、复检、五岗重说一轮、回帖发回房间 —— 与在房间里
+    拖一张图逐字同一条路。文件名前缀加订单号，正是 `locate_order` 的第 1 级判据。
+
+    正文留空：写一句「补材料 ORD-xxx」进去，router 会把它当闲聊交给模型接一句，
+    多一次模型调用、房间里多一条废话。
+    """
+    try:
+        from hiclaw.upload_server import UploadServer
+    except ImportError as exc:
+        log.warning("补件页未装载（%s），不起", exc)
+        return None
+
+    adapter = WebUploadAdapter()
+    # 记住原来占着这个名字的件：起不来要原样放回去，不能把别人的摘掉。
+    previous = router.adapters.get(adapter.name)
+    router.adapters[adapter.name] = adapter
+    seq = {"n": 0}
+
+    def on_upload(req) -> str:                           # noqa: ANN001
+        atts = []
+        for f in req.files:
+            name = f.filename if f.filename.startswith(req.order_id) else f"{req.order_id}-{f.filename}"
+            atts.append(Attachment(
+                channel=adapter.name, file_key=adapter.stash(f.data),
+                kind="image" if f.mime.startswith("image/") else "file",
+                filename=name, mime=f.mime, size=len(f.data),
+                msg_ref={"via": adapter.name}))
+        seq["n"] += 1
+        who = req.uploader or "补件页"
+        print(f"\n[{who} 从补件页传了 {len(atts)} 份给 {req.order_id}]", flush=True)
+        reply = router.handle(InboundMessage(
+            channel=CHANNEL_MATRIX, chat_id=room_id, sender=who, text="",
+            msg_id=f"web-upload-{seq['n']}", attachments=tuple(atts)))
+        if reply:
+            print(f"[回帖]\n{reply}\n", flush=True)
+        return reply
+
+    def known_orders() -> set[str]:
+        return {str(o.get("order_id")) for o in router.ledger().get("order_snapshot", [])
+                if o.get("order_id")}
+
+    server = UploadServer(on_upload=on_upload, known_orders=known_orders,
+                          max_bytes=router.attachments.max_bytes, bind=bind,
+                          back_url=back_url)
+    try:
+        server.start()
+    except OSError as exc:
+        log.warning("补件页起不来（%s: %s），房间里的按钮会打不开", type(exc).__name__, exc)
+        if previous is None:
+            router.adapters.pop(adapter.name, None)
+        else:
+            router.adapters[adapter.name] = previous
+        return None
+    return server
 
 
 def _load_decide():
@@ -253,12 +405,22 @@ class _ProxyVoice:
         self.title = title or agent_id
         self.user_id = user_id
 
-    def say(self, text: str) -> None:
+    def _render(self, text: str) -> tuple[str, str]:
         plain = f"【{self.title} · {self.agent_id}】 {text}"
         # 正文走 `html_block`（转义 + 换行 + 缩进），与 `room_voices.RoomVoice._render`
         # 同一份 —— 这是兜底形态，不该比正主少一样。
         html = (f"<p><strong>{_esc(self.title)}</strong> "
                 f"<code>{self.agent_id}</code><br/>{html_block(text)}</p>")
+        return plain, html
+
+    def say(self, text: str) -> None:
+        plain, html = self._render(text)
+        self._channel.send(plain, html)
+
+    def say_with_actions(self, text: str, actions) -> None:   # noqa: ANN001
+        """发言 + 按钮。渲染在 `matrix_bus.with_actions` 一处，与独立账号那张嘴
+        （`room_voices.RoomVoice.say_with_actions`）共用 —— 兜底形态不该少一样。"""
+        plain, html = with_actions(*self._render(text), actions)
         self._channel.send(plain, html)
 
 
@@ -513,6 +675,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_NO_ROOM
 
     chat = ChatResponder()
+    upload_url, upload_bind = upload_config()
 
     # 圆桌装配。三个件（岗位常量 / 发声面 / 圆桌本体）缺任意一个都退回单机器人，
     # 房间照常起 —— 命令面与申请表是规则代码，不依赖其中任何一个。
@@ -529,7 +692,8 @@ def main(argv: list[str] | None = None) -> int:
         # 没配 MAOS_LLM_* 就传 None：圆桌对「没模型」的姿态是发事实卡，不是沉默、
         # 更不是刷一句 `{}`（契约 §1.4，与 `ap_room` 的 EXIT_NO_MODEL 刻意不同）。
         team = _build_team(chat.model if chat.live else None, voices,
-                           pace=make_pace(pace_ms()))
+                           pace=make_pace(pace_ms()),
+                           upload_link=_upload_link_of(upload_url))
         if team is not None:
             roster = team.roster()
             # 主席包在圆桌**外面**：名册要先取（`roster()` 走的是内层），
@@ -557,12 +721,21 @@ def main(argv: list[str] | None = None) -> int:
               "（只读复检，放行仍要 /approve）；认不出订单号就先存着，"
               "等下一句 /refund 认领")
     print(f"附件落盘：{os.environ.get('MAOS_ATTACHMENT_DIR') or 'var/attachments'}（不进 git）")
+    if upload_url:
+        print(f"补件页：{upload_url}/upload（监听 {upload_bind}）—— 缺材料的岗位发言后面"
+              "带「上传材料」按钮，点开传文件即自动复检")
+    else:
+        print(f"补件页：未配 {ENV_UPLOAD_URL}，房间里不挂「上传材料」按钮（拖图进房间照样能补）")
     print("在 Element 里说话、拖申请表 / 照片、或打 /help。Ctrl-C 退出。")
     print(BAR, flush=True)
 
     ledger = args.ledger or DEFAULT_LEDGER
+    uploads = None
     try:
-        wire(channel, room_id=config.room_id, ledger_path=ledger, chat=chat, team=team)
+        router = wire(channel, room_id=config.room_id, ledger_path=ledger, chat=chat, team=team)
+        if upload_url:
+            uploads = start_uploads(router, room_id=config.room_id, bind=upload_bind,
+                                    back_url=os.environ.get(ENV_ELEMENT_URL, ""))
         if not args.quiet_start:
             if team is not None:
                 seats = " → ".join(str(s.get("title") or s.get("agent_id"))
@@ -586,6 +759,11 @@ def main(argv: list[str] | None = None) -> int:
         print("\n停止监听")
         return EXIT_OK
     finally:
+        if uploads is not None:
+            try:
+                uploads.stop()
+            except Exception as exc:                  # noqa: BLE001
+                log.warning("关补件页失败（%s），继续关通道", describe_exc(exc))
         # 先关五条 send-only 通道再关主通道。关不掉只记 WARNING —— 退出路径上
         # 抛异常会把 `channel.close()` 一起吃掉，那才是真的留下一条活着的 sync。
         if voices is not None:

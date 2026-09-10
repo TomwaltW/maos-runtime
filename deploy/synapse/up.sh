@@ -238,8 +238,12 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$ELEMENT_CT" 2>/dev/null || echo
 else
   docker rm -f "$ELEMENT_CT" >/dev/null 2>&1 || true
   say "起 ${ELEMENT_CT}（:${EL_PORT}）"
+  # element-nginx.conf.template：官方 nginx 模板 + 一段 sub_filter，给房间里的「上传材料」
+  # 按钮补圆角（Element 不让消息 HTML 带 border-radius，只能在显示端注入 CSS，见该文件抬头）。
+  # 改了模板要 docker rm -f 再跑本脚本 —— 上面「已在跑，跳过」那条分支不会给旧容器补挂载。
   docker run -d --name "$ELEMENT_CT" -p "${EL_PORT}:80" \
     -v "${HERE}/element-config.json:/app/config.json:ro" \
+    -v "${HERE}/element-nginx.conf.template:/etc/nginx/templates/default.conf.template:ro" \
     "$ELEMENT_IMAGE" >/dev/null || die "起 ${ELEMENT_CT} 失败（端口 ${EL_PORT} 被占？）"
 fi
 

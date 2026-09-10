@@ -1,0 +1,49 @@
+# Element Web 容器的 nginx 模板 —— 官方镜像 /etc/nginx/templates/default.conf.template 的原样拷贝，
+# 只在 index.html 那一处多了一段 sub_filter（见下）。up.sh 起 maos-element 时把本文件挂到同一路径，
+# 镜像自带的 20-envsubst-on-templates.sh 会照常把 ${ELEMENT_WEB_PORT} 填进去、生成 conf.d/default.conf。
+#
+# 为什么要动 nginx：房间里岗位发言后面的「上传材料」按钮是一条 <a><span data-mx-bg-color> 链接，
+# Element 渲染消息时把 style 整个删掉、只从 data-mx-color / data-mx-bg-color 重建颜色和底色 ——
+# border-radius / padding / white-space 一律进不了消息 HTML（2026-09-10 实测：方角、会折行）。
+# 圆角只能在显示端补：把两条 CSS 塞进 index.html 的 </head> 前，带底色的 span 画成圆角胶囊、不折行，
+# 包着它的 <a> 去掉悬停下划线。选择器只认「带 background-color 行内样式的 span」，本房间里只有按钮用它。
+#
+# 改了本文件要重建容器（docker rm -f maos-element 后再跑 up.sh；8081 的 maos-element-2 同理），
+# 「容器已在跑，跳过」那条分支不会给旧容器补挂载。
+server {
+    listen       ${ELEMENT_WEB_PORT};
+    listen  [::]:${ELEMENT_WEB_PORT};
+    server_name  localhost;
+
+    root   /usr/share/nginx/html;
+    index  index.html;
+
+    # Set no-cache for the version, config, i18n, and index.html
+    # so that browsers always check for a new copy of Element Web.
+    # NB http://your-domain/ and http://your-domain/? are also covered by this
+
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+        # MAOS：圆角胶囊按钮。sub_filter 只对未压缩的 text/html 生效，本 conf 没开 gzip，正好。
+        sub_filter '</head>' '<style>.mx_EventTile_body span[style*="background-color"]{display:inline-block;border-radius:999px;padding:2px 8px;margin:2px 2px 2px 0;white-space:nowrap;line-height:1.6}.mx_EventTile_body a:has(> span[style*="background-color"]){text-decoration:none !important}</style></head>';
+        sub_filter_once on;
+    }
+    location = /version {
+        add_header Cache-Control "no-cache";
+    }
+    location /i18n/ {
+        add_header Cache-Control "no-cache";
+    }
+
+    # covers config.json and config.hostname.json requests as it is prefix.
+    location /config {
+        root /tmp/element-web-config;
+        add_header Cache-Control "no-cache";
+    }
+    location /modules {
+        alias /modules;
+    }
+    # redirect server error pages to the static page /50x.html
+    #
+    error_page   500 502 503 504  /50x.html;
+}

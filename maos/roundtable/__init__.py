@@ -16,8 +16,10 @@ from maos.roundtable.team import (
     FALLBACK_IDENTITIES,
     TEAM_ORDER,
     TITLES,
+    Action,
     RefundRoundtable,
     StageReport,
+    actions_text,
     identity_of,
 )
 from maos.roundtable.verdict import (
@@ -37,10 +39,12 @@ __all__ = [
     "SYSTEM_TMPL",
     "TEAM_ORDER",
     "TITLES",
+    "Action",
     "RefundRoundtable",
     "Speaker",
     "StageReport",
     "Verdict",
+    "actions_text",
     "decide",
     "identity_of",
 ]

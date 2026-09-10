@@ -487,8 +487,13 @@ class IngressRouter:
 
         limit = self.attachments.max_bytes
         for att in msg.attachments:
+            # 取件按**附件自己的渠道**找件，找不到才退回消息的渠道：补件页传上来的
+            # 字节在 `web-upload` 那个件手里，而消息本身属于房间（回帖要发回房间）。
+            # 三个 webhook 渠道与 Matrix 的附件 channel 与消息 channel 恒相同，
+            # 这一步对它们是恒等。
+            taker = self.adapters.get(att.channel) or adapter
             try:
-                if adapter is None:
+                if taker is None:
                     raise AttachmentUnsupported(f"渠道 {msg.channel} 未注册 adapter")
                 # 体积闸在**取件前后各一道**：平台自报的 size 能省掉一次没必要的出网；
                 # 自报值不可信，所以拿到字节再校一次。放在这里而不是只靠 `put()`，
@@ -496,7 +501,7 @@ class IngressRouter:
                 # 下载、解码、逐行走完，而同样体积的照片早在 `put()` 就被拒了。
                 if att.size and att.size > limit:
                     raise AttachmentTooLarge(f"附件自报 {att.size} 字节，超过上限 {limit} 字节")
-                data = adapter.fetch(att)
+                data = taker.fetch(att)
                 if len(data) > limit:
                     raise AttachmentTooLarge(f"附件 {len(data)} 字节，超过上限 {limit} 字节")
                 if _sheet.looks_like_sheet(data):

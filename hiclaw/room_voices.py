@@ -40,7 +40,7 @@ import os
 from typing import Any, Protocol
 
 from hiclaw.matrix_bus import (ENV_HOMESERVER, ENV_ROOM_ID, ENV_TOKEN, ENV_USER,
-                               html_block,
+                               html_block, with_actions,
                                MatrixBusConfig, describe_exc, open_channel)
 
 log = logging.getLogger("maos.room_voices")
@@ -242,6 +242,17 @@ class RoomVoice:
 
     def say(self, text: str) -> None:
         plain, html_body = self._render(text)
+        self._channel.send(plain, html_body)
+
+    def say_with_actions(self, text: str, actions) -> None:   # noqa: ANN001
+        """一条发言 + 后面挂的按钮（`maos.roundtable.team.Action`）。
+
+        圆桌只在这一岗说了「缺材料」时才走这条；按钮渲染在 `matrix_bus.with_actions`
+        一处，与代言兜底（`room_ingress._ProxyVoice`）共用 —— 两种形态各画一遍的
+        症状是「独立账号有按钮、代言时没有」，而两条消息看着是同一个程序发的。
+        """
+        plain, html_body = self._render(text)
+        plain, html_body = with_actions(plain, html_body, actions)
         self._channel.send(plain, html_body)
 
 

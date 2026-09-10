@@ -356,15 +356,21 @@ def test_sheet_facts_spell_out_which_row_and_why(approved: tuple[dict, dict],
     # 判据**照搬**，不在事实卡这一层改写：改写一次，房间里的说法就和回帖对不上了。
     assert f"· 第 3 行 {ORDER}（无理由）：{why}" in policy
 
-    # 下游三岗**连单号都不转抄**：驳回清单和判据规则岗已经连在一起发过一次，
-    # 下游再点一遍名，同一件事就在房间里出现了四回（`SYSTEM_TMPL` 群内发言规则 2）。
-    # 各岗只留自己新产生的那个范围计数，指路句同样不许有（规则 1、2）。
+    # 下游三岗对**自己范围内的单**逐条说自己的结论（证据缺什么、风险几档、预演多少），
+    # 但规则岗的判据一个字都不转抄、驳回的单不再点名、指路句不许有
+    # （`SYSTEM_TMPL` 群内发言规则 1、2）。原来这里钉的是「下游连单号都不许提」——
+    # 那是三岗事实卡只有一行计数时的权宜（2026-09-10 上午的房间），逐单真跑之后
+    # 单号是本岗自己结论的一部分，不再是转抄。
     for build in (stages.facts_sheet_evidence, stages.facts_sheet_risk,
                   stages.facts_sheet_finance):
         facts, _ = build(rows)
-        assert ORDER not in facts, f"{build.__name__} 又把规则岗的驳回清单抄了一遍"
         assert why not in facts, f"{build.__name__} 把规则岗的判据又抄了一遍"
         assert "见规则审核岗" not in facts, f"{build.__name__} 还在往规则岗指路"
+    evidence, _ = stages.facts_sheet_evidence(rows)
+    finance, _ = stages.facts_sheet_finance(rows)
+    for facts, name in ((evidence, "证据岗"), (finance, "财务岗")):
+        assert "第 3 行" not in facts, f"{name} 把驳回的单又点了一遍名"
+        assert f"· 第 2 行 {ORDER}（质量问题）：" in facts, f"{name} 没对自己范围内的单逐条说结论"
 
 
 def test_long_lists_are_capped_and_point_back_to_the_reply() -> None:

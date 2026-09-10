@@ -39,6 +39,23 @@ PREVIEW_PLAN_ID = "preview"
 #: 预演措辞里必须原样保留的三个字眼（铁律 8 / R8）。放行前只有「预演」，没有「已退款」。
 PREVIEW_WORDING = "以上是核算预演，未落账，放行后按同一段代码正式核算"
 
+#: 下游两岗各自要跑的 skill。名字只在这里写一次 —— 单案卡、整表卡、「未装载」判定
+#: 三处共用；各写一遍的症状是改名之后一处判「未装载」、另一处照跑。
+EVIDENCE_SKILL = "refund.evidence_check"
+RISK_SKILL = "refund.risk_screen"
+
+#: 风险档位与证据类型的中文显示。**只管显示**，判定仍按 skill 出参的英文取值。
+#: 证据类型的中文只给按钮文案用；事实卡里「缺口」那一句照旧念 skill 的原话
+#: （「缺少 image 类证据」），与单案卡逐字同源。
+LEVEL_CN = {"low": "低风险", "medium": "中风险", "high": "高风险"}
+KIND_CN = {"image": "照片", "video": "视频", "audio": "录音",
+           "document": "文件", "attachment": "附件"}
+
+
+def kinds_cn(kinds) -> str:                             # noqa: ANN001
+    """`["image"]` -> `照片`。认不出的照原样，不猜。"""
+    return "、".join(KIND_CN.get(str(k), str(k)) for k in (kinds or []))
+
 
 # --------------------------------------------------------------------------
 # 小工具
@@ -257,22 +274,7 @@ def facts_evidence(payload: dict, checked: dict, ledger: dict,
         return ("证据核验 skill 未装载（refund.evidence_check 不在注册表里），"
                 "本单证据无法核验，随案材料请人工过目"), {"verdict": "unavailable"}
 
-    from maos.domain.refund import fixtures
-
-    seed = fixtures.case_seed_of(payload)
-    order_id = str(seed.get("order_id") or "")
-    row = _order_row(ledger.get("order_snapshot") if ledger else None, order_id) \
-        or _order_row(payload.get("order_snapshot"), order_id)
-    order_json = _order_payload(row)
-    order_facts = {k: order_json[k] for k in ("logistics", "qc_report") if k in order_json}
-
-    res = _invoke("refund_evidence", "refund.evidence_check", {
-        "case_seed": seed,
-        "customer_evidence": payload.get("customer_evidence") or [],
-        "rules": _rules_of(payload),
-        "order_facts": order_facts,
-        "requested_at": str(checked.get("requested_at") or ""),
-    }, task_id="preview-evidence")
+    res = _evidence_check(payload, checked, ledger)
 
     if res.status != "ok" or not isinstance(res.output, dict):
         return (f"证据核验失败：refund.evidence_check: {res.error or '出参不是 dict'}，"
@@ -297,17 +299,64 @@ def facts_evidence(payload: dict, checked: dict, ledger: dict,
         lines.append(f"交叉核对：{len(checks)} 项，未通过 {len(bad)} 项"
                      f"（{'、'.join(str(b) for b in bad) or '无'}）")
     out["added_evidence"] = added
+    # 缺什么材料，结构化地留在 data 里（不进文本：单案卡的措辞被 `test_roundtable_recheck`
+    # 与冒烟基线逐字钉着）。发声面按它在本岗发言后面挂「上传材料」按钮。
+    from maos.domain.refund import fixtures
+
+    seed = fixtures.case_seed_of(payload)
+    out["material_gaps"] = _material_gaps(
+        out, order_id=str(seed.get("order_id") or ""),
+        case_id=str(checked.get("case_id") or ""), line=None,
+        reason_raw=reason_cn_of(str(seed.get("reason_code") or "")))
     return "\n".join(lines), out
 
 
-def facts_risk(payload: dict, checked: dict, ledger: dict) -> tuple[str, dict]:
-    """风险反欺诈岗：这个客户、这一单，有没有重复退款或异常频次。"""
-    from maos.skills import registry
+def _evidence_check(payload: dict, checked: dict, ledger: dict | None):  # noqa: ANN201
+    """跑一次 `refund.evidence_check`。**单案与整表共用这一份入参拼法** —— 两处各拼
+    一份的症状是「/refund 说缺照片、读表说证据齐」，而两边各自都不报错。"""
+    from maos.domain.refund import fixtures
 
-    if registry.get("refund.risk_screen") is None:
-        return ("风险筛查 skill 未装载（refund.risk_screen 不在注册表里），"
-                "本单风险未经筛查，放行前请人工看一眼客户历史"), {"level": "unavailable"}
+    seed = fixtures.case_seed_of(payload)
+    order_id = str(seed.get("order_id") or "")
+    row = _order_row(ledger.get("order_snapshot") if ledger else None, order_id) \
+        or _order_row(payload.get("order_snapshot"), order_id)
+    order_json = _order_payload(row)
+    order_facts = {k: order_json[k] for k in ("logistics", "qc_report") if k in order_json}
 
+    return _invoke("refund_evidence", EVIDENCE_SKILL, {
+        "case_seed": seed,
+        "customer_evidence": payload.get("customer_evidence") or [],
+        "rules": _rules_of(payload),
+        "order_facts": order_facts,
+        "requested_at": str(checked.get("requested_at") or ""),
+    }, task_id="preview-evidence")
+
+
+def _material_gaps(out: dict, *, order_id: str, case_id: str, line,   # noqa: ANN001
+                   reason_raw: str) -> list[dict]:
+    """这一单**缺什么材料**，给发声面挂按钮用。没缺就是空列表。
+
+    只看 `verdict` 是 `missing` / `partial` 这两态（取值域见 skill 的
+    `output_schema`）：`not_required` 是「不用交」，`complete` 是「交齐了」，
+    两者都不该出现一个催人上传的按钮。`kinds` 取「规则要求的类型里还没交的」；
+    类型都齐、只是份数不够时退回整个要求清单 —— 按钮总得告诉人传什么。
+    """
+    verdict = str(out.get("verdict") or "")
+    if verdict not in ("missing", "partial"):
+        return []
+    have = {str(it.get("kind") or "") for it in (out.get("items") or [])
+            if isinstance(it, dict) and it.get("ok")}
+    required = [str(k) for k in (out.get("required_kinds") or [])]
+    kinds = [k for k in required if k not in have] or required
+    return [{
+        "order_id": order_id, "case_id": case_id, "line": line,
+        "reason_raw": reason_raw, "verdict": verdict, "kinds": kinds,
+        "gaps": [str(g) for g in (out.get("gaps") or [])],
+    }]
+
+
+def _risk_screen(payload: dict, checked: dict, ledger: dict | None):  # noqa: ANN201
+    """跑一次 `refund.risk_screen`。单案与整表共用，理由同 `_evidence_check`。"""
     from maos.domain.refund import fixtures
 
     seed = fixtures.case_seed_of(payload)
@@ -323,13 +372,24 @@ def facts_risk(payload: dict, checked: dict, ledger: dict) -> tuple[str, dict]:
         # 拿全表当同一个客户会把风险分算成天文数字。只认本单。
         customer_orders = [order] if order else []
 
-    res = _invoke("refund_risk", "refund.risk_screen", {
+    return _invoke("refund_risk", RISK_SKILL, {
         "case_seed": seed,
         "order": order,
         "customer_orders": customer_orders,
         "refund_history": (ledger or {}).get("refund_history") or [],
         "requested_at": str(checked.get("requested_at") or ""),
     }, task_id="preview-risk")
+
+
+def facts_risk(payload: dict, checked: dict, ledger: dict) -> tuple[str, dict]:
+    """风险反欺诈岗：这个客户、这一单，有没有重复退款或异常频次。"""
+    from maos.skills import registry
+
+    if registry.get("refund.risk_screen") is None:
+        return ("风险筛查 skill 未装载（refund.risk_screen 不在注册表里），"
+                "本单风险未经筛查，放行前请人工看一眼客户历史"), {"level": "unavailable"}
+
+    res = _risk_screen(payload, checked, ledger)
 
     if res.status != "ok" or not isinstance(res.output, dict):
         return (f"风险筛查失败：refund.risk_screen: {res.error or '出参不是 dict'}，"
@@ -517,7 +577,15 @@ def _pending_line(stats: dict) -> str:
 ROW_CAP = 12
 
 
-def _clip(items: list[str]) -> list[str]:
+#: 截断尾句。上游两岗指回申请表回帖 —— 那份是逐行全的。
+REPLY_TAIL = "  · 余下的同样在申请表回帖里逐行写着，这里不重复"
+#: 下游三岗的截断尾句。**不指回申请表回帖**：那份回帖只有预检裁定，没有证据 /
+#: 风险 / 核算的逐单结论，指过去是把人指向一个不存在的东西。逐单起单时
+#: （`/refund`，或补材料触发复检）本岗会对那一单单独再说一遍，这才是真的去处。
+DOWNSTREAM_TAIL = "  · 余下的这里不逐条列，单独起单（/refund 订单号 诉求）或补材料时本岗逐单再报"
+
+
+def _clip(items: list[str], tail: str = REPLY_TAIL) -> list[str]:
     """给逐条清单加盖子。
 
     截掉的**不报数字**：那个差值不在入参里（本模块的数字必须是 rows 的子集，
@@ -526,7 +594,7 @@ def _clip(items: list[str]) -> list[str]:
     """
     if len(items) <= ROW_CAP:
         return items
-    return items[:ROW_CAP] + ["  · 余下的同样在申请表回帖里逐行写着，这里不重复"]
+    return items[:ROW_CAP] + [tail]
 
 
 def _who(row: dict) -> str:
@@ -650,58 +718,276 @@ def facts_sheet_policy(rows: list[dict]) -> tuple[str, dict]:
     return "\n".join(lines), stats
 
 
-def facts_sheet_evidence(rows: list[dict]) -> tuple[str, dict]:
+def _approved_rows(rows: list[dict]) -> list[dict]:
+    """会走到证据核验与核算的行：预检走通、裁定批准、payload 在手。
+
+    与 `sheet_stats["approve"]` 同一个筛法再多一条「payload 是 dict」：那是 skill
+    的入参，没有它这一行跑不了。理论上两者同源（有 checked 必有 payload），
+    多这一条只为让本函数对任何形状的 rows 都不抛。
+    """
+    return [r for r in rows or []
+            if isinstance(r, dict) and isinstance(r.get("checked"), dict)
+            and isinstance(r.get("payload"), dict)
+            and str(r["checked"].get("decision") or "") == "approve"]
+
+
+def _valid_rows(rows: list[dict]) -> list[dict]:
+    """预检走通的行（批准 + 驳回），payload 在手。风险筛查的范围。"""
+    return [r for r in rows or []
+            if isinstance(r, dict) and not r.get("error")
+            and isinstance(r.get("checked"), dict) and isinstance(r.get("payload"), dict)]
+
+
+def facts_sheet_evidence(rows: list[dict], ledger: dict | None = None) -> tuple[str, dict]:
+    """证据核验岗对一张表：**逐单真跑** `refund.evidence_check`，不再只报一个范围计数。
+
+    2026-09-10 的房间：这一岗的事实卡只有「进入证据核验范围的有 8 单」一行，
+    模型要么编出 8 单的逐单结论、要么（止血之后）念一句空话 —— 后面两岗排队说
+    「证据岗还没出结论，我不替它说」，而证据岗自己根本没在算。skill 是确定性
+    代码，12 行表整表逐单跑十几毫秒，没有理由不在读表这一刻就算完。
+
+    `ledger` **必须带默认值**（跨轨契约 §3 的同一条理由）：`team.on_sheet` 之外的
+    调用点仍按单参调用，缺默认值就是 `TypeError` 落进 router 的 except，
+    症状是整个圆桌静默哑掉、回帖照发，没有任何测试会红。
+
+    缺材料的单在 `data["material_gaps"]` 里结构化留一份（订单号、缺的类型、
+    行号），发声面按它在本岗发言后面挂「上传材料」按钮 —— 缺口只写在文本里，
+    按钮就得靠正则从文案里刮，而文案是会改的。
+    """
     from maos.skills import registry
 
     stats = sheet_stats(rows)
-    loaded = registry.get("refund.evidence_check") is not None
+    loaded = registry.get(EVIDENCE_SKILL) is not None
     # 分母（`need_evidence` / `reject`）取自规则岗已发布的同一份 `sheet_stats`，
     # 不在这一层重算 —— 口径对齐是 `SYSTEM_TMPL` 群内发言规则第 5 条。
     lines = [
         f"进入证据核验范围的有 {stats['need_evidence']} 单（裁定驳回的 {stats['reject']} 单不看证据）",
     ]
+    data: dict = {**stats, "skill_loaded": loaded, "material_gaps": [],
+                  "evidence_complete": 0, "evidence_gaps": 0,
+                  "evidence_not_required": 0, "evidence_failed": 0}
     # 装载成功不写进事实卡：它是进度不是结论，念出来就是一条空状态帖（规则 4）。
     # 未装载相反 —— 「这一批没核验过」会改变主管的动作，属于本岗的结论，必须发。
     if not loaded:
         lines.append("证据核验 skill 未装载，这一批的证据无法核验，请人工过目")
-    # 驳回单号**不在这里点名**：那份清单和判据规则岗已经逐条发过，下游转抄一遍
-    # 等于同一件事在房间里出现四次（规则 2）。本岗只留自己新产生的范围计数。
-    return "\n".join(lines), {**stats, "skill_loaded": loaded}
+        return "\n".join(lines), data
+
+    gap_lines: list[str] = []
+    cross_lines: list[str] = []
+    fail_lines: list[str] = []
+    for r in _approved_rows(rows):
+        checked = r["checked"]
+        res = _evidence_check(r["payload"], checked, ledger)
+        if res.status != "ok" or not isinstance(res.output, dict):
+            data["evidence_failed"] += 1
+            fail_lines.append(f"  · {_who(r)}：核验失败（{res.error or '出参不是 dict'}），请人工过目")
+            continue
+        out = res.output
+        verdict = str(out.get("verdict") or "")
+        gaps = _material_gaps(out, order_id=str(r.get("order_id") or ""),
+                              case_id=str(checked.get("case_id") or ""),
+                              line=r.get("line"), reason_raw=str(r.get("reason_raw") or ""))
+        if gaps:
+            data["evidence_gaps"] += 1
+            data["material_gaps"].extend(gaps)
+            # 缺口那一句**照搬 skill 的原话**（与单案卡「缺口：…」同一份字），不改写。
+            gap_lines.append(f"  · {_who(r)}：{'；'.join(gaps[0]['gaps']) or verdict}")
+        elif verdict == "not_required":
+            data["evidence_not_required"] += 1
+        else:
+            data["evidence_complete"] += 1
+        bad = [str(c.get("note") or c.get("check") or "")
+               for c in (out.get("consistency") or []) if isinstance(c, dict) and not c.get("ok")]
+        if bad:
+            cross_lines.append(f"  · {_who(r)}：{'；'.join(bad)}")
+
+    tally = (f"逐单核验：证据齐 {data['evidence_complete']} 单、"
+             f"缺材料 {data['evidence_gaps']} 单、无需举证 {data['evidence_not_required']} 单")
+    if data["evidence_failed"]:
+        tally += f"、核验没跑通 {data['evidence_failed']} 单"
+    lines.append(tally)
+    if gap_lines:
+        lines += ["", "缺材料的单，逐条缺什么："] + _clip(gap_lines, DOWNSTREAM_TAIL)
+    if cross_lines:
+        lines += ["", "与订单事实交叉核对没对上的单："] + _clip(cross_lines, DOWNSTREAM_TAIL)
+    if fail_lines:
+        lines += ["", "核验没跑通的单："] + _clip(fail_lines, DOWNSTREAM_TAIL)
+    return "\n".join(lines), data
 
 
-def facts_sheet_risk(rows: list[dict]) -> tuple[str, dict]:
+def facts_sheet_risk(rows: list[dict], ledger: dict | None = None) -> tuple[str, dict]:
+    """风险反欺诈岗对一张表：**逐单真跑** `refund.risk_screen`，中高风险的逐条点名。
+
+    低风险的单只计数不点名 —— 12 行「低风险」在房间里是一堵墙，而人要看的是
+    那几单不干净的。`ledger` 带默认值的理由同 `facts_sheet_evidence`。
+    """
     from maos.skills import registry
 
     stats = sheet_stats(rows)
-    loaded = registry.get("refund.risk_screen") is not None
+    loaded = registry.get(RISK_SKILL) is not None
     lines = [
         f"待筛查 {stats['valid']} 单，其中 {stats['approve']} 单已裁定批准、会走到付款",
     ]
+    data: dict = {**stats, "skill_loaded": loaded, "flagged": [],
+                  "risk_low": 0, "risk_medium": 0, "risk_high": 0, "risk_failed": 0}
     if not loaded:                                  # 理由同证据岗：只发未装载
         lines.append("风险筛查 skill 未装载，这一批未经风险筛查，放行前请人工看一眼客户历史")
-    return "\n".join(lines), {**stats, "skill_loaded": loaded}
+        return "\n".join(lines), data
+
+    flagged_lines: list[str] = []
+    fail_lines: list[str] = []
+    for r in _valid_rows(rows):
+        res = _risk_screen(r["payload"], r["checked"], ledger)
+        out = res.output if res.status == "ok" and isinstance(res.output, dict) else None
+        level = str((out or {}).get("level") or "")
+        if out is None or level not in LEVEL_CN:
+            data["risk_failed"] += 1
+            why = res.error if out is None else f"档位 {level or '空'} 不在低/中/高里"
+            fail_lines.append(f"  · {_who(r)}：筛查失败（{why or '出参不是 dict'}），放行前请人工看一眼客户历史")
+            continue
+        data[f"risk_{level}"] += 1
+        if level == "low":
+            continue
+        reasons = [str(x) for x in (out.get("reasons") or [])]
+        data["flagged"].append({"line": r.get("line"), "order_id": str(r.get("order_id") or ""),
+                                "case_id": str(r["checked"].get("case_id") or ""),
+                                "level": level, "score": out.get("score"), "reasons": reasons})
+        flagged_lines.append(f"  · {_who(r)}：{LEVEL_CN[level]}（评分 {out.get('score')}）"
+                             f"—— {'；'.join(reasons) or '无逐条信号'}")
+
+    tally = (f"逐单筛查：低风险 {data['risk_low']} 单、中风险 {data['risk_medium']} 单、"
+             f"高风险 {data['risk_high']} 单")
+    if data["risk_failed"]:
+        tally += f"、筛查没跑通 {data['risk_failed']} 单"
+    lines.append(tally)
+    if flagged_lines:
+        lines += ["", "中高风险的单，逐条信号（只提示，不改裁定）："] + _clip(flagged_lines, DOWNSTREAM_TAIL)
+    if fail_lines:
+        lines += ["", "筛查没跑通的单："] + _clip(fail_lines, DOWNSTREAM_TAIL)
+    return "\n".join(lines), data
 
 
 def facts_sheet_finance(rows: list[dict]) -> tuple[str, dict]:
+    """财务执行岗对一张表：**逐单预演**（与单案 `facts_finance_preview` 同一段代码），
+    再给整表合计。
+
+    整表合计归本岗，且只在**所有**待核算的单都预演完才允许发（`SYSTEM_TMPL` 的
+    字段归属表）：有一单没跑通，合计就是一个没算完的数，念进群会被当成已经算完的账。
+    驳回的单不预演、不点名 —— 那份清单规则岗已经连着判据发过（规则 2）。
+    """
     stats = sheet_stats(rows)
-    # 整表合计归本岗，但要等所有单预演完才允许发（`SYSTEM_TMPL` 的字段归属表）。
-    # 表这一阶段还没逐单预演，所以不给合计 —— 也**不在事实卡里解释为什么不给**：
-    # 那句解释念进群就是一条关于协作本身的元话语（规则 3）。
-    # 驳回单号与待放行数同理不再转抄，规则岗已经连着判据逐条发过（规则 2）。
     lines = [
         f"需要核算的有 {stats['approve']} 单，驳回的 {stats['reject']} 单无需核算",
     ]
-    return "\n".join(lines), stats
+    previews: list[dict] = []
+    preview_lines: list[str] = []
+    fail_lines: list[str] = []
+    total = Decimal(0)
+    for r in _approved_rows(rows):
+        _text, d = facts_finance_preview(r["payload"], r["checked"])
+        amount = _dec(d.get("amount_approved")) if d.get("preview_ran") else None
+        if amount is None:
+            fail_lines.append(f"  · {_who(r)}：预演没跑通（{d.get('error') or '没算出金额'}）")
+            continue
+        total += amount
+        capped = bool((d.get("breakdown") or {}).get("capped_by_paid"))
+        previews.append({"line": r.get("line"), "order_id": str(r.get("order_id") or ""),
+                         "case_id": str(r["checked"].get("case_id") or ""),
+                         "amount": _money(amount), "capped": capped})
+        preview_lines.append(f"  · {_who(r)}：{_money(amount)}{'（已按实付封顶）' if capped else ''}")
+
+    # 键名不叫 `total`：`sheet_stats` 的 `total` 是行数，五岗共用；金额另起一个名。
+    data: dict = {**stats, "previews": previews, "preview_failed": len(fail_lines),
+                  "amount_total": _money(total) if previews and not fail_lines else None}
+    if preview_lines:
+        lines += ["", "逐单核算预演，应退金额："] + _clip(preview_lines, DOWNSTREAM_TAIL)
+    if fail_lines:
+        lines += ["", "预演没跑通的单："] + _clip(fail_lines, DOWNSTREAM_TAIL)
+    if data["amount_total"] is not None:
+        lines.append(f"整表合计（{len(previews)} 单预演完）：{data['amount_total']}")
+    elif fail_lines:
+        lines.append("整表合计：有单预演没跑通，合计不出")
+    if previews:
+        lines.append(PREVIEW_WORDING)
+    return "\n".join(lines), data
 
 
-#: 数字白名单的取数口径。测试按它断言「facts 里的数字都能在入参里找到」。
+#: 数字白名单的取数口径。测试按它断言「facts 里的数字都能在入参里找到」，
+#: `speaker.Speaker.speak` 的两道门也按它比对 speech 与 facts。
 #: 放在这里而不是测试文件里，是为了让口径和事实卡长在同一个文件 —— 加一行事实卡
 #: 却忘了它的数字从哪来，改这里的时候就会被问一次。
-def numbers_in(text: str) -> set[Decimal]:
-    """一段文本里出现的全部数字。`6800` / `6800.0` / `6800.00` 视作同一个数。"""
-    out: set[Decimal] = set()
-    for token in re.findall(r"\d+(?:\.\d+)?", text or ""):
+
+#: 标识符模式。**从长到短**：`RC-ORD-2026-1000` 含 `ORD-2026-1000`，短的先匹配会切错。
+#: `ORD-\d{4}-\d{4}` 既认本表的单号，也认模型编出来的历史单（实测语料里有 `ORD-2025-0887`）。
+#: 单独抽成一集是因为它在数字维度上根本不可判：`AS-001@v1` 按数字只出 `{1}`
+#: —— `001` 与 `v1` 都塌成 `Decimal(1)`，而 1 几乎必然已在任何一张事实卡里。
+ID_RE = re.compile(r"RC-ORD-\d{4}-\d{4}|ORD-\d{4}-\d{4}|AS-\d{3}@v\d")
+
+#: 中文数字。「两」= 2 是口语里最常见的写法（「两行」「两单」），漏了它这道门
+#: 就能被一句「另外两单」整条绕过。
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000}
+
+#: 中文数字**只有跟着量词、且前面不是指示词时**才算数。
+#:
+#: 两侧都收是实测逼出来的：一句再自然不过的「这一批 12 单」里，「一」会被当成
+#: 一个事实卡里没有的数字 1，整条发言被拦 —— 门就成了误报机。「一并」「一律」
+#: 「第一次」同理。收紧的代价是漏掉「共十二」这种不带量词的写法，认了：
+#: 这道门是永久的，误报会把房间打回念事实卡，而漏一个形态只是少拦一次。
+_CN_QUANTIFIER = "行单条份次天元个项笔张家批轮遍"
+_CN_RUN = re.compile(
+    "(?<![这那哪某第每整统唯])"
+    "[" + "".join(_CN_DIGITS) + "".join(_CN_UNITS) + "]+"
+    "(?=[" + _CN_QUANTIFIER + "])")
+
+#: 千分位逗号。`4,038.78` 不去逗号会被切成 `{4, 38.78}` —— 凭空造出两个
+#: 事实卡里没有的数，模型只要加个逗号就能把门变成一台误报机。
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3})")
+
+#: 阿拉伯数字接中文单位：「4 千」是 4000，不是 4 和 1000 两个数。
+#: 不单独处理的症状是凭空多出一个 1000，而那正好是门要拦的东西。
+_MIXED_UNIT = re.compile(r"(\d+(?:\.\d+)?)\s*([十百千])")
+
+
+def _cn_to_int(run: str) -> int | None:
+    """一串中文数字转整数。覆盖到「千」，再大的写法（万、亿）当前语料里没有。"""
+    total = digit = 0
+    seen = False
+    for ch in run:
+        if ch in _CN_DIGITS:
+            digit, seen = _CN_DIGITS[ch], True
+        else:
+            # 「十二」= 12：单位前面没数字时按 1 算。
+            total += (digit or 1) * _CN_UNITS[ch]
+            digit, seen = 0, True
+    return (total + digit) if seen else None
+
+
+def _normalize(text: str) -> str:
+    """去千分位、混合单位算成一个数、中文数字转阿拉伯。三步都在抽数字**之前**做。
+
+    顺序不可换：混合单位那步要在纯中文数字之前，否则「4 千」的「千」会先被
+    单独转成 1000，剩下一个孤零零的 4。
+    """
+    out = _THOUSANDS.sub("", text or "")
+    out = _MIXED_UNIT.sub(
+        lambda m: _money(Decimal(m.group(1)) * _CN_UNITS[m.group(2)]), out)
+    return _CN_RUN.sub(lambda m: str(_cn_to_int(m.group()) or ""), out)
+
+
+def numbers_in(text: str) -> tuple[set[str], set[Decimal]]:
+    """一段文本里的 `(标识符, 数字)`。`6800` / `6800.0` / `6800.00` 视作同一个数。
+
+    **数字集里剔掉标识符自己的数字**：两集各管一件事，`ORD-2026-1016` 只在
+    `ids` 里出现一次，不再往 `nums` 里塞 `2026` 与 `1016`。不剔的症状是同一次
+    越界被两道子门各报一遍，而读日志的人分不清究竟是引了单号还是引了金额。
+    """
+    found = set(ID_RE.findall(text or ""))
+    rest = ID_RE.sub(" ", text or "")
+    nums: set[Decimal] = set()
+    for token in re.findall(r"\d+(?:\.\d+)?", _normalize(rest)):
         d = _dec(token)
         if d is not None:
-            out.add(d)
-    return out
+            nums.add(d)
+    return found, nums

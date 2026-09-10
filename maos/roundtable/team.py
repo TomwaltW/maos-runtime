@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 from maos.agents.base import AgentIdentity
 from maos.model.client import Tier
@@ -100,6 +101,32 @@ def identity_of(role: str) -> AgentIdentity:
 
 
 @dataclass(frozen=True)
+class Action:
+    """发言后面挂的一个**动作按钮**（平台无关）：一个标签、一个能点开的地址。
+
+    圆桌只负责说「这一单缺照片、去这里传」；按钮长什么样归发声面 —— Matrix 那侧
+    把它渲染成带底色的链接 chip（发声面那一层的事），冒烟脚本
+    与测试里的假嘴把它打成一行文字（:func:`actions_text`）。
+    """
+
+    label: str
+    url: str
+
+    def as_text(self) -> str:
+        return f"📎 {self.label}：{self.url}"
+
+
+def actions_text(actions) -> str:                        # noqa: ANN001
+    """一批按钮的纯文本形态，一行一个。给只有 `say(text)` 的老嘴退化用。"""
+    return "\n".join(a.as_text() for a in (actions or ()))
+
+
+#: 一条发言后面最多挂几个按钮。与 `stages.ROW_CAP` 同数：清单只列这么多行，
+#: 按钮比清单多，房间里就会出现「没提到的单却有按钮」。
+MAX_ACTIONS = stages.ROW_CAP
+
+
+@dataclass(frozen=True)
 class StageReport:
     """一岗说完之后留下的东西。`facts` 与 `speech` 都留着是刻意的 ——
     只留 `speech`，就再也证明不了模型有没有编数字（R1）。"""
@@ -110,16 +137,28 @@ class StageReport:
     speech: str              # 说出口的话：有模型 = 模型复述；没模型 / 失败 = facts 事实卡
     data: dict               # 结构化结论（各岗键见 stages.py），给测试与 /pending 用
     spoken_by_model: bool
+    #: 回退原因（`speaker.FALLBACK_*` 之一），空串 = 没回退。**带默认值是刻意的**：
+    #: 加它的时候 `StageReport(...)` 在三个测试文件里已有构造点，给默认值就一处不用改。
+    #: 与 `spoken_by_model` 并存而不是替掉它：那个布尔答的是「这话谁说的」，
+    #: 本字段答的是「为什么不是模型说的」—— Evidence Bundle 要分清「没响应」与「违规」。
+    fallback_reason: str = ""
+    #: 这一岗发言后面挂的按钮（`Action`）。带默认值的理由同上一个字段。
+    #: 空元组 = 没挂：没配上传地址、或这一岗这一轮没说「缺材料」。
+    actions: tuple = ()
 
 
 class RefundRoundtable:
     """五岗圆桌。实现 `TeamObserver`：三个钩子 + 一份名册。"""
 
     def __init__(self, model, voices, *, ledger_loader=None,        # noqa: ANN001
-                 pace=None) -> None:
+                 pace=None, upload_link: Callable[[dict], str] | None = None) -> None:
         self.model = model
         self.voices = voices
         self._ledger_loader = ledger_loader
+        #: 「上传材料」按钮的地址生成器 `(gap: dict) -> str`，缺省 `None` = 不挂按钮。
+        #: 圆桌不认识 URL 长什么样 —— 补件页由房间入口起，地址由它给；这里只在
+        #: 事实卡说「缺材料」的时候按每一单问一次。回空串或抛异常都当没有按钮。
+        self._upload_link = upload_link
         #: 发言节奏回调 `(i, total) -> None`，每岗**发言进房间之后**调一次。
         #: 缺省 `None` = 一次都不调：测试与冒烟脚本零等待，一秒都不许变慢。
         #: 本包里不许 import `time`、不许自己 sleep —— 停多久由注入方定，
@@ -142,23 +181,61 @@ class RefundRoundtable:
             log.warning("读底账失败（%s: %s），按空底账继续", type(exc).__name__, exc)
             return {}
 
+    def _actions_of(self, data: dict) -> tuple[Action, ...]:
+        """这一岗这一轮要挂的按钮：事实卡说了「缺材料」的每一单一个。
+
+        只认 `data["material_gaps"]`（`stages._material_gaps` 的形状）：按钮是
+        结构化数据长出来的，不是从文案里刮的。没配 `upload_link` 恒为空。
+        """
+        if self._upload_link is None or not isinstance(data, dict):
+            return ()
+        out: list[Action] = []
+        for gap in list(data.get("material_gaps") or [])[:MAX_ACTIONS]:
+            if not isinstance(gap, dict) or not gap.get("order_id"):
+                continue
+            try:
+                url = str(self._upload_link(gap) or "")
+            except Exception as exc:                    # noqa: BLE001
+                log.warning("生成上传链接失败（%s: %s），本单不挂按钮",
+                            type(exc).__name__, exc)
+                continue
+            if not url:
+                continue
+            what = stages.kinds_cn(gap.get("kinds")) or "材料"
+            out.append(Action(label=f"上传{what} · {gap['order_id']}", url=url))
+        return tuple(out)
+
     def _say(self, agent_id: str, facts: str, data: dict,
              history: list[tuple[str, str]]) -> StageReport:
         """一位发言：组织语言 -> 进房间 -> 进上下文。
 
         顺序不可换 —— 没进房间的话不该出现在下一位的上下文里，否则房间里读到的
         是残缺的对话。进房间失败只记日志：房间是旁路，不是主路。
+
+        按钮**不进 `speech`、不进 history**：它不是这一岗说的话，是发声面挂在话
+        后面的东西。进了 history，下一岗的模型就会看到一串 URL 并试图复述它。
         """
         speaker = self._speakers[agent_id]
-        speech, by_model = speaker.speak(facts, history)
+        speech, by_model, fallback = speaker.speak(facts, history)
+        actions = self._actions_of(data)
         try:
-            self.voices.voice(agent_id).say(speech)
+            voice = self.voices.voice(agent_id)
+            if not actions:
+                voice.say(speech)
+            elif hasattr(voice, "say_with_actions"):
+                voice.say_with_actions(speech, actions)
+            else:
+                # 只有 `say(text)` 的老嘴：按钮退化成文字行。加第二个方法而不是改
+                # `say` 的签名（跨轨契约 §1.3 只有那一个方法），是为了让现有的每一张嘴
+                # —— 冒烟脚本、测试假件、代言兜底 —— 不改一行也照样能跑。
+                voice.say(f"{speech}\n{actions_text(actions)}")
         except Exception as exc:                        # noqa: BLE001
             log.warning("岗位 %s 发言没进房间（%s: %s），后面几岗照常",
                         agent_id, type(exc).__name__, exc)
         history.append((speaker.title, speech))
         return StageReport(agent_id=agent_id, title=speaker.title, facts=facts,
-                           speech=speech, data=data, spoken_by_model=by_model)
+                           speech=speech, data=data, spoken_by_model=by_model,
+                           fallback_reason=fallback, actions=actions)
 
     def _tick(self, index: int, total: int) -> None:
         """走完一岗，通知注入方可以停一拍了。
@@ -238,15 +315,16 @@ class RefundRoundtable:
         """一张表：每岗只汇总一次。逐行五连发的代价是 50 行 × 5 岗 = 250 条，
         房间会被刷爆，而人要的只是「这批能不能过」。
 
-        `ledger` 收下但不读：每行的 `checked` 已经是拿底账算过的了，汇总只数行。
-        参数留着是因为签名由跨轨契约定，且逐行深挖迟早要用到它。
+        `ledger` 传给下游两岗：证据核验要订单快照里的物流 / 质检事实，风险筛查要
+        同账号订单与退款历史，两者都只在底账里。上游两岗只数行，不读它。
         """
         try:
+            book = self._ledger(ledger)
             builders = {
                 "refund-intake": lambda: stages.facts_sheet_intake(rows),
                 "refund-policy": lambda: stages.facts_sheet_policy(rows),
-                "refund-evidence": lambda: stages.facts_sheet_evidence(rows),
-                "refund-risk": lambda: stages.facts_sheet_risk(rows),
+                "refund-evidence": lambda: stages.facts_sheet_evidence(rows, book),
+                "refund-risk": lambda: stages.facts_sheet_risk(rows, book),
                 "refund-finance": lambda: stages.facts_sheet_finance(rows),
             }
             log.info("圆桌读表 %d 行 发起人=%s", len(rows or []), requested_by)

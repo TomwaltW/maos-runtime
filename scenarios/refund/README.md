@@ -19,6 +19,11 @@ T7 轨把五份 case 接上了 `maos/flows/contrast.py`，24 条历史案例接�
 | AS-001..AS-004 政策规则与其两个版本 | 合成 | 按行业惯例构造，字段对齐 `policy_rule` 表 |
 | 24 条历史案例的情节与处置 | 合成 | 按行业惯例构造 |
 | 案例里出现的**网关错误码**及其 `outcome` / `retriable` / `message` / `remedy` / `layer` / `source` | **非合成** | 逐字段取自 `maos/tools/gateway_codes.py`，该模块每条码都核过官方出处 |
+| `kb/error_code_playbooks.json` 的 `body.gateway` 七个字段 | **非合成** | 同上，由 `scripts/gen_refund_kb.py` 程序化搬运，有测试逐字段比对 |
+| `kb/task_patterns.json` 的步骤形状与依赖边 | **非合成** | 逐字段取自 `flows/scenario_6`、`flows/scenario_7`、`flows/contrast` 的真实 DAG |
+| `kb/{rejections,comms_results,arrival_results}.json` 里租户 `tnt-demo` 那部分的单号 / 金额 / 时点 | **非合成** | 取自 `scenarios/bulk/ledger-bulk.json` 的 60 单底账 |
+| 同上三份里的**处置理由 / ack 情况 / 轮询次数** | 合成 | 底账只给了 `status`，理由按 `gen_refund_kb.py` 里写死的规则从订单事实推导 |
+| 两个 mfg 租户的驳回 / 沟通 / 到账案例、政策的渠道与品类差异 | 合成 | 按行业惯例构造 |
 
 错误码那一栏是**程序化搬运**进来的，不是人工转写 —— 手打就等于「凭记忆写」，而凭记忆写正是这张表存在的理由所要防的事。可以当场核：
 
@@ -35,6 +40,10 @@ scenarios/refund/
   policy/policy_rules.json       16 行 policy_rule（AS-001..004 × 租户 A/B × v1/v2）
                                  + 被引用的 tenant / channel / product_snapshot
   history/history_cases.json     24 条 kb_doc（8 条 outcome=failed，正好 1/3）
+                                 T118 起失败那 8 条的 kind 直接标 failure_hint，
+                                 workflow_version 整数化（1.0.0 -> 1、1.1.0 -> 2）
+  kb/*.json                      T118 生成的九类流程知识，93 条，勿手改
+                                 （改数据请改 scripts/gen_refund_kb.py 再重跑）
   cases/case_r3a.json            对照组 R3 · 租户维度 · 租户 A → approve
   cases/case_r3b.json            对照组 R3 · 租户维度 · 租户 B → reject
   cases/case_r4a.json            对照组 R4 · 渠道维度 · 自营
@@ -182,6 +191,8 @@ W-1 造完这批数据时**零消费方**（「字段分叉不会有任何报错
 | 同上 | `maos/domain/refund/fixtures.py::seed_policy_corpus` / `seed_policy_kb` | 三组对照的知识库底料（**跨租户召不回**那条约束要靠它，库里必须躺着两个租户的知识） | 同上，共用同一份列清单 |
 | `history/history_cases.json` | `maos/domain/refund/fixtures.py::seed_history_kb` | 24 条按**晋升规则分流**落进 `kb_doc`：`outcome='success'` → `history_case`（规划正例），8 条 `outcome='failed'` → `failure_hint`（**不作为规划正例**） | 列清单对齐 `kb.DOC_COLUMNS`，分叉即抛；条数与分流比例由 `test_contrast_cases.py` 守着 |
 | 同上 | `maos/tests/test_kb_corpus.py` | 全量装载 + 取值域 / 错误码守卫 | 同上 |
+| `kb/*.json` | `maos/kb/experiment.py::seed_process_kb` | R5 的库装上九类流程知识（**不含 `history_case`** —— 核验器第 7 项要它回查得到本库 case） | 列清单对齐 `kb.DOC_COLUMNS`，分叉即抛；条数与 kind 分布由 `test_kb_process_corpus.py` 守着 |
+| 同上 | `scripts/gen_refund_kb.py --check` | 校验磁盘上那份就是当前生成器的产物 | 手改语料、或错误码表 / 真实 DAG 改了形状而语料没跟上，`--check` 当场非零退出 |
 | `cases/*.json` | `maos/flows/contrast.py`（经 `fixtures.load_case`） | 三组对照的靶场与**判据**：`case` 块当 `case_seed`、五张外部快照表灌库、`_expected` 块当唯一判据 | 判据不符时 `run.py --contrast` 直接抛、`make_evidence.py --contrast` 非零退出不留产物 |
 
 入口：
@@ -195,3 +206,51 @@ python3 -m pytest maos/tests/test_contrast_cases.py -q
 `kind` 的分流发生在**装载侧**不是检索侧：语料里 24 条的 `kind` 全是 `history_case`（数据侧只记「这是一条历史案例」），落库时按「外部结果明不明确」分流，口径与 `maos/kb/guardrails.py::classify_case` 同一份。写错 `kind` 的条目查得出来但归不了类，而错误发生在写入侧、暴露在几周后的检索侧，是最难回溯的一类脏数据。
 
 **本目录仍然只出数据**：接线全部在 `maos/` 与 `scripts/` 下，这里一个 `.py`、一行 DDL 都没有加。
+
+
+## 九类流程知识（T118）
+
+评委第二条建议点名了九类面向 workflow 规划的企业流程知识。它们落成 `kb_doc.kind` 的**八个**取值 ——
+「产品与渠道差异」走 `policy` 的渠道 / 品类变体，不另立一类（它讲的是同一条规则在不同渠道上落地的差异）：
+
+| 评委点名的类别 | `kind` | 条数 | 出处 |
+| :-- | :-- | --: | :-- |
+| 售后政策及生效范围 | `policy` | 16 | `policy/policy_rules.json` 投影 |
+| 产品与渠道差异 | `policy`（`kb-pv-*`） | 8 | 构造，两个 mfg 租户各 4 条 |
+| 历史退款原因 | `history_case` / `failure_hint` | 16 / 8 | `history/history_cases.json` |
+| 任务拆分 | `task_pattern` | 12 | 4 种真实 DAG 形状 x 3 租户 |
+| 人工驳回 | `rejection` | 13 | 底账 7 条 + 构造 6 条 |
+| 支付错误码 · 超时与补偿路径 | `error_code_playbook` | 33 | 11 条官方码 x 3 租户 |
+| 客户沟通结果 | `comms_result` | 12 | 底账 6 条 + 构造 6 条 |
+| 真实到账结果 | `arrival_result` | 15 | 底账 9 条 + 构造 6 条 |
+
+**只有 `task_pattern` 的 body 用 `steps` 这个键。** 这不是文风：`guardrails.apply_suggestions`
+会把命中文档 body 里的 `steps` 并进当前 DAG，而它**只按 kind 过滤**（`kb.POSITIVE_KINDS`）。
+`policy` 与 `error_code_playbook` 都在正例里，它们的 body 一旦多出这个键，R5 的计划就凭空多出几步 ——
+而两版 DAG 的 diff 照样是绿的。所以处置步骤一律写成 `remedy_steps`、差异写成 `differences`，
+由 `test_kb_process_corpus.py::test_positive_kinds_carry_no_planning_steps` 钉住。
+
+`task_pattern` 本身**今天不在 `POSITIVE_KINDS` 里** —— 它够格（body 就是步骤清单，键名与
+`guardrails._steps_of` 对齐），但「让一类知识自动改写 DAG 的形状」是规划面的判断，
+不是语料面能替它定的。要启用只需改 `kb.POSITIVE_KINDS` 一处。
+
+### 错误码手册的 `outcome` 为什么一律是 NULL
+
+官方码表里有 `outcome=unknown` 这一档（`20000`、`ACQ.SYSTEM_ERROR`、`ACQ.DISCORDANT_REPEAT_REQUEST`、
+`ACQ.REFUND_CHARGE_ERROR`），而 `kb_doc.outcome` 的取值域只有 `success` / `failed`。
+把 `unknown` 压成 `failed` 就是「把查不到当成没发生」—— 铁律 8 说的正是这种 bug。
+官方那三个字段原样躺在 `body.gateway` 里，谁要用都取得到。
+
+处置口径按 `(retriable, outcome)` **两个字段的组合**判，不是只看 `retriable`：
+`40005` 是 `retriable=True + failed`（入口即拒，可以直接重发），`20000` 是 `retriable=True + unknown`
+（可能已经进了业务系统，必须先 query）。只看 `retriable` 就会在 `20000` 上重发出第二笔退款。
+
+### 重新生成
+
+```bash
+python3 scripts/gen_refund_kb.py            # 覆盖写，末尾打印各 kind 条数
+python3 scripts/gen_refund_kb.py --check    # 只校验，不写盘（有测试跑它）
+```
+
+产物是**确定性**的：同样输入两次生成逐字节相同（没有 `random`、没有 `datetime.now()`、
+没有集合迭代序）。少了这条，语料每跑一次就产生一份无意义的 diff，`git diff` 从此不能当判据用。

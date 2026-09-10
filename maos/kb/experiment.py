@@ -228,14 +228,35 @@ def _seed_domain_from_corpus(store) -> dict:
     return counted
 
 
+#: `policy_rule` 的 scope 列里表示「不限」的那几个写法。列成常量而不是就地写
+#: `== "*"`：语料里今天只用 `*`，但空串与 NULL 在数据上同样是「没限定」，
+#: 三者判成两种结果的后果是同一条规则在两个渠道上行为不同，且不报错。
+_WILDCARD_SCOPES = ("*", "", None)
+
+
+def _scope_value(scope: Any) -> str | None:
+    """把 `channel_scope` / `sku_scope` 翻成 `kb_doc` 的维度值。通配落 NULL。"""
+    return None if scope in _WILDCARD_SCOPES else str(scope)
+
+
 def promote_policy_rule(store, row: dict) -> dict:
     """把**一行** `policy_rule` 投影成 `kind='policy'` 的知识文档。返回落库整行。
 
     投影是**逐字搬运**，不是改写：`title` / `body` / `rule_no` / `version` 原样取自
     `policy_rule` 行，`created_at` 取该版本的 `effective_from`。
-    `channel_id` / `region` / `sku` 一律留 NULL —— 语料里这些规则的
-    `channel_scope` / `sku_scope` 都是通配，而阶段一的口径正是「文档侧 NULL = 通配」，
-    照抄成具体值反而会把一条不限渠道的政策锁死在一个渠道上。
+
+    `channel_id` / `sku` 取自规则自己的 `channel_scope` / `sku_scope`，通配（`*`）
+    才落 NULL —— 阶段一的口径是「文档侧 NULL = 通配」，所以这两件事必须分开：
+
+      · 规则确实不限渠道（`channel_scope='*'`，AS-001..003）-> NULL，任何渠道都是候选；
+      · 规则**限定**渠道（`channel_scope='ch-dealer'`，AS-004）-> 落具体值，
+        自营渠道从此取不到它。
+
+    T118 之前这里一律写 NULL，于是经销专属的 AS-004 对任何渠道都成候选 ——
+    症状不是报错，是「自营的单也命中了经销规则」，而 `policy.match` 那一侧
+    按 `channel_scope` 过滤是对的，两边口径不一致但都不响（账原记在 BACKLOG）。
+
+    `region` 仍是 NULL：`policy_rule` 表没有地区维度这一列，没有的东西不许现编。
 
     拆成「一行一次」是为了让场景 6 播它自己那 3 条政策时走同一份口径
     （`flows/scenario_6.py` 的 `_seed_kb`）。两处各写一套投影，迟早在字段口径上
@@ -253,7 +274,9 @@ def promote_policy_rule(store, row: dict) -> dict:
         # 证据（KbRetrieved.docs）就再也读不出「命中的到底是谁家那条」。
         "doc_id": f"kb-policy-{row['tenant_id']}-{row['rule_no']}-v{row['version']}",
         "biz_type": BIZ_TYPE,
-        "channel_id": None, "region": None, "sku": None,
+        "channel_id": _scope_value(row.get("channel_scope")),
+        "region": None,
+        "sku": _scope_value(row.get("sku_scope")),
         "policy_version": int(row["version"]),
         "workflow_version": None,
         "rule_no": row["rule_no"], "gateway_code": None,
@@ -291,6 +314,51 @@ def seed_kb_corpus(store) -> int:
 _seed_kb_from_corpus = seed_kb_corpus
 
 
+#: T118 的流程知识语料。文件名写死成清单而不是 `glob`：`glob` 的返回序随文件系统变，
+#: 而落库顺序影响同分命中的排序，「连跑两次输出一致」就不再成立。
+#: 这份清单与 `scripts/gen_refund_kb.py::FILES` 是同一份，那边加一份这边要跟着加。
+PROCESS_CORPUS_FILES = (
+    "arrival_results.json",
+    "comms_results.json",
+    "error_code_playbooks.json",
+    "policy_variants.json",
+    "rejections.json",
+    "task_patterns.json",
+)
+
+
+def seed_process_kb(store) -> dict[str, int]:
+    """把 `scenarios/refund/kb/` 的流程知识语料装进 `kb_doc`。返回各 kind 落了几条。
+
+    这批是评委点名的九类里 `policy` / `history_case` 之外的那几类（任务拆分、人工驳回、
+    支付错误码、超时与补偿路径、客户沟通结果、真实到账结果，外加政策的渠道 / 品类变体）。
+
+    **一条 `history_case` 都没有**，这不是巧合而是前提：核验器第 7 项要求库里每条
+    `history_case` 的 `source_case_id` 都能回查到一条本库的 `refund_case`，而外部导入
+    的历史知识按定义没有这样一条记录 —— 给它们凭空造 `refund_case` 行就是伪造证据
+    （铁律 3）。所以那一类知识仍然只由本库真实收口的 case 晋升而来。
+
+    `kind` **照语料原样落库**，不在这里按 outcome 二次分流：这批语料的 kind 由生成器
+    按知识类别定死（驳回就是 `rejection`，到账就是 `arrival_result`），
+    与历史案例那一批「一律标 history_case、装载时按 outcome 分流」的老口径不是一回事。
+    """
+    from maos.kb.retriever import embed
+
+    kb.ensure_schema(store)
+    counted: dict[str, int] = {}
+    for name in PROCESS_CORPUS_FILES:
+        payload = load_corpus(os.path.join("kb", name))
+        for row in _checked_rows(payload, "kb_doc", kb.DOC_COLUMNS):
+            kb.upsert_doc(store, {
+                **row,
+                # 语料里 embedding 恒为 null，落库时现算 —— 预置一串数等于替使用方
+                # 把「用哪个嵌入模型」这个决定提前做掉（口径同历史案例那一批）。
+                "embedding": embed(f"{row['title']} {row['body']}"),
+            })
+            counted[row["kind"]] = counted.get(row["kind"], 0) + 1
+    return counted
+
+
 # ---------------------------------------------------------------- 靶场
 def _seed(store, case_id: str) -> None:
     """装靶场：W-1 的政策语料 + 本段自己的订单快照。
@@ -314,6 +382,9 @@ def _seed(store, case_id: str) -> None:
          "{}", C.now_iso()))
     kb.ensure_schema(store)
     seed_kb_corpus(store)
+    # T118：九类流程知识一并装进来，对照实验才吃得到「政策 + 历史案例」以外的那几类。
+    # 漏斗的三级数字会因此变大，`_kb_funnel` 的 `by_kind` 里能看到各类各几条。
+    seed_process_kb(store)
 
 
 # ---------------------------------------------------------------- 一段的执行
@@ -427,6 +498,10 @@ def _run_segment(*, case_id: str, with_finance: bool, use_kb: bool) -> dict:
     return {
         "plan_id": plan_id,
         "plan_state": plan["state"],
+        # 这一段那根 trace。报出来是给段外的检索用的（`_probe_playbook`）：
+        # 事件挂不上 plan / trace 就成了游离事件，核验器的 trace-tree 会当场报 warn
+        # ——「不在任何一棵树内」是已归零的一类，回来就是回归。
+        "trace_id": trace_id,
         "tasks": [t["title"] for t in rows],
         "task_keys": [".".join(guardrails.task_key(t)) for t in rows],
         "gate_result": _gate_result(verdicts),
@@ -696,9 +771,13 @@ def run_r5(db_path: str | None = None) -> dict:
 
     delta = [k for k in with_kb["task_keys"] if k not in without_kb["task_keys"]]
     hits = _triggering_docs(store, with_kb["plan_id"])
+    playbook = _probe_playbook(store, plan_id=with_kb["plan_id"],
+                               trace_id=with_kb["trace_id"])
     funnel = _kb_funnel(store)
     print(f"\n差异：delta_tasks={delta}，触发文档="
           f"{[(h['doc_id'], h['score']) for h in hits]}")
+    print(f"错误码通道：{PLAYBOOK_PROBE_CODE} -> "
+          f"{[(h['doc_id'], h['score']) for h in playbook]}")
     print(f"检索漏斗：库存 {funnel['kb_doc_total']} 条 -> 同租户 {funnel['same_tenant']} 条"
           f" -> 七维预过滤后 {funnel['after_prefilter']} 条"
           f"（with_kb 段实测候选集 {with_kb['kb_candidate_count']} 条）")
@@ -719,15 +798,68 @@ def run_r5(db_path: str | None = None) -> dict:
         "with_kb": with_kb,
         "delta_tasks": delta,
         "triggering_docs": hits,
+        # 错误码通道单独报：它没参与规划，混进 triggering_docs 会把
+        # 「促成补步骤的命中」说成包含了几条一步都没促成的手册。
+        "playbook_probe": {
+            "gateway_code": PLAYBOOK_PROBE_CODE,
+            "plan_id": with_kb["plan_id"],
+            "docs": [{"doc_id": h["doc_id"], "score": h["score"],
+                      "title": h.get("title"), "kind": h.get("kind"),
+                      "channels": h.get("channels", {})} for h in playbook],
+        },
         "conclusion": _conclusion(without_kb, with_kb, delta),
     }
 
 
+#: 错误码通道的探针用哪条码。选 `20000` 是因为它落在最需要处置手册的那一档
+#: （`retriable=True` + `outcome=unknown`）：只看 `retriable` 就会在这条码上
+#: 重发出第二笔退款，而手册里写着「先 query 再决定」。
+PLAYBOOK_PROBE_CODE = "20000"
+
+
+def _probe_playbook(store, *, plan_id: str, trace_id: str) -> list[dict]:
+    """按错误码取一次处置手册，落一条 `KbRetrieved` —— 证据里要看得到这条通道点着了。
+
+    **为什么非得单独探一次**：三段跑的是顺利路径，规划期那次检索的 query 里没有
+    `gateway_code`，于是权重 0.25 的那条精确通道在整个 R5 里一次都没点着 ——
+    证据束里看不到「按错误码召回」发生过，而它恰恰是评委点名的那一类知识
+    （支付错误码、超时与补偿路径）唯一的取用路径。
+
+    走 `retriever.retrieve_playbook` 而不是另写 SQL：口径与主链路完全一致
+    （同一份七维预过滤、同一份四通道权重、同样的租户硬约束）。
+
+    **挂在 with_kb 那一段的 plan / trace 上**，不另起一个：事件的 plan_id 指不到
+    任何 plan 就成了游离事件，核验器的 trace-tree 会报「不在任何一棵树内」——
+    那是已归零、回来即算回归的一类 warn（`test_verify_warn.RETIRED_WARN_MARKERS`）。
+    挂上去也不影响那一段自己的计数：`kb_retrieved_events` 与 `kb_candidate_count`
+    都在段内就算好了，本函数是三段跑完之后才发起的。
+    """
+    from maos.kb.retriever import retrieve_and_log, retrieve_playbook
+
+    ctx = {"tenant_id": TENANT_ID, "biz_type": BIZ_TYPE,
+           "gateway_code": PLAYBOOK_PROBE_CODE}
+    # 先落事件（`retrieve_and_log` 是唯一会落 `KbRetrieved` 的入口，不在这里另写
+    # 一份 emit），再用薄封装复算一遍对齐 —— 两处口径漂了要当场知道。
+    hits = retrieve_and_log(store, ctx, plan_id=plan_id, trace_id=trace_id,
+                            kinds=(kb.KIND_ERROR_CODE_PLAYBOOK,))
+    assert hits == retrieve_playbook(store, PLAYBOOK_PROBE_CODE,
+                                     {"tenant_id": TENANT_ID, "biz_type": BIZ_TYPE}), \
+        "薄封装与落事件那条走出了不同结果 —— 两处口径漂了"
+    return hits
+
+
 def _triggering_docs(store, plan_id: str) -> list[dict]:
-    """with_kb 那一跑里真正促成补步骤的命中 —— 从 event_log 读，不从内存拼。"""
+    """with_kb 那一跑**规划期**那次检索的命中 —— 从 event_log 读，不从内存拼。
+
+    **按 plan_id 收窄、且只取第一条**（口径同 `_candidate_count`）：R5 里除了三段
+    自己的检索，还有一次错误码通道的探针（`_probe_playbook`），它挂在同一个 plan 上
+    但发生在计划跑完之后，一步都没促成。不收窄的话那几条手册会被当成「触发文档」
+    报进证据里 —— 而「触发」这个词在这份证据里是有判据的，不能随手放宽。
+    """
     rows = kb.query(
         store,
-        "SELECT detail FROM event_log WHERE event_type='KbRetrieved' ORDER BY seq")
+        "SELECT detail FROM event_log WHERE event_type='KbRetrieved'"
+        " AND plan_id=? ORDER BY seq LIMIT 1", (plan_id,))
     out: list[dict] = []
     seen: set[str] = set()
     for row in rows:

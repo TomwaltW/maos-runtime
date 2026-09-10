@@ -34,19 +34,38 @@ from maos.kb import experiment, retriever
 TENANT_A = "tnt-mfg-a"
 TENANT_B = "tnt-mfg-b"
 
-#: 语料现状的三个规模数。它们不是「跑出来多少就写多少」——
+#: 语料现状的四个规模数。它们不是「跑出来多少就写多少」——
 #: 24/8 是 W-1 的 `_note` 自己声明的（历史案例 24 条，其中 8 条 failed，正好 1/3），
-#: 16 是「4 条规则 x 2 租户 x 2 版本」。数字对不上说明语料被动过，该有人知道。
+#: 16 是「4 条规则 x 2 租户 x 2 版本」，93 是 T118 生成器按类别算出来的
+#: （`python3 scripts/gen_refund_kb.py` 末尾会打印这张分类表）。
+#: 数字对不上说明语料被动过，该有人知道。
 HISTORY_DOCS = 24
 HISTORY_FAILED = 8
 POLICY_RULES = 16
+PROCESS_DOCS = 93
+
+#: T118 起语料覆盖评委点名的九类流程知识，落成 `kb_doc.kind` 的八个取值
+#: （「产品与渠道差异」走 `policy` 的渠道 / 品类变体，不另立一类）。
+#: 每类的下限钉在这里：低于它就说明某一类知识事实上不存在，而检索照样返回结果，
+#: 看不出少了什么。
+KIND_FLOOR = 5
 
 #: 装完整份语料之后的检索漏斗。三级都钉死：
-#: 40 = 24 条历史案例 + 16 条政策；21 = 租户 A 的 13 + 8；
-#: 7 = 再按渠道 / 区域 / SKU / 政策版本收窄之后剩下的（3 条历史 + 4 条 v1 政策）。
-FUNNEL_TOTAL = HISTORY_DOCS + POLICY_RULES
-FUNNEL_SAME_TENANT = 21
-FUNNEL_AFTER_PREFILTER = 7
+#: 133 = 24 条历史案例 + 16 条政策 + 93 条流程知识；
+#: 49 = 租户 A 那一份（跨租户的 84 条连候选集都进不了）；
+#: 27 = 再按渠道 / 区域 / SKU / 政策版本收窄之后剩下的。
+#:
+#: T118 之前这三个数是 40 / 21 / 7。变大的是语料，**不是**过滤放松了：
+#: 27 这一级里 11 条是错误码处置手册（与渠道 / 商品无关，按既有语义留 NULL 通配），
+#: 政策则从 4 条降到 3 条 —— AS-004 补上 `channel_id='ch-dealer'` 之后，
+#: 自营渠道的查询不再命中经销专属规则。
+FUNNEL_TOTAL = HISTORY_DOCS + POLICY_RULES + PROCESS_DOCS
+FUNNEL_SAME_TENANT = 49
+FUNNEL_AFTER_PREFILTER = 27
+
+#: 租户 B 那一份。单列而不是拿总数减租户 A：T118 起语料里有三个租户
+#: （多了 60 单批量底账的 `tnt-demo`），减法算出来的是「非 A 的全部」。
+TENANT_B_DOCS = 47
 
 #: R5 用的那份检索上下文，逐字取自 `experiment` 的常量 —— 两处写死会各自漂。
 R5_CONTEXT = {
@@ -84,10 +103,24 @@ def _load_history(target) -> int:
     return len(rows)
 
 
+def _process_rows() -> list[dict]:
+    """取 T118 的流程知识语料，顺带过一遍列清单守卫。文件清单从消费方取，不另抄一份。"""
+    rows: list[dict] = []
+    for name in experiment.PROCESS_CORPUS_FILES:
+        payload = experiment.load_corpus(os.path.join("kb", name))
+        rows.extend(experiment._checked_rows(payload, "kb_doc", kb.DOC_COLUMNS))
+    return rows
+
+
 def _load_all(target) -> None:
-    """整份语料：历史案例 + 政策投影。政策那一半复用 R5 自己那条装载路径。"""
+    """整份语料：历史案例 + 政策投影 + 九类流程知识。
+
+    后两段都复用 R5 自己那条装载路径（`_seed_kb_from_corpus` / `seed_process_kb`），
+    不在测试里另写一套投影 —— 两套迟早在字段口径上分叉，而症状只是「候选集少了些」。
+    """
     _load_history(target)
     experiment._seed_kb_from_corpus(target)
+    experiment.seed_process_kb(target)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +160,7 @@ def test_policy_corpus_columns_match_the_consumer_list():
 # ---------------------------------------------------------------------------
 def test_history_corpus_values_stay_in_range():
     rows = _history_rows()
-    assert {r["kind"] for r in rows} == {kb.KIND_HISTORY_CASE}
+    assert {r["kind"] for r in rows} == {kb.KIND_HISTORY_CASE, kb.KIND_FAILURE_HINT}
     assert {r["outcome"] for r in rows} <= set(kb.VALID_OUTCOMES)
     failed = [r for r in rows if r["outcome"] == kb.OUTCOME_FAILED]
     assert len(failed) == HISTORY_FAILED, "失败案例的比例被动过了"
@@ -135,6 +168,39 @@ def test_history_corpus_values_stay_in_range():
     for row in rows:
         assert row["source_case_id"], "历史案例缺 source_case_id，核验器第 7 项要它"
         assert isinstance(json.loads(row["body"]), dict), "body 不是 JSON 对象"
+
+
+def test_failed_history_cases_are_labelled_failure_hint_in_the_corpus_itself():
+    """失败案例在**语料侧**就是 `failure_hint`，不靠装载侧补那一刀（T118）。
+
+    从前 24 条的 kind 一律写 `history_case`，靠 `fixtures.seed_history_kb` 按 outcome
+    分流。那条路上落库结果一直是对的，但只要有第二条装载路径照着语料的 kind 直装
+    （`_load_all` 就是），失败案例就会以 `history_case` 的身份进 `kb.POSITIVE_KINDS`，
+    被 `guardrails.apply_suggestions` 当成规划正例 —— 它**只按 kind 过滤，不看 outcome**。
+
+    所以这条断言钉的不是「标签好看」，是「失败案例进不了正例」这件事在语料侧就成立。
+    """
+    rows = _history_rows()
+    for row in rows:
+        expected = (kb.KIND_FAILURE_HINT if row["outcome"] == kb.OUTCOME_FAILED
+                    else kb.KIND_HISTORY_CASE)
+        assert row["kind"] == expected, f"{row['doc_id']} 的 kind 与 outcome 对不上"
+    assert not [r for r in rows
+                if r["outcome"] == kb.OUTCOME_FAILED and r["kind"] in kb.POSITIVE_KINDS], \
+        "失败案例落在了规划正例里 —— apply_suggestions 会照着它补步骤"
+
+
+def test_history_corpus_workflow_version_is_an_integer():
+    """`workflow_version` 是整数，不是 `"1.0.0"` 这样的字符串（T118）。
+
+    `kb/schema.sql` 里这一列是 `INTEGER`。SQLite 弱类型，写字符串进去不报错，
+    但阶段一预过滤按整数比就永远不相等 —— 症状是「按 workflow_version 查什么都查不到」，
+    而且一行日志都没有。这条守着的正是那种无症状故障。
+    """
+    for row in _history_rows() + _process_rows():
+        version = row["workflow_version"]
+        assert version is None or isinstance(version, int), \
+            f"{row['doc_id']} 的 workflow_version 是 {type(version).__name__}，不是整数"
 
 
 def test_history_corpus_bodies_carry_no_planning_steps():
@@ -164,21 +230,49 @@ def test_full_corpus_loads_and_the_retrieval_funnel_holds(store):
         "七维预过滤后的候选集大小变了。变大可能是某一维失效了（跨维召回），"
         "变小可能是语料的维度值改了 —— 两种都要有人看一眼")
     kinds = {c["kind"] for c in candidates}
-    assert kinds == {kb.KIND_HISTORY_CASE, kb.KIND_POLICY}, \
-        "候选集里只剩一类知识 —— 融合排序又退回到没什么可排的状态"
+    assert kinds == set(kb.VALID_KINDS), (
+        "候选集没盖住全部八类知识 —— 评委点名的九类里有一类事实上检不到，"
+        f"少的是 {sorted(set(kb.VALID_KINDS) - kinds)}")
 
 
 def test_prefilter_wildcards_let_unscoped_policy_through(store):
-    """政策投影把 channel/region/sku 留成 NULL，靠的是「文档侧 NULL = 通配」。
+    """`channel_scope='*'` 的政策换个渠道 / SKU 照样是候选 —— 「文档侧 NULL = 通配」。
 
     照抄成具体值会把一条不限渠道的政策锁死在一个渠道上，症状是「换个渠道查就查不到
     政策了」，而且不报错。
+
+    **注意这里验的是通配那几条，不是全部** —— T118 之前这条断言的是「两侧候选集
+    完全相同」，那个更强的版本之所以成立，靠的恰恰是投影把经销专属的 AS-004 也写成了
+    NULL（见 `test_channel_scoped_policy_is_not_a_candidate_off_its_channel`）。
+    修好之后两侧本来就该不同，所以断言收窄到「通配的那几条两侧都在」。
     """
     experiment._seed_kb_from_corpus(store)
-    other_channel = dict(R5_CONTEXT, channel_id="ch-dealer", sku="SKU-SRV-A2")
-    got = {c["doc_id"] for c in retriever.prefilter(store, other_channel)}
-    assert got == {c["doc_id"] for c in retriever.prefilter(store, R5_CONTEXT)}, \
-        "换个渠道 / SKU 就查不到政策了 —— 通配没生效"
+    other = dict(R5_CONTEXT, channel_id="ch-dealer", sku="SKU-SRV-A2")
+    here = {c["doc_id"] for c in retriever.prefilter(store, R5_CONTEXT)}
+    there = {c["doc_id"] for c in retriever.prefilter(store, other)}
+    assert here, "本渠道一条政策都取不到，这条测试就没在验通配"
+    assert here <= there, \
+        "换个渠道 / SKU 就查不到本来不限渠道的政策了 —— 通配没生效"
+
+
+def test_channel_scoped_policy_is_not_a_candidate_off_its_channel(store):
+    """限定渠道的政策（AS-004 `channel_scope='ch-dealer'`）在自营渠道取不到（T118）。
+
+    投影从前把 `channel_id` 一律写 NULL，于是经销专属的 AS-004 对**任何**渠道都是
+    候选：自营的单也命中经销规则，而 `policy.match` 那一侧按 `channel_scope` 过滤
+    是对的 —— 两边口径不一致，但两边都不报错。这条守的就是那个差。
+    """
+    experiment._seed_kb_from_corpus(store)
+    dealer_only = f"kb-policy-{TENANT_A}-AS-004-v1"
+    assert kb.get_doc(store, TENANT_A, dealer_only)["channel_id"] == "ch-dealer", \
+        "AS-004 的 channel_scope 没投影进 kb_doc.channel_id"
+
+    on_dealer = {c["doc_id"] for c in retriever.prefilter(
+        store, dict(R5_CONTEXT, channel_id="ch-dealer"))}
+    on_online = {c["doc_id"] for c in retriever.prefilter(store, R5_CONTEXT)}
+    assert dealer_only in on_dealer, "经销渠道反而取不到经销专属规则"
+    assert dealer_only not in on_online, \
+        "自营渠道命中了经销专属的 AS-004 —— 预过滤的渠道维形同虚设"
 
 
 def test_doc_ids_are_globally_unique_across_tenants(store):
@@ -198,11 +292,16 @@ def test_doc_ids_are_globally_unique_across_tenants(store):
 
 
 def test_cross_tenant_never_retrieved_on_the_real_corpus(store):
-    """租户 B 的 11 条历史案例 + 8 条政策，对租户 A 的查询必须完全不可见。"""
+    """租户 B 的那 47 条知识，对租户 A 的查询必须完全不可见。
+
+    条数写死成常量而不是 `FUNNEL_TOTAL - FUNNEL_SAME_TENANT`：T118 起语料里有
+    **三个**租户（多了 60 单批量底账的 `tnt-demo`），两个数一减得到的是「非 A 的全部」，
+    不是「B 的」—— 那样即便 B 的语料整份消失，这条断言也照样绿。
+    """
     _load_all(store)
     b_docs = {r["doc_id"] for r in kb.query(
         store, "SELECT doc_id FROM kb_doc WHERE tenant_id=?", (TENANT_B,))}
-    assert len(b_docs) == FUNNEL_TOTAL - FUNNEL_SAME_TENANT
+    assert len(b_docs) == TENANT_B_DOCS
 
     hits = retriever.retrieve(store, {**R5_CONTEXT, "rule_no": experiment.RULE_NO,
                                       "keyword": "轴承 锈蚀 退款 财务核算"}, limit=50)
@@ -220,11 +319,16 @@ def test_all_four_channels_fire_on_the_real_corpus(store):
     知识，精确通道命中的那条必须排在只有文本相关的前面。
     """
     _load_all(store)
+    # 两个精确通道都要点着，所以 probe 必须**同时**带 rule_no 与 gateway_code。
+    # 只按 `gateway_code IS NOT NULL` 挑（T118 之前的写法）现在会挑中错误码处置手册
+    # —— 那一类按定义不挂规则编号，于是 query 里没有 rule_no，
+    # 下面那条 `channels["rule_no"] == 1.0` 就永远不可能成立。
     gateway_rows = kb.query(
         store, "SELECT doc_id, rule_no, gateway_code FROM kb_doc"
-               " WHERE tenant_id=? AND gateway_code IS NOT NULL ORDER BY doc_id",
+               " WHERE tenant_id=? AND gateway_code IS NOT NULL AND rule_no IS NOT NULL"
+               " ORDER BY doc_id",
         (TENANT_A,))
-    assert gateway_rows, "语料里租户 A 没有带网关错误码的案例，本条无从验起"
+    assert gateway_rows, "语料里租户 A 没有同时带规则编号与网关错误码的案例，本条无从验起"
     probe = gateway_rows[0]
 
     hits = retriever.retrieve(store, {

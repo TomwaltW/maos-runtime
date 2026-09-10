@@ -568,6 +568,40 @@ def retrieve(store: Any, query: dict, *, limit: int = DEFAULT_LIMIT,
     return score_candidates(store, query, candidates, weights=weights, limit=limit)
 
 
+def retrieve_playbook(store: Any, gateway_code: str, ctx: dict, *,
+                      limit: int = DEFAULT_LIMIT,
+                      weights: dict[str, float] | None = None) -> list[dict]:
+    """按网关错误码取处置手册（`kind='error_code_playbook'`）。
+
+    **薄封装，不是第二套检索**：口径全部走 `retrieve()` —— 同一份七维预过滤、
+    同一份四通道权重。这里只做两件事：把错误码放进 `gateway_code` 这一维
+    （权重 0.25 的精确通道就是为它准备的），再按 kind 收窄。
+
+    另写一套「按码查表」的直接 SQL 会绕开租户硬约束 —— 那是这套系统唯一不能出错的
+    那条约束，绕过去不报错，只是某天别家的处置口径出现在了本租户的结果里。
+
+    `ctx` 是调用方的检索上下文（`PREFILTER_FIELDS` 的任意子集）。**没有 `tenant_id`
+    就返回空**，与 `retrieve()` 同一条口径，不在这里另开后门。
+    """
+    query = {**(ctx or {}), "gateway_code": gateway_code}
+    return retrieve(store, query, limit=limit, weights=weights,
+                    kinds=(kb.KIND_ERROR_CODE_PLAYBOOK,))
+
+
+def retrieve_task_patterns(store: Any, ctx: dict, *,
+                           limit: int = DEFAULT_LIMIT,
+                           weights: dict[str, float] | None = None) -> list[dict]:
+    """取任务拆分模式（`kind='task_pattern'`）。
+
+    这一类的 body 里存的是步骤清单（键名 `steps`，与 `guardrails._steps_of` 对齐），
+    但它**今天不在 `kb.POSITIVE_KINDS` 里** —— 也就是说 `apply_suggestions` 吃不到它，
+    检索回来要怎么用由调用方决定。这条是有意的：让一类知识自动改写 DAG 的形状，
+    是规划面的判断，不是语料面能替它定的（口径见 `kb.POSITIVE_KINDS` 的注释）。
+    """
+    return retrieve(store, dict(ctx or {}), limit=limit, weights=weights,
+                    kinds=(kb.KIND_TASK_PATTERN,))
+
+
 def emit_kb_retrieved(store: Any, hits: list[dict], *, query: dict,
                       plan_id: str = "", task_id: str | None = None,
                       trace_id: str = "", duration_ms: float = 0.0,

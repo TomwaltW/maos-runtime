@@ -60,7 +60,12 @@ CREATE TABLE IF NOT EXISTS kb_doc (
     PRIMARY KEY (tenant_id, doc_id),
     -- 取值域写进 CHECK 而不是只写在注释里：写错 kind 的条目查得出来但归不了类，
     -- 而错误发生在写入侧、暴露在几周后的检索侧，是最难回溯的一类脏数据。
-    CHECK (kind IN ('policy', 'history_case', 'failure_hint', 'error_code_playbook')),
+    -- 取值域与 `maos/kb/__init__.py` 的 `VALID_KINDS` 是同一份，改一处必须改两处
+    -- （有测试钉着）。**扩这条 CHECK 对已存在的表一个字都改不动** —— 整份 schema.sql
+    -- 都是 IF NOT EXISTS，老库要认新 kind 得走一条重建表的迁移，账记在
+    -- BACKLOG `## task-t118`。演示期的库都是 :memory: 或每次新建，所以看不出区别。
+    CHECK (kind IN ('policy', 'history_case', 'failure_hint', 'error_code_playbook',
+                    'task_pattern', 'rejection', 'comms_result', 'arrival_result')),
     CHECK (outcome IS NULL OR outcome IN ('success', 'failed'))
 );
 

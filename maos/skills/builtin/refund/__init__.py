@@ -20,6 +20,7 @@ pkgutil 只会让「哪些是 skill、哪些是共用件」变成靠下划线约
 from __future__ import annotations
 
 from . import compensate  # noqa: F401 —— refund.compensate（W-6：失败路径的域内补偿）
+from . import compensation_close  # noqa: F401 —— refund.compensation_close（T117：工单关单回填观察）
 from . import evidence_check  # noqa: F401 —— refund.evidence_check
 from . import finance  # noqa: F401 —— import 即注册（finance.settle）
 from . import intake  # noqa: F401 —— refund.intake
@@ -40,6 +41,7 @@ REFUND_SKILLS = (
     "payment.observe",
     "notify.customer",
     "refund.compensate",
+    "refund.compensation_close",
     "refund.evidence_check",
     "refund.risk_screen",
     "refund.reason_classify",

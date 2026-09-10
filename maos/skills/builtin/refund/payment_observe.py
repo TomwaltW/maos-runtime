@@ -23,7 +23,11 @@ import json
 from maos.domain.refund import guard, objects
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
-from maos.tools.gateway import GATEWAY_QUERY_PORT, register_gateway as register_tool_gateway
+from maos.tools.gateway import (
+    GATEWAY_MANUAL,
+    GATEWAY_QUERY_PORT,
+    register_gateway as register_tool_gateway,
+)
 from maos.tools.port import invoke_tool
 
 from . import _common as C
@@ -31,6 +35,18 @@ from . import _common as C
 #: 轮询上限。到顶仍非终态就如实返回「还没问出来」，**不许**改判成失败 ——
 #: 「我问累了」和「网关说失败了」是两回事，混起来会让一笔实际成功的退款被当成失败收口。
 DEFAULT_MAX_POLLS = 5
+
+
+def _is_manual(receipt: dict) -> bool:
+    """这份回执是不是人工线下凭证包装来的（T117）。
+
+    判据取自回执自己的 `detail.gateway`，**不看调用方传的 gateway 名字**：
+    名字是装配方随手起的（场景里叫 `s7-manual`，测试里叫别的），而回执里的标记
+    由 `ManualReceiptAdapter` 亲手打上，跟着回执一起进 `raw_receipt_json`，
+    审计时看到的和这里判的是同一个字节。
+    """
+    detail = receipt.get("detail")
+    return isinstance(detail, dict) and detail.get("gateway") == GATEWAY_MANUAL
 
 
 @register_skill
@@ -154,6 +170,29 @@ class PaymentObserveSkill(Skill):
             "observed_state": status,
             "observed_at": C.now_iso(),
         }
+
+        # ---- gateway='manual' 适配分支（T117）--------------------------------
+        # 人工线下凭证走的是**同一条**路：同一个 ToolPort、同一个 receipt 形状、
+        # 同一个 guard 通道。这里唯一多出来的一档是「没有合法的目标状态可迁」——
+        # 补偿收口之后 `biz_status` 已经是 `compensated`，而那是终态
+        # （`guard.BIZ_STATUS_FLOW`），铁律 9 不许为此加一条新迁移。
+        #
+        # 此时**观察照落、状态不动**。理由与下面 `_record_failure` 那条一字不差：
+        # guard 的「同事务附回执」是 settled 的前置条件（观察 ⇐ 终态），反过来
+        # 并不要求每条观察都伴随一次状态迁移。丢掉这条观察才是真的错 ——
+        # 「人到渠道后台核对过、外部系统显示已入账」是本系统能拿到的最硬的一条
+        # 外部事实，它不该因为案子已经收口过就消失。
+        #
+        # 收窄到人工分支、不做成通用规则，是刻意的：现有网关路径上「问出 settled
+        # 却迁不过去」意味着状态机被别处改坏了，那种情况该当场抛出来让人看见，
+        # 不该被这里静默兜住。
+        if _is_manual(receipt) and "settled" not in guard.BIZ_STATUS_FLOW.get(
+                case["biz_status"], ()):
+            self._record_observation(store, tenant_id, case_id, observation, invocation_id)
+            return self._out(receipt, case["biz_status"], settled=False,
+                             needs_compensation=False, invocation_id=invocation_id,
+                             poll_count=poll_count)
+
         case = guard.update_biz_status(
             store, tenant_id, case_id, "settled",
             self.contract.name, invocation_id,
@@ -198,14 +237,40 @@ class PaymentObserveSkill(Skill):
         前置条件（观察 ⇐ 终态），反过来并不要求每条观察都伴随一次状态迁移。
         这里没有合法的目标状态可迁，但这条观察必须留下来。
         """
+        PaymentObserveSkill._record_observation(
+            store, tenant_id, case_id,
+            {
+                "request_id": request_id,
+                "gateway_code": str(receipt.get("code") or ""),
+                "raw_receipt_json": json.dumps(receipt, ensure_ascii=False, sort_keys=True),
+                "observed_state": "failed",
+                "observed_at": C.now_iso(),
+            },
+            invocation_id,
+        )
+
+    @staticmethod
+    def _record_observation(store, tenant_id: str, case_id: str, observation: dict,
+                            invocation_id: str) -> None:
+        """把一条观察直接落进 `payment_observation`，**不推进业务状态**。
+
+        两个调用方都是「网关给了终态，但本地没有合法的目标状态可迁」这一档：
+        `_record_failure`（网关明确失败）与人工凭证分支（案子已 compensated）。
+        一份 INSERT 两处抄写迟早分叉，而分叉的症状是两条观察的列不一样 ——
+        表面正常，只在按列查的时候少掉一半。
+
+        `actor_invocation_id` 一律是**本次 payment.observe 调用**的 id：
+        `scripts/verify.py` 的第 3 项按它反查「这条回执出自哪一次 observe 调用」，
+        填别的等于把权威事实的溯源链剪断。
+        """
         objects.execute(
             store,
             "INSERT OR REPLACE INTO payment_observation (tenant_id, case_id, request_id,"
             " gateway_code, raw_receipt_json, observed_state, observed_at,"
             " actor_invocation_id) VALUES (?,?,?,?,?,?,?,?)",
-            (tenant_id, case_id, request_id, str(receipt.get("code") or ""),
-             json.dumps(receipt, ensure_ascii=False, sort_keys=True),
-             "failed", C.now_iso(), invocation_id),
+            (tenant_id, case_id, observation["request_id"], observation["gateway_code"],
+             observation.get("raw_receipt_json", "{}"), observation["observed_state"],
+             observation.get("observed_at") or C.now_iso(), invocation_id),
         )
 
     @staticmethod

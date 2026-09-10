@@ -101,11 +101,15 @@ from maos.agents.reviewer import ReviewerAgent, review_after_gate
 from maos.contracts.events import new_id
 from maos.contracts.states import TASK_TRANSITIONS, PlanState, TaskState
 from maos.core.control_plane import GATEWAY_GATE, HUMAN_EXIT_GATEWAY
-from maos.domain.refund import guard, objects
+from maos.domain.refund import guard, objects, roles
 from maos.flows.common import build, dump, run_until_settled
+from maos.ingress import outcome_commands
 from maos.model.client import Tier, select_model_client
 from maos.runtime.gate import HumanApprovalQueue
 from maos.skills.builtin.refund import _common as C
+# 模块整体也要用（T117 的工单闭环那一段），而本文件已经有一个模块级函数叫
+# `compensate()`，所以另起别名 —— 同名会把那个函数悄悄遮掉。
+from maos.skills.builtin.refund import compensate as compensate_skill
 from maos.skills.builtin.refund.compensate import (
     KIND_MANUAL_TICKET,
     KIND_REQUEST_REVOKED,
@@ -799,4 +803,145 @@ def run(*, matrix: bool = False) -> int:
     assert moves2 <= set(TASK_TRANSITIONS), (
         f"第二段出现了不在冻结迁移表里的 Task 迁移：{sorted(moves2 - set(TASK_TRANSITIONS))}")
     assert cp.store.get_plan(exit2["plan_id"])["state"] == PlanState.FAILED
+
+    # ================================================================ 第三段（T117）
+    # **位置同样不能上移**，理由与第二段一字不差：上面那两条全库口径的断言
+    # （`settled_rows == 0`）数的是整张 payment_observation，而本段最后落下的正是
+    # 一条 `observed_state='settled'` 的观察。断言之后再演，两件事才都成立。
+    closed = close_ticket_demo(store, plan_id=plan_id, trace_id=out["trace_id"])
+    ticket, obs = closed["ticket"], closed["observation"]
+
+    # —— 本段买的第一件东西：工单有人接、有关闭时刻、且关闭时回填了一条观察 ——
+    assert ticket["assignee_role"] == roles.ROLE_PAYMENT_OPS, (
+        f"派单之后承接岗应是 {roles.ROLE_PAYMENT_OPS}，实际 {ticket['assignee_role']!r}")
+    assert ticket["assignee"] in roles.accounts_of(roles.ROLE_PAYMENT_OPS), (
+        f"接单人应来自角色目录，实际 {ticket['assignee']!r}")
+    assert ticket["resolved_at"] and ticket["resolution_observation_id"], (
+        "关单必须同时留下关闭时刻与回填的观察引用 —— "
+        "指不到观察的「已处理」就是替外部系统宣布终态（铁律 8）")
+
+    # —— 第二件：那条观察出自人工凭证，且**仍然经 payment.observe 落库** ——
+    assert obs["observed_state"] == "settled" and obs["gateway_code"].startswith("MANUAL."), (
+        f"回填的观察应是人工凭证说的 settled，实际 "
+        f"{obs['observed_state']!r}/{obs['gateway_code']!r}")
+    assert ticket["resolution_observation_id"].startswith(obs["request_id"]), (
+        "工单回填的引用要指得回那条观察行")
+    observed_by = {e["detail"].get("invocation_id") for e in cp.store.list_event_log(plan_id)
+                   if e["event_type"] == "SkillInvoked"
+                   and e["detail"].get("skill") == "payment.observe"}
+    assert obs["actor_invocation_id"] in observed_by, (
+        "回填的观察必须追得回一次真实的 payment.observe 调用 —— "
+        "追不回就说明有人绕开权威边界自己写了一条观察（scripts/verify.py 第 3 项同判据）")
+
+    # —— 第三件：铁律 8/9 都还站着 ——
+    assert closed["case"]["biz_status"] == "compensated", (
+        f"回填一条观察不该改动业务状态，实际 {closed['case']['biz_status']!r} —— "
+        "compensated 是终态，为回填去加一条新迁移就是铁律 9 说的那种事")
+    assert closed["denied"].kind == outcome_commands.KIND_DENIED, (
+        "名单外账号派单必须被拒")
+    assert [e for e in cp.store.list_event_log(plan_id)
+            if e["event_type"] == outcome_commands.EVENT_COMMAND_DENIED], (
+        "越权被拒也要留证据 —— 吞掉就等于这次试探没发生过")
     return 0
+
+
+# ==================================================================== 第三段（T117）
+# 工单闭环：派单 -> 关单 -> 人工凭证经 payment.observe 回填成一条观察。
+#
+# **位置钉死在 run() 的最末尾**，不许上移。上面两段里有两条**全库口径**的断言
+# （`settled_rows == 0` 数的是整张 payment_observation），而本段最后落下的正是一条
+# `observed_state='settled'` 的观察。先跑本段，那两条断言校验的就不再是失败路径
+# 那条链路了 —— 它们是本场景存在的理由，不能被后加的演示稀释。
+#
+# 这一段要给评委看的那句话：
+#
+#     「流程卡住后应由谁补偿」有三个答案，缺一不可：
+#      谁接单（承接岗，不是某个人名）、他做完了没有（关单时刻）、
+#      他做完之后钱到底退没退（回填的那条观察，权威仍在外部）。
+
+#: 本段的最小授权 identity。**两个 skill 都要**：关单本身，以及它要经 invoker 调的
+#: `payment.observe` —— 后者是全系统唯一写得进 settled 的 actor，关单借道它，
+#: 而不是自己开一条写终态的路（铁律 8）。少给一个，invoker 当场抛 PermissionDenied，
+#: 那正是白名单该有的样子：不许降级成本地直写。
+TICKET_DESK_IDENTITY = AgentIdentity(
+    agent_id="refund-ticket-desk",
+    role="refund_payment_ops",
+    duty="补偿工单的派单与关单：把人工线下凭证经 payment.observe 回填成一条观察",
+    allowed_skills=frozenset({"refund.compensation_close", "payment.observe"}),
+    allowed_tools=frozenset(),
+    write_scope=frozenset(),
+    max_risk="M",
+    model_tier=Tier.LIGHT,
+)
+
+#: 本段显式传进去的审批人名单。**刻意不读进程环境**：本场景的验收之一是「连跑两次
+#: 输出逐条一致」，而 ambient 的 `MAOS_APPROVERS` 在不同机器上不一样（全仓 conftest
+#: 也正是为此把它删掉）。真实部署里这份名单来自配置面，见
+#: `maos/ingress/outcome_commands.py` 的模块抬头。
+DEMO_APPROVERS = frozenset({"@payops:maos.local", "@boss:maos.local"})
+
+#: 名单外的账号，用来演「越权被拒且留痕」。
+OUTSIDER = "@intern:maos.local"
+
+#: 线下凭证。摘要的**第一个词**是凭证引用（渠道流水号）—— 这条约定写在
+#: `/resolve` 的用法里，也是这份人工凭证作为**外部事实**的出处。
+MANUAL_EVIDENCE = "20260910114500123456 支付宝商家后台已入账 6800.00 元"
+
+
+def close_ticket_demo(store, *, plan_id: str, trace_id: str) -> dict:
+    """把补偿工单走完整条链：越权被拒 -> 派单 -> 关单 -> 回填观察。只跑不断言。"""
+    extras = {"plan_id": plan_id, "trace_id": trace_id, "task_id": TASK_PAYMENT}
+    ticket_id = compensate_skill.ticket_id_of(CASE_ID)
+
+    print("\n[6] 工单闭环（T117）—— 「流程卡住后应由谁补偿」")
+    opened = compensate_skill.require_ticket(store, TENANT_ID, CASE_ID)
+    print(f"    开单: {ticket_id} · 承接岗 {opened['assignee_role']}"
+          f"（{roles.title_of(opened['assignee_role'])}）· 接单人 {opened['assignee']}"
+          f" · opened_at={opened['opened_at']}")
+
+    # —— 越权：名单外的账号派单，必须被拒且留一条 ApprovalDenied ——
+    denied = outcome_commands.dispatch(
+        f"/assign {ticket_id} {roles.ROLE_PAYMENT_OPS}",
+        store=store, tenant_id=TENANT_ID, sender=OUTSIDER,
+        approvers=DEMO_APPROVERS, extras=extras)
+    denied_events = [e for e in store.list_event_log(plan_id)
+                     if e["event_type"] == outcome_commands.EVENT_COMMAND_DENIED]
+    print(f"    越权: {OUTSIDER} 派单 -> {denied.kind}（{denied.text.splitlines()[0]}）"
+          f"；event_log 留下 {len(denied_events)} 条 "
+          f"{outcome_commands.EVENT_COMMAND_DENIED}")
+
+    # —— 派单：派的是**岗**，接单人由角色目录决定，不是硬编码的一个人名 ——
+    assigned = outcome_commands.dispatch(
+        f"/assign {ticket_id} {roles.ROLE_PAYMENT_OPS}",
+        store=store, tenant_id=TENANT_ID, sender="@boss:maos.local",
+        approvers=DEMO_APPROVERS, extras=extras)
+    print(f"    派单: {assigned.kind} -> 承接岗 {assigned.data['assignee_role']}"
+          f" · 接单人 {assigned.data['assignee']}")
+
+    # —— 关单：人在渠道后台核对完，把凭证交回来 ——
+    # 走的是 /resolve 这条真命令，不是直接调 skill：要演的正是「房间里打一行字」。
+    resolved = outcome_commands.dispatch(
+        f"/resolve {ticket_id} {MANUAL_EVIDENCE}",
+        store=store, tenant_id=TENANT_ID, sender="@payops:maos.local",
+        approvers=DEMO_APPROVERS, identity=TICKET_DESK_IDENTITY, extras=extras)
+    if resolved.kind != outcome_commands.KIND_DONE:
+        raise RuntimeError(f"关单没生效，不许静默收口：{resolved.text}")
+
+    ticket = compensate_skill.require_ticket(store, TENANT_ID, CASE_ID)
+    obs = objects.query(
+        store,
+        "SELECT * FROM payment_observation WHERE tenant_id=? AND case_id=?"
+        " ORDER BY observed_at DESC", (TENANT_ID, CASE_ID))[0]
+    case = guard.get_case(store, TENANT_ID, CASE_ID)
+
+    print(f"    关单: {ticket_id} · resolved_at={ticket['resolved_at']}"
+          f" · 结论 {ticket['resolution_kind']}")
+    print(f"    回填: resolution_observation_id={ticket['resolution_observation_id']}")
+    print(f"    观察: gateway={json.loads(obs['raw_receipt_json'])['detail']['gateway']}"
+          f" code={obs['gateway_code']} observed_state={obs['observed_state']}"
+          f" actor={obs['actor_invocation_id'][:8]}…")
+    print(f"    业务状态: {case['biz_status']} —— **仍是 compensated**。"
+          f"钱到没到账记在那条观察上，不在 biz_status 上（铁律 8/9："
+          f"compensated 是终态，不为回填一条观察去加一条新迁移）")
+    return {"ticket": ticket, "observation": obs, "case": case,
+            "denied": denied, "assigned": assigned, "resolved": resolved}

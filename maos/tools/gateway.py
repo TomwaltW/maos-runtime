@@ -60,6 +60,7 @@ from typing import Any, Protocol
 
 from maos.tools.gateway_codes import (
     DISCORDANT_REPEAT_REQUEST,
+    LAYER_BUSINESS,
     OUTCOME_FAILED,
     OUTCOME_SUCCESS,
     OUTCOME_UNKNOWN,
@@ -348,6 +349,177 @@ class AlipaySandboxAdapter:
             "AlipaySandboxAdapter.query 尚未接通支付宝沙箱："
             "本轮为时间盒任务，演示使用 MockGateway（错误码与时序对齐官方文档）"
         )
+
+
+# ---------------------------------------------------------------------------
+# 人工线下凭证适配器（T117）—— **外部凭证也是外部权威事实，不是绕过**
+# ---------------------------------------------------------------------------
+#
+# 补偿开出的人工工单，人在支付渠道后台把那笔钱线下退掉之后，这个事实必须能回到
+# 系统里。从前它回不来：`refund.compensate` 把 `last_observed_state` 记成
+# `unobserved`（那是对的，铁律 8 不许它替外部宣布结果），然后链路就断了。
+#
+# 补法**不是**给补偿流程开一条写 `settled` 的口子 —— 那会让全系统出现第二个写权威
+# 终态的地方，`guard.AUTHORITATIVE_WRITER` 那道闸当场变成摆设。补法是把人工凭证
+# 建模成它本来的样子：**一份来自外部的回执**。人到支付宝后台看到「已退款」，
+# 与 MAOS 自己 query 到 `settled`，是同一类事实的两种取得方式，区别只在取得的
+# 渠道是人眼还是 API。于是它照旧从 `gateway.query` 这个口进来，照旧经
+# `payment.observe` 落库，四道闸一道不少。
+#
+# 与 `AlipaySandboxAdapter` 的关系：那个是「同一条 API 换个真后端」，这个是
+# 「同一份事实换个取得渠道」。两者都实现 `GatewayPort`，所以上层一个字不用改。
+
+#: 本适配器在回执 `detail` 里打的渠道标记。`payment.observe` 认这个键分流，
+#: 审计与验收也按它捞行（`payment_observation.raw_receipt_json` 的 `$.detail.gateway`）。
+#:
+#: 为什么不新开一列：`payment_observation` 是既有表，同期 T116/T120 也在动退款域，
+#: 给共用表加列是跨轨风险；而回执原文本来就整份存在 `raw_receipt_json` 里，
+#: 标记放进回执自己的 detail，既不动表结构，也保证「标记与回执同生共死」——
+#: 单独一列可以和回执内容对不上，detail 里的不会。
+GATEWAY_MANUAL = "manual"
+
+#: 人工凭证的两个码。**刻意不进 `gateway_codes` 的官方码表**：那张表的规矩是
+#: 「每条码都带 source，核不到出处的一条都不写」，而这两个码根本不是支付宝发的，
+#: 是我们给「人看了一眼外部系统」这件事起的名字。混进官方表里，评委问一句
+#: 「这个码哪来的」就答不上来了。所以码值带 `MANUAL.` 前缀、`source` 一句话直说
+#: 它不是官方码 —— 一眼看得出它跟 `ACQ.*` 不是一回事。
+#:
+#: `layer` 仍是 `business`，不另造一个「人工层」：两层是**支付宝 API 的真实结构**，
+#: 不是我们的分类槽（`GatewayCode.__post_init__` 校验的就是这一点）。人工核对看到的
+#: 「这笔退款入没入账」，正是请求进了业务系统之后的结果，与 `ACQ.*` 描述的是同一层
+#: 事实，区别只在取得渠道是人眼还是 API —— 这也正是本适配器全部的立论。
+MANUAL_SETTLED = GatewayCode(
+    code="MANUAL.SETTLED",
+    message="人工线下核对：外部支付渠道显示该笔退款已入账",
+    retriable=False,
+    outcome=OUTCOME_SUCCESS,
+    remedy="以外部支付渠道后台记录为准；MAOS 侧只留这一次观察，不改写外部结果",
+    layer=LAYER_BUSINESS,
+    source="人工提交的线下凭证摘要（**非**支付宝官方码表；出处是提交人与凭证引用，"
+           "逐条记在回执 detail 里）",
+)
+
+MANUAL_NOT_SETTLED = GatewayCode(
+    code="MANUAL.NOT_SETTLED",
+    message="人工线下核对：外部支付渠道显示该笔退款未入账",
+    retriable=False,
+    outcome=OUTCOME_FAILED,
+    remedy="按人工流程重新发起或改单；本回执只记录这一次核对的结果",
+    layer=LAYER_BUSINESS,
+    source="人工提交的线下凭证摘要（**非**支付宝官方码表；出处是提交人与凭证引用，"
+           "逐条记在回执 detail 里）",
+)
+
+#: 人工凭证只收**两个**结论。`processing` / `unknown` 一律不收 ——
+#: 人是在「已经查完外部系统」之后才提交凭证的，「我还没查出来」不是一份凭证，
+#: 是凭证的缺席。口径同 `payment.observe` 那条「还没问出来不是一个可以落库的
+#: 结论」与 `compensate.UNOBSERVED`：把「没查出来」收成一条回执，等于替外部
+#: 系统下了一个谁都没下过的结论。
+_MANUAL_CODES: dict[str, GatewayCode] = {
+    OUTCOME_SUCCESS: MANUAL_SETTLED,
+    OUTCOME_FAILED: MANUAL_NOT_SETTLED,
+}
+_MANUAL_STATUS: dict[str, str] = {
+    OUTCOME_SUCCESS: STATUS_SETTLED,
+    OUTCOME_FAILED: STATUS_FAILED,
+}
+
+
+class ManualReceiptAdapter:
+    """把人工提交的线下凭证摘要包装成一份网关回执。签名同 ``GatewayPort``。
+
+    用法（``maos/skills/builtin/refund/compensation_close.py`` 就这么用）::
+
+        adapter = ManualReceiptAdapter()
+        adapter.submit(request_id=rid, outcome=OUTCOME_SUCCESS,
+                       evidence_ref="alipay-console-20260910-0031",
+                       summary="支付宝商家后台 7 月 5 日退款流水已入账",
+                       submitted_by="@payops:maos.local")
+        register_gateway("manual", adapter)      # 之后 payment.observe 照常 query
+
+    ``refund()`` **恒抛**，这是本类最要紧的一条。走到人工凭证这一步，说明退款
+    要么已经由人在渠道后台做完了、要么由人判定做不了 —— 本适配器只负责把那个
+    结果收下来。留一个能发起退款的方法在这里，迟早有人拿它去补一笔真钱，
+    而它绕过的正是幂等键、轮询与错误码那一整套（口径同 ``AlipaySandboxAdapter``：
+    没接通的动作显式抛，不静默返回假数据）。
+    """
+
+    def __init__(self) -> None:
+        #: request_id -> 已提交的凭证回执。一笔请求只留**最后一次**提交的凭证：
+        #: 人改口了以最新一次为准，历史留在 `payment_observation` 里（那张表按
+        #: `observed_at` 逐次追加），不在本适配器的内存里做第二份账。
+        self._receipts: dict[str, GatewayReceipt] = {}
+        #: request_id -> 被 query 过几次。落进回执的 `poll_count`，语义与 MockGateway
+        #: 一致：**问了几次**。人工这条路上恒为 1（观察一次就是终态），
+        #: 但仍然如实计数，不写死 —— 写死的数字骗不了人，只会让审计少一条真信息。
+        self._polls: dict[str, int] = {}
+
+    def __repr__(self) -> str:
+        return f"ManualReceiptAdapter(submitted={sorted(self._receipts)})"
+
+    # ------------------------------------------------------------------
+    def submit(self, *, request_id: str, outcome: str = OUTCOME_SUCCESS,
+               evidence_ref: str, summary: str, submitted_by: str,
+               submitted_at: str = "", idempotency_key: str = "") -> GatewayReceipt:
+        """收下一份线下凭证摘要，返回它包装成的回执。
+
+        四个必填项缺一不可，缺了就抛：**没有提交人、没有凭证引用的「凭证」不是
+        凭证**，是一句没有出处的断言 —— 而这条链路买的就是出处。
+        """
+        rid = str(request_id or "").strip()
+        if not rid:
+            raise ValueError("人工凭证必须指名它说的是哪一笔 refund_request（request_id）")
+        code = _MANUAL_CODES.get(str(outcome))
+        if code is None:
+            raise ValueError(
+                f"人工凭证的结论只能是 {sorted(_MANUAL_CODES)} 之一，实际 {outcome!r}；"
+                "「还没查出来」不是一份凭证，不要收成一条回执")
+        ref = str(evidence_ref or "").strip()
+        who = str(submitted_by or "").strip()
+        if not ref or not who:
+            raise ValueError(
+                "人工凭证必须带 evidence_ref（外部凭证引用）与 submitted_by（提交人）："
+                "这两项是它作为**外部事实**的全部出处，缺了就只是一句断言")
+
+        receipt = _receipt(
+            rid, str(idempotency_key or ""), _MANUAL_STATUS[str(outcome)], code,
+            poll_count=0,
+            detail={
+                "gateway": GATEWAY_MANUAL,
+                "evidence_ref": ref,
+                "summary": str(summary or ""),
+                "submitted_by": who,
+                "submitted_at": str(submitted_at or ""),
+            },
+        )
+        self._receipts[rid] = receipt
+        self._polls[rid] = 0
+        log.info("收到人工线下凭证 request=%s outcome=%s 提交人=%s", rid, outcome, who)
+        return receipt
+
+    # ------------------------------------------------------------------
+    def refund(self, request: RefundRequest) -> GatewayReceipt:
+        raise NotImplementedError(
+            "ManualReceiptAdapter 不发起退款：走到人工凭证这一步，那笔钱已经由人在"
+            "支付渠道后台处理过了，本适配器只负责把结果收回系统。"
+            "要真发起退款请用 MockGateway / AlipaySandboxAdapter，那条路上有幂等键、"
+            "轮询与官方错误码"
+        )
+
+    def query(self, request_id: str) -> GatewayReceipt:
+        """取这一笔已提交的人工凭证。没提交过就抛 —— **不返回一个空回执**。
+
+        兜底成「还没到终态」会让 `payment.observe` 白轮询几圈然后如实报「问不出来」，
+        表面上毫无异常，实际上是「凭证根本没提交」被伪装成了「外部还没结果」。
+        """
+        rid = str(request_id or "").strip()
+        receipt = self._receipts.get(rid)
+        if receipt is None:
+            raise KeyError(
+                f"没有针对 request_id={rid!r} 的人工凭证（已提交：{sorted(self._receipts)}）；"
+                "先 submit() 再 query()")
+        self._polls[rid] = self._polls.get(rid, 0) + 1
+        return replace(receipt, poll_count=self._polls[rid])
 
 
 # ---------------------------------------------------------------------------

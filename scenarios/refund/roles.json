@@ -1,0 +1,62 @@
+{
+  "_": [
+    "退款域的角色目录 —— 回答一件事：**这个账号属于哪个角色**。",
+    "",
+    "它**不是**权限名单。谁能批一笔钱，权威永远是运行时的 `MAOS_APPROVERS`",
+    "（铁律 6：那是运行时配置，不是仓库里的数据；改它属于安全事件，见 deploy/nacos.md）。",
+    "本文件里写了某个账号，只说明「他在组织里是这个岗」，不说明「他现在批得动」——",
+    "名单里没有的账号一律批不动，哪怕这里给他写了个主管的头衔。反过来也成立：",
+    "名单里有、这里没有的账号，`role_of` 给空字符串，按角色收窄的动作就落不到他头上。",
+    "",
+    "为什么要有这张表：从前审批人只是一串字符串，`verdict.approver_role` 算出来的角色名、",
+    "政策规则 `policy_rule.params.approver_role` 里写的角色名、`MAOS_APPROVERS` 里的账号，",
+    "三处各说各话，没有任何一处把「角色」和「账号」对上。于是「流程卡住后应由谁补偿」",
+    "这一问只能答一个人名，答不出他是哪个岗、这个岗还有谁能顶上。",
+    "",
+    "`verdict_role` 那一列是与 `maos/roundtable/verdict.py` 的角色名对齐用的：那边的",
+    "`ESCALATION` 升档表用 supervisor / finance_manager，`flows/contrast.py` 用 region_manager。",
+    "两套名字并存是并行开发的代价，不是设计意图 —— 收敛成一套是整合期的事（见 DECISIONS）。",
+    "空字符串表示那边没有对应的角色（`payment_ops` 不是审批岗，是接单岗）。",
+    "",
+    "账号一律用演示域 `maos.local`，与 evidence/room/ 的真房间语料同一套写法。",
+    "这里不放任何密钥、token 或真实身份（铁律 6）。"
+  ],
+  "version": 1,
+  "roles": {
+    "after_sales_supervisor": {
+      "title": "售后主管",
+      "duty": "退款诉求的第一责任人：判定该不该退、退多少，是常规档的拍板人",
+      "verdict_role": "supervisor",
+      "accounts": [
+        "@boss:maos.local",
+        "@as-lead:maos.local"
+      ]
+    },
+    "finance_reviewer": {
+      "title": "财务复核",
+      "duty": "超阈值金额的第二双眼睛：核算口径、账期与凭证是否对得上，高风险档由他复核",
+      "verdict_role": "finance_manager",
+      "accounts": [
+        "@cfo:maos.local",
+        "@fin-review:maos.local"
+      ]
+    },
+    "payment_ops": {
+      "title": "支付运维",
+      "duty": "到支付渠道后台按幂等键核对一笔退款的真实下落，线下补退或改单，并把凭证交回系统",
+      "verdict_role": "",
+      "accounts": [
+        "@payops:maos.local",
+        "@payops-2:maos.local"
+      ]
+    },
+    "region_manager": {
+      "title": "区域经理",
+      "duty": "经销渠道的退款按区域授权，政策规则 AS-004 指名要他放行",
+      "verdict_role": "region_manager",
+      "accounts": [
+        "@region-east:maos.local"
+      ]
+    }
+  }
+}

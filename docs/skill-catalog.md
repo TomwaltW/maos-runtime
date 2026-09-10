@@ -38,9 +38,10 @@
 | `kb.sink` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/kb_sink.py:29` |
 | `notify.customer` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤2 次） | （空） | `maos/skills/builtin/refund/notify.py:22` |
 | `payment.execute` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.refund` | `maos/skills/builtin/refund/payment_execute.py:34` |
-| `payment.observe` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/payment_observe.py:36` |
+| `payment.observe` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/payment_observe.py:52` |
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:363` |
-| `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:65` |
+| `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:67` |
+| `refund.compensation_close` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/compensation_close.py:85` |
 | `refund.evidence_check` | `1.0.0` | 制造售后退款域 | `refund_evidence` | escalate | （空） | `maos/skills/builtin/refund/evidence_check.py:109` |
 | `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:130` |
 | `refund.reason_classify` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤1 次） | （空） | `maos/skills/builtin/refund/reason_classify.py:141` |
@@ -468,7 +469,7 @@
 
 ### payment.observe @ 1.0.0
 
-实现：`PaymentObserveSkill` @ `maos/skills/builtin/refund/payment_observe.py:36`
+实现：`PaymentObserveSkill` @ `maos/skills/builtin/refund/payment_observe.py:52`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -502,12 +503,12 @@
 
 ### refund.compensate @ 1.0.0
 
-实现：`RefundCompensateSkill` @ `maos/skills/builtin/refund/compensate.py:65`
+实现：`RefundCompensateSkill` @ `maos/skills/builtin/refund/compensate.py:67`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
 | `purpose` | ① 用途 | 退款被驳回或走不通后的域内补偿收口：作废退款请求、写补偿记录与人工工单，把案子推进到 compensated |
-| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`operator`: str（做出驳回/收口决定的人）<br>`reason`: str（为什么走补偿，原样进补偿记录与事件）<br>`assignee`: str（可选，人工工单的接单人，缺省同 operator） |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`operator`: str（做出驳回/收口决定的人）<br>`reason`: str（为什么走补偿，原样进补偿记录与事件）<br>`assignee`: str（可选，人工工单的接单人，缺省同 operator）<br>`assignee_role`: str（可选，工单承接岗，缺省 roles.DEFAULT_TICKET_ROLE；认目录写法与 verdict.py 那套写法两种） |
 | `output_schema` | ③ 输出 | `biz_status`: compensated<br>`revoked`: list[dict]（每笔作废的 refund_request 及其最后观察到的下落）<br>`ticket`: dict（人工工单：单号、接单人、要人去做什么）<br>`records`: int（落进 compensation_record 的行数）<br>`last_observed_state`: str（settled\|failed\|processing\|unknown\|unobserved）<br>`invocation_id`: str |
 | `preconditions` | ④ 前置条件 | `tenant_id`、`case_id`、`operator`、`reason` |
 | `depends_tools` | ⑤ 依赖工具 | （空） |
@@ -515,6 +516,23 @@
 | `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
 | `security_boundary` | ⑦ 安全边界 | 写 compensation_record 与 biz_status(compensated)；**不写 settled**（那是 payment.observe 的权威边界，guard 会抛）；**不宣布外部资金结果** —— 作废记录只表示 MAOS 侧不再推进，最后一次观察到的下落原样留档交人工对账；已 settled 的案子拒绝补偿，不静默跳过 |
 | `reuse_note` | ⑧ 复用说明 | 任何「外部已经收到请求、但本地要收口」的域都该照此写：先留档最后一次观察、再开人工工单、最后才推进本地状态；三步顺序不可换 |
+| `owner_roles` | ⑨ 归属角色 | `refund_payment` |
+
+### refund.compensation_close @ 1.0.0
+
+实现：`RefundCompensationCloseSkill` @ `maos/skills/builtin/refund/compensation_close.py:85`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 人工工单处理完之后的关单：把线下凭证摘要经 payment.observe 落成一条payment_observation，回填工单的 resolution_observation_id，落 CompensationResolved |
+| `input_schema` | ② 输入 | `tenant_id`: str<br>`case_id`: str<br>`operator`: str（提交凭证的人；应是工单的承接人）<br>`evidence_ref`: str（外部凭证引用，如渠道后台流水号 —— 这是它作为外部事实的出处）<br>`summary`: str（可选，凭证摘要原文，原样进回执 detail 与事件）<br>`resolution_kind`: str（settled\|not_settled，缺省 settled） |
+| `output_schema` | ③ 输出 | `ticket`: dict（关单后的工单行）<br>`resolution_kind`: settled\|not_settled<br>`observation_id`: str（回填的那条 payment_observation 的自然键 request_id@observed_at）<br>`observed_state`: str（那条观察的 observed_state，来自 payment.observe 的出参）<br>`biz_status`: str（**通常不变** —— 案子已 compensated，观察不推终态）<br>`observe_invocation_id`: str（哪一次 payment.observe 落的那条观察）<br>`invocation_id`: str |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`case_id`、`operator`、`evidence_ref` |
+| `depends_tools` | ⑤ 依赖工具 | `gateway.query` |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | **不写 settled，也不写任何 biz_status** —— 观察一律经 payment.observe 落库，本 skill 只写 compensation_record 的关单列；关单必须带 evidence_ref 与回填的观察引用，指不到观察的结论不许落；已关闭的工单拒绝二次关单，不静默覆盖；调用方的 identity 必须同时授权 refund.compensation_close 与 payment.observe，缺授权时 SkillInvoker 抛 PermissionDenied，**不降级成本地直写** |
+| `reuse_note` | ⑧ 复用说明 | 任何「人在系统外把事办了，要把结果收回来」的域都该照此写：把人工凭证建模成一份外部回执，走该域既有的那条权威观察通道，不为人工另开一条写终态的路 |
 | `owner_roles` | ⑨ 归属角色 | `refund_payment` |
 
 ### refund.evidence_check @ 1.0.0

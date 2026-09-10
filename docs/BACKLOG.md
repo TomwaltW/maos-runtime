@@ -2359,3 +2359,13 @@ python3 scripts/gen_docs.py --check →  3 份文档与代码逐字节一致  ex
 | 2026-09-10 | p10 | `MANUAL.SETTLED` / `MANUAL.NOT_SETTLED` 刻意不在 `maos/tools/gateway_codes.py` 的官方码表里，所以 `lookup()` 对它俩抛 `KeyError` | 第七道闸 `ReviewerGate._gate_gateway` 按码查表判 disposition；哪天有人把人工凭证做成一份进闸的产物，那里会撞 `KeyError`。今天走不到：关单不产 artifact、不过闸 | 真要让人工凭证进闸时再处理，做法是给闸加一条「`MANUAL.` 前缀直接判 human_terminal」的分支，**不是**把这两个码塞进官方表 |
 | 2026-09-10 | p10 | `docs/expected-metrics.json` 的 `pytest_passed_nopg` / `pytest_skipped_nopg`（3220 / 41）在基线 `1f4bb1f` 上**就已经不准**（实跑 3217 / 44），只是两数之和 3261 恰好等于当时的收集数，所以那条断言当时是绿的 | 本轨 +53 条之后收集数变 3314，断言当场红。契约 §A 不许任何一轨动那个文件 | 整合期统一刷：`pytest_passed_nopg` → 3270、`pytest_skipped_nopg` → 44（本轨实跑值，五轨并完还要再刷一次）。顺带把两数各自刷准，别再靠「和恰好对上」蒙混 |
 | 2026-09-10 | p10 | `maos/domain/refund/roles.py::_load()` 每次调用都读一遍 `scenarios/refund/roles.json`，不缓存；而 `role_of()` 会对每个岗调一次 `accounts_of()`，一次查询最多读盘四次 | 几十行的静态语料，实测无感。但它挂在 `/assign` 与每次 `can_approve` 上，真房间高频用时会变成可见的开销 | 真觉得慢了再加缓存，**同时**要给测试留一个 `reset_cache()`。现在不加是刻意的：缓存会让测试之间互相串（换一份目录得先想起来清缓存），那种耦合不值这点开销 |
+
+## 整合期 p10-a（Wave A 五轨合并，2026-09-10）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-10 | p10 | T117 的 `maos/ingress/outcome_commands.py` 还没接进 `router.py`（`COMMAND_HANDLERS` 表 + `dispatch()` 已就位，只差 router 认这四个动词） | 房间里 `/assign /resolve /confirm /complain` 目前无人应答 | Wave B 整合（T113 收工后）：`IngressRouter` 认不出的斜杠命令交给 `outcome_commands.dispatch`。注意 T117 的处理函数要的 store 是**装着退款域表的那个库**，而房间的 `/refund` 是在 `custom_case` 自建的 `:memory:` 里跑完的 —— 接线时要先定「命令对着哪个库」，T113 的 `MAOS_INGRESS_DB` 是一半答案 |
+| 2026-09-10 | p10 | T116 的三态投影 `projection.public_status()` 未接财务岗卡片；T117 的角色名（`after_sales_supervisor` 等）与 `verdict.py` 的 `supervisor / finance_manager` 靠 `roles.canonical_role()` 两边认，`verdict.py` 本身未改 | 房间里财务岗仍按老文案说状态；升档表用的仍是旧角色名 | Wave B 整合，与 T113 一起动 `maos/roundtable/**` |
+| 2026-09-10 | p10 | 裸跑 `python3 run.py --scenario 6` 仍不落 `case_outcome` / 晋升行（只有 `make_evidence` 那条路接了 `PlanFinalizer.poll`，T120 期人类拍板） | 演示时若直接跑 run.py 再查库会看到空表 | 演示脚本定稿前决定：要么演示走 `run_case.py` / `make_evidence.py`，要么给 `scenario_6/7` 各加一句 `poll()`（各 1 行，幂等由 claim 兜着） |
+| 2026-09-10 | p10 | `_add_column_if_missing` 三份复制（`case_pack.py` / `compensate.py` / `outcome.py`），契约 §B.2 说整合期去重 | 改一处漏两处不报错；`case_pack.py` 那份多一层 PRAGMA 回落 | Wave B 整合一并收成 `maos/domain/refund/objects.py` 的一个助手（T115 的 `DomainConn` 上 PG 后 PRAGMA 不保证有，回落分支要留） |
+| 2026-09-10 | p10 | T113 的基线是 `7af9022`，比本分支的五轨基线 `1f4bb1f` 新一个 commit，但不含本分支任何内容 | Wave B 整合时 T113 要合到本分支之上，`maos/roundtable/**` 以 T113 为准、其余以本分支为准 | 9/14 前后 T113 收工时 |

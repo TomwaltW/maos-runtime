@@ -40,12 +40,14 @@ set -euo pipefail
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-# 第 1 步的测试条数按环境分两档。差的 29 条 = 22（maos/tests/test_pg_store_live.py）
-# + 7（maos/tests/test_pg_rank_parity.py）：没库时它们整个 skip，有库时全部真跑。
+# 第 1 步的测试条数按环境分两档。差的 64 条 = 22（maos/tests/test_pg_store_live.py）
+# + 7（maos/tests/test_pg_rank_parity.py）+ 19（maos/tests/test_refund_domain_pg.py）
+# + 16（maos/tests/test_kb_pg_prefilter.py，后两份 T115 加，2026-09-10 整合期由 29 刷成 64）：
+# 没库时它们整个 skip，有库时全部真跑。
 #
-# 有库那档**由无库那档加 29 算出来，不写死**；无库那档**已经不在本文件里**，
-# 它在 docs/expected-metrics.json 的 pytest_passed_nopg。29 这个差值才是真正要守的
-# 不变量，下面那条算式不要动。
+# 有库那档**由无库那档加 64 算出来，不写死**；无库那档**已经不在本文件里**，
+# 它在 docs/expected-metrics.json 的 pytest_passed_nopg（差值本身在 pg_gated_tests）。
+# 这个差值才是真正要守的不变量，下面那条算式不要动。
 #
 # 下面整段是这个数被漏改的历次。留着，因为它解释了为什么最后要收口到一处。
 # metric:frozen-begin 历次并轨的实测读数，各自钉在当时的基线上，是史料，不随合入刷新

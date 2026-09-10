@@ -1,4 +1,4 @@
-# generated at 2026-09-10T14:13:38.401274+00:00 from f4ad8ddcb18c6c8a54efdb075888bd57c38a7a62
+# generated at 2026-09-10T14:17:35.241261+00:00 from e6b3848d8be61d817cc57595d96a5494ce8cd23e
 场景 8：保险理赔（顺利路径），无 key 确定性复现
 
 [1] 待主管审批: 核算赔款并逐行分摊（赔款 9900.00 > 阈值 5000）
@@ -149,7 +149,7 @@ Plan: FAILED  |  处理第三笔住院医疗理赔：赔付方受理后迟迟不
     task-s8c-pay  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
     task-s8c-pay  BLOCKED          -> FAILED           [human_reject]
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_3ba935eb472e，共 4 个任务
+INFO  maos.cp      创建计划 plan_1e25227528fd，共 4 个任务
 INFO  maos.cp      [task-s8-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s8-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s8-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -173,7 +173,7 @@ INFO  maos.gate    [task-s8-pay] Gate {'schema': 'pass', 'acceptance': 'pass', '
 INFO  maos.cp      [task-s8-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s8-pay] BLOCKED -> DONE (human_approve)
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_f1a178a79693，共 4 个任务
+INFO  maos.cp      创建计划 plan_9418da3ff6e3，共 4 个任务
 INFO  maos.cp      [task-s8b-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s8b-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s8b-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -197,7 +197,7 @@ INFO  maos.gate    [task-s8b-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 
 INFO  maos.cp      [task-s8b-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s8b-pay] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s8b-pay] BLOCKED -> FAILED (human_reject)
-INFO  maos.cp      创建计划 plan_f893bd71215d，共 4 个任务
+INFO  maos.cp      创建计划 plan_6a1d1d4398f4，共 4 个任务
 INFO  maos.cp      [task-s8c-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s8c-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s8c-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -221,6 +221,6 @@ INFO  maos.gate    [task-s8c-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 
 INFO  maos.cp      [task-s8c-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s8c-pay] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s8c-pay] BLOCKED -> FAILED (human_reject)
-INFO  maos.finalizer [plan_3ba935eb472e] 复盘完成，沉淀 1 条
-INFO  maos.finalizer [plan_f1a178a79693] 复盘完成，沉淀 2 条
-INFO  maos.finalizer [plan_f893bd71215d] 复盘完成，沉淀 2 条
+INFO  maos.finalizer [plan_1e25227528fd] 复盘完成，沉淀 1 条
+INFO  maos.finalizer [plan_9418da3ff6e3] 复盘完成，沉淀 2 条
+INFO  maos.finalizer [plan_6a1d1d4398f4] 复盘完成，沉淀 2 条

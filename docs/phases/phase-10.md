@@ -6,6 +6,10 @@
 > **波次调整（2026-09-10）**：T113（圆桌落库）与另一会话正在改的
 > `maos/roundtable/**` / `hiclaw/**` / `maos/ingress/router.py` 直接撞车，
 > 已把 **T117 提到 Wave A 顶替 T113**，T113 退到 Wave B —— 它的基线要等那轮 commit 落地。
+> **波次调整二（2026-09-10 晚）**：圆桌那轮已作为 `7af9022` 落地，**T113 提前开工**、与 Wave A 五轨并行，
+> worktree 钉 **7af9022**（派单 `review/paste-T113.md`，基线已实跑）；Wave B 只剩 **T114 / T119**，
+> 基线 = Wave A 整合后主干，派单 `review/paste-T114.md` / `review/paste-T119.md` 已写好、`【刷` 占位整合期刷；
+> Wave B 契约 `review/p10b-contracts.md`（与 A 版并存，只加不改）。
 > 复赛现场 2026-09-22/23（杭州）。本手册只管 **9/11 → 9/21**。
 > 全局铁律九条见 `CLAUDE.md`；本期新增的跨轨约定在 §4，派单时抽成 `review/p10-contracts.md`。
 > 写法约定：**加反引号的路径 = 现存文件**（`scripts/check_docs.py` 会核存在性）；
@@ -134,7 +138,7 @@
 - 验收：`env -u … python3 run.py --scenario 6` 的 `result.json.business_outcome` 含四判据；`--stall` 路径 `business_success=false` 且 verify 第 6 项 PASS；`python3 scripts/verify.py` `RESULT: 10/10 PASS`；`failure_hint_index` 在场景 7 后有 ≥ 1 行。
 - 白名单方向：`maos/domain/refund/{schema_p10_t120.sql,outcome.py}`（新）、`maos/kb/{guardrails.py(classify_case 扩四判据),promotion.py(新)}`、`maos/runtime/plan_finalizer.py`、`scripts/{make_evidence.py(business_outcome 段),verify.py(第 6/10 项),run_case.py(--stall),case_inbound.py}`、`docs/authoritative-facts.md`（四判据段）、测试。
 
-### Wave B（基线 = Wave A 整合分支 sha；T113 另需圆桌那轮先落地）
+### Wave B（T113 已于 9/10 晚提前开工、基线 `7af9022`；T114 / T119 基线 = Wave A 整合后主干 sha）
 
 **T113 圆桌落库 —— AgentTeams 事件链可核验**
 - 目标：五岗每次发言、合议、skill 调用、模型用量进 store，圆桌成为可回放的事件链。
@@ -189,10 +193,10 @@
 
 | 日期 | 事 | 门 |
 |---|---|---|
-| 9/10 四 | 人类拍板 §6；另一会话把圆桌发声门禁 commit；主会话建 5 个 worktree（钉 sha）+ `p10-contracts.md` + 5 份派单，在一个 worktree 实跑基线写进「开场自检期望值」 | `claude-fleet t113 t115 t116 t118 t120` |
+| 9/10 四 | 人类拍板 §6；另一会话把圆桌发声门禁 commit；主会话建 5 个 worktree（钉 sha）+ `p10-contracts.md` + 5 份派单，在一个 worktree 实跑基线写进「开场自检期望值」 | `claude-fleet t115 t116 t117 t118 t120`（已开）；圆桌 `7af9022` 落地后 T113 worktree 钉 7af9022 + 派单 → `claude-fleet t113` |
 | 9/11 五 – 9/13 日 | **Wave A** 五轨并行 | 各轨回执 |
-| 9/14 一 | Wave A 整合：`integrate/p10-a`，合并顺序 T115 → T116 → T120 → T118 → T113；刷 `expected-metrics`；本机 docker PG 门禁测试全绿；建 Wave B 三个 worktree + 派单 | `claude-fleet t114 t117 t119` |
-| 9/15 二 – 9/16 三 | **Wave B** 三轨并行 | 各轨回执 |
+| 9/14 一 | Wave A 整合：`integrate/p10-a` 从 `7af9022` 起，合并顺序 T115 → T116 → T120 → T118 → T117 → T113；刷 `expected-metrics`；本机 docker PG 门禁测试全绿；建 Wave B 两个 worktree（T114 / T119，钉整合后 sha）+ 刷两份派单的 `【刷` 占位 | `claude-fleet t114 t119` |
+| 9/15 二 – 9/16 三 | **Wave B** 两轨并行（T113 若已收工，随 Wave A 一起合） | 各轨回执 |
 | 9/17 四 | Wave B 整合：`integrate/p10-b`；全量回归；干净工作区重产全部证据束（默认 8 束 + domains + case-real-01 四路径 + R8）；`verify.py` ≥ 10/10；快进 `goai-restructure` | 整合验收（§9） |
 | 9/18 五 – 9/19 六 | **真跑日**（人类 + 主会话）：PolarDB 真实例（白名单 + DSN）跑 `polardb_smoke.py` 6 步 + 单案例四路径，截图三张（实例详情页 / 终端 / 表行数）；真 Matrix 房间真模型五岗 + 真人 `/approve` 与 `/reject` 各一次，`capture_room_transcript.py` 采进束；`--live-model` 束带 `model-usage.json` | 证据束首行 sha 干净、无 `-dirty` |
 | 9/20 日 – 9/21 一 | **T121** 材料 + 视频重录 + 彩排 + `make_release.sh`；9/21 下午留白当缓冲 | checklist 全可勾 |
@@ -231,4 +235,4 @@
 
 ## 10. 下一步
 
-人类回复 §6 的 1、2 两条（其余按缺省）→ 主会话建 worktree、抽契约、落派单、实跑基线 → 交一行 `claude-fleet t113 t115 t116 t118 t120`。
+Wave A 五轨在跑、T113 已就绪（`claude-fleet t113`）；人类回复 §6 的 1、2 两条（其余按缺省）→ 9/14 整合 Wave A → 刷 `paste-T114.md` / `paste-T119.md` 的 `【刷` 占位、建两个 worktree → `claude-fleet t114 t119`。

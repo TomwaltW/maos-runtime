@@ -23,9 +23,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maos.domain.refund.case_pack import TEN_OBJECTS  # noqa: E402
-from maos.flows.custom_case import CaseFileError, RoomNotConnected, run_file  # noqa: E402
+from maos.flows.custom_case import (  # noqa: E402
+    CaseFileError,
+    RoomNotConnected,
+    load,
+    run_file,
+    run_payload,
+)
 
 BAR = "=" * 68
+
+#: `--stall` 给网关的 settle_after。必须**大于** `payment.observe` 的 `DEFAULT_MAX_POLLS`
+#: （5），否则轮询在到顶之前就问出了终态，这条路径的全部意义就没了。取 99 与
+#: `flows/scenario_7.py` 的 `SETTLE_AFTER` 同一个数，两处演的是同一件事。
+STALL_SETTLE_AFTER = 99
 
 #: 与 `hiclaw/room_demo.py` 的 `EXIT_NO_ROOM` 同一个数：要了房间却没进去，不许 exit 0。
 EXIT_NO_ROOM = 4
@@ -164,6 +175,88 @@ def _report_coverage(row: dict) -> None:
         print(f"      **悬空引用 {len(cov['dangling'])} 条**：{cov['dangling']}")
 
 
+# --------------------------------------------------------------- --stall 路径
+def _run_stalled(path: str, **kw) -> tuple[dict, dict]:
+    """读文件再跑。拆成两层是为了让测试能直接喂 payload，不必落一个临时文件。"""
+    return _run_stalled_payload(load(path), **kw)
+
+
+def _run_stalled_payload(payload: dict, **kw) -> tuple[dict, dict]:
+    """跑一份 case，但让网关**永远不返终态**。返回 `(观测行, 业务四判据)`。
+
+    这条路径是评委那句话最直接的一张证据：
+
+        「所有 Agent 都回复完成」只表示协作结束，不代表业务成功。
+
+    所有任务都会走到 DONE —— `payment.observe` 问到 `max_polls` 上限仍是非终态时
+    **如实返回「还没问出来」**，那是一次成功的观察行为，不是一次失败的任务。于是
+    DAG 全绿、Plan DONE、每个 Agent 都回复完成，而 `payment_observation` 表是空的，
+    `arrival` 只能是 `unknown`，`business_success` 只能是 false。
+
+    ## 两处实现细节，各有一个不能换的理由
+
+    · **改数据不改代码**：`settle_after` 本来就是 case JSON 里的字段
+      （`scenarios/custom/README.md`），这里只是把它按 `--stall` 顶上去。给
+      `custom_case.py` 加一个 stall 分支是另一轨的白名单面，也没必要 —— 靶场的
+      可配置性本来就够了。
+    · **借出那一个 store**：`flows/common.build()` 建的是 `:memory:` 库，进程内跑完
+      就没了，而四判据只有对着库才算得出来。这里把 `common.SqliteStore` 换成一个
+      **记账的工厂**（与 `scripts/make_evidence.py::run_child` 同一套手法，理由也一样），
+      库仍然是 `:memory:`、这一跑的行为一个字节不变，只是跑完还拿得到那个 store。
+      不这么做的话，这条路径只能打印一句「四判据是这样」而没有库可核 —— 那正是
+      本轨在拆的那种自述。
+    """
+    import maos.flows.common as common
+    from maos.core.store import SqliteStore
+    from maos.domain.refund import outcome as outcome_mod
+
+    gateway = dict(payload.get("gateway") or {})
+    gateway["settle_after"] = STALL_SETTLE_AFTER
+    payload = {**payload, "gateway": gateway}
+
+    seen: list[object] = []
+    original = common.SqliteStore
+
+    def factory(*a, **kwargs):
+        store = original(*a, **kwargs)
+        seen.append(store)
+        return store
+
+    common.SqliteStore = factory                       # type: ignore[assignment]
+    try:
+        row = run_payload(payload, **kw)
+    finally:
+        common.SqliteStore = original                  # type: ignore[assignment]
+
+    if not seen:                                       # 装配层换了实现就会走到这里
+        raise RuntimeError("没借到 store，算不出四判据 —— flows/common.build() 的建库方式变了？")
+    store = seen[-1]
+    assert isinstance(store, SqliteStore)
+    return row, dict(outcome_mod.record_case_outcome(
+        store, tenant_id=row["tenant_id"], case_id=row["case_id"],
+        plan_id=row["plan_id"]))
+
+
+def report_stall(row: dict, outcome_row: dict) -> None:
+    """`--stall` 的招牌那一屏：任务全 DONE 与业务没成功，摆在一起看。"""
+    states = [t["state"] for t in row["tasks"]]
+    all_done = bool(states) and all(s == "DONE" for s in states)
+    print(f"\n{BAR}\n--stall：所有 Agent 都回复完成 ≠ 业务成功\n{BAR}")
+    print(f"  任务终态  : {len(states)} 个任务，全 DONE = {all_done}"
+          f"（{', '.join(sorted(set(states)))}）")
+    print(f"  Plan      : {row['plan_state']}")
+    print(f"  支付观察  : {len(row['payment_observations'])} 条"
+          f" —— 轮询到 max_polls 上限仍非终态，`payment.observe` 一行都不写")
+    print(f"  到账      : {outcome_row.get('arrival')}"
+          f"（依据 {outcome_row.get('arrival_basis') or '无观察行'}）")
+    print(f"  客户确认  : {outcome_row.get('customer_confirmation')}")
+    print(f"  人工纠错  : {outcome_row.get('manual_correction')}")
+    print(f"  投诉      : {outcome_row.get('complaint')}")
+    print(f"  业务成功  : {bool(outcome_row.get('business_success'))}")
+    print("  结论      : 协作完成了，业务没有。arrival 只由 payment_observation 的行决定，"
+          "没有观察行就不许说到账（铁律 8）。")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="run_case", description="跑一份自定义退款 case（无 key、零出网）")
@@ -185,15 +278,23 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"--matrix 没接通房间时照跑不误，而不是 exit {EXIT_NO_ROOM}")
     parser.add_argument("--quiet", action="store_true",
                         help="不打印状态迁移轨迹，只留结果摘要")
+    parser.add_argument("--stall", action="store_true",
+                        help="网关永不返终态、轮询到顶：所有任务照样 DONE，"
+                             "但 arrival=unknown、business_success=false")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)-12s %(message)s")
     logging.getLogger("maos.bus").setLevel(logging.WARNING)
 
+    stalled: dict | None = None
     try:
-        row = run_file(args.case, approve=not args.reject, fail_with=args.fail_with,
-                       matrix=args.matrix, verbose=not args.quiet,
-                       allow_degraded=args.allow_degraded, drift=args.drift)
+        kw = dict(approve=not args.reject, fail_with=args.fail_with,
+                  matrix=args.matrix, verbose=not args.quiet,
+                  allow_degraded=args.allow_degraded, drift=args.drift)
+        if args.stall:
+            row, stalled = _run_stalled(args.case, **kw)
+        else:
+            row = run_file(args.case, **kw)
     except CaseFileError as exc:
         print(f"输入有问题：{exc}", file=sys.stderr)
         return 2
@@ -208,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     report(row)
+    if stalled is not None:
+        report_stall(row, stalled)
     if args.json:
         Path(args.json).write_text(
             json.dumps(row, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

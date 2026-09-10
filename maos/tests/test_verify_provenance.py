@@ -325,4 +325,6 @@ def test_provenance_is_wired_into_checks():
     """判据写了却没接进 `CHECKS`，屏幕上照旧一屏 PASS —— 这是最省事的削弱方式。"""
     verify = _load_verify()
     assert verify.check_provenance in verify.CHECKS
-    assert len(verify.CHECKS) == 9, "第 9 项加进来了，前八项一个都不许少"
+    # T120 把 `case-outcome` 加成第 10 项（业务四判据），9 -> 10。
+    # 这个数字是**下限守卫**：它防的是有人为了让某一项别红而把它从 CHECKS 里摘掉。
+    assert len(verify.CHECKS) == 10, "第 10 项加进来了，前九项一个都不许少"

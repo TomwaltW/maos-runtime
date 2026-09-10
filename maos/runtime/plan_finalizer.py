@@ -13,6 +13,16 @@ Plan 没到终态就什么都不做，到了终态且没沉淀过，才复盘一
 组织成可检索的条目，而模型只会让同一份数据每次产出不同的文字。
 ``model`` 参数照常留着并透传进 skill 上下文 —— 这里是模型**该**在的地方，
 换成模型复盘时不需要动 Control Plane 一行，这正是本类存在的意义。
+
+## T120 起它还多干一件事：业务结果的自动晋升
+
+`poll()` 里多了一句 `self.promote(plan_id)`：算这一趟的业务四判据
+（`domain/refund/outcome.py`），再按晋升规则（`kb/guardrails.classify_case`）
+决定这个案例进不进默认知识层（`kb/promotion.py`）。
+
+放在这里是因为它与复盘是同一类事：Plan 到终态之后才做、可以慢、失败了也不该掀翻
+已经跑完的 Plan。区别只在沉淀的对象 —— 复盘沉淀的是「这一趟怎么跑的」，
+晋升沉淀的是「这一单业务成没成，够不够格当下一次规划的范本」。
 """
 
 from __future__ import annotations
@@ -73,6 +83,8 @@ class PlanFinalizer:
         rows = self.store.list_event_log(plan_id)
         entries = self.distill(plan, tasks, rows)
 
+        self.promote(plan_id)
+
         ids: list[str] = []
         for entry in entries:
             res = self.skills.invoke(SKILL_SINK, {
@@ -91,6 +103,38 @@ class PlanFinalizer:
         self.store.finish_idempotency(f"finalize:{plan_id}", {"knowledge": len(ids)})
         log.info("[%s] 复盘完成，沉淀 %d 条", plan_id, len(ids))
         return ids
+
+    # ------------------------------------------------------------------
+    def promote(self, plan_id: str) -> list[dict]:
+        """计划终态钩子：算业务四判据，够格的案例自动晋升进知识层。
+
+        **这是「自动晋升」在系统里唯一的执行点**。在此之前晋升规则
+        （`kb.guardrails.classify_case`）写好了却只在 R5 对照实验里被手动调过一次，
+        于是「只有证据完整且外部结果明确的案例进入默认知识层」是一句没有执行点的话。
+        接在这里而不是控制面里，理由与本类存在的理由是同一个：复盘可以慢、可以失败，
+        状态权威不能。
+
+        **失败只告警不上抛**，与下面 `kb.sink` 失败那一支同一口径：Plan 已经跑完了，
+        沉淀不了不该把它掀翻。但也不能不出声 —— 静默的晋升失败会让知识库慢慢空掉，
+        而每一次跑都显示成功。
+
+        退款域没落地（软件域那几个场景）时 `promote_plan` 自己返回空，不抛。
+        """
+        try:
+            from maos.kb.promotion import promote_plan
+        except ImportError as exc:                    # noqa: BLE001 —— 域未合入时软降级
+            log.warning("[%s] 晋升模块不可用（%s），本轮未晋升", plan_id, exc)
+            return []
+        try:
+            results = promote_plan(self.store, plan_id=plan_id)
+        except Exception as exc:                      # noqa: BLE001 —— 见 docstring
+            log.warning("[%s] 自动晋升失败，本轮未沉淀业务结果: %s", plan_id, exc)
+            return []
+        for res in results:
+            log.info("[%s] case %s -> %s（到账=%s）", plan_id, res["case_id"],
+                     res["verdict"] or "不进知识层",
+                     (res.get("outcome") or {}).get("arrival"))
+        return results
 
     # ------------------------------------------------------------------
     @staticmethod

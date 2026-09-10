@@ -780,7 +780,8 @@ def evidence_backing(case: Case, plan_id: str, item: object) -> str:
     return _observation_backing(case, plan_id, item)
 
 
-def outcome_selfclaim(state: str, outcome: dict, unaudited: int) -> list[str]:
+def outcome_selfclaim(state: str, outcome: dict, unaudited: int,
+                      expect: tuple[str, str] | None = None) -> list[str]:
     """``business_outcome`` 那四个自述字段与证据的**就地**比对。返回全部失败理由。
 
     第 6 项从前只查 ``external_evidence`` 里**指得到的东西**（G-2 把产物和回执做进了
@@ -799,7 +800,11 @@ def outcome_selfclaim(state: str, outcome: dict, unaudited: int) -> list[str]:
     ``provenance`` 本身对不对得上事件链**不在这里判**（那要重算入库路径，是另一件事，
     见 BACKLOG ``## task-H1``）—— 这里只保证「自述的数」等于「列表里数得出来的数」。
     """
-    expect_status, expect_basis = TERMINAL_OUTCOME[state]
+    # ``expect`` 由调用侧按**它自己从库里推出来的**结论给（T120：DONE 但四判据说业务
+    # 没成时，生成侧写的是 undetermined/business_outcome_not_successful）。不给就退回
+    # 按库里的 state 查表 —— 行为与 T120 之前逐字节相同。
+    # 关键是它**不来自报告自述的 status**：拿被审的那份自述去定期望值，这一整层就白查了。
+    expect_status, expect_basis = expect if expect is not None else TERMINAL_OUTCOME[state]
     wrong: list[str] = []
     if outcome.get("plan_state") != state:
         wrong.append(f"plan_state 自述 {outcome.get('plan_state')!r}，库里是 {state!r}")
@@ -829,6 +834,18 @@ def check_business_outcome(cases: list[Case], *, domain: DomainSpec | None = Non
     ``business_outcome.status`` 却写 succeeded」这一手一声不吭（H-1 实测：7/7 PASS、
     exit=0、warn 一行不少）。判负要判在**自称**上，不是判在 state 上 —— 因为
     state 本来就是老实的，那正是这一手能躲过去的原因。
+
+    ## T120 加的那口牙：DONE 且 ``arrival != settled`` ⇒ 必须 ``business_success=false``
+
+    从前「有外部判据」就够了，而一条 ``payment_observation`` 只要在那儿就算判据 ——
+    哪怕它记的是 ``failed``、哪怕轮询到顶压根没写过观察行（那时判据来自别处）。
+    于是 Plan DONE + 有判据 = succeeded 这条推理里，**没有任何一步问过钱到没到账**。
+    本项现在读 ``business_outcome.case_outcomes`` 的四判据：只要有一个 case 没成，
+    DONE 的 status 就只能是 ``undetermined``；而 ``arrival`` 不是 settled 却自称
+    ``business_success=true`` 直接判负 —— 那是报告自己打自己的脸。
+
+    四判据本身对不对得上库，由第 10 项 ``check_case_outcome`` 查（那边要回查观察行）。
+    本项只判**这份报告内部一致不一致**，两项分工不重叠。
     """
     chk = Check("business-outcome",
                 "Plan 终态有 business_outcome，DONE 的外部判据回查得到")
@@ -862,13 +879,31 @@ def check_business_outcome(cases: list[Case], *, domain: DomainSpec | None = Non
             ev = outcome.get("external_evidence") or []
             unaudited = sum(1 for e in ev
                             if isinstance(e, dict) and e.get("provenance") == "unknown")
+            # T120：四判据里只要有一条说这单业务没成，DONE 就不许记成 succeeded。
+            # `contradictory` 抓的是报告自己打自己的脸 —— 到账不是 settled 却自称业务成功。
+            outcomes = [o for o in (outcome.get("case_outcomes") or []) if isinstance(o, dict)]
+            unsuccessful = [o for o in outcomes if not o.get("business_success")]
+            contradictory = [o for o in outcomes
+                             if o.get("arrival") != "settled" and o.get("business_success")]
+            expect = TERMINAL_OUTCOME[state]
+            if state == "DONE" and unsuccessful:
+                expect = ("undetermined", "business_outcome_not_successful")
+            if contradictory:
+                chk.bad(f"{label}: {len(contradictory)} 个 case 的 arrival 不是 settled "
+                        f"却记成 business_success=true —— 到账只由 payment_observation 的行"
+                        f"决定（铁律 8），没问出到账就没有「业务成功」这一说："
+                        + "；".join(f"{o.get('case_id')} arrival={o.get('arrival')}"
+                                   for o in contradictory))
+                continue
             if state == "DONE":
                 if not ev:
                     chk.bad(f"{label}: DONE 但没有任何外部判据 —— "
                             f"「Agent 都完成了」不等于业务成功")
                     continue
-                if outcome.get("status") != "succeeded":
-                    chk.bad(f"{label}: 有外部判据却记成 status={outcome.get('status')}")
+                if outcome.get("status") != expect[0]:
+                    why = ("四判据说这单业务没成" if unsuccessful else "有外部判据")
+                    chk.bad(f"{label}: {why}，status 只能是 {expect[0]!r}，"
+                            f"报告记的是 {outcome.get('status')!r}")
                     continue
                 if unaudited:
                     # 措辞只说这一项证得了的事：**入库路径**上没有来源事件。
@@ -901,7 +936,7 @@ def check_business_outcome(cases: list[Case], *, domain: DomainSpec | None = Non
                         f"{TERMINAL_OUTCOME[state][0]!r}")
                 continue
             # 结论有了牙齿，描述结论的那四个字段还得对得上（见 outcome_selfclaim）。
-            wrong = outcome_selfclaim(state, outcome, unaudited)
+            wrong = outcome_selfclaim(state, outcome, unaudited, expect)
             if wrong:
                 chk.bad(f"{label}: business_outcome 的自述字段与证据对不上 —— "
                         f"这一层从前没人查过：" + "；".join(wrong))
@@ -1307,6 +1342,130 @@ def check_provenance(cases: list[Case]) -> Check:
     return chk
 
 
+# ---------------------------------------------------------------------------
+# 第 10 项：case-outcome（T120）
+# ---------------------------------------------------------------------------
+#: 四判据的取值域，逐字照跨轨契约 §E。verify 自己留一份是**故意的**：
+#: 从 `domain.refund.outcome` import 过来的话，是拿被审那份代码给自己定标准 ——
+#: 枚举被改宽的那天，核验器会跟着一起变宽而一声不响。核验器的判据必须独立于生成侧。
+_ARRIVAL_VALUES = {"settled", "unsettled", "unknown"}
+_CONFIRMATION_VALUES = {"confirmed", "disputed", "none"}
+_CORRECTION_VALUES = {"none", "overridden", "compensated"}
+_COMPLAINT_VALUES = {"none", "open", "closed"}
+
+#: `arrival_basis` 的形状：`payment_observation:<request_id>@<observed_at>`。
+#: 出处 `maos/domain/refund/outcome.py::observation_basis`。
+_BASIS_RE = re.compile(r"^payment_observation:(?P<request>.*)@(?P<at>[^@]+)$")
+
+
+def check_case_outcome(cases: list[Case]) -> Check:
+    """业务四判据齐不齐、对不对得上库，`arrival_basis` 回不回查得到。
+
+    评委第三条要的是拿**到账、客户确认、人工纠错、投诉**去验整条 DAG。第 6 项判的是
+    「这份报告内部一致不一致」，本项判的是另一件事：**那四个值本身是不是真的**。
+
+    四条判据，各自「失败意味着什么」：
+
+    1. **四个字段齐全且取值合法**。少一个或写了个契约外的词，这单就没被四判据验过，
+       而报告看上去仍然完整。
+    2. **`business_success` 等于那三个值算出来的**。公式是
+       `(arrival == settled) and (confirmation != disputed) and (complaint != open)`
+       —— 报告自己填一个 true 进去是最省事的一种造假，也是最难看出来的一种。
+    3. **`arrival` 与库里的 `payment_observation` 对得上**。这是铁律 8 在核验侧的落点：
+       重新从观察行数一遍，数出来是什么就该是什么。自称 settled 而库里没有 settled
+       观察，与「绕过 guard 写 settled」是同一类事。
+    4. **`arrival == settled` 时 `arrival_basis` 指得到那一行**。指不回去的到账不叫判据，
+       叫说法 —— 这一整轨要拆的就是这类说法。
+    """
+    chk = Check("case-outcome", "业务四判据齐全、算得对，arrival_basis 回查得到观察行")
+    for case in cases:
+        if "refund_case" not in case.tables or "payment_observation" not in case.tables:
+            continue
+        for plan in case.result.get("plans", []):
+            outcome = plan.get("business_outcome")
+            if not isinstance(outcome, dict):
+                continue
+            plan_id = plan.get("plan_id")
+            db_cases = {r[0] for r in case.conn.execute(
+                "SELECT case_id FROM refund_case WHERE plan_id=?", (plan_id,))}
+            reported = [o for o in (outcome.get("case_outcomes") or []) if isinstance(o, dict)]
+            missing = db_cases - {str(o.get("case_id")) for o in reported}
+            if missing:
+                chk.bad(f"{case.name} plan={plan_id}: 库里这些 case 没有四判据 "
+                        f"{sorted(missing)} —— 「所有 Agent 都回复完成」之外的那四条判据"
+                        f"一条都没算过，报告却是完整的")
+                continue
+            for row in reported:
+                _check_one_outcome(chk, case, plan_id, row)
+    if chk.total == 0:
+        # 不走 `_idle_skip`：它的补跑提示是 RAG 专用的（指向 scenario-R5），
+        # 而四判据的素材在退款场景那两束里，指错方向的提示比没有提示更坏。
+        chk.skip("空转：证据束里没有带 payment_observation 的退款 case，"
+                 "四判据这一项判据一次都没执行 —— 跑 python3 scripts/make_evidence.py "
+                 "产出场景 6/7 两束")
+    return chk
+
+
+def _check_one_outcome(chk: Check, case: Case, plan_id: str, row: dict) -> None:
+    label = f"{case.name} plan={plan_id} case={row.get('case_id')}"
+    arrival = row.get("arrival")
+    confirmation = row.get("customer_confirmation")
+    correction = row.get("manual_correction")
+    complaint = row.get("complaint")
+
+    for field, value, domain in (
+            ("arrival", arrival, _ARRIVAL_VALUES),
+            ("customer_confirmation", confirmation, _CONFIRMATION_VALUES),
+            ("manual_correction", correction, _CORRECTION_VALUES),
+            ("complaint", complaint, _COMPLAINT_VALUES)):
+        if value not in domain:
+            chk.bad(f"{label}: {field}={value!r} 不在契约 §E 的取值域 {sorted(domain)} 里 —— "
+                    f"自造措辞的判据没法与别的轨对账")
+            return
+
+    expect = (arrival == "settled" and confirmation != "disputed" and complaint != "open")
+    if bool(row.get("business_success")) != expect:
+        chk.bad(f"{label}: business_success 自述 {bool(row.get('business_success'))}，"
+                f"按 (到账={arrival}, 确认={confirmation}, 投诉={complaint}) 算出来是 "
+                f"{expect} —— 结论必须由那三个值推出来，不许另填一个")
+        return
+
+    tenant_id = row.get("tenant_id")
+    observations = [dict(r) for r in case.conn.execute(
+        "SELECT request_id, observed_at, observed_state FROM payment_observation"
+        " WHERE tenant_id=? AND case_id=? ORDER BY observed_at",
+        (tenant_id, row.get("case_id")))]
+    settled = [o for o in observations if o["observed_state"] == "settled"]
+    failed = [o for o in observations if o["observed_state"] == "failed"]
+    from_db = "settled" if settled else ("unsettled" if failed else "unknown")
+    if arrival != from_db:
+        chk.bad(f"{label}: arrival 自述 {arrival!r}，而库里 {len(observations)} 条观察"
+                f"（settled {len(settled)} / failed {len(failed)}）只推得出 {from_db!r}"
+                f" —— 到账只由 payment_observation 的行决定（铁律 8）")
+        return
+
+    if arrival == "settled":
+        match = _BASIS_RE.match(str(row.get("arrival_basis") or ""))
+        if not match:
+            chk.bad(f"{label}: arrival=settled 却拿不出成形的 arrival_basis"
+                    f"（{row.get('arrival_basis')!r}）—— 指不回观察行的到账不叫判据")
+            return
+        hit = case.conn.execute(
+            "SELECT observed_state FROM payment_observation"
+            " WHERE tenant_id=? AND case_id=? AND request_id=? AND observed_at=?",
+            (tenant_id, row.get("case_id"), match.group("request"), match.group("at"))
+        ).fetchone()
+        if hit is None:
+            chk.bad(f"{label}: arrival_basis 指向的观察行不在库里"
+                    f"（{row.get('arrival_basis')}）—— 回查不到就是没有")
+            return
+        if hit["observed_state"] != "settled":
+            chk.bad(f"{label}: arrival_basis 指向的那一行 observed_state="
+                    f"{hit['observed_state']!r}，不是 settled —— 拿一条别的观察给到账背书")
+            return
+    chk.ok()
+
+
 CHECKS = [
     check_hash_integrity,
     check_business_ref,
@@ -1317,6 +1476,7 @@ CHECKS = [
     check_history_case,
     check_cost_attribution,
     check_provenance,
+    check_case_outcome,
 ]
 
 

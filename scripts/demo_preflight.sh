@@ -24,8 +24,17 @@
 #    第 1 步的条数**自己认环境分两档**（见下面 EXPECT_TESTS_NOPG / _PG），
 #    显式传 MAOS_EXPECT_TESTS 仍然盖过自动判断 —— 覆盖能力是负例自证的地基。
 #
-# 4. **零出网、不依赖任何 API key。** 全程走 ScriptedModelClient 路径，
-#    评委在没有任何密钥的机器上照样跑得出同一份结果 —— 这是卖点，第 0 步会显式打出来。
+# 4. **零出网、不依赖任何 API key —— 这条由 `MAOS_FORCE_SCRIPTED` 机器保证，
+#    不再靠人记得加前缀（T125）。** 下面那行 export 一设，全程走
+#    ScriptedModelClient 路径：`select_model_client()` 无视环境里的 `MAOS_LLM_*`，
+#    一个包都不发。评委在没有任何密钥的机器上跑，得到的是同一份确定性结果。
+#
+#    **原先这句话是假的**，照实记：本脚本既不 `env -u` 也不传 `force_scripted`，
+#    于是在演示机上（`~/.bash_profile` 里 export 了 `MAOS_LLM_*`）第 2 步的
+#    `run.py`、第 3 步的 `--scenario 7`、第 4 步的 `make_evidence.py` **全部在打
+#    真模型** —— 「零出网」只写在注释里，没有任何东西强制它。缓解办法曾经是
+#    「人记得加 `env -u MAOS_LLM_API_KEY ...` 前缀」，而复赛现场靠人记，不行。
+#
 #    唯一一次网络动作是第 1 步的 PG 探测，且**只在人自己配了 MAOS_PG_DSN 时发生**：
 #    没配就一个包都不发，与 API key 无关。
 #
@@ -36,6 +45,11 @@
 # 6. 本机没有 `python` 命令，全脚本一律 python3。
 
 set -euo pipefail
+
+# 本脚本的确定性由这一行强制（契约 §G）。`export` 而不是逐条命令加前缀：下面每一步
+# 都要它，而漏加一次的症状是「这一跑悄悄变成真模型」—— 屏幕上没有任何提示。
+# 子进程（`make_evidence.py` 再 fork 出去的那些）继承得到，所以只设这一次就够。
+export MAOS_FORCE_SCRIPTED=1
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -203,6 +217,8 @@ printf '\033[1mMAOS Demo 录制前置\033[0m　仓库根 %s\n' "$REPO_ROOT"
 printf '提交 %s\n' "$(git rev-parse --short HEAD)"
 printf '\n本脚本\033[1m零出网、不读任何 API key\033[0m：全程走 ScriptedModelClient 路径，\n'
 printf '拿到仓库的人在没有任何密钥的机器上跑，得到的是同一份确定性结果。\n'
+printf '这一条由 \033[1mMAOS_FORCE_SCRIPTED=1\033[0m 机器保证（本脚本开头 export），\n'
+printf '不是靠人记得加 env -u 前缀 —— 本机 env 里的 MAOS_LLM_* 一概不读。\n'
 
 # --- 第 1 步：全量测试 --------------------------------------------------------
 banner '全量测试　python3 -m pytest maos/tests -q -rs'

@@ -2412,3 +2412,25 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | 「整合期 p10-a」那三处 roundtable / router 接线仍未做（`outcome_commands` 进 router、财务岗卡片接投影、`verdict.py` 角色名对齐），本轮 push 只合三轨 | 房间里 `/assign /resolve /confirm /complain` 仍无人应答；财务岗仍按老文案说状态 | 复赛前单开一轨（白名单 `maos/ingress/router.py` + `maos/roundtable/**`），先定「命令对着哪个库」：T113 的 `MAOS_INGRESS_DB` 让 router 的 store 落文件，但 `/refund` 的处置仍在 `custom_case` 自建的 `:memory:` 里 |
 | 2026-09-11 | p10 | T114 的 `gateway_fail` 路径没有 `REWORK`：可重试码让付款跑三趟时 `payment_execute.py:143/163` 同渠道重试会留 2 条悬空 `business_ref`（verify 第 2 项判负），只好换终态失败码绕开 | 单案例束里「返工」这一环只能指去 `evidence/scenario-2/` | skill 面单独一轨：重试时先作废上一条引用再挂新的 |
 | 2026-09-11 | p10 | `source ~/.maos.env && python3 scripts/make_evidence.py` 仍 exit 2：空补丁集已放行，现在停在模型产出质量（`corrupt patch` / 回归 4 过 1 挂） | 带 key 的 shell 下 `test_cost_metrics` 那一条仍红；Scripted 口径不受影响 | 复赛口径保持「证据束一律 Scripted 产，真模型束单独标」；要治只能在 coding 岗提示词 + `git apply --check` 重试那一轨 |
+
+## task-t125
+
+五条旧账的处理状态（行号按本文件合入前的版本）：
+
+| 旧账 | 记的是什么 | 本轨处理 |
+|---|---|---|
+| `:2263`（2026-09-09） | 真模型下 `scenario_1` 走不到 DONE，coding 岗产的 unified diff 不合格，`validate` 报 `corrupt patch at line 14`，三次 attempt 全被拒 | **两条都接上了**：`SYSTEM` 补三句 unified diff 硬约束（文件头 / hunk 头行号真实 / 不许省略上下文），落盘前加 `git apply --check` 预检并最多重问 2 次。原话「要么把 diff 格式约束写死并加一轮自校验，要么在落盘前做一次 `git apply --check` 的重试」—— 两条都做了，没有二选一 |
+| `:2290`（2026-09-10） | `make_evidence.py` 跑不成，连带 `test_verify_warn` 4 条 + `test_domain_evidence` 7 条 ERROR + `test_cost_metrics` 1 条 FAILED | **归零**，但治的是另一半：`MAOS_FORCE_SCRIPTED` 让 `make_evidence.py` 的子进程缺省走 Scripted，那 11 条 ERROR 与 1 条 FAILED 在带 key 的 shell 下不再出现（验收 2 与验收 1 同数）。这一条里「单开一轨查 coding agent 那次重试耗尽」的部分由上一行接管 |
+| `:2293`（2026-09-10） | 真根因是「把纯定位/调查任务派给了只会产补丁的 `code.repo-patch`」，空补丁集要升格成合法结论 | 空补丁集那一层 T114 已做（`code_repo_patch.py` 与 `sandbox.py:450-457` 两处）。**本轨只保证它没被预检重新判死** —— `sandbox_git_apply` 对空 files 在碰 workdir 之前就早返回 ok，`test_an_empty_patch_set_with_summary_survives_the_precheck` 钉住。「别把调查任务派给补丁 skill」那一半仍未做，见下表 |
+| `:2381`（2026-09-11） | 根因换成两个：① `corrupt patch at line 39` ② 沙箱回归 4 过 / 1 挂。自陈「`≤ 40 行`的根因面修不动」 | **① 治了，② 不治。** ① 由预检 + 自修复 + 提示词三句消掉；② 是「模型修得对不对」，`git apply --check` 从原理上答不了 —— 补丁合法与补丁正确是两件事。派单 §2 第 5 条明说本轨不承诺 ② |
+| `:2414`（2026-09-11，整合期 p10-b） | 同 `:2381` 的复述；「复赛口径保持『证据束一律 Scripted 产、真模型束单独标』」 | **口径从人记得变成机器缺省**：`run.py` / `demo_preflight.sh` / `make_evidence.py` 子进程 / `conftest.py` 四处 `setdefault`，`--live-model` 是唯一显式开关；真模型束由 `INDEX.json` 与逐束 `model_mode` 标出来（字面值与 `make_case_bundle.py` 对齐） |
+
+本轨新留的账：
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | **「沙箱回归 4 过 / 1 挂」仍在**（`gate.py:374-383` 判 major）。本轨消掉的是「补丁打不上」，没碰「补丁修得对不对」 | 带 key 跑 `run.py --live-model --scenario 1` 时 Plan 仍可能 FAILED，但失败理由从 `tool_error: 补丁没能落进沙箱` 变成 Gate 的回归 finding —— 后者是**返工链正常工作**的样子，不是工具坏了 | 要治只有两条路，都超出 skill 面：① 按 `:2293` 的原话，别把「定位/调查」任务派给只会产补丁的 `code.repo-patch`（改 Manager 规划提示或加一个调查类 skill）；② 把沙箱回归的失败用例逐条喂回模型再修一轮（那是 attempt 层的事，不是 skill 层） |
+| 2026-09-11 | p10 | `MAOS_FORCE_SCRIPTED` 是走配置面的**第五个**不进 `GOVERNED_KEYS` 的旋钮（前四个：`MAOS_KB_ENABLED` / `MAOS_KB_WEIGHTS` / `MAOS_KB_ADVICE`，加本轨这个）。现况是「能治理（Nacos 上改得到、不用重启），变更不落审计」 | Nacos 上有人把它从 1 改成 0，`event_log` 里不会有 `ConfigChanged` —— 而这个旋钮一改，整批证据束的成本读数含义就变了。比 kb 那三个更值得审计 | 补齐是「五行改动 + 一条断言」：`GOVERNED_KEYS` 加五个 key，`test_config_source.py::test_governed_keys_are_exactly_the_four_this_track_owns` 改名并改断言。那个文件从来不在加旋钮那一轨的白名单里，所以要单开一轨或整合期顺手做。`## task-T35` 记的是同一笔账 |
+| 2026-09-11 | p10 | 预检每次现造一份靶场副本（`prepare_sandbox_workdir()`，实测 ~80ms / 次），一次 invoke 内的多轮重问复用同一份，但**跨 invoke 不复用** | 全量测试与 `run.py` 各多付几次 80ms（只在 `max_self_repair > 0` 的岗位上，目前只有 coding）。实测全量条数与耗时都没有可见变化（100.5s -> 104.3s，在正常波动内） | 真嫌慢了再说。缓存一份基线副本要处理并发与脏化两件事，为 80ms 引入那两个问题不划算 |
+| 2026-09-11 | p10 | `docs/skill-catalog.md` 里 `code.repo-patch` 的行号随本轨改动从 `:62` 漂到 `:119`（重跑 `scripts/gen_docs.py` 产出，2 行纯行号） | 整合期若别轨也动了 `maos/skills/**`，这两行会冲突 | 冲突时不要手改，重跑 `python3 scripts/gen_docs.py` 即可 —— 那三份是生成物，手改会被 `test_generated_docs.py` 逮住 |
+| 2026-09-11 | p10 | `--live-model` 只加在 `run.py` 与 `scripts/make_evidence.py` 上，`scripts/demo_preflight.sh` 没有对应开关（它 `export MAOS_FORCE_SCRIPTED=1` 写死） | 想用真模型跑一遍 preflight 的人得自己 `MAOS_FORCE_SCRIPTED=0 bash scripts/demo_preflight.sh` | 不做。preflight 是复赛现场那道门，它的全部意义就是确定性 —— 给它一个「真模型」开关等于给那道门开一个后门。`export` 前面的 `MAOS_FORCE_SCRIPTED=0` 仍然盖得住（shell 语义），够用了 |

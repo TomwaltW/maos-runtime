@@ -1,8 +1,19 @@
-"""全仓测试的起跑线：把 Matrix 相关的环境变量从每条用例里剥干净（H-6）。
+"""全仓测试的起跑线：让这台机器 export 了什么与测试结果无关（H-6 / T15 / T125）。
 
 **要买的东西**：测试结果只由代码决定，不由「跑测试这台机器上恰好 export 了什么」
 决定。没有这一层，同一个 commit 在干净机器上全绿，在演示机上变红 —— 而演示机
 正是最需要测试可信的那台。
+
+现在有三条 autouse fixture，前两条**只删**、第三条**要设**：
+
+===========================  ==============================================
+``_no_ambient_matrix_env``   删 5 个 ``MATRIX_*`` / ``MAOS_APPROVERS``（H-6）
+``_no_ambient_store_env``    删 ``MAOS_STORE_BACKEND`` / ``MAOS_PG_DSN``（T15）
+``_force_scripted_model``    设 ``MAOS_FORCE_SCRIPTED=1``（T125）
+===========================  ==============================================
+
+第三条为什么反着来，理由写在它自己的 docstring 里 —— 一句话：它与生产口径是
+**同一个开关**，删 env 才是造一种只有测试里才有的环境。
 
 **洞在哪**（出处 ``docs/BACKLOG.md`` 的 ``## task-C2`` 第 1 条）::
 
@@ -97,3 +108,38 @@ def _no_ambient_store_env(monkeypatch):
     """
     for name in STORE_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+#: 与 ``maos/model/client.py::ENV_FORCE_SCRIPTED`` 同一个名字（契约 §G）。
+#: 同上不 import：collection 期执行的代码不该把 ``maos.model`` 整条链先拉起来。
+#: ``test_code_repo_patch_selfrepair.py`` 有一条断言钉着两边逐字相等。
+FORCE_SCRIPTED_ENV = "MAOS_FORCE_SCRIPTED"
+
+
+@pytest.fixture(autouse=True)
+def _force_scripted_model(monkeypatch):
+    """每条用例都跑在脚本回放上 —— 配了 key 的机器上也是（T125）。
+
+    **这一条是「设」不是「删」，与上面两条刻意相反**，所以要把理由写在这里，
+    免得后来人照着「只删不设」那条取向把它改掉。
+
+    删掉三个 ``MAOS_LLM_*`` 同样能不打网络，但买到的是**另一条路**：
+    ``select_model_client()`` 会走「缺配置 -> 降级」那一支，每次调用打一条
+    WARNING「本次运行不发起任何网络请求，所有「模型」输出都是脚本回放：成本读数、
+    延迟、以及任何与模型行为相关的结论，这一跑一律不成立」。那句话在全量里要刷
+    几百遍，而它陈述的后果在测试语境下**是假的**（测试本来就不看成本读数）。
+    把一句真告警刷成噪音，等于提前花掉它下次真该响时的信用
+    （``test_model_client_hardening.py`` 那三条钉的正是这句告警的分量）。
+
+    更要紧的是第二条：``MAOS_FORCE_SCRIPTED`` 与生产口径**是同一个开关**。
+    ``run.py`` / ``scripts/demo_preflight.sh`` / ``scripts/make_evidence.py`` 的子进程
+    都设它，所以测试这么设 = 测试跑在与它们逐字相同的模式下。删 env 才是造一种
+    「只有测试里才存在」的环境 —— 生产上没有任何一处靠「把 key 删掉」保证确定性。
+
+    **要验真模型选路的用例自己 ``monkeypatch.delenv(FORCE_SCRIPTED_ENV)``**，
+    顺序上盖得住（autouse fixture 先于同 scope 的普通 fixture 实例化，见本文件
+    开头那段）。现在这么做的有 ``test_model_client_hardening.py`` 的三条降级告警
+    用例：它们判的是「缺 key 时那句 WARNING 的级别与措辞」，而强制开关会让
+    ``select_model_client()`` 在走到那句话之前就返回，于是告警一条都不落。
+    """
+    monkeypatch.setenv(FORCE_SCRIPTED_ENV, "1")

@@ -5,6 +5,17 @@
     python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景（不含 R5）
     python3 scripts/make_evidence.py --contrast         # 只产 contrast-R3/R4/R6
     python3 scripts/make_evidence.py --domains          # 1-10 + R5，缺省落到 evidence/domains/
+    python3 scripts/make_evidence.py --live-model       # 用真模型产（缺省是脚本回放）
+
+**缺省一律脚本回放**（T125，契约 §G）：``main()`` 里
+``os.environ.setdefault("MAOS_FORCE_SCRIPTED", "1")``，子进程继承。于是在
+``~/.bash_profile`` export 了 ``MAOS_LLM_*`` 的演示机上，``python3 scripts/make_evidence.py``
+产的仍是确定性证据 —— 此前这件事全靠人记得加 ``env -u MAOS_LLM_API_KEY ...`` 前缀，
+漏一次，这一整批束的成本读数与延迟就都不成立，而**产物上看不出来**
+（``docs/BACKLOG.md`` 的 2290 / 2414 记的就是这笔账）。
+``--live-model`` 是唯一的显式出口，它产的束在 ``INDEX.json`` 与每条 ``produced[]``
+里都标 ``model_mode: live``（字面值与 ``scripts/make_case_bundle.py`` 对齐）。
+哨兵反查不受影响：``secret_values()`` 照旧从 ``os.environ`` 取 key 当哨兵扫产物。
 
 ``--domains`` 显式扩展到四个业务域，默认使用独立的 ``evidence/domains/`` 根目录，
 可用 ``--out`` 覆盖。无参仍只产 ``scenario-1..7 + scenario-R5`` 八束。
@@ -72,6 +83,33 @@ _SECRET_NAME = re.compile(
 _ALWAYS_SECRET = ("MAOS_LLM_API_KEY", "MATRIX_TOKEN")
 #: 太短的值当哨兵会把正常文本全打成命中（"1"、"on" 之类），反而掩盖真泄漏。
 _MIN_SECRET_LEN = 6
+
+#: 与 ``maos/model/client.py::ENV_FORCE_SCRIPTED`` 同一个名字（契约 §G）。
+#: 本脚本缺省设它，``--live-model`` 时不设。
+FORCE_SCRIPTED_ENV = "MAOS_FORCE_SCRIPTED"
+
+#: 认的那几个「关」值，与 ``maos/model/client.py::_FORCE_OFF_VALUES`` 同一份口径。
+_FORCE_OFF_VALUES = ("", "0", "false", "no", "off")
+
+#: ``INDEX.json`` 里 ``model_mode`` 的两个字面值。与 ``scripts/make_case_bundle.py``
+#: 逐字一致（它先立的这个口径），两边合起来才是「哪些束是真模型产的」这个问题的
+#: 完整答案 —— 值不一样的话，跨束筛一次就漏。
+MODE_SCRIPTED = "scripted"
+MODE_LIVE = "live"
+
+
+def model_mode() -> str:
+    """本次跑用的是脚本回放还是真模型。
+
+    判据只有 ``MAOS_FORCE_SCRIPTED`` 一个 —— 它正是 ``select_model_client()`` 读的
+    那一个，于是「跑的时候走了哪条路」与「索引里标的是什么」同源。
+    **刻意不看 ``MAOS_LLM_*`` 配没配全**：没配全时 ``select_model_client()`` 自己会
+    降级，那种情形标 ``live`` 是错的，但它只发生在 ``--live-model`` 且 key 不全的
+    时候 —— 而那一跑本来就该在日志里看见那条 WARNING（"这一跑的结论一律不成立"），
+    不该由索引替它圆场。
+    """
+    raw = (os.environ.get(FORCE_SCRIPTED_ENV) or "").strip().lower()
+    return MODE_LIVE if raw in _FORCE_OFF_VALUES else MODE_SCRIPTED
 
 
 class EvidenceError(RuntimeError):
@@ -827,6 +865,10 @@ def _bundle_info(scenario, final: str, bundle: dict) -> dict:
     return {
         "scenario": scenario,
         "dir": os.path.relpath(final, ROOT),
+        # 这一束是脚本回放产的还是真模型产的（T125）。逐束标而不是只标在 INDEX.json
+        # 顶层：束目录会被单独拷走、单独引用，而「成本读数能不能信」这个问题跟着
+        # 束走，不跟着索引走。口径与 `make_case_bundle.py` 的 `model_mode` 同字面值。
+        "model_mode": model_mode(),
         "span_count": bundle["summary"]["span_count"],
         "event_count": bundle["summary"]["event_count"],
         "unsourced_artifacts": bundle["summary"]["unsourced_artifacts"],
@@ -1056,6 +1098,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="不产 scenario-R5；verify.py 的第 5、7 项会因此判 SKIP")
     parser.add_argument("--contrast", action="store_true",
                         help="只产三组对照束 contrast-R3/R4/R6；不碰 scenario-* 也不重写 INDEX.json")
+    parser.add_argument("--live-model", action="store_true",
+                        help="用真模型产这一批束（默认强制 ScriptedModelClient）；"
+                             "产出的 INDEX.json 会标 model_mode=live")
     parser.add_argument("--_child", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_contrast", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_db", default=None, help=argparse.SUPPRESS)
@@ -1064,6 +1109,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--domains 不能与 --scenarios / --contrast 同用")
     if args.out is None:
         args.out = os.path.join(ROOT, "evidence", "domains") if args.domains else os.path.join(ROOT, "evidence")
+
+    # 缺省把这一跑（连同它 fork 出去的每个场景子进程）钉死在脚本回放上（T125，契约 §G）。
+    # **写进 `os.environ` 而不是给 `subprocess.run` 传 `env=`**：子进程是本文件用
+    # `--_child` 递归调起自己的，走的正是这个 main()，继承一份环境比在两处 subprocess
+    # 调用点各传一次更难漏 —— 而漏掉一处的症状是「这一束悄悄是真模型产的」，
+    # 从产物上看不出来（除非去比 model_usage 的 token 数）。
+    #
+    # 同一个变量也是 `_model_mode()` 的判据，于是「跑的时候用了什么」与
+    # 「INDEX.json 里标的是什么」读的是同一个源，不会分叉。
+    if not args.live_model:
+        os.environ.setdefault(FORCE_SCRIPTED_ENV, "1")
 
     if args._child is not None:
         if not args._db:
@@ -1122,6 +1178,7 @@ def main(argv: list[str] | None = None) -> int:
     aux = scan_aux_bundles(args.out)
     write_json(os.path.join(args.out, "INDEX.json"), {
         "git_sha": sha,
+        "model_mode": model_mode(),
         "requested": [*wanted, "R5"] if want_r5 else wanted,
         "produced": produced,
         "missing_scenarios": missing,

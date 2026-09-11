@@ -8,7 +8,7 @@
     attach_config_audit()  订阅变更并逐条落 `event_log` 的 `ConfigChanged`
     GOVERNED_KEYS        推送到达时按它逐个 diff 出变更的那份清单（四个）
 
-现在走这条路的**六个**读取点：
+现在走这条路的**八个**读取点：
 
 | 旋钮 | 读取点 | 进 `GOVERNED_KEYS` |
 | :-- | :-- | :-- |
@@ -19,6 +19,15 @@
 | `MAOS_KB_ENABLED` | `maos/kb/__init__.py::kb_enabled` | 否（T35） |
 | `MAOS_KB_WEIGHTS` | `maos/kb/retriever.py::load_weights` | 否（T35） |
 | `MAOS_KB_ADVICE` | `maos/kb/plan_advice.py::advice_enabled` | 否（T119，同 kb 那两个） |
+| `MAOS_FORCE_SCRIPTED` | `maos/model/client.py::forced_scripted` | 否（T125，同上） |
+
+`MAOS_FORCE_SCRIPTED` 与前七个有一处**不同**，读这份表时要分清：前七个的缺省是
+「不设 = 保持原行为」，它的缺省也是不设 = 原行为，但**几乎所有入口都替人设成 1**
+（`run.py` / `scripts/demo_preflight.sh` / `scripts/make_evidence.py` 的子进程 /
+`maos/tests/conftest.py`）。于是「不设」在实践中只剩两处：房间入口
+（`hiclaw/room_ingress.py`）与显式 `--live-model`。这不是治理旋钮被滥用 ——
+它要治的正是「演示机上 export 了 key，于是证据束悄悄变成真模型产的」这件事，
+而那要的就是**缺省**，不是一个人人都要记得拧的开关（契约 §G）。
 
 **「读取点接上了」与「进 `GOVERNED_KEYS`」是两件事**，kb 那两个旋钮现在正好卡在
 中间，所以这里要写清楚：`NacosConfigSource._resolve` 读快照时**不看**

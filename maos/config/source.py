@@ -93,6 +93,17 @@ ORIGIN_DEFAULT = "default"
 #: kb 的两个旋钮（`MAOS_KB_ENABLED` / `MAOS_KB_WEIGHTS`）这一轮**不在此列**：
 #: `maos/kb/**` 归 T24 / T25，同轮并行改同一个文件必冲突。接口留成现在这个形状
 #: 就是为了它们并轨后能直接加两行进来，一行别的代码都不用改。
+#:
+#: 后来又有三个旋钮走了同一条路而没进这份清单 —— `MAOS_KB_ADVICE`（T119）与
+#: `MAOS_FORCE_SCRIPTED`（T125，`maos/model/client.py::forced_scripted`）。
+#: 原因每次都一样：`test_config_source.py::test_governed_keys_are_exactly_the_
+#: four_this_track_owns` 钉着「就是这四个」，而那个文件从来不在加旋钮那一轨的
+#: 白名单里。**现况要写清楚，别让人以为它们没接上**：这五个旋钮
+#: （kb 三个 + advice + force_scripted）都**能治理** —— `_resolve` 读 Nacos 快照
+#: 时不看本清单，对任何 key 一视同仁，所以 Nacos 上改了就是能改到、不用重启；
+#: 它们只是**变更不落审计**（推送到达时没人按清单为它们 diff 出 `ConfigChanged`）。
+#: 补齐是「五行改动 + 一条断言」，`docs/BACKLOG.md` 的 `## task-T35` 记着这笔账。
+#: 读取点的完整表格在 `maos/config/__init__.py` 的模块 docstring 里。
 GOVERNED_KEYS: tuple[str, ...] = (
     "MAOS_MAX_REPLAN",
     "MAOS_FINANCE_THRESHOLD",

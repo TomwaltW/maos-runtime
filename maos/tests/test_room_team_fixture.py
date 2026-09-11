@@ -48,7 +48,12 @@ TEAM_SHEET = CUSTOM / "refund-requests-team.csv"
 LEGACY_STDOUT_MD5 = "a50ea8b5f4362f770b8f16198f676dd7"
 
 LEGACY_ORDERS = ("ORD-2026-0001", "ORD-2026-0002", "ORD-2026-0003")
-NEW_ORDERS = ("ORD-2026-0004", "ORD-2026-0005", "ORD-2026-0006")
+#: `ORD-2026-0007` 是房间里专演失败路径那一单（底账 `gateway.fail_orders` 只登记了它）：
+#: `/refund` → `/approve` 必定卡在网关 → 开人工补偿工单 → `/assign` → `/resolve`。
+#: 它**不在** `refund-requests-team.csv` 里 —— 演示时人手打 `/refund ORD-2026-0007 …`，
+#: 进了表就会改 `test_room_team_recheck.PLAIN_STDOUT_MD5`。
+#: 实付刻意压到 3600（远低于 0006 的 88000），否则「大额」那条剧情判据会挪到它头上。
+NEW_ORDERS = ("ORD-2026-0004", "ORD-2026-0005", "ORD-2026-0006", "ORD-2026-0007")
 CUSTOMER_ID = "CUS-2026-0042"
 
 #: 与 `refund.evidence_check` 的交叉核对同一口径：质量诉求要的是「判不合格」。
@@ -132,7 +137,7 @@ def test_seed_case_does_not_reject_extended_ledger(ledger):
     store.init_schema()
     counted = fixtures.seed_case(store, ledger)
 
-    assert counted["order_snapshot"] == 6, "三老三新，六张订单快照都该落库"
+    assert counted["order_snapshot"] == 7, "三老四新，七张订单快照都该落库"
     assert counted["policy_rule"] == 3, "扩展不许动政策：仍是三条 AS- 规则"
 
 

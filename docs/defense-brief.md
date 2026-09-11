@@ -41,7 +41,7 @@ exit 0**，坏的只有 206 条房间测试。反过来说，这也意味着**�
 
 | # | 评委建议（压缩） | 我们做了什么 | 台上打开哪个文件 |
 | :-- | :-- | :-- | :-- |
-| **一** | 多 Agent 协同要看得见：AgentTeams 事件链、关键 Skill 的真实调用、返工 / HITL trace | 一条脱敏真实案例 `RC-2026-0904-001` 跑出四条路径的证据束；圆桌五岗发言与 DAG 四岗执行落在**同一条** `event_log` 时间线上；8 个契约 Skill 逐个带 `invocation_id` 可回查 | `evidence/case-real-01/happy/event-chain.json` — 61 条事件，`by_type` 里 `RoundtableSeatSpoke` 5、`SkillInvoked` 15、`PlanAdvised` 1<br>`evidence/case-real-01/happy/skills.json` — `present 8` / `total 8`<br>`evidence/case-real-01/happy/hitl-trace.json` — 计划审批 + 闸上 BLOCKED + 放行，每条带操作者<br>`evidence/case-real-01/happy/roundtable.json` — 五岗发言全文 |
+| **一** | 多 Agent 协同要看得见：AgentTeams 事件链、关键 Skill 的真实调用、返工 / HITL trace | 一条脱敏真实案例 `RC-2026-0904-001` 跑出四条路径的证据束；圆桌五岗发言与 **DAG 五岗六任务**执行落在**同一条** `event_log` 时间线上；8 个契约 Skill 逐个带 `invocation_id` 可回查；返工在失败路径上真走出来了 | `evidence/case-real-01/happy/event-chain.json` — `events[]` 按 `seq` 升序，条数与分类计数读同文件的 `count` / `by_type`<br>`evidence/case-real-01/happy/result.json` — `plans[0].tasks` 数出 **6 个任务 / 5 个角色**（受理岗担受理与通知两条）<br>`evidence/case-real-01/happy/skills.json` — `present 8` / `total 8`<br>`evidence/case-real-01/gateway_fail/hitl-trace.json` — `kind=rework` 那条（`AWAITING_REVIEW->REWORK [gate_rework]`）＋ 闸上 BLOCKED + 拒签 + 补偿三条，每条带操作者<br>`evidence/case-real-01/happy/roundtable.json` — 五岗发言全文 |
 | **二** | 以 PolarDB 为业务纵切载体：业务对象带版本、外部系统保留权威事实、区分已提出 / 处理中 / 已到账、RAG 面向 workflow 规划、结果验证 | 十类业务对象带版本挂在同一个 case 上；付款前读外部当前订单版本、漂移即停；对外三态只从 `public_status` 出；九类流程知识进 `kb_doc`，Planner 给必要任务 / 审批人 / 重试预算并带引用；`case_outcome` 四判据判业务成功 | `evidence/case-real-01/happy/business-objects.json` — `resolved 20`、`dangling 0`<br>`evidence/case-real-01/drift/` — `SnapshotDrift` 一条，案子停在 `submitted`，`public_status` 为空串<br>`evidence/case-real-01/happy/outcome.json` — `case_outcome` 四判据 + `public_status`<br>`evidence/contrast-R8/dag-diff.json` — Planner 建议有无对照<br>`python3 scripts/verify.py` → `RESULT: 10/10 PASS` |
 | **三** | 材料：把上面两段讲清楚，并且让评委自己能核 | README §8 映射表逐行指到上面这些文件；架构文档写清 PolarDB 与本地 SQLite 的切分线；PPT 加三张子页（P6b / P9b / P11b）；分镜换成单案例失败路径、≤ 8 分钟 | `README.md` 的 §8 映射表<br>`docs/architecture.md` §5 的「业务对象与知识层在 PolarDB，控制面在本地 SQLite」<br>`docs/ppt-outline.md` 的 P6b / P9b / P11b<br>`docs/demo-script.md` |
 
@@ -56,10 +56,19 @@ exit 0**，坏的只有 206 条房间测试。反过来说，这也意味着**�
 - 🔴 **`happy-live` 是真模型束，`verify.py` 按口径跳过它。** 核验器输出末尾自己列名：
   「未核验（真模型束，重放比不了）」。它证明的是「换成真模型这条路也跑得通」，
   **不是**「真模型的结果被核验过」。
-- 🔴 **返工那一格今天是空的。** 四条路径的 `hitl-trace.json` 里 `kind` 只有
-  `plan_approval` / `task_approval` / `blocked` / `drift`，**没有 `rework`**。返工机制本身在
-  （`REWORK` 是 `StateTransition.to_state`，场景 2 / 3 / 5 / 7 走得到），但这条单案例上
-  还没走出来 —— **T124 落地后补**，在那之前别说「返工也在这一条案例里」。
+- 🔴 **返工只在 `gateway_fail` 这一束，别把它说成「四条路径都有」。** 四条路径的
+  `hitl-trace.json` 里，`kind` 的完整取值是 **`plan_approval` / `task_approval` / `blocked` /
+  `drift` / `rework` / `compensation`** 六种（早先的材料漏写了 `compensation`，而它在
+  `gateway_fail` 那束里有三条：开工单、派岗、线下凭证关单）。`rework` 只出现在
+  `gateway_fail`：一条，`actor=gate`，`transition` 字面值 `AWAITING_REVIEW->REWORK
+  [gate_rework]`，挂在付款任务上。顺利路径**不该**有返工 —— 钱一次就退成了。
+- 🔴 **被追问返工细节时，三句话别说错**：①**只重发了一次**，不是「重试到上限」——
+  第二次网关回终态失败码，控制面当场转人工、不再重发（`run.log` 里那行
+  `gateway_needs_human —— 机器返工修不好，一次转人工，不再重发`）；②**同渠道、同幂等键**
+  重发同一笔，不是「改派备用渠道」（`outcome.json` 三条付款观察共用同一个 `request_id`；
+  「改派备用渠道」是**场景 7** 那条线，别串台）；③闸判了两次 `rework`，状态机只跳了**一次**
+  `REWORK` —— 第二次被 `gateway_needs_human` 接管。要数它：`skills.json` 里 `payment.execute`
+  的 `invocations` 是 2。
 - 🔴 **单案例的圆桌回放今天演不了。** `scripts/make_case_bundle.py` 的库建在临时目录里，
   跑完就没了 —— 束里有 `roundtable.json`（发言全文）和 `event-chain.json`，但**没有 `maos.db`**，
   而 `scripts/replay_roundtable.py` 要的是库。能当场演的是「圆桌顺序是从 `event_log` 零模型
@@ -67,6 +76,15 @@ exit 0**，坏的只有 206 条房间测试。反过来说，这也意味着**�
   再 `python3 scripts/replay_roundtable.py --db <路径> --list`（本轮实跑，三单各一段）。
 - 🔴 **房间里的真人审批还没进这个束。** `evidence/room/` 那五张截图跑的是一个 `role=coding`
   的软件域任务，不是这条退款案例；真人在房间里审批这条退款案例，**等 9/18 真跑日采集**。
+  房间这一侧近期确实前进了 —— 结果面的四条命令 `/assign` `/resolve` `/confirm` `/complain`
+  已经进 router，和命令行处置**共用同一个库**（不是房间里另起一套账），`/approve` 的回帖卡
+  还多打一行「对客户口径」。但这些都由**单测**钉着，不是由真房间的采集钉着。
+  被问的时候实话是：**命令能用，真人在真房间批过这条退款案的记录还没有。**
+- 🔴 **「对客户口径」那一行在任何证据束里都翻不到，别拿束当它的出处。** 它所在的圆桌财务岗
+  **执行段**只有 `maos/ingress/router.py` 调得到 —— 也就是只有真 Matrix 房间那条路；
+  `scripts/make_case_bundle.py` 走的是**预检段**，所以五束 `roundtable.json` 里一个字都没有。
+  要说它，只能说「这一行只在真房间的圆桌卡上出现，证据等 9/18 真跑日采集」。
+  台上千万别说「`roundtable.json` 里能看到对客户口径」—— 评委当场打开就翻不到。
 
 **第二段（PolarDB 业务纵切 + RAG + 结果验证）**
 
@@ -1673,16 +1691,17 @@ exit=0
 | 5 | **知识晋升可溯源** | `verify.py` 第 7 项 | 1/1 PASS（晋升的 history_case 追溯到 `outcome='success'` 的真实 case） |
 | 6 | **权威事实边界** | `verify.py` 第 3 项 | 3/3 PASS |
 
-R5 的原始数据（本次从新生成的 `result.json` 读出）：
+R5 的原始数据（从 `evidence/scenario-R5/result.json` 读出。`plan_id` 每重产一次都换一串，
+这里一律写成 `plan_…` —— 要具体值就打开那个文件，别照抄本页）：
 
 ```
-without_kb: {'plan_id': 'plan_ae3d52364317', 'state': 'FAILED'}
+without_kb: {'plan_id': 'plan_…', 'state': 'FAILED'}
     metrics = {'duration_ms': 11, 'event_count': 9,
                'event_types': {'PlanTransition': 2, 'StateTransition': 5, 'SkillInvoked': 2},
                'skill_invocations': 2, 'tool_invocations': 0}
     business_outcome = {'status': 'failed', 'basis': 'plan_failed', 'external_evidence': []}
 
-with_kb:    {'plan_id': 'plan_39e6a43e4a78', 'state': 'DONE'}
+with_kb:    {'plan_id': 'plan_…', 'state': 'DONE'}
     metrics = {'duration_ms': 44, 'event_count': 40,
                'event_types': {'KbRetrieved': 1, 'SkillInvoked': 9, 'PlanTransition': 2,
                                'StateTransition': 21, 'RefundBizStatusChanged': 4, 'ToolInvoked': 3},
@@ -1698,22 +1717,30 @@ with_kb:    {'plan_id': 'plan_39e6a43e4a78', 'state': 'DONE'}
 | 缺什么 | 状态 |
 | :-- | :-- |
 | 端到端任务时延 / 吞吐（真模型） | **未实现**。全部数据来自 `ScriptedModelClient`，`duration_ms` 是 11–44ms 量级，那是脚本回放不是真模型 |
-| 真实模型的 token 成本 | 有归因框架（57/57），但 `model_usage` 里的量来自 Scripted 路径；本次执行零真实 API 调用 |
+| 真实模型的 token 成本 | 有归因框架，八个场景束里的 `model_usage` 量来自 Scripted 路径；**唯一带真实 token 数的是 `evidence/case-real-01/happy-live/model-usage.json`**（`estimated=0`），且只覆盖圆桌那一段 |
 | 并发 / 压测 | **未实现**（见 D2） |
 | 代码覆盖率 | **未跑过**（见 E4） |
-| 任务成功率 / 返工率的统计口径 | 有字段（`rework_count` / `replan_count`，本次 R5 全为 0），但没有跨多次运行的统计 |
+| 任务成功率 / 返工率的统计口径 | 有字段：`result.json` 的 `plans[].metrics.rework_count`（`gateway_fail` 那束是 1，`happy` 是 0，数得出来），但**没有跨多次运行的统计** —— 单束读数不是「返工率」 |
 
 **实现程度**：部分
 
 **最狠的追问**：「你的 duration 是 11 毫秒 —— 这是脚本回放的数字，跟真实系统性能没有
-任何关系。你有没有一次真模型跑通的记录？」——`maos/model/client.py` 有真模型客户端
-（`test_model_client_hardening.py` / `test_model_usage_dialects.py` / `test_model_failure_accounting.py`
-共同覆盖两家 usage 口径与失败留账），但**本次会话没有 key，没跑过真调用，
-证据束里也没有真模型的记录**。
+任何关系。你有没有一次真模型跑通的记录？」——**有，但要说清它证明了什么。**
+`maos/model/client.py` 有真模型客户端（`test_model_client_hardening.py` /
+`test_model_usage_dialects.py` / `test_model_failure_accounting.py` 共同覆盖两家 usage 口径
+与失败留账），而 `evidence/case-real-01/happy-live/` 就是一次真模型跑出来的束：
+打开同束 `model-usage.json`，每一行是真调用 —— 带真实 `model` 名、真实
+`tokens_in` / `tokens_out`、秒级的 `latency_ms`，且 `estimated=0`（不是估算出来的）。
+对照 Scripted 束毫秒级的 `duration_ms`，这个量级差本身就是「这次真出网了」的证据。
 
-**48h 补救**：如果你手上有 key，跑一次真模型的场景 1 并单独存一束证据，成本约 1 小时。
-**建议做**（前提是有 key 且你同意用量）—— 「跑过真模型」和「只跑过脚本」在评委眼里
-是两个档次。⚠️ 需要你提供 key 并同意消耗，我不会自作主张。
+**但下面这条实话必须一起说**：`--live-model` 只把**圆桌五岗的发言**换成真模型，
+DAG 那一段的规划应答仍是脚本回放；`scripts/verify.py` 也**按口径跳过这一束**（重放比不了
+逐字节，核验器输出末尾显式列名「未核验（真模型束，重放比不了）」）。所以它证明的是
+**「换成真模型这条路也跑得通」，不是「真模型的结果被核验过」，更不是一份性能基线**。
+真模型束的唯一出处是 `python3 scripts/make_case_bundle.py --path happy --live-model`。
+
+**仍然缺的是性能数字本身**：端到端时延 / 吞吐没有在真模型下系统测过，也没有并发压测。
+被追到这一层，实话就是「我们证明了真模型能跑通，没有证明它在负载下的表现」。
 
 ---
 
@@ -1867,7 +1894,7 @@ R5 的差异只是『规划时多排了一步』。」——**在当前 R5 这�
 | **13** | **F3** 生产调用点不钉 skill 版本，线上回滚只能靠不投放新文件 | 低 | 中 | **中** | **承认**。注册表层机制完整，缺的是调用点钉扎 |
 | **14** | **F2** 只有 1 个真 MCP（只读 git），占分 25% 的板块 | 中 | 大 | **高** | **承认 + 话术**。强调「ToolPort 抽象已被一个跨进程实现验证过，其余是替换 `entry` 一处」 |
 | **15** | **B1** 安全闸是 4 个字面量子串匹配 | 中 | 中 | **中** | **承认**。说清「演示级、会漏不会误伤、位置存在且可扩展」 |
-| **16** | **G1** 全部性能数字来自 Scripted，无真模型端到端记录 | 中 | 中 | **中**（需 key） | **可选修**：有 key 的话跑一次真模型场景 1，1 小时。⚠️ 需你同意用量 |
+| **16** | **G1** 全部**性能**数字来自 Scripted（真模型跑通的记录已有，性能基线仍没有） | 中 | 中 | **中**（需 key） | **已部分补**：`evidence/case-real-01/happy-live/` 是真模型束，`model-usage.json` 带真实 token 与秒级时延（`estimated=0`），但只覆盖圆桌段、且 `verify.py` 按口径跳过它。**剩下的缺口是性能基线与并发压测**，那要另跑，⚠️ 需你同意用量 |
 | **17** | **B2** 无生产误判率数据 | 低 | 小 | 不可修 | **承认**。用「开发期 6 例误判 + 每例一条回归守卫」代替 |
 | **18** | **E3** 无链式哈希、无外部时间戳 | 低 | 中 | **低**（但需对外发布） | **承认**。「重跑一致」是我能给的全部自证。⚠️ 带外时间戳需你点头 |
 | **19** | **C4-5** 供应链无 SBOM / lockfile 完整性 | 低 | 小 | 高 | **忽略**。已在「不防清单」里 |

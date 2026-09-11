@@ -14,10 +14,16 @@
     "没库时整组 skip、有库时整组真跑。有库那档由「无库档 + 64」算出，永远不写死 ——",
     "写死过一次，代价是配了 MAOS_PG_DSN 的机器上门禁误红（scripts/demo_preflight.sh 的注释有原委）。",
     "",
-    "这些数与环境绑定：无可连的 PG、无任何 API key、依赖装齐。换环境读数会变，那不是回归。"
+    "这些数与环境绑定：无可连的 PG、无任何 API key、依赖装齐。换环境读数会变，那不是回归。",
+    "",
+    "pytest_skipped_nopg 会随 checkout 漂 ±3：maos/tests/test_rtv_sop_doc.py 有 3 条在",
+    "review/rtv-contracts.md 缺席时 skip，而 review/ 走 .git/info/exclude —— 主仓里有那个文件",
+    "（读数 76），从 commit 新建的 worktree 里没有（读数 79）。**收集数两边都是同一个**，",
+    "而本文件的守卫比的是 collected == passed + skipped 这个和，所以两档都过，不用改。",
+    "下次在 worktree 里读到 79 不是回归，别去刷这个数（2026-09-11 整合期 p10-c 查实）。"
   ],
-  "pytest_passed_nopg": 3636,
-  "pytest_skipped_nopg": 79,
+  "pytest_passed_nopg": 3746,
+  "pytest_skipped_nopg": 76,
   "pg_gated_tests": 64,
   "evidence_bundles": 8,
   "verify_result_line": "RESULT: 10/10 PASS"

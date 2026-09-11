@@ -361,6 +361,27 @@ def test_redact_replaces_secret_values():
     assert "***REDACTED:MAOS_LLM_API_KEY***" in out
 
 
+def test_base_url_is_always_a_sentinel_although_it_is_not_a_key():
+    """``MAOS_LLM_BASE_URL`` 必须在恒脱敏名单里，哪怕它不是密钥。
+
+    铁律 6 点名的是「凡是可能回显 env 或 **URL** 的命令，输出前必须过脱敏」，
+    而 ``select_model_client()`` 的「启用真模型：base_url=… model=…」那一行
+    **会**进 ``run.log`` —— ``--live-model`` 产的每一束都有。名字里没有
+    key/secret/token，``_SECRET_NAME`` 那条正则命不中，只能点名。
+
+    内网网关地址进证据本身就是泄漏面；自建网关还常把凭据编在路径里，
+    那种情况下这一行就是明文 key。这里用假 URL，真的绝不进测试。
+    """
+    fake = "https://gw.internal.invalid/compat-mode/v1"
+    got = make_evidence.secret_values({"MAOS_LLM_BASE_URL": fake})
+    assert got == {"MAOS_LLM_BASE_URL": fake}, (
+        "MAOS_LLM_BASE_URL 不在恒脱敏名单里 —— run.log 会把它原样写进证据")
+
+    out = make_evidence.redact(f"启用真模型：base_url={fake} model=x", got)
+    assert fake not in out
+    assert "***REDACTED:MAOS_LLM_BASE_URL***" in out
+
+
 def test_scan_finds_sentinel_even_inside_a_binary_file(tmp_path):
     """按字节查而不是按行读文本：sqlite 库就在同一目录，按文本读会解码失败而跳过。"""
     (tmp_path / "blob.db").write_bytes(b"\x00\x01" + SENTINEL.encode() + b"\xff")

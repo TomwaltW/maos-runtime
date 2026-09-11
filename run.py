@@ -53,6 +53,14 @@ def _apply_model_mode(args: list[str]) -> list[str]:
     """
     if LIVE_MODEL_FLAG in args:
         args = [a for a in args if a != LIVE_MODEL_FLAG]
+        # **赋值，不是 delenv**：这个旗标要压得过**继承来的** `MAOS_FORCE_SCRIPTED=1`。
+        # 摘旗标却不清环境的话，在 export 过该变量的 shell 里（演示机的
+        # `.bash_profile` 就 export 着 `MAOS_LLM_*` 那一串）`--live-model` 静默失效、
+        # 仍走 Scripted，而日志还在提示「要真模型请用 --live-model」—— 人照做了，
+        # 什么也没变，且没有任何红灯。显式开关必须压过环境，这是它之所以叫显式。
+        # 写 "0" 而不是删掉：它在 `_FORCE_OFF_VALUES` 里，且 `env | grep` 看得见
+        # 「这一跑刻意关掉了强制」，删掉则与「从来没设过」不可区分。
+        os.environ[FORCE_SCRIPTED_ENV] = "0"
     else:
         os.environ.setdefault(FORCE_SCRIPTED_ENV, "1")
     return args

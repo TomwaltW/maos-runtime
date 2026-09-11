@@ -190,7 +190,7 @@
 9. **`scripts/run_case.py` 旗标归属**：`--drift`（T116）、`--stall`（T120）；各自只加自己的 `add_argument` 与分支。
 10. **环境变量**：`MAOS_DOMAIN_BACKEND`（新，T115）、`MAOS_INGRESS_DB`（新，T113）；`MAOS_PG_DSN / MAOS_PG_FTS_CONFIG / MAOS_STORE_BACKEND` 沿用。密钥只读 env（铁律 6）。
 11. **谁都不许动**：`maos/contracts/**`、`.contracts.lock`、`docs/parallel/contracts.md`、`maos/artifacts.py`、`scripts/guard_bash.py`、`.claude/**`、`maos/core/store.py` 现有表；`docs/expected-metrics.json` 与 `docs/submission-checklist.md:24` 锚点**整合期统一刷**；`maos/roundtable/**` 除 T113（T117 只改 `verdict.py` 角色名常量）。
-12. **Scripted 口径命令一律加前缀** `env -u MAOS_LLM_API_KEY -u MAOS_LLM_BASE_URL -u MAOS_LLM_MODEL`（`~/.bash_profile` 会 export 真模型变量）。
+12. **Scripted 口径已机器化**（T125，2026-09-11 Wave C）：`MAOS_FORCE_SCRIPTED=1` 由 `run.py`、`scripts/demo_preflight.sh`、`scripts/make_evidence.py` 的子进程与 `maos/tests/conftest.py` 缺省设上，`select_model_client()` 见到它一律返回 `ScriptedModelClient`、无视 `MAOS_LLM_*`。**`--live-model` 是唯一的显式出口**，它压得过环境里已有的值；房间入口（`hiclaw/room_ingress.py`）与 `make_case_bundle.py --live-model` 不设。于是 `env -u MAOS_LLM_API_KEY -u MAOS_LLM_BASE_URL -u MAOS_LLM_MODEL` 这个前缀**不再是必需的**（带上也无害，Wave C 之前的命令原样能跑）。真模型口径仍是 `set -a; . ~/.maos.env; set +a`。
 
 ## 5. 时间线与波次（9/10 周四起）
 
@@ -200,7 +200,9 @@
 | 9/11 五 – 9/13 日 | **Wave A** 五轨并行 | 各轨回执 |
 | ~~9/14 一~~ **9/10 四晚（提前）** | Wave A 整合**已完成**：`integrate/p10-a` 从 `7af9022` 起，合并顺序 T115 → T116 → T120 → T118 → T117，3 处冲突手工合；刷 `expected-metrics`（3541 / 79 / PG 门控 64 / verify 10/10）；本机 docker PG 有库档 3604 passed；干净树重产 8 束 + domains；快进主干 = `c2bc75f`；T114 / T119 worktree 已建、派单已刷。T113 收工后单独合 | `claude-fleet t114 t119` |
 | 9/11 五 – 9/13 日 | **Wave B** 两轨并行（T114 / T119）+ T113 收尾；三轨回执 | 各轨回执 |
-| 9/14 一 – 9/15 二 | Wave B 整合：`integrate/p10-b`（T113 最后合，roundtable 以它为准；接 `outcome_commands` 进 router、财务岗卡片接投影、`verdict.py` 角色名对齐）；全量回归；干净工作区重产全部证据束（默认 8 束 + domains + case-real-01 四路径 + R8）；`verify.py` ≥ 10/10；快进 `goai-restructure`。**多出的两天给 9/18 真跑日与材料做缓冲** | 整合验收（§9） |
+| ~~9/14 一 – 9/15 二~~ **9/11 五上午（提前三天）** | Wave B 整合**已完成**：`integrate/p10-b` 从 `137c960` 起，按 T114 → T119 → T113 合并，三次零冲突；整合期只接了 `scenario_6.py` 的 `kb_context` 带 `case_id` 那一行；`pytest_passed_nopg` 3541 → 3636；干净树重产 8 束 + domains + `--all-paths` + `happy --live-model` + R8，verify 10/10；代码 `283ce68` + 证据 `4756832`，快进主干并 push。**点名留给下一波的三处接线**（`outcome_commands` 进 router、财务岗卡片接投影、`verdict.py` 角色名对齐）当时未接，记进 BACKLOG | 整合验收（§9） |
+| 9/11 五上午 | **Wave C** 五轨并行派单，基线 `4756832`，契约 `review/p10c-contracts.md`：**T121** 材料重指单案例束 · **T122** 四条结果面命令进 router + 处置与命令共用一个库 · **T123** 圆桌财务岗接三态投影 + 审批角色名收成一套 · **T124** 同渠道重试不留悬空引用、`gateway_fail` 长出 `REWORK` · **T125** Scripted 口径机器化 + coding 岗补丁预检自修复。兑现的是上面那三处接线加 T114 / T119 的欠账 | `claude-fleet t121..t125` |
+| 9/11 五下午 | **Wave C 整合**：`integrate/p10-c` 从 `4756832` 起，按 T125 → T122 → T123 → T124 → T121 合并，五次零冲突（两本账靠本地 `.git/info/attributes` 的 `merge=union`）；五轨各出一份独立审查回执，整合期修掉审查点出的四处（`/approve` 回帖自相矛盾、`make_evidence --live-model` 到不了子进程、`MockGateway.fail_times ≥ 2` 改判不了、`MAOS_LLM_BASE_URL` 没进脱敏哨兵）+ 底账加一单失败网关码；刷 `expected-metrics`、重跑 `gen_docs.py`；文档与代码**先**全部 commit，**再**在干净树上重产全部证据束 | 整合验收（§9） |
 | 9/18 五 – 9/19 六 | **真跑日**（人类 + 主会话）：PolarDB 真实例（白名单 + DSN）跑 `polardb_smoke.py` 6 步 + 单案例四路径，截图三张（实例详情页 / 终端 / 表行数）；真 Matrix 房间真模型五岗 + 真人 `/approve` 与 `/reject` 各一次，`capture_room_transcript.py` 采进束；`--live-model` 束带 `model-usage.json` | 证据束首行 sha 干净、无 `-dirty` |
 | 9/20 日 – 9/21 一 | **T121** 材料 + 视频重录 + 彩排 + `make_release.sh`；9/21 下午留白当缓冲 | checklist 全可勾 |
 | 9/22 二 – 9/23 三 | 复赛现场 | — |
@@ -216,7 +218,7 @@
 ## 7. 风险与退路 / 砍序
 
 - **PolarDB 白名单出口 IP 漂移**（症状 TCP 静默超时，BACKLOG:1367）：真跑日先跑 `polardb_smoke.py`，不通就当天改白名单，改不了退本机 PG。
-- **真模型不稳**（key / 证书 / 空补丁集）：`verify.py` 只认 Scripted 束；`--live-model` 束单独产、单独标。T114 修根因失败就保留 `env -u` 前缀口径。
+- **真模型不稳**（key / 证书 / 空补丁集）：`verify.py` 只认 Scripted 束；`--live-model` 束单独产、单独标。**Wave C 之后这条退路是机器缺省**（§4.12）：不给 `--live-model` 就一定是 Scripted，不再靠人记得加 `env -u` 前缀。
 - **`objects.py` 合并冲突**：按 §4.2 分区；整合顺序 T115 先合。
 - **圆桌改动撞车**：T113 基线必须包含发声门禁那次 commit；T116/T117 不碰 `maos/roundtable/**`（T117 只改常量）。
 - **时间不够时的砍序**：先砍 T119（检索 + 护栏已有，少的是"建议"这层和 R8 对照）→ 再砍 T117 到最小（只留 assign/resolve，不做 manual 观察）→ T114 的 `--live-model` 与房间采集可降级为 Scripted 束 + 截图。**T115、T116、T120 不砍**，那是评委第二条的骨架。
@@ -238,4 +240,4 @@
 
 ## 10. 下一步
 
-Wave A 已整合、T113 在跑、T114 / T119 就绪 → `claude-fleet t114 t119`；人类回复 §6 的 1、2 两条（其余按缺省）；T113 收工后合入并接 BACKLOG「整合期 p10-a」的三处线。
+Wave A / B / C 共十四轨全部整合进 `goai-restructure`（Wave C 于 2026-09-11 下午合入，**未 push**）。剩下的是 §6 与真跑日：人类回复 §6 的 1、2 两条（其余按缺省）；**9/18 – 9/19 真跑日**跑 PolarDB 真实例与真 Matrix 房间真人审批 —— 材料里那两处占位（`docs/defense-brief.md` 的实话节、`docs/demo-script.md` 镜 7）等的就是它；**9/20 – 9/21** T121 材料定稿 + 视频重录 + 彩排。Wave C 审查留下的账都在 `docs/BACKLOG.md` 的`## 整合期 p10-c` 小节里，没有一条卡真跑日。

@@ -219,6 +219,20 @@ class _Entry:
     polls: int = 0
     settled: bool = False
 
+    attempts: int = 1
+    """这个**幂等键**上受理过几次 refund 尝试（建账本算第 1 次）。
+
+    挂在 entry 上而不是按 ``out_trade_no`` 记在网关上，有两个理由：
+
+    1. 幂等重发走的是 ``refund()`` 里 ``existing`` 那一支，**不经过** ``_next_code``
+       —— 计数原先记在那里，于是永远停在 1，``fail_times>=2`` 的改判判据
+       （``attempts >= budget``）就永不成立：连发多少次都是注入的那个码。
+       ``fail_times=1`` 碰巧不受影响（建账本那一次就把计数顶到 1），
+       所以既有证据束没暴露它。
+    2. 同一个订单可以有多个案子（多个 ``out_request_no``）。按订单号记的话
+       甲案发过一次，乙案的**第一次**就直接吃掉了甲案用剩的额度。
+    """
+
 
 class MockGateway:
     """演示用网关 —— 错误码与异步时序都对齐支付宝开放平台官方文档。
@@ -259,7 +273,8 @@ class MockGateway:
         self._validate_retry_injection()
         self._ledger: dict[str, _Entry] = {}  # idempotency_key -> 账本
         self._by_request: dict[str, str] = {}  # request_id -> idempotency_key
-        self._attempts: dict[str, int] = {}   # out_trade_no -> 受理过几次 refund 尝试
+        # 尝试数记在 `_Entry.attempts` 上（按幂等键），不在这里按 out_trade_no 记 ——
+        # 理由见 `_Entry.attempts` 的两条。
 
     def _validate_retry_injection(self) -> None:
         """把「失败 N 次后改判」的注入在构造时校验干净，不留到调用时才炸。
@@ -319,12 +334,16 @@ class MockGateway:
                                 DISCORDANT_REPEAT_REQUEST,
                                 poll_count=existing.polls,
                                 detail={"duplicate_of": existing.request_id})
+            # 参数一致的重发才算一次「尝试」：上面那条参数不一致的路网关当场就拒了，
+            # 不该吃掉注入额度。计数必须在这里推进 —— 这一支不经过 `_next_code`。
+            existing.attempts += 1
             if self._supersede_due(existing, request.out_trade_no):
                 # 注入的失败次数用完了。上一笔落的是「网关在入口就拒了、业务确定
                 # 没执行」的码 —— 这个 out_request_no 上没有任何真实退款发生过，
                 # 所以这次重发不是「再读一遍旧观察」，而是**同一笔请求这一次被受理**。
                 # 仍然不新建第二笔：request_id 不变，改的只是这一笔的下落。
-                existing.code = self._next_code(request.out_trade_no)
+                existing.code = self._next_code(request.out_trade_no,
+                                                existing.attempts - 1)
                 existing.polls, existing.settled = 0, False
                 log.info("幂等键 %s 注入的失败次数已用完，本次改判为 %s",
                          key, existing.code.code)
@@ -333,18 +352,19 @@ class MockGateway:
             return self._observe(existing, advance=False)
 
         entry = _Entry(request_id=f"gw_{uuid.uuid4().hex[:16]}", request=request,
-                       code=self._next_code(request.out_trade_no))
+                       code=self._next_code(request.out_trade_no, 0))
         self._ledger[key] = entry
         self._by_request[entry.request_id] = key
         return self._accept(entry)
 
-    def _next_code(self, trade_no: str) -> GatewayCode:
-        """这一次 refund 尝试落哪个码，顺手把尝试数记上。
+    def _next_code(self, trade_no: str, attempt: int) -> GatewayCode:
+        """第 ``attempt`` 次（0 基）refund 尝试落哪个码。**纯函数，不记账。**
+
+        计数由调用方给（建账本是第 0 次，第 k 次重发是第 k 次）—— 原先它自己记，
+        而幂等重发那条路根本不调它，计数于是漏掉一半，见 ``_Entry.attempts``。
 
         没配 ``fail_times`` 时恒为 ``script`` 里那个码 —— 既有行为一个字节不变。
         """
-        attempt = self._attempts.get(trade_no, 0)
-        self._attempts[trade_no] = attempt + 1
         injected = self.script.get(trade_no)
         if injected is None:
             return SUCCESS
@@ -359,13 +379,17 @@ class MockGateway:
         第二条判据让改判**只发生一次**：改判之后 ``entry.code`` 要么是成功码
         （``outcome=success``）、要么是终态失败码（``retriable=False``），两者都
         落不进这一条，于是第三次、第四次重发照常走幂等返回，不会反复翻烧饼。
+
+        第三条是 ``attempts > budget`` 而不是 ``>=``：docstring 承诺的是「前 N 次落
+        注入的码，第 N+1 次改判」，而 ``attempts`` 进到这里时已经把**本次**算上了。
+        ``fail_times=1`` 于是仍在第 2 次改判，与改动前逐字节一致。
         """
         budget = self.fail_times.get(trade_no)
         if budget is None:
             return False
         if entry.code.outcome != OUTCOME_FAILED or not entry.code.retriable:
             return False
-        return self._attempts.get(trade_no, 0) >= budget
+        return entry.attempts > budget
 
     def _accept(self, entry: _Entry) -> GatewayReceipt:
         """按这一笔当下的码出一份受理回执。**这里绝不返回 settled。**"""

@@ -80,7 +80,12 @@ HEADER_PREFIX = "# generated at "
 _SECRET_NAME = re.compile(
     r"(?i)(api[_-]?key|access[_-]?key|secret|token|password|passwd|credential|private[_-]?key)")
 #: 派单点名的两个，无论命名规则是否命中都必须纳入。
-_ALWAYS_SECRET = ("MAOS_LLM_API_KEY", "MATRIX_TOKEN")
+#: ``MAOS_LLM_BASE_URL`` 是第三个：它不是密钥，但铁律 6 明文点名「凡是可能回显
+#: env 或 URL 的命令，输出前必须过脱敏」，而 ``select_model_client()`` 的
+#: 「启用真模型：base_url=…」那一行**会**把它写进 ``run.log``（``--live-model``
+#: 跑出来的每一束都有）。内网网关地址进证据即是泄漏，何况自建网关常把凭据
+#: 编在路径里。名字里没有 key/secret/token，正则命不中，只能点名。
+_ALWAYS_SECRET = ("MAOS_LLM_API_KEY", "MATRIX_TOKEN", "MAOS_LLM_BASE_URL")
 #: 太短的值当哨兵会把正常文本全打成命中（"1"、"on" 之类），反而掩盖真泄漏。
 _MIN_SECRET_LEN = 6
 
@@ -1118,7 +1123,20 @@ def main(argv: list[str] | None = None) -> int:
     #
     # 同一个变量也是 `_model_mode()` 的判据，于是「跑的时候用了什么」与
     # 「INDEX.json 里标的是什么」读的是同一个源，不会分叉。
-    if not args.live_model:
+    #
+    # **子进程一律继承，不许自己重新决定**：`--_child` / `--_contrast` 的 argv 里
+    # 没有 `--live-model`（见上面两处 subprocess.run），子进程要是照着 `not
+    # args.live_model` 自己判，父进程带 `--live-model` 那一跑就会变成
+    # 「父进程标 live、子进程实跑 Scripted」—— 而束里的标签是父进程写的。
+    # 那正是本开关最怕的一种谎：产物说真模型，实际是脚本回放（铁律 3）。
+    #
+    # `--live-model` 那一支用赋值而不是 `setdefault`/`delenv`：显式旗标要压得过
+    # 继承来的 `MAOS_FORCE_SCRIPTED=1`（演示机的 `.bash_profile` 里就 export 着），
+    # 否则 `--live-model` 静默失效，而屏幕上只有一句「要真模型请用 --live-model」。
+    # 写 "0" 不写删除 —— "0" 在 `_FORCE_OFF_VALUES` 里，且在 env 里看得见。
+    if args.live_model:
+        os.environ[FORCE_SCRIPTED_ENV] = "0"
+    elif args._child is None and args._contrast is None:
         os.environ.setdefault(FORCE_SCRIPTED_ENV, "1")
 
     if args._child is not None:

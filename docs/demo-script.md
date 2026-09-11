@@ -40,8 +40,15 @@ python3 scripts/make_case_bundle.py --path gateway_fail
 
 ## 逐镜耗时表（`4756832` 实测，2026-09-11）
 
-中文口播按 **4 字/秒**折算。「念词预算」= 分配时长扣掉命令耗时后，按 4 字/秒能念完的
-**上限字数**，留 ≥ 5 秒余量。
+中文口播按 **4 字/秒**折算。「念词预算」按一条算式来，**逐镜可自己验**：
+
+```text
+念词预算(字) = (分配秒数 − 实测命令耗时 − 5) × 4
+```
+
+那个 **5 秒是每镜的硬余量** —— 留给切窗口、翻文件、念错一句重来。上一版的预算
+是直接拿分配时长折的，九镜**没有一镜真留出 5 秒**（镜 2 是 45s/180 字，正好吃满、
+余量 0），所以本版按上式整张重算过：合计从 ≤ 1665 字降到 **≤ 1552 字**。
 
 > 🔴 **念词预算是上限，不是已定稿的字数。** 上一版那张表里的「讲稿字数 / 念完约需 / 富余」
 > 是逐字数过真念词得来的；本版主线刚换，**逐字念词尚未定稿**，所以这里给的是预算而不是实测。
@@ -49,16 +56,16 @@ python3 scripts/make_case_bundle.py --path gateway_fail
 
 | 镜 | 时间轴 | 命令 | 实测命令耗时 | 念词预算 |
 | :-- | :-- | :-- | --: | --: |
-| 1 | 00:00 — 00:50 (50s) | `make_case_bundle.py --path gateway_fail`（一条命令跑完；镜 1、3、4 看这一屏） | 1s | ≤ 190 字 |
-| **2** | **00:50 — 01:35 (45s)** | **编辑器开 `roundtable.json`**（必含项：Agent 协作 —— 圆桌五岗） | — | ≤ 180 字 |
-| 3 | 01:35 — 02:30 (55s) | 无（回终端：七道闸 + 两次人工停点） | — | ≤ 215 字 |
-| 4 | 02:30 — 03:10 (40s) | 无（回终端：收口那三行） | — | ≤ 155 字 |
-| **5** | **03:10 — 04:00 (50s)** | **编辑器开 `skills.json`**（必含项：Skill 调用过程） | — | ≤ 190 字 |
-| **6** | **04:00 — 04:55 (55s)** | **编辑器开 `event-chain.json`**（必含项：AgentTeams 事件链） | — | ≤ 215 字 |
-| **7** | **04:55 — 05:45 (50s)** | **房间 `/pending`**，或 `room_team_smoke.py --db` + `replay_roundtable.py --list` | 0s + 0s | ≤ 185 字 |
-| 8 | 05:45 — 06:35 (50s) | 编辑器开 `outcome.json`，再 `verify.py` | 1s | ≤ 185 字 |
-| 9 | 06:35 — 07:15 (40s) | `git diff --stat` | 0s | ≤ 150 字 |
-| | **合计** | | **约 2s** | **≤ 1665 字** |
+| 1 | 00:00 — 00:50 (50s) | `make_case_bundle.py --path gateway_fail`（一条命令跑完；镜 1、3、4 看这一屏） | 1s | ≤ 176 字 |
+| **2** | **00:50 — 01:35 (45s)** | **编辑器开 `roundtable.json`**（必含项：Agent 协作 —— 圆桌五岗） | — | ≤ 160 字 |
+| 3 | 01:35 — 02:30 (55s) | 无（回终端：七道闸 + 返工重发 + 两次人工停点） | — | ≤ 200 字 |
+| 4 | 02:30 — 03:10 (40s) | 无（回终端：收口那三行） | — | ≤ 140 字 |
+| **5** | **03:10 — 04:00 (50s)** | **编辑器开 `skills.json`**（必含项：Skill 调用过程） | — | ≤ 180 字 |
+| **6** | **04:00 — 04:55 (55s)** | **编辑器开 `event-chain.json`**（必含项：AgentTeams 事件链） | — | ≤ 200 字 |
+| **7** | **04:55 — 05:45 (50s)** | **房间 `/pending`**，或 `room_team_smoke.py --db` + `replay_roundtable.py --list` | 0s + 0s | ≤ 180 字 |
+| 8 | 05:45 — 06:35 (50s) | 编辑器开 `outcome.json`，再 `verify.py` | 1s | ≤ 176 字 |
+| 9 | 06:35 — 07:15 (40s) | `git diff --stat` | 0s | ≤ 140 字 |
+| | **合计** | | **约 2s** | **≤ 1552 字** |
 
 **总长 7 分 15 秒（435s）**，复赛手册口径是 **≤ 8 分钟（480s）**，富余 **45 秒**。
 
@@ -117,6 +124,13 @@ MAOS_EXPECT_VERIFY='RESULT: 1/1 PASS' bash scripts/demo_preflight.sh   # -> exit
 **这一跑零出网、不读任何 API key**（全程 `ScriptedModelClient` 路径）。脚本第 0 步会
 把这句显式打在屏幕上 —— 评委在没有任何密钥的机器上跑，得到的是同一份确定性结果，
 这是卖点，不是免责声明。
+
+> 🔴 **这条现在是机器保证的，不再依赖「演示机上碰巧没配 key」。** `MAOS_FORCE_SCRIPTED`
+> 已是缺省：`scripts/demo_preflight.sh` 开头 export 它，`run.py`（不带 `--live-model` 时）、
+> `scripts/make_evidence.py` 拉起的子进程、`maos/tests/conftest.py` 各自 `setdefault` 它。
+> **所以录制机的 `.bash_profile` 里 export 着 `MAOS_LLM_*` 也不要紧** —— 光有那三个环境变量
+> 已经切不动真模型了，不必再为录制临时 `unset` 什么。真模型的**唯一显式开关是
+> `--live-model`**（它用赋值压过环境里已有的值），录制全程一次都不该出现这个旗标。
 
 🔴 **跑完前置，工作区一定是脏的（`evidence/` 50 行 M）。** 第 4 步一次重写
 `evidence/scenario-1..7` 与 `scenario-R5` 全部 50 个文件
@@ -189,24 +203,29 @@ python3 scripts/make_case_bundle.py --path gateway_fail
 
 ```text
 INFO  maos.roundtable 圆桌预检 case=RC-2026-0904-001 发起人=沈思锴 第 1 轮（本轮新增 0 份证据）
-INFO  maos.cp      创建计划 plan_a9ad93c7e2aa，共 6 个任务
-INFO  maos.plan_approval [plan_a9ad93c7e2aa] 沈思锴（after_sales_supervisor） 批准，6 个任务开跑
+INFO  maos.cp      创建计划 plan_…，共 6 个任务
+INFO  maos.plan_approval [plan_…] 沈思锴（after_sales_supervisor） 批准，6 个任务开跑
 ...
 Plan: FAILED  |  处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额
   · 受理多源退款诉求并聚合证据                        DONE             attempt=1 risk=L
   · 按下单锁定的政策版本裁定退款资格                     DONE             attempt=1 risk=L
   · 渠道商核销                                DONE             attempt=1 risk=M
   · 核算退款金额并写财务分录                         DONE             attempt=1 risk=M
-  · 发起退款并观察网关终态                          FAILED           attempt=1 risk=M
+  · 发起退款并观察网关终态                          FAILED           attempt=2 risk=M
   · 通知客户裁定结果                             PENDING          attempt=0 risk=L
 ```
 
+> `plan_…` 是**每跑一次都变**的随机 id，上镜时念不到、也不必念；要对出处就看
+> `evidence/case-real-01/gateway_fail/run.log` 那一行，或 `INDEX.json` 的 `git_sha`。
+
 **讲什么**
 一条脱敏的真实退款诉求，案号 `RC-2026-0904-001`，一条命令跑完 —— 一秒。
-先是五岗圆桌预检，再拆成六个任务的 DAG，然后送人审批。
+先是五岗圆桌预检，再拆成 DAG：**六个任务、五个角色**（受理岗担了首尾两条 ——
+受理与通知；政策、渠道、财务、付款各一）。然后送人审批。
 **第三条「渠道商核销」不是我们手写进去的** —— 它是 Planner 从知识层里查出来的：
 这一单走经销渠道，政策规则 `AS-004@v1` 要求多这一步。这条线第六镜会再回来讲。
 最后一列的 `risk` 决定哪几步要停下来等人：`risk=M` 的两条后面都停了。
+**付款那条的 `attempt=2` 是第三镜的伏笔** —— 它返工重发过一次。
 
 **红线**
 - 🔴 **别说「五岗在这一屏上说话」。** 这条命令的 stdout 里只有 `圆桌预检` 那一行；
@@ -253,6 +272,10 @@ INFO  maos.gate    [task-...-finance] Gate {'schema': 'pass', 'acceptance': 'pas
 INFO  maos.cp      [task-...-finance] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-...-finance] BLOCKED -> DONE (human_approve)
 INFO  maos.gate    [task-...-payment] Gate {... 'finance': 'pass', 'gateway': 'fail'} -> rework
+INFO  maos.cp      [task-...-payment] AWAITING_REVIEW -> REWORK (gate_rework)
+INFO  maos.cp      [task-...-payment] REWORK -> PENDING (requeue)
+INFO  maos.tools.gateway 幂等键 rfd-… 注入的失败次数已用完，本次改判为 ACQ.SELLER_BALANCE_NOT_ENOUGH
+INFO  maos.gate    [task-...-payment] Gate {... 'finance': 'pass', 'gateway': 'fail'} -> rework
 WARNING maos.cp      [task-...-payment] gateway_needs_human —— 机器返工修不好，一次转人工，不再重发
 INFO  maos.cp      [task-...-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-...-payment] BLOCKED -> FAILED (human_reject)
@@ -261,17 +284,27 @@ INFO  maos.cp      [task-...-payment] BLOCKED -> FAILED (human_reject)
 **讲什么**
 七道闸对每个任务逐项判，判定是**规则驱动的、不是模型说了算**。
 财务那一步七道全过，但因为它是高风险动作，仍然停在 `BLOCKED` 等人 —— 主管放行，落 `human_approve`。
-付款那一步不一样：六道过了，**第七道 `gateway` 判 fail**。
-注意紧接着那行 warning：机器返工修不好，一次转人工，**不再重发** —— 这就是「无限重试」那条的答案。
+付款那一步不一样：六道过了，**第七道 `gateway` 判 fail**，于是走返工 ——
+`AWAITING_REVIEW -> REWORK -> PENDING`，**同一个渠道、同一个幂等键，重发一次**。
+第一次网关回的是可重试码，值得再试；第二次网关改口，回的是余额不足这类
+**终态**失败码。闸第二次仍判 `rework`，但控制面这时打出那行 warning：
+机器返工修不好，一次转人工，**不再重发** —— 这就是「无限重试」那条的答案，
+边界不是「一次都不试」，是「试一次、试不好就交给人」。
 人看过回执之后拒签，任务落 `FAILED`。两次人工介入，各自留了操作者和时间。
 
+**要指证据就指结构**：`evidence/case-real-01/gateway_fail/hitl-trace.json` 的 `trace[]` 里
+有 `kind=rework` 一条，`actor=gate`、`transition` 字面值 `AWAITING_REVIEW->REWORK [gate_rework]`；
+同束 `skills.json` 里 `payment.execute` 的 `invocations` 是 2。
+
 **红线**
-- 🔴 **闸判了 `rework`，但状态机上没有 REWORK 那一跳。** 屏幕上是 `-> rework` 紧跟着
-  `gateway_needs_human`：这条路径**直接转人工**，没有真的走返工。
-  所以这一单的 `hitl-trace.json` 里**没有 `kind=rework`**。
-  **T124 落地后按实跑改这一镜** —— 在那之前，别把这屏念成「系统自动返工了一次」。
-  真的返工轨迹（`AWAITING_REVIEW -> REWORK [gate_rework]`）在附录 A 的场景 7 那条线上。
-- 🔴 **别说「重试到上限」。** 这里一次都没重发。
+- 🔴 **别说「重试到上限」。** 只重发了**一次**，然后就转人工了。「上限」这个词会让评委
+  去找重试计数器，找不到就成了漏洞。
+- 🔴 **别说「换了渠道重发」。** 是**同渠道、同幂等键**重发同一笔；`outcome.json` 里三条
+  付款观察共用同一个 `request_id`，这一点当场翻得出来。
+- 🔴 **别说「顺利路径也有返工」。** `happy` 那一束的 `hitl-trace.json` 里没有 `kind=rework`，
+  钱一次就退成了的案子本来就不该返工。返工**只在** `gateway_fail` 这一束。
+- 🔴 **别把闸的 `-> rework` 判定和状态机的 `REWORK` 跳混为一谈。** 屏幕上闸判了两次
+  `rework`，状态机只跳了**一次** `REWORK` —— 第二次被 `gateway_needs_human` 接管。
 
 ---
 
@@ -282,10 +315,14 @@ INFO  maos.cp      [task-...-payment] BLOCKED -> FAILED (human_reject)
 **屏幕上的原话**（实跑）
 
 ```text
-INFO  maos.tools.gateway 收到人工线下凭证 request=gw_ab0da987365e4d1a outcome=failed 提交人=@payops:maos.local
-INFO  maos.finalizer [plan_a9ad93c7e2aa] case RC-2026-0904-001 -> ('failure_hint', 'failed')（到账=unsettled）
+INFO  maos.tools.gateway 收到人工线下凭证 request=gw_… outcome=failed 提交人=@payops:maos.local
+INFO  maos.finalizer [plan_…] case RC-2026-0904-001 -> ('failure_hint', 'failed')（到账=unsettled）
   [OK] evidence/case-real-01/gateway_fail  plan=FAILED biz=compensated skills=7/8 business_success=False
 ```
+
+> `gw_…` / `plan_…` 每跑一次都换一串，别念也别写进 PPT；那行的真出处是
+> `evidence/case-real-01/gateway_fail/run.log`，`request_id` 同时出现在
+> 同束 `outcome.json` 的 `payment_observations[]` 三条里（**同一个值**，因为是同一笔）。
 
 **讲什么**
 钱没退成。系统做了三件事：开补偿工单并派人、把线下凭证按 `payment.observe` 回填成一条观察行、
@@ -328,7 +365,11 @@ INFO  maos.finalizer [plan_a9ad93c7e2aa] case RC-2026-0904-001 -> ('failure_hint
 这是这一镜要证的全部：**圆桌和 DAG 不是两套日志**。
 `events` 按 `event_log.seq` 升序，圆桌那五条 `RoundtableSeatSpoke` 排在前面，
 `PlanApproved` 之后才是 DAG 的 `StateTransition` 和 `SkillInvoked` —— 谁先谁后不是我们讲出来的，
-是库里排好的。`by_type` 给各类计数，这一束 64 条事件。
+是库里排好的。总条数与各类计数就念**屏幕上 `count` / `by_type` 两个字段的当场读数**，
+别背数字：这一束每重产一次都可能变，而画面上那两个字段永远是对的。
+这条路径里还能指着看返工：`StateTransition` 里有一跳 `AWAITING_REVIEW -> REWORK`，
+紧跟一跳 `REWORK -> PENDING`，之后付款那几条 `SkillInvoked` 又来了一轮 —— 第三镜讲的返工，
+在这条时间线上是看得见位置的。
 `KbRetrieved` 之后紧跟着 `PlanAdvised`：第一镜那条「渠道商核销」就是从这里来的，
 建议带着 `doc_id` 引用，查得到出处。
 
@@ -360,6 +401,11 @@ python3 scripts/replay_roundtable.py --db /tmp/rt.db --list
 
 **讲什么**
 Team 成员当前在干什么、哪几步卡在等人 —— 房间里一条 `/pending` 就能看到。
+审批之外，**结果面的四条命令也已经在 router 里**：`/assign` 把补偿工单派给一个岗、
+`/resolve` 提交线下凭证关单、`/confirm` 记客户确认收款、`/complain` 记一条投诉 ——
+它们和第四镜那条命令行处置**共用同一个库**，不是房间里另起一套账。
+`/approve` 的回帖卡如今还多打一行**「对客户口径」**，念的是对外三态投影，
+不是内部七态 —— 房间里的人和客服对客户说的是同一句话。
 回放这条更硬：`replay_roundtable.py` **一次模型都不调**，只读 `event_log`，
 把五岗的顺序重建出来。所以「这五岗到底说了什么、按什么顺序」不靠截图证明，靠库证明。
 
@@ -368,9 +414,15 @@ Team 成员当前在干什么、哪几步卡在等人 —— 房间里一条 `/p
   `evidence/case-real-01/` 各束里**没有 `maos.db`**。所以回退路径演的是圆桌机制本身
   （用 `room_team_smoke.py` 现落的库，案号是 `RC-ORD-2026-000x`），**不是这一单**。
   走回退时必须说清这一句。
-- 🔴 **真人在房间里审批这条退款案例，还没采集。** `evidence/room/` 那五张截图跑的是
-  一个 `role=coding` 的软件域任务。**9/18 真跑日采集后按实跑改这一镜**；
-  在那之前走房间实拍，只能演 `/pending` 与命令回执，别说「这一单是在房间里批的」。
+- 🔴 **「命令能用」不等于「真人已经在房间里批过退款案」。** 四条结果面命令与 `/approve`
+  的新回帖行都由单测钉着（`maos/tests/test_room_outcome_commands.py`），但**真人在真房间
+  敲它们的采集还没做**。`evidence/room/` 那五张截图跑的是一个 `role=coding` 的软件域任务。
+  **9/18 真跑日采集后按实跑改这一镜**；在那之前走房间实拍，只能演 `/pending` 与命令回执，
+  别说「这一单是在房间里批的」。
+- 🔴 **「对客户口径」那一行在任何证据束里都翻不到。** 它只在**真 Matrix 房间**那条路上
+  打出来（圆桌财务岗的执行段只由 `maos/ingress/router.py` 调到；`make_case_bundle.py`
+  走的是预检段）。所以别说「`roundtable.json` 里能看到对客户口径」—— 要演它只能开真房间，
+  证据同样等 9/18 真跑日。
 - 🔴 **房间实拍的前置一条都没松**：系统 `python3` 没装 matrix-nio，必须用
   `~/.maos-matrix/venv/bin/python` 才走得到活路径，拿系统解释器起房间会**静默降级 log-only**
   （终端照刷「房间消息」，房间里一条没有）。详见文末「录制前必须确认的三件事」第 1 条。

@@ -83,7 +83,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from maos.domain.refund import annotation, objects as _refund_objects
+from maos.domain.refund import (
+    annotation, objects as _refund_objects, projection as _projection,
+)
 from maos.ingress import classify as _classify
 from maos.ingress import outcome_commands as _outcome_cmds
 from maos.ingress import sheet as _sheet
@@ -1232,8 +1234,14 @@ class IngressRouter:
         # 在锁内触发就是自己等自己 —— 而症状是房间彻底不动，没有任何报错。
         self._record(("execute", ticket.payload, result, msg.sender))
         head = f"已放行 {ticket.case_id}（操作人 {msg.sender}）\n"
-        return head + self._render(result, title=ticket.summary) + \
-            self._compensate_if_stuck(result, msg)
+        # **先补偿、再渲染**。开单那一步会把 `biz_status` 推到 `compensated`，
+        # 卡片必须照补偿**之后**的库讲话。反过来（从前那样把 `_render` 写在
+        # 表达式左边、靠求值序先跑）的症状是同一条回帖自相矛盾：上半截说
+        # 「业务状态：已提交网关·未确认 / 对客户口径：已提出退款」，下半截说
+        # 「钱没退出去，已开人工补偿工单」—— 而那一刻库里已经是 compensated。
+        # 拼接位置不变：这段仍然接在卡片末尾。
+        tail = self._compensate_if_stuck(result, msg)
+        return head + self._render(result, title=ticket.summary) + tail
 
     def _compensate_if_stuck(self, r: dict, msg: InboundMessage) -> str:
         """网关明确失败、钱没退出去 -> 开一张人工补偿工单，并说出下一步（T122）。
@@ -1289,6 +1297,15 @@ class IngressRouter:
             return f"\n⚠️ 这一单钱没退出去，但补偿工单没开出来（{res.error}）—— 请人工介入"
 
         out = res.output
+        # 把补偿**之后**的事实写回观测，好让紧接着跑的 `_render` 照新库讲话
+        # （调用序见 `handle_execute`）。对外口径仍然**只经**
+        # `domain/refund/projection.py` 取值 —— 这里拼一句字面值就是契约 §D
+        # 说的「第二处措辞」，而第二处迟早会跟第一处漂。
+        r["biz_status"] = out.get("biz_status", r.get("biz_status"))
+        r["public_status"] = _projection.public_status(
+            str(r.get("biz_status") or ""),
+            self._has_refund_request(tenant_id, case_id),
+            _projection.observed_state_of(obs))
         opened = out.get("ticket") if isinstance(out.get("ticket"), dict) else {}
         ticket_id = _outcome_cmds.CP.ticket_id_of(case_id)
         role = str(opened.get("assignee_role") or "")
@@ -1300,6 +1317,23 @@ class IngressRouter:
         return (f"\n钱没退出去（{code}），已开人工补偿工单：{ticket_id}{seat}\n"
                 f"  改派：/assign {ticket_id} payment_ops\n"
                 f"  关单：/resolve {ticket_id} <渠道流水号> <线下凭证摘要>")
+
+    def _has_refund_request(self, tenant_id: str, case_id: str) -> bool:
+        """库里有没有本案的 `refund_request` 行 —— 口径逐字同 `custom_case._observe()`。
+
+        `projection.public_status` 的第二个入参就是它：`approved` 加上这一行才是
+        客户口径的「已提出退款」。查不动（表还没建、库读不了）一律当作**没有**——
+        拿 False 最多少说一句话，拿 True 则可能替这个案子宣布一件没发生的事（铁律 8）。
+        """
+        try:
+            return bool(_refund_objects.query(
+                self.store,
+                "SELECT request_id FROM refund_request"
+                " WHERE tenant_id=? AND case_id=? LIMIT 1",
+                (tenant_id, case_id)))
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("查案子 %s 的退款申请行失败（%s）—— 当作没有", case_id, exc)
+            return False
 
     def _render(self, r: dict, *, title: str) -> str:
         """把 `_observe()` 的观测结果排成一张群里能一眼读完的卡。"""
@@ -1322,8 +1356,14 @@ class IngressRouter:
         # 同一个案子说得不一样，而其中一句迟早会在没有观察行的时候说出「退款已到账」
         # （铁律 8）。空串就不打这一行 —— 「没有对外口径」与「口径是空」是两回事，
         # 硬打一行空的等于替这个案子编了一句对外的话。
+        # 打之前再验一次成员：来路不明的字符串一个字都不许当对外口径念出去
+        # （契约 §D 禁止自造措辞）。不在五句里就**不打这一行**并留一条 WARNING，
+        # 宁可少说一句，也不替客户编一个状态。
         public = str(r.get("public_status") or "")
-        if public:
+        if public and public not in _projection.PUBLIC_STATUSES:
+            log.warning("案子 %s 的对外口径 %r 不在契约 §D 的五个字面值里，本行不打",
+                        r.get("case_id"), public)
+        elif public:
             lines.append(f"对客户口径：{public}")
 
         # 铁律 8：钱到没到账只认观察。没有 settled 观察就明说没有，不含糊。

@@ -515,9 +515,42 @@ def test_run_py_defaults_to_scripted_and_live_model_opts_out():
         os.environ.pop(ENV_FORCE_SCRIPTED, None)
         assert run_mod._apply_model_mode(["--live-model", "--scenario", "1"]) \
             == ["--scenario", "1"], "--live-model 必须被摘掉，maos/main.py 不认识它"
-        assert ENV_FORCE_SCRIPTED not in os.environ
+        # 显式写 "0" 而不是留空：留空与「从来没设过」不可区分，而这一跑是**刻意**
+        # 关掉强制的。行为上两者等价（"0" 在 `_FORCE_OFF_VALUES` 里），
+        # 区别在于它还能压过继承来的 =1 —— 下一条测试守着那件事。
+        assert os.environ[ENV_FORCE_SCRIPTED] == "0"
     finally:
         os.environ[ENV_FORCE_SCRIPTED] = "1"        # 还给 conftest 的起跑线
+
+
+def test_live_model_outranks_an_inherited_force_scripted(monkeypatch):
+    """``--live-model`` 必须压得过**继承来的** ``MAOS_FORCE_SCRIPTED=1``。
+
+    原先 ``run.py`` 带这个旗标时只把它从 argv 里摘掉，**不动环境**。于是在
+    export 过该变量的 shell 里（演示机的 ``.bash_profile`` 就 export 着
+    ``MAOS_LLM_*`` 那一串，``demo_preflight.sh`` 也 ``export MAOS_FORCE_SCRIPTED=1``）
+    ``--live-model`` 静默失效、照走 Scripted —— 而日志还在提示「要真模型请用
+    ``--live-model``」。人照做了，什么也没变，且没有任何红灯。
+
+    显式开关压过环境，这是它之所以叫显式。这里从 ``forced_scripted()`` 与
+    ``select_model_client()`` 两头判，不打一行真网络（key 是假的，只构造不调用）。
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_t125_run3", ROOT / "run.py")
+    run_mod = importlib.util.module_from_spec(spec)
+    sys.modules["_t125_run3"] = run_mod
+    spec.loader.exec_module(run_mod)
+
+    _with_live_env(monkeypatch)
+    monkeypatch.setenv(ENV_FORCE_SCRIPTED, "1")
+    assert forced_scripted() is True, "起跑线：环境把这一跑钉死在 Scripted 上"
+
+    assert run_mod._apply_model_mode(["--live-model"]) == []
+    assert os.environ[ENV_FORCE_SCRIPTED] == "0"
+    assert forced_scripted() is False
+    assert isinstance(select_model_client(), GatewayModelClient), \
+        "--live-model 没能压过继承来的 =1，这一跑仍然是脚本回放"
 
 
 def test_run_py_does_not_override_an_explicit_choice():
@@ -594,3 +627,98 @@ def test_make_evidence_labels_the_bundle_with_the_model_mode(monkeypatch):
     case_bundle = (ROOT / "scripts" / "make_case_bundle.py").read_text(encoding="utf-8")
     assert '"live" if live else "scripted"' in case_bundle, (
         "make_case_bundle.py 的 model_mode 字面值变了，两边口径已分叉")
+
+
+# ---------------------------------------------------------------------------
+# 7b. make_evidence 的父子进程：子进程继承决定，不自己重新判
+# ---------------------------------------------------------------------------
+def _load_make_evidence(name: str):
+    """把 ``scripts/make_evidence.py`` 当模块装进来（它平时是 ``__main__``）。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "scripts" / "make_evidence.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_make_evidence_child_process_inherits_and_does_not_decide(monkeypatch, tmp_path):
+    """``--_child`` 子进程**不许**自己设 ``MAOS_FORCE_SCRIPTED``。
+
+    父进程用 ``[sys.executable, __file__, "--_child", n, "--_db", db]`` 递归调起
+    自己，**argv 里不带 ``--live-model``**。子进程要是照着 ``not args.live_model``
+    自己判，父进程带 ``--live-model`` 的那一跑就会变成：父进程不设、``model_mode()``
+    标 ``live``，子进程却把自己钉死成 Scripted —— **实跑脚本回放，索引却写着真模型**。
+    标签说谎比跑错模型更坏（铁律 3），而从产物上看不出来，除非去比 token 数。
+
+    传递靠的是 ``subprocess.run`` 不传 ``env=``（父进程已把 ``os.environ`` 设好），
+    所以子进程正确的动作是**什么都不做**。这条就钉这个「什么都不做」。
+    """
+    make_evidence = _load_make_evidence("_t125_me_child")
+    monkeypatch.delenv(ENV_FORCE_SCRIPTED, raising=False)
+
+    seen = []
+    monkeypatch.setattr(make_evidence, "run_child",
+                        lambda n, db: (seen.append((n, db)), 0)[1])
+
+    db = str(tmp_path / "child.db")
+    assert make_evidence.main(["--_child", "1", "--_db", db]) == 0
+    assert seen == [(1, db)]
+    assert ENV_FORCE_SCRIPTED not in os.environ, (
+        f"子进程自己把 {ENV_FORCE_SCRIPTED} 设成了 "
+        f"{os.environ.get(ENV_FORCE_SCRIPTED)!r} —— 父进程带 --live-model 时，"
+        f"这一束会标 live 而实跑 Scripted")
+    assert make_evidence.model_mode() == "live"
+
+
+def test_make_evidence_contrast_child_also_inherits(monkeypatch, tmp_path):
+    """``--_contrast`` 走的是第二个递归入口，同一条豁免必须也覆盖它。
+
+    只修 ``--_child`` 的话，八束是真模型、三组对照束悄悄是脚本回放，
+    而两边的 ``model_mode`` 都写着 live。
+    """
+    make_evidence = _load_make_evidence("_t125_me_contrast")
+    monkeypatch.delenv(ENV_FORCE_SCRIPTED, raising=False)
+
+    seen = []
+    monkeypatch.setattr(make_evidence, "run_child_contrast",
+                        lambda g, db: (seen.append((g, db)), 0)[1])
+
+    db = str(tmp_path / "contrast.db")
+    assert make_evidence.main(["--_contrast", "R3", "--_db", db]) == 0
+    assert seen == [("R3", db)]
+    assert ENV_FORCE_SCRIPTED not in os.environ
+
+
+def test_make_evidence_parent_still_defaults_to_scripted(monkeypatch):
+    """父进程（没有 ``--_child`` / ``--_contrast``）缺省照旧钉死 Scripted。
+
+    上面那条豁免不许把缺省一起放掉 —— 那才是这个开关的主业。
+    ``--contrast`` 只是个不落盘的挂载点，真正跑的那一段打了桩。
+    """
+    make_evidence = _load_make_evidence("_t125_me_parent")
+    monkeypatch.delenv(ENV_FORCE_SCRIPTED, raising=False)
+    monkeypatch.setattr(make_evidence, "main_contrast", lambda args: 0)
+
+    assert make_evidence.main(["--contrast"]) == 0
+    assert os.environ[ENV_FORCE_SCRIPTED] == "1"
+    assert make_evidence.model_mode() == "scripted"
+
+
+def test_make_evidence_live_model_outranks_an_inherited_force_scripted(monkeypatch):
+    """``make_evidence.py --live-model`` 同样要压得过继承来的 ``=1``。
+
+    与 ``run.py`` 那条同源（见 ``test_live_model_outranks_an_inherited_force_scripted``）：
+    ``setdefault`` 在环境里已经有值时是空操作，于是 preflight ``export`` 过之后
+    ``--live-model`` 静默失效，产出的束标着 live、实跑却是脚本回放。
+    """
+    make_evidence = _load_make_evidence("_t125_me_live")
+    monkeypatch.setenv(ENV_FORCE_SCRIPTED, "1")
+    monkeypatch.setattr(make_evidence, "main_contrast", lambda args: 0)
+
+    assert make_evidence.main(["--contrast", "--live-model"]) == 0
+    assert os.environ[ENV_FORCE_SCRIPTED] == "0"
+    assert make_evidence.model_mode() == "live"
+    assert forced_scripted() is False, "make_evidence 与 client.py 对 \"0\" 的判定必须一致"

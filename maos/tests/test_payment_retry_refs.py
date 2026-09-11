@@ -201,6 +201,46 @@ def test_fail_times_then_succeeds_on_retry():
     assert gw.query(first.request_id).status == "settled"
 
 
+@pytest.mark.parametrize("budget", [1, 2, 3], ids=["N=1", "N=2", "N=3"])
+def test_fail_times_holds_for_any_n_not_just_one(budget):
+    """docstring 承诺的是**任意 N**：前 N 次落注入的码，第 N+1 次改判。
+
+    原先计数记在 `MockGateway._attempts` 上，而它只在**新建账本**那条路上
+    （`_next_code`）推进；幂等重发走的是 `refund()` 里 `existing` 那一支，
+    压根不经过它。于是计数永远停在 1，`_supersede_due` 的额度判据在 N>=2 时
+    **永不成立** —— `fail_times=2` 连发五次全是 `40005`，改判一次都不发生。
+
+    N=1 碰巧是对的（建账本那一次就把计数顶到 1），而 T124 证据束用的正是 N=1，
+    所以这个洞在产物上看不出来。这条 parametrize 的全部意义就是别再只测 N=1。
+    """
+    gw = MockGateway(settle_after=2, script={s6.ORDER_ID: "40005"},
+                     fail_times={s6.ORDER_ID: budget})
+
+    codes = [gw.refund(_req()).code for _ in range(budget + 2)]
+    assert codes == ["40005"] * budget + ["10000", "10000"], (
+        f"fail_times={budget} 应当前 {budget} 次失败、之后改判，实际 {codes}")
+    assert gw.refund_count == 1, "改判改的是同一笔请求的下落，不许新开第二笔"
+
+
+def test_each_idempotency_key_gets_its_own_budget():
+    """额度按**幂等键**算，不按订单号 —— 同一个订单的两个案子互不吃额度。
+
+    原先按 `out_trade_no` 记：甲案发过一次，乙案的**第一次** refund 就直接
+    落在改判后的码上，等于乙案一次都没失败过就「重试成功」了。
+    一个订单多个 `out_request_no` 是退款域的常态（部分退款、二次申诉）。
+    """
+    gw = MockGateway(settle_after=2, script={s6.ORDER_ID: "40005"},
+                     fail_times={s6.ORDER_ID: 1})
+    a, b = _req(key="case-a"), _req(key="case-b")
+
+    assert gw.refund(a).code == "40005"
+    assert gw.refund(b).code == "40005", (
+        "乙案的第一次被甲案吃掉了额度 —— 它一次都没失败过就改判了")
+    assert gw.refund(a).code == "10000"
+    assert gw.refund(b).code == "10000"
+    assert gw.refund_count == 2, "两个幂等键就是两笔退款"
+
+
 def test_fail_times_zero_is_the_same_as_no_injection():
     """N=0 等于不注入：第一次就落改判后的码，注入的那个码一次都不出现。"""
     injected = MockGateway(settle_after=2, script={s6.ORDER_ID: "40005"},

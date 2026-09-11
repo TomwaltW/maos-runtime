@@ -574,28 +574,49 @@ def test_assign_to_an_unknown_role_is_a_usage_error_not_a_denial(invoker, store)
     assert not _events(store, OC.EVENT_COMMAND_DENIED)
 
 
-def test_confirm_and_complain_parse_and_authorize_but_do_not_persist(invoker, store):
-    """本轨的边界：`/confirm` `/complain` 只做解析 + 鉴权 + 返回结构，落库归 T120。
+def test_confirm_and_complain_write_case_outcome_not_compensation_record(invoker, store):
+    """T122 之后的边界：这两条命令**真落库**，但只碰结果面，不碰补偿账。
 
-    `data` 里的字面值逐字对齐跨轨契约 §E 的取值域，整合期照搬即可。
+    T117 时它们停在「解析 + 鉴权 + `KIND_PENDING`」，落库归 T120；T122 接上了
+    `outcome.record_confirmation()` / `record_complaint()`，于是回帖变成 `KIND_DONE`、
+    `data` 变成重算后的 `case_outcome` 整行（不再是「该写什么」那份指令）。
+
+    前置条件也跟着变硬了：确认要求**先发过通知**。这个夹具从不跑 `notify.customer`，
+    所以第一次 `/confirm` 必须被挡在「客户无从确认」上 —— 那一条单独钉在最前面，
+    它正是 T122 之后 `/confirm` 与 T117 版本最大的行为差别，删掉就没人守了。
+
+    `data` 里的字面值逐字对齐跨轨契约 §E 的取值域。
     """
     _compensated(invoker, store)
     before = objects.query(store, "SELECT COUNT(*) AS n FROM compensation_record")[0]["n"]
 
+    # 1. 一条通知都没发过 —— 确认不成立，且是**一句人话**（KIND_USAGE），不是崩溃。
+    early = OC.dispatch(f"/confirm {s7.CASE_ID}", store=store, tenant_id=s7.TENANT_ID,
+                        sender=BOSS, approvers=APPROVERS, extras=_extras())
+    assert early.kind == OC.KIND_USAGE, "没发过通知却确认成功了 —— 那是替客户认的"
+    assert "无从确认" in early.text
+
+    # 2. 补上通知，确认这才立得住。
+    note = invoker.invoke("notify.customer",
+                          {"tenant_id": s7.TENANT_ID, "case_id": s7.CASE_ID},
+                          extras=_extras())
+    assert note.status == "ok", note.error
+
     ok = OC.dispatch(f"/confirm {s7.CASE_ID}", store=store, tenant_id=s7.TENANT_ID,
                      sender=BOSS, approvers=APPROVERS, extras=_extras())
-    assert ok.kind == OC.KIND_PENDING
-    assert ok.data["field"] == "customer_confirmation" and ok.data["value"] == "confirmed"
+    assert ok.kind == OC.KIND_DONE, ok.text
+    assert ok.data["customer_confirmation"] == "confirmed"
 
+    # 3. 投诉一开就是 open，而 open 一票否决 `business_success`（契约 §E）。
     cp = OC.dispatch(f"/complain {s7.CASE_ID} 收到的金额少了 200",
                      store=store, tenant_id=s7.TENANT_ID, sender=BOSS,
                      approvers=APPROVERS, extras=_extras())
-    assert cp.kind == OC.KIND_PENDING
-    assert cp.data["field"] == "complaint" and cp.data["value"] == "open"
-    assert cp.data["text"] == "收到的金额少了 200"
+    assert cp.kind == OC.KIND_DONE, cp.text
+    assert cp.data["complaint"] == "open"
+    assert not cp.data["business_success"], "投诉还开着，这单业务不许算成"
 
     after = objects.query(store, "SELECT COUNT(*) AS n FROM compensation_record")[0]["n"]
-    assert after == before, "这两条命令一行都不该落库"
+    assert after == before, "这两条命令不碰 `compensation_record` —— 结果面不是补偿账"
 
 
 def test_confirm_by_an_outsider_is_denied(invoker, store):

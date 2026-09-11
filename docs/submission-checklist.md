@@ -21,7 +21,7 @@
 
 ```bash
 # ①
-python3 -m pytest maos/tests -q          # □ 3636 passed，一分多钟 · metric:pytest_passed_nopg
+python3 -m pytest maos/tests -q          # □ 3746 passed，一分多钟 · metric:pytest_passed_nopg
 # ②
 python3 run.py                           # □ exit=0，个位数秒；跑完 git status 仍空（它不产证据）
 # ③
@@ -261,7 +261,7 @@ Z-1 允许拆子页（`P8a`/`P8b`），但**不许改 P1–P14 的编号**，所
 | 1 | 一条脱敏真实退款需求的可执行纵向切片 | P3 → P10 | `OQ-1` | `evidence/case-real-01/`（四条路径 + 真模型束） | ☐ |
 | 2 | AgentTeams 事件链 | P6 → P6b | `OQ-1` | `evidence/case-real-01/happy/event-chain.json`（圆桌与 DAG 同一条 `seq`）+ `docs/agentteams-mapping.md` | ☐ |
 | 3 | 关键 Skill 的真实调用 | P7 | `OQ-1` | `evidence/case-real-01/happy/skills.json`（契约钉死的 8 个，逐个带 `invocation_id`） | ☐ |
-| 4 | 返工 / HITL Trace | P10 | `OQ-1` | `evidence/case-real-01/happy/hitl-trace.json`（每条人做的动作带操作者）。🔴 **返工那一格今天是空的**（四束里都没有 `kind=rework`），真返工轨迹在 `evidence/scenario-2/`、`evidence/scenario-7/`；单案例上的 **T124 落地后补** | ☐ |
+| 4 | 返工 / HITL Trace | P10 | `OQ-1` | `evidence/case-real-01/gateway_fail/hitl-trace.json` —— `kind=rework` 一条（`actor=gate`、`transition` 字面值 `AWAITING_REVIEW->REWORK [gate_rework]`，挂在付款任务上），另有 `blocked` / `task_approval` / `compensation`，每条人做的动作带操作者。`kind` 的完整取值是 `plan_approval` / `task_approval` / `blocked` / `drift` / `rework` / `compensation` 六种。**返工只在这一束**（顺利路径不返工是对的）；口径三句：只重发**一次**、**同渠道同幂等键**、闸判两次 `rework` 而状态机只跳一次 | ☐ |
 | 5 | Evidence Bundle | P11 → P11b | `OQ-1` | `scripts/verify.py` 全绿（现行 `RESULT: 10/10 PASS`） | ☐ |
 | 6 | 业务对象关联到同一案例 | P3 / P9b | `OQ-1` | verify 第 2 项 + `evidence/case-real-01/happy/business-objects.json`（十类对象带版本，`dangling 0`；`business_ref_coverage` 顺利路径 9/10，第十类在 `evidence/case-real-01/gateway_fail/`） | ☐ |
 | 7 | 外部系统保留权威事实，区分已提出/处理中/已到账 | P9 | `OQ-1` | verify 第 3 项 + 越权拒绝单测 | ☐ |

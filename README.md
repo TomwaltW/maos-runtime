@@ -226,13 +226,24 @@ python3 scripts/verify.py           # ② RESULT 行全绿，exit=0
 缺省走 `ScriptedModelClient`：按关键字返回预置应答，**一行网络都不走**，
 场景 1–7 与全部测试在任何机器上状态迁移序列逐条一致。评审没有 key 也能跑完全程。
 
-接真模型（可选，只影响 Agent 的语义产出，不影响状态机）：
+**缺省是机器钉的，不是「碰巧没配 key」。** 入口自己 `setdefault("MAOS_FORCE_SCRIPTED", "1")`：
+`run.py`（不带 `--live-model` 时）、`scripts/demo_preflight.sh`、`scripts/make_evidence.py`
+拉起的子进程、`maos/tests/conftest.py` 都设。**后果要记住：环境里 export 好三个
+`MAOS_LLM_*` 已经不会把 `python3 run.py` 切成真模型了** —— 演示机的 `.bash_profile`
+里 export 着也照样走 Scripted，这正是想要的行为。
+
+真模型的**唯一显式开关是 `--live-model`**（它用赋值而非 `setdefault`，压得过环境里
+已有的 `MAOS_FORCE_SCRIPTED`）。它只影响 Agent 的语义产出，不影响状态机：
 
 ```bash
 export MAOS_LLM_BASE_URL=...   # OpenAI 兼容接口
 export MAOS_LLM_API_KEY=...    # 只读环境变量，禁止写进任何文件
 export MAOS_LLM_MODEL=...
+python3 run.py --live-model                              # 场景 1–7 走真模型
+python3 scripts/make_case_bundle.py --path happy --live-model   # 真模型束的唯一出处
 ```
+
+`evidence/case-real-01/happy-live/` 只从 `make_case_bundle.py --live-model` 出。
 
 场景 5 与全部测试**强制** `force_scripted=True`，配了 key 的机器上也不打真网络 ——
 `replan / 补偿 / 审批是控制面行为，其正确性不得依赖模型的智力表现`。
@@ -353,9 +364,9 @@ evidence/
 | 评委要求 | 落点 | 可核验证据 |
 | :-- | :-- | :-- |
 | 用一条脱敏真实退款需求完成可执行纵向切片 | 案例 `RC-2026-0904-001`，四条路径各一束 | `evidence/case-real-01/`（`happy` / `drift` / `gateway_fail` / `reject`，另有真模型束 `happy-live`）；四束总账在 `evidence/case-real-01/INDEX.json` |
-| AgentTeams 事件链 | 圆桌五岗 + DAG 四岗落在**同一条** `event_log` 上 | `evidence/case-real-01/happy/event-chain.json`（61 条事件按 `seq` 升序；`by_type` 里 `RoundtableSeatSpoke` 5、`SkillInvoked` 15、`PlanAdvised` 1、`RefundBizStatusChanged` 4）＋ 零模型回放器 `scripts/replay_roundtable.py` |
+| AgentTeams 事件链 | 圆桌五岗 + DAG 五岗六任务落在**同一条** `event_log` 上 | `evidence/case-real-01/happy/event-chain.json`（`events[]` 按 `seq` 升序，条数与分类计数都在同文件的 `count` / `by_type` 字段里，不在这里写死）＋ 零模型回放器 `scripts/replay_roundtable.py`。DAG 那一侧数 `happy/result.json` 的 `plans[0].tasks`：**6 个任务、5 个角色**（受理岗担两个任务 —— 受理与通知；政策、渠道、财务、付款各一） |
 | 关键 Skill 的真实调用 | 跨轨契约钉死的 **8 个**退款 Skill | `evidence/case-real-01/happy/skills.json`（`present 8` / `total 8`，逐个带 `invocation_id` / `input_digest` / `output_hash` / 版本；失败路径另有 `refund.compensate` 与 `refund.compensation_close`） |
-| 返工 / HITL Trace | 计划审批 + 任务闸 `BLOCKED` + 放行 / 驳回 | `evidence/case-real-01/happy/hitl-trace.json`（人做的每个动作带操作者，机器判的如实记 `actor=gate`；`reject` 束里有两级驳回）。🔴 **返工那一格今天是空的** —— 四束里都没有 `kind=rework`，机制在但这条案例上还没走出来，**T124 落地后补** |
+| 返工 / HITL Trace | 计划审批 + 任务闸 `BLOCKED` + 返工重发 + 放行 / 驳回 + 补偿闭环 | `evidence/case-real-01/happy/hitl-trace.json`（人做的每个动作带操作者，机器判的如实记 `actor=gate`；`reject` 束里有两级驳回）。**返工在 `evidence/case-real-01/gateway_fail/`**：`hitl-trace.json` 的 `trace[]` 里有 `kind=rework` 一条，`actor=gate`、`transition` 字面值 `AWAITING_REVIEW->REWORK [gate_rework]`，挂在付款任务上；同束 `event-chain.json` 里紧随其后的那条 `StateTransition` 是 `REWORK -> PENDING [requeue]`。剧情是网关先回可重试码 `40005`、闸判 blocker、**同渠道**重发一次（`skills.json` 里 `payment.execute` 的 `invocations` 是 2，`outcome.json` 三条观察共用同一个 `request_id`），网关改口 `ACQ.SELLER_BALANCE_NOT_ENOUGH` 终态失败，转人工、人在付款闸拒签，最后补偿工单闭环 |
 | Evidence Bundle | `scripts/make_evidence.py` + `scripts/verify.py` | 本轮实跑 `RESULT: 10/10 PASS`；**现行期望值的唯一真源是** [`docs/expected-metrics.json`](docs/expected-metrics.json) |
 | 业务对象关联到同一案例 | `business_ref`（只存引用不存副本） | `evidence/case-real-01/happy/business-objects.json`（`resolved 20`、`dangling 0`，十类对象各带 `object_version`）。`business_ref_coverage` 在顺利路径上是 **9/10** —— 缺的是补偿记录，钱退成了的案子本就不该有；第十类在 `evidence/case-real-01/gateway_fail/` 那一束 |
 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | settled guard + 对外三态投影 | `evidence/case-real-01/happy/outcome.json` 的 `public_status`；五个字面值的唯一产出处是 `maos/domain/refund/projection.py`（问不出终态时它就是空串）。付款前读外部当前版本、**漂移即停**那条在 `evidence/case-real-01/drift/`（`refund.snapshot_check` → `SnapshotDrift`，案子停在 `submitted`） |

@@ -431,13 +431,41 @@ def test_complain_without_content_only_replies_usage(chain):
 # 7. 回帖措辞 —— 对客户口径那一行（跨轨契约 §D）
 # ==========================================================================
 def test_reply_carries_the_public_status_line(chain):
-    """放行卡上多一行「对客户口径」，取值必须是 `projection.PUBLIC_*` 五个之一。"""
+    """放行卡上多一行「对客户口径」，且**恰好**是补偿路径该说的那一句。
+
+    从前这里只断言「在五个字面值里」，而那正好放过了 T126 那个 bug：卡片在
+    补偿开单**之前**渲染，念出来的是 `PUBLIC_FILED`（已提出退款）—— 它也在
+    五个里，于是断言全绿而回帖自相矛盾。判据松到「五选一」就等于没判。
+    """
     out = chain["said"]["approve"]
     assert "对客户口径：" in out
 
     said = [ln.split("：", 1)[1] for ln in out.splitlines() if ln.startswith("对客户口径：")]
-    assert said and said[0] in projection.PUBLIC_STATUSES, (
-        f"对外口径 {said} 不在契约 §D 那五个字面值里 —— 又拼了第二处")
+    assert said and said[0] == projection.PUBLIC_COMPENSATED, (
+        f"这一单走的是补偿路径，对外只能说 {projection.PUBLIC_COMPENSATED!r}，"
+        f"实际说的是 {said}")
+
+
+def test_the_card_and_the_ticket_notice_tell_the_same_story(chain):
+    """同一条回帖的上半截与下半截**不许打架**（T126）。
+
+    补偿路径上，`_compensate_if_stuck` 会把 `biz_status` 推到 `compensated`；
+    卡片若在那之前渲染，读到的是补偿**前**的库，于是同一条消息上半截说
+    「已提交网关·未确认 / 已提出退款」，下半截说「钱没退出去，已开人工补偿工单」。
+    评委肉眼可见，且库里那一刻已经是 compensated —— 卡片说的是过去式。
+
+    所以这里三样一起钉：库里的终态、卡片上的两行、以及后半截的开单提示都在。
+    """
+    out = chain["said"]["approve"]
+    case = CP.guard.get_case(chain["store"], TENANT, CASE) or {}
+    assert case.get("biz_status") == "compensated", "前提没成立：这一跑没走到补偿"
+
+    assert "钱没退出去" in out, "后半截的开单提示丢了，这条就不是在测矛盾"
+    assert "业务状态：已补偿" in out, (
+        f"卡片念的还是补偿前的业务状态 —— 与后半截的开单提示自相矛盾：\n{out}")
+    assert "对客户口径：" + projection.PUBLIC_COMPENSATED in out, (
+        f"卡片念的还是补偿前的对外口径：\n{out}")
+    assert "对客户口径：" + projection.PUBLIC_FILED not in out
 
 
 def test_public_status_line_is_skipped_when_there_is_none(tmp_path):

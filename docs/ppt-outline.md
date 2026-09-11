@@ -11,8 +11,9 @@
 > 工程落地与安全审计 30% ／ 开源贡献 5%**；交付形式 PPT 或 PDF，必要内容含
 > 核心解决思路、技术亮点、**风险边界**、可复现路径；截止 **9 月 3 日 18:00**。
 > 本文件此前一律不猜、不写预估权重的做法到此为止 —— 现在有权威口径，按它填。
-> **十三条评委要求的对照表（表 A / 表 B）继续保留**（出处 `README.md:295-309`，
-> 行号 2026-09-01 刷过：README 多轮膨胀后旧值 280-294 已指偏），
+> **十三条评委要求的对照表（表 A / 表 B）继续保留**（出处 `README.md` **§8
+> 「与提案 / 比赛要求的映射」那张表** —— 按标题找，不按行号找：README 多轮膨胀，
+> 写死的行号已经指偏过两次），
 > 两套口径并行不冲突：十三条是「答没答到」，四维是「按什么打分」。
 > 四维 → 页的承接见文末「T 轮渲染台账」的表 C。
 >
@@ -232,33 +233,46 @@ HITL 是房间里的斜杠命令，第五项是可观测。第五项要单说：
 ## P6b · 单案例事件链时间线（圆桌与 DAG 在同一条线上）
 
 **一句话主张**
-五岗圆桌先议、四岗 DAG 再执行 —— 它们不是两套日志，是 `event_log` 上**一条**按 `seq` 升序的时间线。
+五岗圆桌先议、五岗六任务的 DAG 再执行 —— 它们不是两套日志，是 `event_log` 上**一条**按 `seq` 升序的时间线。
 
 **画面要素**
 一条自上而下的时间轴，左侧标 `seq`，右侧标事件名；圆桌段与 DAG 段用两种底色分开，
-**但轴本身中间不断开**（断开就把这一页要证的事讲反了）。轴上钉七个锚点，读数取自实测：
+**但轴本身中间不断开**（断开就把这一页要证的事讲反了）。轴上钉七段锚点。
 
-| seq | 事件 | 这一格在说什么 |
+> 🔴 **做图时 `seq` 的具体数字现场从 `event-chain.json` 抄，别从这张表抄。**
+> 证据束每重产一次，`seq` 都可能整体平移；这张表只钉**顺序与结构**，那才是不会过期的部分。
+
+| 段 | 事件 | 这一格在说什么 |
 | :-- | :-- | :-- |
-| 1–2 | `ToolInvoked` → `SkillInvoked refund.snapshot_check` | 议事之前先读外部当前订单版本 |
-| 3–10 | `RoundtableRound` → 5 × `RoundtableSeatSpoke` | 受理 / 规则 / 证据 / 风险 / 财务五岗依次发言，中间夹着 `refund.evidence_check` 与 `refund.risk_screen` 两条真调用 |
-| 13–15 | `KbRetrieved` → `SkillInvoked kb.retrieve` → `PlanAdvised` | 检索九类流程知识，Planner 据此给必要任务与审批人 |
-| 16–17 | `PlanApproved` → `PlanTransition PENDING→RUNNING` | 计划审批是人做的，事件里带操作者 |
-| 20–55 | 15 × `SkillInvoked` 夹在 25 × `StateTransition` 里 | DAG 四岗执行，每次调用带 `invocation_id` |
-| 42–49 | 4 × `RefundBizStatusChanged` | `submitted` → `approved` → `gateway_accepted` → `processing` → `settled`，每一跳的 `reason` 里带网关回执 |
-| 59–61 | `CaseOutcomeComputed` → `CasePromoted` → `SkillInvoked kb.sink` | 四判据算完才谈晋升 |
+| 开头两条 | `ToolInvoked` → `SkillInvoked refund.snapshot_check` | 议事之前先读外部当前订单版本 |
+| 圆桌段 | `RoundtableRound` → 5 × `RoundtableSeatSpoke` | 受理 / 规则 / 证据 / 风险 / 财务五岗依次发言，中间夹着 `refund.evidence_check` 与 `refund.risk_screen` 两条真调用 |
+| 检索段 | `KbRetrieved` → `SkillInvoked kb.retrieve` → `PlanAdvised` | 检索九类流程知识，Planner 据此给必要任务与审批人 |
+| 审批那一跳 | `PlanApproved` → `PlanTransition PENDING→RUNNING` | 计划审批是人做的，事件里带操作者 |
+| DAG 段 | 25 × `StateTransition`，中间夹着 **8** × `SkillInvoked` | 五岗六任务逐个执行，每次调用带 `invocation_id` |
+| 付款那一串 | 4 × `RefundBizStatusChanged` | `submitted` → `approved` → `gateway_accepted` → `processing` → `settled`，每一跳的 `reason` 里带网关回执 |
+| 收口三条 | `CaseOutcomeComputed` → `CasePromoted` → `SkillInvoked kb.sink` | 四判据算完才谈晋升 |
 
-右下角小字：**61 条事件，一条命令重产**。
+> **「DAG 段」那一格的两个数怎么数出来的**（`happy/event-chain.json`，做图前自己复核一遍）：
+> `StateTransition` 全线 **25** 条，全部落在 DAG 段里 —— 第一条到最后一条之间就是这一段的边界；
+> 落在这段边界内的 `SkillInvoked` 是 **8** 条。**全线 `SkillInvoked` 是 15 条**，另外 7 条在段外：
+> 圆桌段 6 条（`refund.snapshot_check` / 两次 `refund.evidence_check` / 两次 `refund.risk_screen` /
+> `kb.retrieve`）、收口 1 条（`kb.sink`）。**别把 15 写成「夹在 25 条里」** —— 那是把全线总数
+> 安到了一段上，当场翻文件就露。
+
+右下角小字：**一条命令重产，条数以 `event-chain.json` 的 `count` 字段为准**。
 
 **讲稿**
-评委问 AgentTeams 事件链，我们给的不是截图，是一张表里的 61 行。圆桌五岗说完话，
+评委问 AgentTeams 事件链，我们给的不是截图，是一张表里的每一行。圆桌五岗说完话，
 计划才送审批；审批过了 DAG 才开跑 —— 这两段共用同一个 `seq` 序列，所以「谁先谁后」
 不是我们讲出来的，是库里排好的。中间这四次业务状态变更，每一次都指得到是哪个网关回执。
 
 **数据从哪来**
 - `evidence/case-real-01/happy/event-chain.json` —— `events` 按 `event_log.seq` 升序，
-  `by_type` 给各类计数（`RoundtableSeatSpoke` 5、`SkillInvoked` 15、`RefundBizStatusChanged` 4、
-  `PlanAdvised` 1、`CasePromoted` 1）
+  `count` 给总条数、`by_type` 给各类计数（`RoundtableSeatSpoke` / `SkillInvoked` /
+  `StateTransition` / `RefundBizStatusChanged` / `PlanAdvised` / `CasePromoted` 逐类都在里面，
+  **上图前照这个字段抄，不要照本页抄**）
+- `evidence/case-real-01/happy/result.json` —— `plans[0].tasks`，DAG 那一侧的**六个任务、
+  五个角色**从这里数（受理岗担受理与通知两条，政策、渠道、财务、付款各一）
 - 同束的 `roundtable.json` —— 五岗发言全文，讲解时的备份画面
 - `scripts/replay_roundtable.py` —— 零模型、只读 `event_log` 重建五岗顺序的回放器
 
@@ -277,8 +291,15 @@ HITL 是房间里的斜杠命令，第五项是可观测。第五项要单说：
   `roundtable.json` 里每一岗的 `spoken_by_model` 都是 `false`、`fallback_reason` 是 `no_model`,
   发言内容是**确定性事实卡**。真模型那一版在 `evidence/case-real-01/happy-live/`，
   且 `scripts/verify.py` 按口径跳过它（输出末尾自己列名）。
-- 🔴 返工那一格**今天是空的**：四条路径的 `hitl-trace.json` 里没有 `kind=rework`。
-  机制在（`REWORK` 是 `StateTransition.to_state`），这条单案例上还没走出来 —— **T124 落地后补**。
+- 🔴 **返工只在 `gateway_fail` 这一束，别说「happy 束里也有」。** 顺利路径钱一次就退成了，
+  本来就不该返工，它的 `hitl-trace.json` 里没有 `kind=rework` 是对的。返工那条在
+  `evidence/case-real-01/gateway_fail/hitl-trace.json`：`kind=rework`、`actor=gate`、
+  `transition` 字面值 `AWAITING_REVIEW->REWORK [gate_rework]`，挂在付款任务上。
+- 🔴 **讲返工时别说「重试到上限」，也别说「换渠道重发」。** 实跑是网关先回可重试码
+  `40005`、闸判 blocker、**同渠道同幂等键重发一次**（`skills.json` 里 `payment.execute`
+  的 `invocations` 是 2），网关第二次改口 `ACQ.SELLER_BALANCE_NOT_ENOUGH`（终态失败），
+  于是一次转人工、不再重发。`outcome.json` 里三条付款观察共用同一个 `request_id` ——
+  「同一笔」这件事当场翻得出来。（场景 7 那条线**确实**有「改派备用渠道」，别把两条混讲。）
 
 ---
 
@@ -424,8 +445,11 @@ FAIL 输出片段。
 这套表可以整体搬到 PolarDB —— **控制面不搬**。
 
 **画面要素**
-中间一张十行表（对象类型 × 条数 × 版本 × 由哪个任务挂上），左边一列 DAG 四个任务，
-箭头从任务指向对象、箭头上标 `business_ref`。右下角一块小图画**两个库的切分线**：
+中间一张十行表（对象类型 × 条数 × 版本 × 由哪个任务挂上），左边一列 DAG **六个任务**，
+箭头从任务指向对象、箭头上标 `business_ref`。**六条里有五条出箭头** —— 「渠道商核销」
+那一条不挂业务对象，画成没有出边的那一格即可（`business-objects.json` 里
+`task_id` 只出现 intake / policy / finance / payment / notify 五种，数一遍就知道）。
+右下角一块小图画**两个库的切分线**：
 业务对象 + `kb_doc` → PolarDB；`plan` / `task` / `artifact` / `event_log` → 本地 SQLite。
 
 | 对象类型 | 顺利路径条数 | 版本 | 挂它的任务 |
@@ -641,8 +665,10 @@ B 类「执行路径不可审计」与 C 类「事件不在任何一棵树内」
 - 🔴 不许把 `drift` 那束的 `arrival=unknown` 说成「失败」。它是**问不出来**：案子停在
   `submitted`，一条付款观察行都没有，`public_status` 因此是空串 ——「问不出终态就什么都不写」
   是设计，不是漏填。
-- 🔴 不许说「客户确认过了」。三条路径的 `customer_confirmation` 全是 `none`；
-  那一格要有值得走房间里的 `/confirm`，**等 9/18 真跑日**。
+- 🔴 不许说「客户确认过了」。四条路径的 `customer_confirmation` 全是 `none`。
+  房间里的 `/confirm <案号>` 命令**已经落在 router 里**（与 `/assign` `/resolve` `/complain`
+  同一批，和命令行处置共用一个库），但**真人在真房间敲它、把回执采进证据束这件事还没做** ——
+  等 9/18 真跑日。「命令能用」和「已经有人用过」是两句话，别说成一句。
 
 ---
 
@@ -695,12 +721,12 @@ Control Plane 和 Worker 是同一份。换域换的是 Skill、ToolPort 和业�
 演示用对齐该规范的模拟实现，沙箱账号未接通。
 
 **可核验证据**
-- `README.md:317-329`（§8 数据口径小节：合成数据 / 公开规范·模拟实现 / Matrix 真房间 三条；
-  行号 2026-09-01 刷过 —— §7 表增 MCP 行、§8 表后增工具链段，小节整体下移）
+- `README.md` **§8 的「数据口径（必须写明，不含糊）」小节**（合成数据 / 公开规范·模拟实现 /
+  Matrix 真房间 三条 —— 按小节标题找，别按行号：这一节被上游几次插表整体推移过）
 - `docs/submission-checklist.md §A-4`（A-4 口径一致性八行表，本页即这张表的上版；
   2026-09-01 增 MCP 行成八行）
-- `maos/tools/gateway_codes.py`（错误码逐条核对后写入的落点，
-  `README.md:320-322` 明写「禁止凭记忆编造」）
+- `maos/tools/gateway_codes.py`（错误码逐条核对后写入的落点；
+  README 那一节明写「禁止凭记忆编造」）
 
 **对应评委要求编号**
 —（口径页，不扛具体要求；但它是全篇每一条断言可信的前提）
@@ -763,26 +789,32 @@ python3 scripts/verify.py           # ② 十项逐条重放校验（读数以�
 
 ## 表 A · 评委要求 → 页
 
-十三条出自 `README.md:295-309`（§8，**以此为准**；行号 2026-09-01 刷过）。
-`docs/EXECUTION.md:788-802` 的附 C 是 v4 手册原文，条数一致（13 条），
+十三条出自 **`README.md` §8「与提案 / 比赛要求的映射」那张表**（**以此为准**；
+这里不写死行号 —— README 每改一次都会漂，照行号翻只会翻到别的段）。
+`docs/EXECUTION.md` 附 C 是 v4 手册原文，条数一致（13 条），
 但里面写的是 `scenario-R1/R2`、`Phase 5`、「退款域 6 Skill」这类**已改名的旧编号**，
 只用来确认「一条不漏」，**不要照抄其落点**。
 
+> 🔴 **本表末列一律不写核验读数。** `verify.py` 各项的分子分母随证据束增减而变，
+> 写死过一次就再没刷对过。要现行期望值只有两个出处：`docs/expected-metrics.json`
+> （唯一真源）与**当场跑出来的 `RESULT` 行**。下表末列因此只给「打开哪个文件、
+> 数哪个字段」。
+
 | # | 评委要求（README §8 原文） | 主页 | 辅页 | 该页给出的证据 |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | 用一条脱敏真实退款需求完成可执行纵向切片 | **P3** | P10 | `python3 run.py --scenario 6` / `--scenario 7` |
-| 2 | AgentTeams 事件链 | **P6** | — | `docs/agentteams-mapping.md:16-24` 五项映射（每项带行号） |
-| 3 | 关键 Skill 的真实调用 | **P7** | P3 | `docs/skill-catalog.md:15-29`（13 skill，含退款域 7 个） |
-| 4 | 返工 / HITL Trace | **P5** | P10 | `maos/runtime/gate.py:254-260` + 场景 7 的 `BLOCKED → FAILED` 轨迹 |
-| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py::CHECKS` → 当场跑出的 `RESULT` 行 |
-| 6 | 业务对象关联到同一案例 | **P11** | P3 | verify 第 2 项 `business-ref 35/35` |
-| 7 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | **P9** | P10 | `maos/domain/refund/guard.py:33` + `:307-315` |
-| 8 | RAG 面向 workflow 规划 | **P8a** | P8b | `maos/kb/retriever.py:151-163` + `evidence/scenario-R5/dag-diff.json` |
-| 9 | 先按租户/业务/地区/渠道/商品/政策/版本过滤，再组合规则编号、错误码、全文、语义 | **P8a** | — | `maos/kb/retriever.py:51-55`（过滤顺序与评委原话逐字一致） |
-| 10 | 减少遗漏财务复核、错误套用政策、无限重试 | **P5** | P8b | 第六道闸 `maos/runtime/gate.py:259` + 政策版本锁定 + `MAOS_MAX_REPLAN` |
-| 11 | 历史流程不能替代当前订单事实和人工授权 | **P8b** | P9 | `maos/kb/guardrails.py:1-16` 三条护栏 + `:149` `check_all` |
-| 12 | 以退款到账 / 客户确认 / 人工纠错验证 DAG | **P10** | P11 | `result.json` 的 `business_outcome` / verify 第 6 项 `10/10` |
-| 13 | 只有证据完整且外部结果明确的案例进默认知识层 | **P8b** | P11 | 晋升规则 `promote_history_case` / verify 第 7 项 `1/1` |
+| 1 | 用一条脱敏真实退款需求完成可执行纵向切片 | **P3** | P10 | 单案例束 `evidence/case-real-01/`（`happy` / `drift` / `gateway_fail` / `reject` 四条路径，总账在 `INDEX.json`），一条 `python3 scripts/make_case_bundle.py --all-paths` 重产 |
+| 2 | AgentTeams 事件链 | **P6** | P6b | `docs/agentteams-mapping.md` 五项映射（每项带落点）＋ `case-real-01/happy/event-chain.json` |
+| 3 | 关键 Skill 的真实调用 | **P7** | P3 | `case-real-01/happy/skills.json` 的 `contract_skills` —— **跨轨契约钉的是 8 个退款 Skill**，顺利路径 `present`／`total` 两个字段当场读；`docs/skill-catalog.md` 是注册表全量（远不止 8 个），两个数别混 |
+| 4 | 返工 / HITL Trace | **P5** | P10 | `case-real-01/gateway_fail/hitl-trace.json` 的 `kind=rework`（`transition` 字面值 `AWAITING_REVIEW->REWORK [gate_rework]`）＋ 同束 `BLOCKED → FAILED` 轨迹 |
+| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py::CHECKS` → 当场跑出的 `RESULT` 行；期望值见 `docs/expected-metrics.json` |
+| 6 | 业务对象关联到同一案例 | **P11** | P3 | verify 的 `business-ref` 项（分子分母当场读）＋ `case-real-01/happy/business-objects.json` 的 `resolved` / `dangling` |
+| 7 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | **P9** | P10 | `maos/domain/refund/guard.py` 的 settled guard ＋ `maos/domain/refund/projection.py` 的对外三态 |
+| 8 | RAG 面向 workflow 规划 | **P8a** | P8b | `maos/kb/retriever.py` 两阶段检索 + `evidence/scenario-R5/dag-diff.json` |
+| 9 | 先按租户/业务/地区/渠道/商品/政策/版本过滤，再组合规则编号、错误码、全文、语义 | **P8a** | — | `maos/kb/retriever.py` 的阶段一过滤顺序（与评委原话逐字一致） |
+| 10 | 减少遗漏财务复核、错误套用政策、无限重试 | **P5** | P8b | 第六道闸 `maos/runtime/gate.py` + 政策版本锁定 + `MAOS_MAX_REPLAN`；「无限重试」的实证是 `gateway_fail` 那束**只重发一次就转人工** |
+| 11 | 历史流程不能替代当前订单事实和人工授权 | **P8b** | P9 | `maos/kb/guardrails.py` 三条护栏 + `check_all` |
+| 12 | 以退款到账 / 客户确认 / 人工纠错验证 DAG | **P10** | P11 | `case-real-01/*/outcome.json` 的 `case_outcome` 四判据 ＋ verify 的 `case-outcome` 项（当场读） |
+| 13 | 只有证据完整且外部结果明确的案例进默认知识层 | **P8b** | P11 | 晋升规则 `promote_history_case` ＋ `happy/event-chain.json` 里的 `CasePromoted` ＋ verify 的 `history-case` 项（当场读） |
 
 **十三条零空行。** 每一条至少命中一个页锚，且该页在自己的「可核验证据」小节里
 给出了对应的 `文件:行号` 或可跑命令。

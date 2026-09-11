@@ -5,7 +5,10 @@
 
   "gateway": {
     "settle_after": 2,
-    "fail_with": null
+    "fail_with": null,
+    "fail_orders": {
+      "ORD-2026-0007": "ACQ.SELLER_BALANCE_NOT_ENOUGH"
+    }
   },
 
   "tenant": [
@@ -51,6 +54,15 @@
       "name": "梅花联轴器 330",
       "category": "coupling",
       "warranty_months": 24,
+      "payload_json": "{}"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "sku": "SKU-VLV-118",
+      "version": 1,
+      "name": "气动球阀 118",
+      "category": "valve",
+      "warranty_months": 12,
       "payload_json": "{}"
     }
   ],
@@ -126,6 +138,18 @@
       "channel_id": "ch-online",
       "policy_version_at_order": 1,
       "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-08-23T10:15:00+00:00\", \"tracking_no\": \"DB-5561-0093-7742\"}, \"qc_report\": {\"issued_at\": \"2026-08-30T13:00:00+00:00\", \"report_no\": \"QC-2026-0830-021\", \"result\": \"fail\"}}",
+      "read_at": "2026-09-01T00:00:00+00:00"
+    },
+    {
+      "tenant_id": "tnt-demo",
+      "order_id": "ORD-2026-0007",
+      "version": 1,
+      "sku": "SKU-VLV-118",
+      "amount_paid": 3600.0,
+      "paid_at": "2026-08-06T09:30:00+00:00",
+      "channel_id": "ch-online",
+      "policy_version_at_order": 1,
+      "payload_json": "{\"customer_id\": \"CUS-2026-0042\", \"logistics\": {\"carrier\": \"德邦物流\", \"signed_at\": \"2026-08-11T16:40:00+00:00\", \"tracking_no\": \"DB-5561-0093-8815\"}, \"qc_report\": {\"issued_at\": \"2026-08-28T09:20:00+00:00\", \"report_no\": \"QC-2026-0828-034\", \"result\": \"defect\"}}",
       "read_at": "2026-09-01T00:00:00+00:00"
     }
   ],

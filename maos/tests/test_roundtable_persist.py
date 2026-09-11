@@ -724,12 +724,78 @@ def test_verify_accepts_a_db_that_contains_roundtable_rows(
         "（那说明有人给圆桌造了 plan 行），还是判据口径变了")
 
 
-def test_roundtable_rows_show_up_as_stray_and_unattributed_not_as_a_fake_run(
-        case, ledger, store, db_path):  # noqa: F811
-    """圆桌那一摊**如实**落进 `stray_events` / `unattributed_usage`。
+def test_verify_reports_the_roundtable_timeline_instead_of_warning_about_strays(
+        case, ledger, store, db_path, tmp_path):  # noqa: F811
+    """第 4 项把圆桌那一段**印出来**，而不是报一行「不在任何一棵树内」。
 
-    它们确实不在任何一棵树里 —— 伪 plan_id 的全部意义就是「能捞出来，但不冒充
-    一条 Run」。`plan_count` 仍是 0：多出一棵树才是该查的那种红。
+    T134 之前评委在这一栏读到的是 8 条读不懂的游离事件。现在是一行说得清的
+    info：几轮、几岗、几次 skill、花了多少。`info` 而不是 `warn` —— 这不是缺口
+    （warn 有基线，见 `test_verify_warn.py`），是「这一段现在有树了」这件事本身。
+    """
+    rt = RefundRoundtable(_TokenModel(), _Voices(), store=store)
+    reports = _preflight(rt, case, ledger)
+    rt.verdict_of(reports, case[1])
+
+    vcase = _verify_case(str(db_path), tmp_path)
+    try:
+        chk = verify.check_trace_tree([vcase])
+    finally:
+        vcase.conn.close()
+
+    assert chk.status == verify.PASS, chk.notes
+    assert not [n for n in chk.notes if n.startswith("warn:")], \
+        f"圆桌有树了就不该再出 warn：{chk.notes}"
+    line = next(n for n in chk.notes if "圆桌" in n)
+    assert line.startswith("info:")
+    for fragment in ("1 轮", f"{SEATS} 岗发言", "2 次 SkillInvoked", "1 次合议",
+                     "replay_roundtable.py"):
+        assert fragment in line, f"info 里少了 {fragment!r}：{line}"
+
+
+def test_verify_catches_a_roundtable_event_that_is_in_no_family_at_all(
+        case, ledger, store, db_path, tmp_path):  # noqa: F811
+    """🔴 把判据放宽成「有 `roundtable:` 前缀就豁免」时，第 4 项必须当场红。
+
+    这是 T134 那条收窄判据的看门人。只看 warn 的话，「真收进树里」和「按前缀
+    豁免掉」长得一模一样 —— 两种写法都让那四行 warn 消失。所以核验器**回库数**：
+    库里每条带前缀的事件必须恰好出现在一个地方（某棵圆桌树，或 `stray_events`）。
+
+    这里就地伪造那种放宽：把圆桌树摘掉、`stray_events` 仍留空 —— 于是那几条事件
+    哪儿都不在。核验器要点名这件事，而不是让它静静过去。
+    """
+    rt = RefundRoundtable(_TokenModel(), _Voices(), store=store)
+    reports = _preflight(rt, case, ledger)
+    rt.verdict_of(reports, case[1])
+
+    vcase = _verify_case(str(db_path), tmp_path)
+    assert vcase.trace["roundtable_traces"], "前提：本该有一棵圆桌树"
+    vcase.trace["roundtable_traces"] = []          # ← 伪造「按前缀豁免」
+    vcase.trace["stray_events"] = []
+    try:
+        chk = verify.check_trace_tree([vcase])
+    finally:
+        vcase.conn.close()
+
+    assert chk.status == verify.FAIL, "判据被放宽了却全绿 —— 看门人没上岗"
+    hidden = [n for n in chk.notes if "哪儿都找不到" in n]
+    assert len(hidden) == SEATS + 4, (
+        f"库里 {SEATS + 4} 条带前缀的事件都该被点名，实际 {len(hidden)} 条")
+    assert "判据被放宽成" in hidden[0]
+
+
+def test_roundtable_rows_get_their_own_tree_not_a_fake_run(
+        case, ledger, store, db_path):  # noqa: F811
+    """圆桌那一摊进**自己那一族树**，而不是冒充一条 Run（T134 改了这条的期望）。
+
+    T113 立这条时的期望是「如实落进 `stray_events` / `unattributed_usage`」——
+    那时圆桌在 trace 里确实无处安放，承认这一点比藏起来好。T134 给了它一族树
+    （`roundtable_traces`），所以期望跟着变：**那 8 条不再是游离的**。
+
+    没变的是这条测试真正要挡的事，而且一个字节都不许松：
+
+    * `plan_count` 仍是 **0** —— 多出一棵 plan 树才是该查的那种红（给圆桌造
+      plan 行会让 DAG 的证据束凭空多几棵不是任务的树）；
+    * 圆桌树的 `trace_id` 仍是**空串** —— 不编一个 Run id 让它看起来有归属。
     """
     rt = RefundRoundtable(_TokenModel(), _Voices(), store=store)
     reports = _preflight(rt, case, ledger)
@@ -737,11 +803,69 @@ def test_roundtable_rows_show_up_as_stray_and_unattributed_not_as_a_fake_run(
 
     bundle = trace_mod.export_trace_bundle(str(db_path))
     assert bundle["plan_count"] == 0, "圆桌不许在证据里冒充一棵 Run 的树"
-    strays = {s["event_type"] for s in bundle["stray_events"]}
-    assert {"RoundtableRound", "RoundtableSeatSpoke", "RoundtableVerdict",
-            "SkillInvoked"} <= strays
-    assert len(bundle["unattributed_usage"]) == SEATS
-    assert bundle["summary"]["unattributed_model_calls"] == SEATS
+    assert bundle["traces"] == [], "圆桌不许进 plan 那一族"
+
+    trees = bundle["roundtable_traces"]
+    assert len(trees) == 1, f"该有一棵圆桌树，实际 {len(trees)} 棵"
+    tree = trees[0]
+    assert tree["plan_id"] == plan_id_of(str(case[1]["case_id"]))
+    assert tree["case_id"] == str(case[1]["case_id"]), "去掉前缀就是 case_id"
+    assert tree["trace_id"] == "", "圆桌不属于任何 Run，不许编一个 trace_id"
+    assert tree["summary"]["by_event_type"] == {
+        "RoundtableRound": 1, "RoundtableSeatSpoke": SEATS,
+        "RoundtableVerdict": 1, "SkillInvoked": 2}
+    assert tree["summary"]["round_count"] == 1
+    assert tree["summary"]["seat_spoke_count"] == SEATS
+    assert tree["summary"]["verdict_count"] == 1
+    assert tree["summary"]["tree_errors"] == []
+
+    # 收走了就不许再算游离 —— 同一条记录在证据里只能出现在一个地方。
+    assert bundle["stray_events"] == [], (
+        f"圆桌事件已有树，不该再算游离：{bundle['stray_events']}")
+    assert bundle["unattributed_usage"] == []
+    assert bundle["summary"]["unattributed_model_calls"] == 0
+    assert bundle["summary"]["roundtable_model_calls"] == SEATS
+    assert bundle["summary"]["roundtable_event_count"] == SEATS + 4
+    assert bundle["summary"]["stray_event_count"] == 0
+    # 成本归到了圆桌那一段：五岗各一条，token 数进 attributed 那一栏。
+    assert tree["cost"]["calls"] == SEATS
+    assert tree["cost"]["tokens_total"] > 0
+    assert bundle["summary"]["attributed_tokens_total"] == tree["cost"]["tokens_total"]
+    assert len(tree["model_usage"]) == SEATS, "五岗各一行用量，逐行列在树上"
+
+
+def test_claiming_the_roundtable_does_not_excuse_real_strays(
+        case, ledger, store, db_path):  # noqa: F811
+    """🔴 判据是「**被树收走的**不算游离」，不是「plan_id 非空就不算游离」。
+
+    这条是 T134 的看门人。把 `stray_events` 的判据写成「带 `roundtable:` 前缀就
+    豁免」也能让那四行 warn 消失，而代价是**两类真该查的事件一起被藏掉**：
+
+    * `plan_id` 是空串的（建 Plan 之前的调用，`stray_events` docstring 点名的那类）；
+    * `plan_id` 指向一个**不存在的** Plan（`docs/BACKLOG.md ## task-t110` 那类，
+      「被否决的计划」上的事件）。
+
+    所以这里在同一个库里把三类掺在一起：只有圆桌那一摊该被收走，另外两条必须
+    照旧被点名。少点名一条，这条测试就红 —— 那正是「判据被放宽了」的信号。
+    """
+    rt = RefundRoundtable(_TokenModel(), _Voices(), store=store)
+    reports = _preflight(rt, case, ledger)
+    rt.verdict_of(reports, case[1])
+    # 第二类与第三类：手写两条，plan 表里都查不到它们。
+    store.append_event_log({"plan_id": "", "event_type": "SkillInvoked",
+                            "detail": {"skill": "issue.aggregate"}})
+    store.append_event_log({"plan_id": "plan_does_not_exist",
+                            "event_type": "TaskCreationVetoed", "detail": {}})
+
+    bundle = trace_mod.export_trace_bundle(str(db_path))
+    strays = bundle["stray_events"]
+    assert len(strays) == 2, f"两条真游离都要留下，实际 {strays}"
+    assert {s["event_type"] for s in strays} == {"SkillInvoked", "TaskCreationVetoed"}
+    assert {s["plan_id"] for s in strays} == {"", "plan_does_not_exist"}
+    assert bundle["summary"]["stray_event_count"] == 2
+    # 圆桌那一摊照旧被收走，两件事互不影响。
+    assert bundle["summary"]["roundtable_event_count"] == SEATS + 4
+    assert not any(s["plan_id"].startswith(PLAN_PREFIX) for s in strays)
 
 
 # --------------------------------------------------------------------------

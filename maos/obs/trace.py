@@ -37,8 +37,23 @@ attributes``。**不做真 OTel 导出**：没有 SDK 依赖、没有 collector�
 subprocess / not-run）和 ``provenance.source`` 点的那个函数名。把它们一律读成
 「预置的假报告」，会把已经兑现的外部判据重新贬成脚手架。
 
+树有**三族**，不是一族（T134 加了第三族）：
+
+* ``traces`` —— 每条真 ``plan`` 行一棵，事件按 plan_id 归、用量按非空 trace_id 归。
+* ``roundtable_traces`` —— 圆桌那一段。它跑在 ``create_plan`` **之前**，不建 plan、
+  不建 task，所以既没有真 plan 行也没有 trace_id；它那一摊行靠 ``plan_id`` 的
+  ``roundtable:`` 前缀认（:data:`ROUNDTABLE_PLAN_PREFIX`）。**不给它造 plan 行**：
+  那会让 DAG 的证据束里凭空多出几棵不是任务的树（理由写在
+  ``maos/roundtable/speaker.py`` 的模块 docstring 里，那是个设计决定，不是欠账）。
+* ``stray_events`` / ``unattributed_usage`` —— 上面两族一条都没收走的剩余。
+
+三族互斥且穷尽，所以「换个地方挂」不等于「消失」：圆桌从游离清单搬进自己的树之后，
+条数在 ``summary`` 里照旧数得到。判据是「**被树收走的**不算游离」，不是「plan_id
+非空就不算游离」—— 后者会把「指向一个不存在的 Plan」那种真该查的形态一起藏掉。
+
 依赖方向：``maos/obs`` 只 import ``maos.core.store``，不 import 任何业务域
-（铁律 9）。换域时本文件一行不改。
+（铁律 9）。换域时本文件一行不改 —— 圆桌那一族也是按**前缀**认的，
+不 import ``maos.roundtable``。
 """
 
 from __future__ import annotations
@@ -57,6 +72,21 @@ KIND_PLAN = "plan"
 KIND_TASK = "task"
 KIND_EVENT = "event"
 KIND_ARTIFACT = "artifact"
+#: 圆桌那一段的两种 kind（T134）。它们**不出现在任何 plan 树里** —— 圆桌不属于
+#: 任何 Plan，所以它自成一族树，见 :func:`roundtable_traces`。
+KIND_ROUNDTABLE = "roundtable"
+KIND_ROUNDTABLE_ROUND = "roundtable-round"
+
+#: 圆桌落库那些行的 ``plan_id`` 前缀。与 ``maos/roundtable/team.py::PLAN_PREFIX``
+#: 同值，**照抄而不 import**：本模块只 import ``maos.core.store``（见模块 docstring
+#: 末条的依赖纪律），口径同 ``scripts/replay_roundtable.py`` 抄同一个字面量的理由。
+#:
+#: 这个前缀是圆桌那一摊行**唯一**的归属键：`plan` 表里永远查不到它（圆桌不建
+#: plan、不建 task，`maos/roundtable/speaker.py` 的模块 docstring 把「给圆桌造
+#: plan 行」这条路明令堵死了），而 `plan_id LIKE 'roundtable:%'` 一句就能把它
+#: 整摊捞出来。T134 之前这一摊只能落进 ``stray_events`` / ``unattributed_usage``，
+#: 也就是「如实承认它不在任何一棵树里」；现在它有自己的树了。
+ROUNDTABLE_PLAN_PREFIX = "roundtable:"
 
 # 产物来源。前三种都能在 event_log 里指到具体一行；指不到的一律 unknown ——
 # 不猜，也不因为「看着像」就给它安一个来源。
@@ -102,6 +132,14 @@ _EVENT_NAME = {
         f"biz:{e.get('from_state')}->{e.get('to_state')}"),
     "AuthoritativeFactViolation": lambda e: "biz:authoritative-violation",
     SEEDED_EVENT: lambda e: f"artifact-seeded:{(e.get('detail') or {}).get('kind', '?')}",
+    # 圆桌那三类（T134）。只在圆桌树里出现 —— 它们的 plan_id 恒带
+    # ``roundtable:`` 前缀，进不了任何 plan 树。名字里带 seat / round 而不是
+    # 沿用 ``event:<type>``：评委在页面上读的就是「谁第几个说的」。
+    "RoundtableRound": lambda e: (
+        f"roundtable-round:{(e.get('detail') or {}).get('round_no', '?')}"),
+    "RoundtableSeatSpoke": lambda e: f"seat:{(e.get('detail') or {}).get('seat', '?')}",
+    "RoundtableVerdict": lambda e: (
+        f"roundtable-verdict:{(e.get('detail') or {}).get('recommend', '?')}"),
 }
 
 
@@ -140,6 +178,38 @@ def _within(ts: str | None, lo: str | None, hi: str | None) -> bool:
     if ts is None or lo is None or hi is None:
         return False
     return lo <= ts <= hi
+
+
+def _event_attrs(e: dict) -> dict[str, Any]:
+    """一条 ``event_log`` 行 → span 的 attributes。
+
+    键的顺序即落盘顺序，**不许动**：``verify.py`` 第 4 项拿库重放一遍与
+    ``trace.json`` 逐字节比对，重排一个键就会让那一项在没人动过证据的情况下红。
+    抽成函数是为了让圆桌树（:func:`roundtable_traces`）与 plan 树落出**同一个
+    形状** —— 两处各写一遍的话，哪天只改一处，两族树的事件长得就不一样了。
+    """
+    return {
+        "maos.event.seq": e.get("seq"),
+        "maos.event.type": e.get("event_type", "?"),
+        "maos.event.id": e.get("event_id") or None,
+        "maos.task_id": e.get("task_id"),
+        "maos.reason": e.get("reason"),
+        "maos.detail": e.get("detail") or {},
+    }
+
+
+def _event_name(e: dict) -> str:
+    """事件 → span 名。认不出来的走 ``event:<type>`` —— 不丢、也不假装认识它。"""
+    etype = e.get("event_type", "?")
+    namer = _EVENT_NAME.get(etype)
+    return namer(e) if namer else f"event:{etype}"
+
+
+def _event_end(e: dict, start: str | None) -> str | None:
+    """有 ``duration_ms`` 的事件才有真实跨度，其余 ``end == start``（不编时长）。"""
+    if e.get("event_type") in _TIMED_EVENTS:
+        return _plus_ms(start, (e.get("detail") or {}).get("duration_ms"))
+    return start
 
 
 def _span(*, trace_id, span_id, parent_span_id, name, kind, start, end, attributes) -> dict:
@@ -507,17 +577,9 @@ def export_trace(store: Any, plan_id: str) -> dict:
 
     unknown_task_events = 0
     for e in events:
-        etype = e.get("event_type", "?")
         tid = e.get("task_id")
         parent = task_span.get(tid) if tid else root_id
-        attrs: dict[str, Any] = {
-            "maos.event.seq": e.get("seq"),
-            "maos.event.type": etype,
-            "maos.event.id": e.get("event_id") or None,
-            "maos.task_id": tid,
-            "maos.reason": e.get("reason"),
-            "maos.detail": e.get("detail") or {},
-        }
+        attrs = _event_attrs(e)
         if tid and parent is None:
             # 事件指向一个 task 表里没有的 task_id：挂到 plan 根上并留记号，
             # 不丢事件、也不假装它属于某个已知任务。
@@ -525,15 +587,11 @@ def export_trace(store: Any, plan_id: str) -> dict:
             attrs["maos.task_id.resolved"] = False
             unknown_task_events += 1
         start = e.get("created_at")
-        end = start
-        if etype in _TIMED_EVENTS:
-            end = _plus_ms(start, (e.get("detail") or {}).get("duration_ms"))
-        namer = _EVENT_NAME.get(etype)
         spans.append(_span(
             trace_id=e.get("trace_id") or trace_id,
             span_id=_sid("event", e.get("seq")), parent_span_id=parent,
-            name=namer(e) if namer else f"event:{etype}", kind=KIND_EVENT,
-            start=start, end=end, attributes=attrs,
+            name=_event_name(e), kind=KIND_EVENT,
+            start=start, end=_event_end(e, start), attributes=attrs,
         ))
 
     submits = _submit_index(events, tasks)
@@ -691,30 +749,337 @@ def _connect_ro(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def stray_events(db_path: str) -> list[dict]:
-    """``plan_id`` 指不到任何 plan 行的事件 —— 它们不属于任何一棵树。
+# ---------------------------------------------------------------------------
+# 第三族树：圆桌（T134）
+# ---------------------------------------------------------------------------
+#: 每棵圆桌树都跟着这句话。圆桌**不是** Plan 的一部分，读者必须知道它为什么
+#: 单列一族 —— 否则「这几棵树怎么没有 task」会被读成导出漏了东西。
+ROUNDTABLE_NOTE = (
+    "圆桌是旁路观察者：它跑在 create_plan 之前，不建 plan、不建 task，所以没有 "
+    "trace_id、也进不了任何一棵 plan 树（给它造一条 plan 行会让 DAG 凭空多出几棵"
+    "不是任务的树，见 maos/roundtable/speaker.py 模块 docstring）。这一族树按 "
+    "event_log.plan_id 的 roundtable: 前缀聚出来，顺序即 seq 顺序，与 "
+    "scripts/replay_roundtable.py 从同一批行重建出来的一致。"
+)
+
+#: 一段圆桌一条用量都没记到时跟着的话。比 :data:`ZERO_CALLS_NOTE` 说得更准 ——
+#: 圆桌这一侧「调了没记」的成因是**知道**的，不必把它和「真的没调」混着说。
+ROUNDTABLE_ZERO_CALLS_NOTE = (
+    "这一段圆桌没有模型用量行。成因是确定的：Speaker.complete 只在 live 为真时"
+    "记账（maos/roundtable/speaker.py），而缺省的 ScriptedModelClient 不算 live。"
+    "所以这不是「五岗没说话」—— 发言照旧落在 RoundtableSeatSpoke 里，"
+    "看那几条的 spoken_by_model。要真实 token 数就跑 --live-model 那一束。"
+)
+
+#: 圆桌不记失败调用：``maos/roundtable/speaker.py`` 全包只有一处
+#: ``record_model_usage``，没有 ``record_model_call_failure``。如实说「没这项记账」，
+#: 而不是给一个空列表让它长得像「一次没失败过」（口径同 :func:`_failure_rows`）。
+ROUNDTABLE_NO_FAILURE_LEDGER = "圆桌不记失败调用：speaker.py 只调 record_model_usage"
+
+#: 一轮的三类事件，与 ``scripts/replay_roundtable.py`` 的同名常量同值。
+_RT_ROUND = "RoundtableRound"
+_RT_SPOKE = "RoundtableSeatSpoke"
+_RT_VERDICT = "RoundtableVerdict"
+
+
+def _rt_event_rows(conn: sqlite3.Connection) -> list[dict]:
+    """圆桌那一摊事件行，按 seq 升序，``detail`` 就地解析。
+
+    两个条件**都要**：带前缀，且 ``plan`` 表里查不到。后一条是防重复计数的 ——
+    万一哪天真有一条 plan_id 带这个前缀的 plan 行（红线说不许，但判据不建立在
+    别人守规矩上），那它已经有自己的 plan 树了，不该再被圆桌收一遍。
+    """
+    rows = conn.execute(
+        "SELECT seq, event_id, trace_id, plan_id, task_id, event_type, from_state,"
+        " to_state, reason, detail, created_at FROM event_log"
+        " WHERE plan_id LIKE ? AND plan_id NOT IN (SELECT plan_id FROM plan)"
+        " ORDER BY seq", (f"{ROUNDTABLE_PLAN_PREFIX}%",)).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        row = dict(r)
+        try:
+            row["detail"] = json.loads(row["detail"] or "{}")
+        except ValueError:                              # 那一列不是合法 JSON
+            row["detail"] = {"_unparsed": row["detail"]}
+        if not isinstance(row["detail"], dict):
+            row["detail"] = {"_unparsed": row["detail"]}
+        out.append(row)
+    return out
+
+
+def _rt_usage_rows(conn: sqlite3.Connection) -> list[dict]:
+    """圆桌那一摊用量行，按 seq 升序。
+
+    ``trace_id=''`` 这一条**必须留着**：它让圆桌树与 plan 树的用量行**没有交集**
+    （plan 树按非空 trace_id 归集），否则同一行会被两边各算一次，而
+    ``summary.model_calls`` 那个数看不出来是重了。
+
+    表不存在（早于 T29 的库）返回空清单，口径同 :func:`unattributed_usage`。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT seq, plan_id, task_id, agent_role, call_site, model, tier,"
+            " tokens_in, tokens_out, latency_ms, estimated, created_at FROM model_usage"
+            " WHERE trace_id='' AND plan_id LIKE ? ORDER BY seq",
+            (f"{ROUNDTABLE_PLAN_PREFIX}%",)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(r) for r in rows]
+
+
+def _rt_rounds(events: list[dict]) -> list[dict]:
+    """把一摊圆桌事件切成一轮一轮。**口径与 ``scripts/replay_roundtable.py::rebuild``
+    一致**（那个脚本已经对了，本函数拿它当对照，不 import：它在 ``scripts/`` 下，
+    而本模块只 import ``maos.core.store``）。
+
+    以 ``RoundtableRound`` 开一轮，其后的座位、skill、合议都归它，直到下一条
+    ``RoundtableRound``。开头就没有 ``RoundtableRound``（引擎更早的版本、或那条
+    落库失败）时起一个**无头轮**把后面的事件收住 —— 丢掉它们等于这一段少报几岗，
+    而少报与「本来就没说」在屏幕上长得一模一样。
+    """
+    rounds: list[dict] = []
+
+    def _open(e: dict, *, headless: bool) -> dict:
+        detail = e["detail"] if not headless else {}
+        rounds.append({
+            "span_id": (_sid("event", e["seq"]) if not headless
+                        else _sid("roundtable-round", e["plan_id"], e["seq"])),
+            "seq": e["seq"],
+            "round_no": detail.get("round_no"),
+            "entry": str(detail.get("entry") or ""),
+            "tenant_id": str(detail.get("tenant_id") or ""),
+            "case_id": str(detail.get("case_id") or ""),
+            "sheet_digest": str(detail.get("sheet_digest") or ""),
+            "seats_expected": list(detail.get("seats") or []),
+            "headless": headless,
+            "events": [] if headless else [e],
+            "seats": [], "skills": [], "verdict": None,
+        })
+        return rounds[-1]
+
+    current: dict | None = None
+    for e in events:
+        kind = e["event_type"]
+        detail = e["detail"]
+        if kind == _RT_ROUND:
+            current = _open(e, headless=False)
+            continue
+        if current is None:
+            current = _open(e, headless=True)
+        current["events"].append(e)
+        if kind == _RT_SPOKE:
+            current["seats"].append({
+                "seq": e["seq"], "seat": str(detail.get("seat") or ""),
+                "spoken_by_model": bool(detail.get("spoken_by_model")),
+                "fallback_reason": str(detail.get("fallback_reason") or ""),
+                "facts_digest": str(detail.get("facts_digest") or ""),
+                "speech_digest": str(detail.get("speech_digest") or ""),
+                "speech_len": detail.get("speech_len"),
+            })
+        elif kind == "SkillInvoked":
+            current["skills"].append({
+                "seq": e["seq"], "skill": str(detail.get("skill") or ""),
+                "status": str(detail.get("status") or ""),
+                "task_id": e.get("task_id"),
+                "duration_ms": detail.get("duration_ms"),
+                "invocation_id": str(detail.get("invocation_id") or ""),
+            })
+        elif kind == _RT_VERDICT:
+            current["verdict"] = {
+                "seq": e["seq"],
+                "recommend": str(detail.get("recommend") or ""),
+                "approver_role": str(detail.get("approver_role") or ""),
+                "blockers": list(detail.get("blockers") or []),
+            }
+    return rounds
+
+
+def _rt_spans(plan_id: str, case_id: str, rounds: list[dict],
+              events: list[dict]) -> list[dict]:
+    """圆桌那一段的 span 树：``roundtable`` 根 → 每轮一个 ``roundtable-round``
+    → 每条事件一个 ``event`` 叶子。
+
+    **每一条**收进来的事件都会得到一个叶子 span，认不认识它的类型都一样
+    （名字走 :func:`_event_name` 的 ``event:<type>`` 兜底）。这一条是要紧的：
+    ``stray_events`` 之后按「有没有被树收走」判游离，漏掉一条事件就等于把它
+    **既**从树里丢了、**又**从游离清单里藏了 —— 两头都看不见才是真没了。
+    """
+    spans: list[dict] = []
+    root_id = _sid(KIND_ROUNDTABLE, plan_id)
+    stamps = [e["created_at"] for e in events if e.get("created_at")]
+    spans.append(_span(
+        trace_id="", span_id=root_id, parent_span_id=None,
+        name=f"{KIND_ROUNDTABLE}:{case_id or '(无 case_id)'}", kind=KIND_ROUNDTABLE,
+        start=min(stamps) if stamps else None, end=max(stamps) if stamps else None,
+        attributes={
+            # 伪 plan_id 原样落进来。它是这一摊行在库里的**真实归属键**，
+            # 不是这里编出来的展示串 —— 拿它去 event_log / model_usage 一查就有。
+            "maos.plan_id": plan_id,
+            "maos.roundtable.case_id": case_id,
+            "maos.roundtable.rounds": len(rounds),
+            "maos.roundtable.tenant_id": next(
+                (r["tenant_id"] for r in rounds if r["tenant_id"]), ""),
+            "maos.roundtable.note": ROUNDTABLE_NOTE,
+        },
+    ))
+
+    for rnd in rounds:
+        kids = rnd["events"]
+        ends = [_event_end(e, e.get("created_at")) for e in kids]
+        ends = [x for x in ends if x]
+        head = next((e for e in kids if e["event_type"] == _RT_ROUND), None)
+        attrs: dict[str, Any] = (_event_attrs(head) if head is not None else {
+            "maos.event.seq": rnd["seq"],
+            "maos.event.type": None,
+            "maos.event.id": None,
+            "maos.task_id": None,
+            "maos.reason": None,
+            "maos.detail": {},
+        })
+        attrs["maos.roundtable.round_no"] = rnd["round_no"]
+        attrs["maos.roundtable.entry"] = rnd["entry"]
+        attrs["maos.roundtable.seats_expected"] = rnd["seats_expected"]
+        attrs["maos.roundtable.seats_spoke"] = [s["seat"] for s in rnd["seats"]]
+        attrs["maos.roundtable.headless"] = rnd["headless"]
+        # 无头轮必须在树上说出来：它意味着 RoundtableRound 那条没落下来，
+        # 而「这一轮的名册是什么」就此查不到了。静静收拢等于把缺口抹掉。
+        attrs["maos.roundtable.headless.note"] = (
+            "这一段没有 RoundtableRound 开头，是按 seq 收拢出来的：名册（seats）"
+            "与轮次号查不到，只能看实际发言的那几岗" if rnd["headless"] else None)
+        spans.append(_span(
+            trace_id="", span_id=rnd["span_id"], parent_span_id=root_id,
+            name=(_event_name(head) if head is not None
+                  else f"{KIND_ROUNDTABLE_ROUND}:(无 RoundtableRound 开头)"),
+            kind=KIND_ROUNDTABLE_ROUND,
+            start=(head or kids[0])["created_at"] if kids else None,
+            end=max(ends) if ends else None, attributes=attrs,
+        ))
+        for e in kids:
+            if e is head:
+                continue                # 这一轮的头已经是那个 round span 本身
+            start = e.get("created_at")
+            spans.append(_span(
+                trace_id="", span_id=_sid("event", e["seq"]),
+                parent_span_id=rnd["span_id"], name=_event_name(e), kind=KIND_EVENT,
+                start=start, end=_event_end(e, start), attributes=_event_attrs(e),
+            ))
+
+    spans.sort(key=lambda s: (s.get("start") or "", s["kind"], s["span_id"]))
+    return spans
+
+
+def roundtable_traces(db_path: str) -> list[dict]:
+    """圆桌那一段，每个伪 plan_id 一棵树。**这是 ``traces`` 之外的第三族**。
+
+    为什么非要单列一族，而不是并进 ``traces``：``traces`` 的每一棵都对应一条真的
+    ``plan`` 行（``plan_state`` / ``task_count`` / 按 trace_id 归集的成本都从那儿来），
+    而圆桌一条都没有。混进去的话，下游每一个「按 plan 读」的消费者都得先判断这棵树
+    是不是真 plan —— 漏判一处就会印出一棵 ``plan_state: null`` 的树，看着像库坏了。
+
+    形状与 plan 树刻意**平行**（``spans`` / ``cost`` / ``summary`` 同名同义），所以
+    ``check_span_tree``、渲染器的树组件、``verify.py`` 的重放比对都能原样吃。
+    """
+    conn = _connect_ro(db_path)
+    try:
+        events = _rt_event_rows(conn)
+        usage = _rt_usage_rows(conn)
+    finally:
+        conn.close()
+
+    by_plan: dict[str, list[dict]] = {}
+    for e in events:
+        by_plan.setdefault(e["plan_id"], []).append(e)
+    usage_by_plan: dict[str, list[dict]] = {}
+    for r in usage:
+        usage_by_plan.setdefault(r["plan_id"], []).append(r)
+
+    out: list[dict] = []
+    # 只有用量行、一条事件都没有的伪 plan 也要成树 —— 否则那几次调用会既不在树里、
+    # 又被下面的「已收走」判据从 unattributed_usage 里摘掉，两头都看不见。
+    for plan_id in sorted(set(by_plan) | set(usage_by_plan)):
+        plan_events = by_plan.get(plan_id, [])
+        rows = usage_by_plan.get(plan_id, [])
+        case_id = plan_id[len(ROUNDTABLE_PLAN_PREFIX):]
+        rounds = _rt_rounds(plan_events)
+        spans = _rt_spans(plan_id, case_id, rounds, plan_events)
+        cost = cost_view(rows, failures=None,
+                         failures_unavailable=ROUNDTABLE_NO_FAILURE_LEDGER)
+        if not rows:
+            # 比 cost_view 的缺省那句说得准（见 ROUNDTABLE_ZERO_CALLS_NOTE）。
+            cost["zero_calls_note"] = ROUNDTABLE_ZERO_CALLS_NOTE
+        by_type: dict[str, int] = {}
+        for e in plan_events:
+            by_type[e["event_type"]] = by_type.get(e["event_type"], 0) + 1
+        out.append({
+            "schema": SCHEMA,
+            "kind": KIND_ROUNDTABLE,
+            "plan_id": plan_id,
+            "case_id": case_id,
+            # 圆桌不属于任何 Run。空串是**如实记录**，不是漏填 —— 编一个
+            # trace_id 让它看起来有归属，正是本模块最不该干的那件事。
+            "trace_id": "",
+            "note": ROUNDTABLE_NOTE,
+            "spans": spans,
+            "rounds": [{k: v for k, v in r.items() if k != "events"} for r in rounds],
+            # 这一段的用量行原样列出（投影同 unattributed_usage），既给页面按岗位
+            # 印明细，也让 verify.py 能逐条核「这几行确实被这棵树收走了」。
+            "model_usage": [{k: v for k, v in r.items() if k != "plan_id"} for r in rows],
+            "cost": cost,
+            "summary": {
+                "span_count": len(spans),
+                "event_count": len(plan_events),
+                "round_count": len(rounds),
+                "headless_rounds": sum(1 for r in rounds if r["headless"]),
+                "seat_spoke_count": sum(len(r["seats"]) for r in rounds),
+                "seats_by_model": sum(1 for r in rounds for s in r["seats"]
+                                      if s["spoken_by_model"]),
+                "skill_invoked_count": sum(len(r["skills"]) for r in rounds),
+                "verdict_count": sum(1 for r in rounds if r["verdict"] is not None),
+                "by_event_type": dict(sorted(by_type.items())),
+                "model_calls": cost["calls"],
+                "tokens_total": cost["tokens_total"],
+                "tree_errors": check_span_tree(spans),
+            },
+        })
+    return out
+
+
+def stray_events(db_path: str, *, claimed: Any = frozenset()) -> list[dict]:
+    """``plan_id`` 指不到任何 plan 行、**又没被任何一族树收走**的事件。
 
     现实里确实有：``flows/scenario_5.py`` 的 ``issue.aggregate`` 跑在 create_plan
     之前，落的 SkillInvoked 行 ``plan_id`` 是空串。这类事件按 plan 查永远查不到，
     所以在这里单独点名，而不是让它们静静消失。
+
+    ``claimed`` 是**已经被某一族树收走的 seq 集合**（T134：圆桌树收走它那一摊）。
+    判据是「被树收走的不算游离」，**不是**「plan_id 非空就不算游离」—— 后者会把
+    第二种形态（``plan_id`` 指向一个不存在的 Plan，``verify.py`` 的
+    ``_warn_stray_events`` 里那条「这一种要查」）一起藏掉，而那正是真该查的一种。
+    按 seq 认而不按 plan_id 前缀认，也是同一个道理：圆桌树万一漏收一条事件，
+    它照旧在这里被点名，而不是靠「前缀对得上」蒙一个豁免。
     """
     conn = _connect_ro(db_path)
     try:
         rows = conn.execute(
             "SELECT seq, event_type, plan_id, task_id, trace_id, created_at FROM event_log"
             " WHERE plan_id NOT IN (SELECT plan_id FROM plan) ORDER BY seq").fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in rows if r["seq"] not in claimed]
     finally:
         conn.close()
 
 
-def unattributed_usage(db_path: str) -> list[dict]:
-    """``trace_id`` 为空的用量行 —— 它们挂不上任何一棵树（口径同 ``stray_events``）。
+def unattributed_usage(db_path: str, *, claimed: Any = frozenset()) -> list[dict]:
+    """``trace_id`` 为空、**又没被任何一族树收走**的用量行（口径同 ``stray_events``）。
 
     现实里确实有：``ManagerAgent.plan()`` 跑在 ``create_plan`` **之前**
     （``flows/scenario_1.py`` 等把 ``mgr.plan(GOAL)`` 当作 ``create_plan`` 的入参），
     那一刻还没有 plan 行、也没有 trace_id 可挂。这些调用照旧花掉了 token，
     所以既不丢掉、也不硬安一个 trace_id，而是在这里单独点名。
+
+    ``claimed`` 同 :func:`stray_events`：T134 之后圆桌那几次调用归到圆桌树的
+    ``cost`` 里，不再算「归属不上」。**剩下的照旧逐条点名** —— 上面那条
+    ``ManagerAgent.plan()`` 的行 ``plan_id`` 也是空串，前缀对不上、也不在任何一棵
+    圆桌树里，所以它一条都不会被这次收窄带走。
 
     表不存在（早于 T29 的库）返回空清单 —— 那是「没有这项记账」，由每棵树自己的
     ``cost.available=false`` 说清楚，不在这里重复报错。
@@ -725,7 +1090,7 @@ def unattributed_usage(db_path: str) -> list[dict]:
             "SELECT seq, agent_role, call_site, model, tier, tokens_in, tokens_out,"
             " latency_ms, estimated, created_at FROM model_usage WHERE trace_id=''"
             " ORDER BY seq").fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in rows if r["seq"] not in claimed]
     except sqlite3.Error:
         return []
     finally:
@@ -733,9 +1098,20 @@ def unattributed_usage(db_path: str) -> list[dict]:
 
 
 def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
-    """整库导出：每个 plan 一棵树，外加不属于任何 plan 的游离事件清单。
+    """整库导出：每个 plan 一棵树、圆桌那一段各自一棵树，外加真正游离的清单。
 
     这就是写进 ``evidence/scenario-<N>/trace.json`` 的那份文档。
+
+    三族东西的边界是**互斥且穷尽**的，这一点是本函数的骨架：
+
+    * ``traces``：每条真 ``plan`` 行一棵。事件按 plan_id 归，用量按**非空**
+      trace_id 归。
+    * ``roundtable_traces``：``plan_id`` 带 ``roundtable:`` 前缀那一摊（T134）。
+      事件按前缀归，用量按「trace_id 为空**且**前缀对得上」归。
+    * ``stray_events`` / ``unattributed_usage``：上面两族**一条都没收走**的剩余。
+
+    所以「圆桌被收走了」不会让任何一条记录凭空消失：它换了个地方，而那个地方
+    在同一份文档里、在同一个 ``summary`` 里数得到。
     """
     from maos.core.store import SqliteStore
 
@@ -744,32 +1120,64 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
     factory = store_factory or SqliteStore
     store = factory(db_path)
     traces = [export_trace(store, pid) for pid in list_plan_ids(db_path)]
-    strays = stray_events(db_path)
-    orphan_usage = unattributed_usage(db_path)
+    rt_traces = roundtable_traces(db_path)
+    # 「已被树收走」按 seq 认，认的是**真的进了 span 树**的那些事件（见 _rt_spans
+    # 的 docstring）—— 不是「前缀对得上就豁免」。漏收一条就该在游离清单里现身。
+    rt_event_seqs = frozenset(
+        s["attributes"].get("maos.event.seq") for t in rt_traces for s in t["spans"]
+        if s["kind"] in (KIND_EVENT, KIND_ROUNDTABLE_ROUND)
+        and s["attributes"].get("maos.event.type") is not None)
+    rt_usage_seqs = frozenset(r["seq"] for t in rt_traces for r in t["model_usage"])
+    strays = stray_events(db_path, claimed=rt_event_seqs)
+    orphan_usage = unattributed_usage(db_path, claimed=rt_usage_seqs)
     attributed = [t["cost"] for t in traces if t["cost"]["available"]]
+    rt_costs = [t["cost"] for t in rt_traces if t["cost"]["available"]]
     estimated_calls = (sum(c["estimated_calls"] for c in attributed)
+                       + sum(c["estimated_calls"] for c in rt_costs)
                        + sum(1 for r in orphan_usage if r.get("estimated")))
-    total_calls = sum(c["calls"] for c in attributed) + len(orphan_usage)
+    plan_calls = sum(c["calls"] for c in attributed)
+    rt_calls = sum(c["calls"] for c in rt_costs)
+    total_calls = plan_calls + rt_calls + len(orphan_usage)
     return {
         "schema": SCHEMA,
         "db": os.path.basename(db_path),
         "plan_count": len(traces),
         "traces": traces,
+        # 圆桌那一段（T134）。与 traces 并列而不是混进去 —— 见 roundtable_traces。
+        "roundtable_traces": rt_traces,
         "stray_events": strays,
         # 归属不上的用量单列，不并进任何一棵树的 cost（见 unattributed_usage）。
         "unattributed_usage": orphan_usage,
         "summary": {
             "span_count": sum(t["summary"]["span_count"] for t in traces),
-            # 成本汇总。`model_calls` 含归属不上的那些，`attributed_*` 只数挂上了
-            # Run id 的 —— 两个数分开，「记了账」与「归得上账」不是一回事。
+            # 成本汇总。`model_calls` 是**三族之和**，其余三个数把它拆开：
+            # 挂在 Run id 上的（plan 树）、挂在圆桌伪 plan 上的、以及一个都挂不上的。
+            # 拆开是要紧的：T134 之前「圆桌那 5 次」只能在 unattributed 里看见，
+            # 于是「真模型跑一单花多少 token」这个问题的答案在 attributed 里查不到。
             "model_calls": total_calls,
-            "attributed_model_calls": sum(c["calls"] for c in attributed),
+            "attributed_model_calls": plan_calls + rt_calls,
+            "plan_model_calls": plan_calls,
+            "roundtable_model_calls": rt_calls,
             "unattributed_model_calls": len(orphan_usage),
-            "attributed_tokens_total": sum(c["tokens_total"] for c in attributed),
+            "attributed_tokens_total": (sum(c["tokens_total"] for c in attributed)
+                                        + sum(c["tokens_total"] for c in rt_costs)),
+            "plan_tokens_total": sum(c["tokens_total"] for c in attributed),
+            "roundtable_tokens_total": sum(c["tokens_total"] for c in rt_costs),
             "estimated_model_calls": estimated_calls,
             "measured_model_calls": total_calls - estimated_calls,
             "all_estimated": total_calls > 0 and estimated_calls == total_calls,
             "cost_note": ESTIMATED_NOTE,
+            # 圆桌那一族的规模。与 span_count / event_count 分开数：那两个数是
+            # plan 树的，圆桌并进去会让「这一单有多少任务事件」当场读不准。
+            "roundtable_tree_count": len(rt_traces),
+            "roundtable_span_count": sum(t["summary"]["span_count"] for t in rt_traces),
+            "roundtable_event_count": sum(t["summary"]["event_count"] for t in rt_traces),
+            "roundtable_round_count": sum(t["summary"]["round_count"] for t in rt_traces),
+            "roundtable_seat_spoke_count": sum(
+                t["summary"]["seat_spoke_count"] for t in rt_traces),
+            "roundtable_skill_invoked_count": sum(
+                t["summary"]["skill_invoked_count"] for t in rt_traces),
+            "roundtable_note": ROUNDTABLE_NOTE if rt_traces else None,
             # 失败的模型调用（T54）。只数**查得到**的那些树 —— 后端没有这张表时
             # 每棵树自己的 failures.available=false 已经说清了，这里不把
             # 「没查成」混成 0。与 model_calls 分开列：成功与失败不是一本账。
@@ -785,7 +1193,10 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
             "unrecorded_sandbox_reports": sum(
                 t["summary"]["unrecorded_sandbox_reports"] for t in traces),
             "stray_event_count": len(strays),
-            "tree_errors": [e for t in traces for e in t["summary"]["tree_errors"]],
+            # 两族树的错误并成一张清单：verify.py 第 4 项与页面的「审计链完整性」
+            # 都读这一个数，圆桌树的孤儿/环不该有一个躲得过去的地方。
+            "tree_errors": ([e for t in traces for e in t["summary"]["tree_errors"]]
+                            + [e for t in rt_traces for e in t["summary"]["tree_errors"]]),
         },
     }
 

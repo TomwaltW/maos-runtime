@@ -272,6 +272,201 @@ def test_stray_events_are_reported_not_swallowed(tmp_path):
 
 
 # ===========================================================================
+# 2b. 圆桌那一族树（T134）
+# ===========================================================================
+#: 圆桌那一摊行的伪 plan_id。前缀是契约（``maos/obs/trace.py::ROUNDTABLE_PLAN_PREFIX``），
+#: 后半段是 case_id。本节**不 import 圆桌引擎** —— trace 侧认的只是这个前缀，
+#: 换业务域、甚至圆桌那个包整个不在，这一族树也该照样导得出来（铁律 9）。
+RT_PLAN = "roundtable:RC-TEST-0001"
+
+
+def _roundtable_rows(store, *, plan_id: str = RT_PLAN, verdict: bool = True,
+                     seats=("refund-intake", "refund-policy")) -> None:
+    """在库里摆一轮圆桌：`RoundtableRound` → 座位 → 中间夹一次 skill → 合议。"""
+    store.append_event_log({"plan_id": plan_id, "trace_id": "",
+                            "event_type": "RoundtableRound",
+                            "detail": {"entry": "preflight", "round_no": 1,
+                                       "tenant_id": "tnt-1", "case_id": "RC-TEST-0001",
+                                       "seats": list(seats)}})
+    for i, seat in enumerate(seats):
+        store.append_event_log({"plan_id": plan_id, "trace_id": "",
+                                "event_type": "RoundtableSeatSpoke",
+                                "detail": {"seat": seat, "spoken_by_model": i == 0,
+                                           "fallback_reason": "" if i == 0 else "no_model",
+                                           "facts_digest": "f" * 16,
+                                           "speech_digest": "s" * 16, "speech_len": 42}})
+        if i == 0:
+            store.append_event_log({"plan_id": plan_id, "trace_id": "",
+                                    "task_id": "preview-evidence",
+                                    "event_type": "SkillInvoked",
+                                    "detail": {"skill": "refund.evidence_check",
+                                               "status": "ok", "duration_ms": 3}})
+    if verdict:
+        store.append_event_log({"plan_id": plan_id, "trace_id": "",
+                                "event_type": "RoundtableVerdict",
+                                "detail": {"recommend": "approve",
+                                           "approver_role": "refund_finance",
+                                           "blockers": []}})
+
+
+def test_roundtable_events_get_their_own_tree_not_a_plan_tree(tmp_path):
+    """圆桌那一段自成一族：``roundtable_traces``，而**不是**第二棵 plan 树。
+
+    混进 ``traces`` 的后果是下游每个「按 plan 读」的消费者都得先判断这棵树是不是
+    真 plan —— 漏判一处就印出一棵 ``plan_state: null`` 的树，看着像库坏了。
+    """
+    path = tmp_path / "rt.db"
+    store = build_db(path)
+    _roundtable_rows(store)
+
+    bundle = export_trace_bundle(str(path))
+    assert bundle["plan_count"] == 1, "圆桌不许让 plan 数变多"
+    assert [t["plan_id"] for t in bundle["traces"]] == [PLAN_ID]
+
+    trees = bundle["roundtable_traces"]
+    assert len(trees) == 1
+    tree = trees[0]
+    assert tree["plan_id"] == RT_PLAN and tree["case_id"] == "RC-TEST-0001"
+    assert tree["trace_id"] == "", "圆桌不属于任何 Run —— 不许编一个 trace_id"
+    assert check_span_tree(tree["spans"]) == [], "圆桌树也得无孤儿无环、单根"
+    assert tree["summary"]["by_event_type"] == {
+        "RoundtableRound": 1, "RoundtableSeatSpoke": 2,
+        "RoundtableVerdict": 1, "SkillInvoked": 1}
+    assert tree["summary"]["round_count"] == 1
+    assert tree["summary"]["seats_by_model"] == 1, "一岗是模型说的，一岗是事实卡"
+    assert tree["summary"]["headless_rounds"] == 0
+    # 三层：圆桌根 → 轮 → 事件。轮 span 的父亲是根，事件的父亲是轮。
+    kinds = {s["kind"] for s in tree["spans"]}
+    assert kinds == {"roundtable", "roundtable-round", "event"}
+    root = next(s for s in tree["spans"] if s["parent_span_id"] is None)
+    assert root["kind"] == "roundtable"
+    rnd = next(s for s in tree["spans"] if s["kind"] == "roundtable-round")
+    assert rnd["parent_span_id"] == root["span_id"]
+    assert all(s["parent_span_id"] == rnd["span_id"]
+               for s in tree["spans"] if s["kind"] == "event")
+    # 顺序即 seq 顺序：座位与 skill 交织，「这一岗说话之前跑过 skill 吗」看得出来。
+    seqs = [s["attributes"]["maos.event.seq"] for s in tree["spans"]
+            if s["kind"] in ("event", "roundtable-round")]
+    assert seqs == sorted(seqs)
+
+
+def test_roundtable_tree_claims_its_events_so_they_are_no_longer_stray(tmp_path):
+    """收走了就不再算游离 —— 同一条记录在证据里只出现一个地方。"""
+    path = tmp_path / "rt.db"
+    store = build_db(path)
+    _roundtable_rows(store)
+
+    bundle = export_trace_bundle(str(path))
+    assert bundle["stray_events"] == []
+    assert bundle["summary"]["stray_event_count"] == 0
+    assert bundle["summary"]["roundtable_event_count"] == 5
+    assert bundle["summary"]["roundtable_tree_count"] == 1
+    assert bundle["summary"]["roundtable_round_count"] == 1
+    assert bundle["summary"]["roundtable_seat_spoke_count"] == 2
+    assert bundle["summary"]["roundtable_skill_invoked_count"] == 1
+
+
+def test_claiming_the_roundtable_does_not_excuse_other_strays(tmp_path):
+    """🔴 判据是「**被树收走的**不算游离」，不是「plan_id 非空就不算游离」。
+
+    后一种写法也能让 warn 归零，代价是把两类真该查的事件一起藏掉：``plan_id`` 是
+    空串的（建 Plan 之前的调用）和指向一个**不存在的** Plan 的
+    （``docs/BACKLOG.md ## task-t110`` 那类「被否决的计划」）。两类都必须留在
+    ``stray_events`` 里 —— 少一条，这条测试就红。
+    """
+    path = tmp_path / "rt.db"
+    store = build_db(path)
+    _roundtable_rows(store)
+    store.append_event_log({"plan_id": "", "trace_id": "", "event_type": "SkillInvoked",
+                            "detail": {"skill": "issue.aggregate", "status": "ok"}})
+    store.append_event_log({"plan_id": "plan_vetoed_never_created", "trace_id": "",
+                            "event_type": "TaskCreationVetoed", "detail": {}})
+
+    bundle = export_trace_bundle(str(path))
+    strays = bundle["stray_events"]
+    assert {s["plan_id"] for s in strays} == {"", "plan_vetoed_never_created"}
+    assert bundle["summary"]["stray_event_count"] == 2
+    assert bundle["summary"]["roundtable_event_count"] == 5, "圆桌照旧被收走"
+
+
+def test_roundtable_usage_lands_in_the_tree_cost_not_in_unattributed(tmp_path):
+    """圆桌那几次调用归进圆桌树的 ``cost``，成本账上**看得见**（T134 的主目标）。
+
+    改动之前它们全在 ``unattributed_usage`` 里，于是 ``attributed_tokens_total``
+    不含圆桌 —— 「真模型跑一单花多少 token」在证据里查不到。
+    """
+    path = tmp_path / "rt.db"
+    store = build_db(path)
+    _roundtable_rows(store)
+    for role, tin, tout in (("refund_intake", 864, 79), ("refund_policy", 947, 87)):
+        store.insert_model_usage({
+            "trace_id": "", "plan_id": RT_PLAN, "task_id": None, "agent_role": role,
+            "call_site": "maos/roundtable/speaker.py::Speaker.complete",
+            "model": "deepseek-flash", "tier": "light", "tokens_in": tin,
+            "tokens_out": tout, "latency_ms": 1500, "estimated": 0})
+    # 对照组：建 Plan 之前的那一类，trace_id 与 plan_id 都空 —— 它必须留在原地。
+    store.insert_model_usage({
+        "trace_id": "", "plan_id": "", "task_id": None, "agent_role": "manager",
+        "call_site": "maos/agents/manager.py::ManagerAgent.plan", "model": "scripted-strong",
+        "tier": "strong", "tokens_in": 100, "tokens_out": 200, "latency_ms": 0,
+        "estimated": 1})
+
+    bundle = export_trace_bundle(str(path))
+    tree = bundle["roundtable_traces"][0]
+    assert tree["cost"]["calls"] == 2
+    assert tree["cost"]["tokens_total"] == 864 + 79 + 947 + 87
+    assert tree["cost"]["measured_calls"] == 2, "真模型的行不许被当成估算"
+    assert tree["cost"]["all_estimated"] is False
+    assert {b["role"] for b in tree["cost"]["by_role"]} == {"refund_intake", "refund_policy"}
+    assert [r["seq"] for r in tree["model_usage"]] == [1, 2]
+    assert tree["cost"]["failures"]["available"] is False, "圆桌没有失败记账，不许装作有"
+
+    sm = bundle["summary"]
+    assert sm["roundtable_model_calls"] == 2
+    assert sm["roundtable_tokens_total"] == 1977
+    assert sm["attributed_model_calls"] == sm["plan_model_calls"] + 2
+    assert sm["unattributed_model_calls"] == 1, "manager 那条照旧归属不上"
+    assert [r["agent_role"] for r in bundle["unattributed_usage"]] == ["manager"]
+    # 一笔花销只算一次：三个数加起来正好是库里的行数。
+    assert sm["model_calls"] == sm["plan_model_calls"] + 2 + 1
+
+
+def test_headless_roundtable_round_is_collected_and_says_so(tmp_path):
+    """``RoundtableRound`` 那条没落下来时，后面几岗**照旧收进树**并标明无头。
+
+    丢掉它们等于这一段少报几岗，而少报与「本来就没说」在屏幕上长得一模一样。
+    """
+    path = tmp_path / "rt.db"
+    store = build_db(path)
+    store.append_event_log({"plan_id": RT_PLAN, "trace_id": "",
+                            "event_type": "RoundtableSeatSpoke",
+                            "detail": {"seat": "refund-intake", "spoken_by_model": True}})
+
+    tree = export_trace_bundle(str(path))["roundtable_traces"][0]
+    assert tree["summary"]["round_count"] == 1
+    assert tree["summary"]["headless_rounds"] == 1
+    assert tree["summary"]["seat_spoke_count"] == 1
+    assert check_span_tree(tree["spans"]) == []
+    rnd = next(s for s in tree["spans"] if s["kind"] == "roundtable-round")
+    assert rnd["attributes"]["maos.roundtable.headless"] is True
+    assert rnd["attributes"]["maos.roundtable.headless.note"], "无头必须在树上说出来"
+    assert export_trace_bundle(str(path))["stray_events"] == []
+
+
+def test_two_roundtable_cases_get_two_trees(tmp_path):
+    """两单圆桌两棵树，不混成一摊（伪 plan_id 不同就是不同一段）。"""
+    path = tmp_path / "rt.db"
+    store = build_db(path)
+    _roundtable_rows(store, plan_id="roundtable:RC-A")
+    _roundtable_rows(store, plan_id="roundtable:RC-B", verdict=False)
+
+    trees = export_trace_bundle(str(path))["roundtable_traces"]
+    assert [t["plan_id"] for t in trees] == ["roundtable:RC-A", "roundtable:RC-B"]
+    assert [t["summary"]["verdict_count"] for t in trees] == [1, 0]
+    assert all(check_span_tree(t["spans"]) == [] for t in trees)
+
+
+# ===========================================================================
 # 3. 证据文件：首行出处 + 可被 json 解析
 # ===========================================================================
 EVIDENCE_FILES = ("run.log", "trace.json", "result.json",

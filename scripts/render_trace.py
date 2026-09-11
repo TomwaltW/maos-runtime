@@ -77,6 +77,8 @@ from maos.obs.trace import (                                    # noqa: E402
     KIND_ARTIFACT,
     KIND_EVENT,
     KIND_PLAN,
+    KIND_ROUNDTABLE,
+    KIND_ROUNDTABLE_ROUND,
     KIND_TASK,
     check_span_tree,
 )
@@ -85,6 +87,10 @@ from scripts.make_evidence import (                             # noqa: E402
     git_sha,
     load_evidence_json,
 )
+#: 回退原因的人话，**借** ``scripts/replay_roundtable.py`` 的那张表而不是再抄一份。
+#: 两处印的是同一批字面量（``maos/roundtable/speaker.py`` 的五个 ``FALLBACK_*``），
+#: 各存一份的后果是引擎多一种回退时只有一处跟着改，而两边都不报错。
+from scripts.replay_roundtable import FALLBACK_CN                # noqa: E402
 
 DEFAULT_EVIDENCE = os.path.join(ROOT, "evidence")
 DEFAULT_OUT = os.path.join(DEFAULT_EVIDENCE, "report.html")
@@ -131,12 +137,15 @@ GATE_TONE = {
     "gate_fail": ("fatal", "判失败"),
 }
 
-#: span kind → 中文标签。四种，与 ``maos/obs/trace.py`` 的 KIND_* 一一对应。
+#: span kind → 中文标签。六种，与 ``maos/obs/trace.py`` 的 KIND_* 一一对应
+#: （后两种是圆桌那一族，T134）。
 KIND_LABEL = {
     KIND_PLAN: "plan",
     KIND_TASK: "task",
     KIND_EVENT: "event",
     KIND_ARTIFACT: "artifact",
+    KIND_ROUNDTABLE: "圆桌",
+    KIND_ROUNDTABLE_ROUND: "轮",
 }
 
 #: provenance → 配色档。``unknown`` 是审计链上的洞，必须是最扎眼的一档。
@@ -669,11 +678,168 @@ def _errs(errors: list) -> str:
     return f'<details class="inline"><summary>{chip(str(len(errors)), "fatal")}</summary><ul>{items}</ul></details>'
 
 
+def roundtable_timeline(rnd: dict) -> list[dict]:
+    """一轮的时间线：座位、skill、合议按 ``seq`` **交织成一条**。
+
+    交织而不是分三张表，是因为「哪一岗说话之前跑过 skill」这件事只在顺序里 ——
+    分开列之后读者得自己拿 seq 去对，而那正是评委不会做的一步。
+    """
+    items = [{"seq": s["seq"], "what": "seat", "row": s} for s in rnd["seats"]]
+    items += [{"seq": s["seq"], "what": "skill", "row": s} for s in rnd["skills"]]
+    if rnd.get("verdict"):
+        items.append({"seq": rnd["verdict"]["seq"], "what": "verdict",
+                      "row": rnd["verdict"]})
+    return sorted(items, key=lambda x: x["seq"])
+
+
+def _seat_row(index: int, seat: dict) -> str:
+    """一岗一行。**模型复述与事实卡必须一眼分得开** —— 那是这一段里唯一能自证
+    「五岗不是模板拼的」的信息（口径同 ``replay_roundtable.py::_seat_line``）。"""
+    by_model = seat.get("spoken_by_model")
+    who = chip("模型复述", "info") if by_model else chip("事实卡", "muted")
+    reason = seat.get("fallback_reason") or ""
+    why = FALLBACK_CN.get(reason, reason)
+    tail = f'<span class="kv"><i>回退</i>{esc(why)}</span>' if why else ""
+    return (f'<tr><td class="n">{index}</td><td>{chip("发言", "muted")}</td>'
+            f'<td class="mono">{esc(seat.get("seat"))}</td><td>{who}</td>'
+            f'<td class="mono">{esc(seat.get("facts_digest"))} → '
+            f'{esc(seat.get("speech_digest"))}</td>'
+            f'<td class="n">{num(seat.get("speech_len"))}</td><td>{tail}</td></tr>')
+
+
+def _skill_row(index: int, sk: dict) -> str:
+    status = sk.get("status") or "?"
+    return (f'<tr><td class="n">{index}</td><td>{chip("skill", "warn")}</td>'
+            f'<td class="mono">{esc(sk.get("skill"))}</td>'
+            f'<td>{chip(status, "ok" if status == "ok" else "danger")}</td>'
+            f'<td class="mono">{esc(sk.get("invocation_id"))}</td>'
+            f'<td class="n">{num(sk.get("duration_ms"))} ms</td>'
+            f'<td><span class="kv"><i>task</i>{esc(sk.get("task_id"))}</span></td></tr>')
+
+
+def _verdict_row(index: int, v: dict) -> str:
+    blockers = "、".join(str(b) for b in v.get("blockers") or []) or "无"
+    return (f'<tr><td class="n">{index}</td><td>{chip("合议", "info")}</td>'
+            f'<td class="mono">{esc(v.get("recommend"))}</td>'
+            f'<td>{esc(v.get("approver_role") or "未指定")}</td>'
+            f'<td colspan="3"><span class="kv"><i>拦路项</i>{esc(blockers)}</span></td></tr>')
+
+
+def render_roundtable(doc: dict) -> str:
+    """圆桌那一段的时间线（T134）。**没有圆桌树就返回空串** —— 八场景那一族因此
+    逐字节不变。
+
+    这一块在 T134 之前是不存在的：圆桌那 8 条事件落在「挂不上树的东西」里，
+    页面上摊开成一串读不懂的游离事件（``stray_events``）。它们其实顺序完整、
+    五岗齐全，缺的只是有人把它们织成一段时间线。
+
+    视觉上**不另起一套**：kind 标签、chip、树组件全是 plan 树那一套，只多两个
+    kind（``圆桌`` / ``轮``）。评委不该因为换了一段就要重新学怎么读。
+    """
+    trees = doc.get("roundtable_traces") or []
+    if not trees:
+        return ""
+    blocks = []
+    for tree in trees:
+        s = tree["summary"]
+        cost = tree["cost"]
+        # 「这几次是真调用还是估算」必须写在脸上：真模型那一束的五次发言是
+        # measured，脚本束一次都不记账 —— 两者在 token 数上长得都像个数字。
+        if not cost["calls"]:
+            money = chip("无模型用量行", "muted", title=cost.get("zero_calls_note") or "")
+            money_note = f'<p class="lede">{esc(cost.get("zero_calls_note"))}</p>'
+        else:
+            measured = cost["measured_calls"]
+            money = (chip(f"{cost['calls']} 次调用 · {num(cost['tokens_total'])} tokens",
+                          "ok" if measured else "warn")
+                     + chip("真实计量" if measured == cost["calls"] else "含估算",
+                            "ok" if measured == cost["calls"] else "warn",
+                            title="estimated=0 的行是网关回的用量；estimated=1 是"
+                                  "len(user)//4 的估算"))
+            money_note = (f'<p class="lede">这一段 {cost["calls"]} 次模型调用、'
+                          f'tokens_in {num(cost["tokens_in"])} / tokens_out '
+                          f'{num(cost["tokens_out"])}（共 {num(cost["tokens_total"])}）、'
+                          f'墙钟 {num(cost["latency_ms"])} ms，其中 {measured} 次是'
+                          f'<b>真实计量</b>、{cost["estimated_calls"]} 次是估算。'
+                          f'这几次<b>不在</b>任何 plan 树的成本里 —— 圆桌不属于任何 '
+                          f'Plan，所以它单列一族；两个数在 <code>summary</code> 的 '
+                          f'<code>plan_model_calls</code> 与 '
+                          f'<code>roundtable_model_calls</code> 里分开数。</p>')
+        rows = []
+        for rnd in tree["rounds"]:
+            head = [f'第 {rnd["round_no"] if rnd["round_no"] is not None else "?"} 轮']
+            if rnd["entry"]:
+                head.append(f'入口 {rnd["entry"]}')
+            if rnd["tenant_id"]:
+                head.append(f'租户 {rnd["tenant_id"]}')
+            if rnd["sheet_digest"]:
+                head.append(f'整表 {rnd["sheet_digest"]}')
+            warn = ('　' + chip("无 RoundtableRound 开头，这一段是收拢出来的", "warn")
+                    if rnd["headless"] else "")
+            rows.append(f'<tr class="grp"><td colspan="7">{esc(" ｜ ".join(head))}{warn}'
+                        f'</td></tr>')
+            spoke = [x["row"]["seat"] for x in roundtable_timeline(rnd)
+                     if x["what"] == "seat"]
+            if rnd["seats_expected"] and rnd["seats_expected"] != spoke:
+                # 名册与实际发言对不上是真该查的一种：某一岗在房间里凭空消失过。
+                rows.append(f'<tr><td colspan="7">{chip("名册与实际发言对不上", "danger")}'
+                            f'名册 {esc("、".join(rnd["seats_expected"]))}</td></tr>')
+            for i, item in enumerate(roundtable_timeline(rnd), 1):
+                if item["what"] == "seat":
+                    rows.append(_seat_row(i, item["row"]))
+                elif item["what"] == "skill":
+                    rows.append(_skill_row(i, item["row"]))
+                else:
+                    rows.append(_verdict_row(i, item["row"]))
+        usage = "".join(
+            f'<tr><td class="mono">{esc(r.get("agent_role"))}</td>'
+            f'<td class="mono">{esc(r.get("model"))}</td><td>{esc(r.get("tier"))}</td>'
+            f'<td class="n">{num(r.get("tokens_in"))}</td>'
+            f'<td class="n">{num(r.get("tokens_out"))}</td>'
+            f'<td class="n">{num(r.get("latency_ms"))}</td>'
+            f'<td>{chip("估算", "warn") if r.get("estimated") else chip("真实计量", "ok")}</td>'
+            f'</tr>' for r in tree.get("model_usage") or [])
+        usage_block = (
+            f'<details class="block"><summary>这一段的模型用量明细'
+            f'（{len(tree.get("model_usage") or [])} 行，一岗一行）</summary>'
+            f'<div class="scroll"><table class="grid"><thead><tr><th>岗位角色</th>'
+            f'<th>model</th><th>tier</th><th>tokens_in</th><th>tokens_out</th>'
+            f'<th>latency_ms</th><th>计量</th></tr></thead><tbody>{usage}</tbody>'
+            f'</table></div></details>' if usage else "")
+        blocks.append(f"""      <article class="trace">
+        <h3>{chip("圆桌", "info")}<span class="goal">{esc(tree["case_id"] or "（无 case_id）")}</span></h3>
+        <p class="ids"><code>{esc(tree["plan_id"])}</code>
+          <span>{num(s["span_count"])} span · {num(s["round_count"])} 轮 ·
+          {num(s["seat_spoke_count"])} 岗发言（其中 {num(s["seats_by_model"])} 岗是模型说的）·
+          {num(s["skill_invoked_count"])} 次 skill · {num(s["verdict_count"])} 次合议</span>
+          {money}</p>
+        <p class="lede">{esc(tree["note"])}</p>
+        {money_note}
+        <div class="scroll">
+        <table class="grid"><thead><tr>
+          <th scope="col">#</th><th scope="col">类型</th><th scope="col">岗位 / skill</th>
+          <th scope="col">谁在说 / 状态</th><th scope="col">摘要</th>
+          <th scope="col">字数 / 耗时</th><th scope="col">备注</th>
+        </tr></thead><tbody>
+{chr(10).join(rows)}
+        </tbody></table>
+        </div>
+        {usage_block}
+        <details class="block"><summary>结构树（{num(s["span_count"])} span，
+          圆桌 → 轮 → 事件）</summary>{render_tree(tree)}</details>
+      </article>""")
+    return "".join(blocks)
+
+
 def render_stray(doc: dict) -> str:
     """游离事件与归属不上的用量 —— 显式展示，不许藏。
 
     两张表都是「有洞就让洞看得见」那一类。空的时候印一句「已查，0 条」，
     非空的时候把每一行摊开：藏起来等于把审计链上的洞抹平。
+
+    圆桌那一摊（T134 之前恒 8 条 ``stray_events``）现在有自己的树了，所以这一栏
+    在单案例束上是 0。**那不是它们消失了**：空状态那句话会点名说它们搬去了哪儿 ——
+    不说的话，读者只会以为上一版那 8 条被谁悄悄藏了。
     """
     blocks = []
     strays = doc.get("stray_events") or []
@@ -689,8 +855,14 @@ def render_stray(doc: dict) -> str:
             f'<th>task_id</th><th>plan_id</th><th>摘要</th></tr></thead>'
             f'<tbody>{rows}</tbody></table></div>')
     else:
+        moved = doc.get("roundtable_traces") or []
+        went = (f'圆桌那 {sum(t["summary"]["event_count"] for t in moved)} 条'
+                f'已归进上面的圆桌树（{len(moved)} 棵），不在这一栏 —— '
+                f'它们有归属，只是归在 <code>roundtable:</code> 这个伪 plan 上。'
+                if moved else "")
         blocks.append('<p class="ok-line">游离事件：<b>0 条</b>（已查 '
-                      '<code>trace.json → stray_events</code>，不是没查）。</p>')
+                      '<code>trace.json → stray_events</code>，不是没查）。'
+                      + went + '</p>')
 
     orphan = doc.get("unattributed_usage") or []
     if orphan:
@@ -705,8 +877,15 @@ def render_stray(doc: dict) -> str:
             f'<th>tokens_in</th><th>tokens_out</th><th>latency_ms</th><th>estimated</th>'
             f'</tr></thead><tbody>{rows}</tbody></table></div>')
     else:
+        rt = doc.get("roundtable_traces") or []
+        rt_calls = sum(t["cost"]["calls"] for t in rt)
+        went = (f'圆桌那 {rt_calls} 次调用'
+                f'（{num(sum(t["cost"]["tokens_total"] for t in rt))} tokens）'
+                f'已算进圆桌树的 <code>cost</code>，不在这一栏。'
+                if rt_calls else "")
         blocks.append('<p class="ok-line">归属不上的模型用量：<b>0 条</b>（已查 '
-                      '<code>trace.json → unattributed_usage</code>）。</p>')
+                      '<code>trace.json → unattributed_usage</code>）。'
+                      + went + '</p>')
     return "".join(blocks)
 
 
@@ -1100,10 +1279,20 @@ def render_bundle(bundle: dict) -> str:
     tags = f" {marks}" if marks else ""
     blurb = (f'\n    <p class="lede">{esc(bundle["blurb"])}</p>'
              if bundle.get("blurb") else "")
+    # 圆桌那一段（T134）。没有圆桌树时 render_roundtable 回空串，此处整块不出现 ——
+    # 八场景那一族的页面因此逐字节不变。
+    rt = render_roundtable(doc)
+    roundtable = (f'<h4>圆桌时间线（AgentTeams 事件链）</h4>\n'
+                  f'    <p class="lede">五岗按顺序发言、中间夹着两次 skill —— 这一段跑在 '
+                  f'<code>create_plan</code> <b>之前</b>，所以它不在下面那几棵 plan 树里，'
+                  f'而是自成一族。顺序取自 <code>event_log.seq</code>，与 '
+                  f'<code>scripts/replay_roundtable.py</code> 从同一批行重建出来的一致。</p>\n'
+                  f'    {rt}' if rt else "")
     return f"""  <section class="scenario" id="{aid}">
     <h2>{esc(bundle['label'])}<span class="sub">{esc(bundle['dir'])}{wall}</span>{tags}</h2>{blurb}
     {notes}
     <p class="prov"><i>出处</i><code>{esc(bundle['header'])}</code></p>
+    {roundtable}
     <h4>挂不上树的东西</h4>
     {render_stray(doc)}
 {chr(10).join(sections)}
@@ -1335,6 +1524,9 @@ ul.tree summary::marker{color:var(--dim)}
 .k-plan{color:var(--info)}
 .k-task{color:var(--ok)}
 .k-artifact{color:var(--warn)}
+.k-roundtable{color:var(--info)}
+.k-roundtable-round{color:var(--muted)}
+tr.grp td{background:var(--muted-bg);font-weight:600}
 .nm{font-family:var(--mono);font-size:12px;margin-right:8px}
 .cnt{font-size:10px;color:var(--dim);margin-left:6px;font-family:var(--mono)}
 .meta{margin:1px 0 4px 52px;font-size:11.5px;color:var(--dim)}

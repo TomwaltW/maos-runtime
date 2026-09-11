@@ -37,6 +37,7 @@ from maos.agents.manager import ManagerAgent
 from maos.agents.refund import ROLE_FINANCE, ROLE_PAYMENT
 from maos.contracts.events import new_id
 from maos.contracts.states import TaskState
+from maos.core.control_plane import AWAIT_HUMAN_DECISION
 from maos.domain.refund import case_pack, fixtures, guard, objects, projection
 from maos.flows import contrast
 from maos.flows.common import build, dump, run_until_settled
@@ -544,6 +545,44 @@ def _blocked_reason(cp, plan_id: str, task_id: str) -> str:
     return f"{head} —— {note}" if note else head
 
 
+def await_kind(store, plan_id: str, task_id: str) -> str:      # noqa: ANN001
+    """这一次停在 BLOCKED 等的是哪一类人工决定 —— 取 `detail["await"]`，没有返回空串。
+
+    **公开的**：房间那条路（`ingress/router.py::_held_gate_of`）要问同一个问题，
+    在那边另写一遍就是同一条判据的第二份实现 —— 改一处漏一处时不报错，只会让
+    两条路对「这个闸该不该由我代签」给出不同答案。理由与
+    `core/control_plane.py::AWAIT_HUMAN_DECISION` 那段注释逐字同源。
+
+    与 `HumanApprovalQueue.pending()` 里那个集合判定**不是**一件事，别互相替代：
+    那边答「这个任务历史上等过人吗」，**宽**是对的（多捞不会错，漏捞才会）；
+    这边答「它**这一次**等的是哪一类」，**准**是对的（判错就会代签一个签不到的闸）。
+
+    两类的分界：
+
+      · 没有 `await` 标记的是 ``effect_risk=H`` —— 产物落地要人放行，**规划期就知道
+        它会来**，一句「这一单可以去退」包得住它；
+      · `AWAIT_HUMAN_DECISION` 是控制面第三出口 / replan 上限，判的是「机器已经没有
+        别的招了」，**执行中才出现**，规划期那次签字签不到它。
+
+    判据取 event_log 的**最后一次**进 BLOCKED 那一跳，口径逐字同 `_blocked_reason`：
+    `detail` 只落在迁移那一条事件上，在任务行上另开一个字段就有了第二份事实。
+    取最后一次而不是第一次，是因为 BLOCKED 的三条出边全是人的动作 —— 历史上等过人、
+    `human_resume` 回去、这次因**别的**原因再停一次的任务，要按**这一次**的原因判。
+    """
+    hits = [e for e in store.list_event_log(plan_id)
+            if e.get("event_type") == "StateTransition"
+            and e.get("task_id") == task_id and e.get("to_state") == TaskState.BLOCKED]
+    if not hits:
+        return ""
+    detail = hits[-1].get("detail")
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except json.JSONDecodeError:
+            detail = {}
+    return str((detail or {}).get("await") or "") if isinstance(detail, dict) else ""
+
+
 # --------------------------------------------------------------------- 跑一次
 def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = None,
                 matrix: bool = False, verbose: bool = True,
@@ -553,6 +592,7 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
                 approval_operator: str = APPROVER,
                 plan_feedback: str = "",
                 reject_roles: tuple[str, ...] = (),
+                hold_awaits: tuple[str, ...] = (),
                 store=None) -> dict:                              # noqa: ANN001
     """跑一份自定义 case，返回**观测到的事实**（不含任何期望值）。
 
@@ -574,6 +614,16 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     `approve` 走。缺省空元组 = 全按 `approve`，行为不变。它存在的理由只有一个：
     网关明确失败时，人在付款闸上该做的是**不放行**（钱没退出去，不能签「这一步完成了」），
     而核算那一步照常批 —— 一个全局布尔表达不了「这一步批、那一步不批」。
+
+    `hold_awaits` 是**不代签**的闸的清单，按 `detail["await"]` 匹配（取值见
+    `core/control_plane.py::AWAIT_HUMAN_DECISION`）。缺省空元组 = 一个都不扣，
+    行为逐字节不变。它与 `reject_roles` 答的是**不同的问题**：那个答「这一步批还是
+    不批」，要求调用方**跑之前**就知道答案；这个答「这一步该不该由我代签」——
+    `AWAIT_HUMAN_DECISION` 的闸是控制面判定「机器已经没有别的招了」才落的，
+    **执行中才出现**，跑之前根本不存在，于是调用方那一次签字签不到它。
+    命中的任务停在 BLOCKED、`human_exits` 记一条 `held_for_human`，Plan 不收 DONE ——
+    与 `held_for_drift` 同一个形状，理由也同一条：代跑「停下来问人」等于问了个寂寞。
+    第二次决定由调用方在别处下（房间那条路见 `ingress/router.py::handle_gate_decision`）。
 
     `store` 给了就跑在那个库上（透给 `build`），没给照旧自建一个 `:memory:`（T122）。
     房间入口由此让 `/refund` 跑出来的十一张退款域表落在 router 自己的库里，
@@ -701,6 +751,8 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     # （派单验收 3 的字面是「付款任务落 BLOCKED」，本轨做不到那个字面 + 钱不退
     #  两全，取了后者 —— 详见 docs/DECISIONS.md 的 ## task-t116。）
     held_for_drift: set[str] = set()
+    # 跑起来之后才出现的闸，代签不了 —— 理由见 `hold_awaits` 那段 docstring。
+    held_for_human: set[str] = set()
     for _ in range(MAX_APPROVAL_ROUNDS):
         pending = hq.pending(plan_id)
         if not pending:
@@ -714,6 +766,22 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
                         "task_id": blocked["task_id"], "title": blocked["title"],
                         "why": _blocked_reason(cp, plan_id, blocked["task_id"]),
                         "decision": "held_for_drift",
+                    })
+                continue
+            kind = await_kind(cp.store, plan_id, blocked["task_id"])
+            if kind and kind in hold_awaits:
+                # 扣住，**不代签**。与漂移那一支同形：记一条留痕，任务停在 BLOCKED，
+                # 等调用方把这一条递给真正该决定的人。判的是这一次进 BLOCKED 的
+                # `await` 标记，不是角色也不是 `effect_risk` —— 那两个规划期就定了，
+                # 而这一类闸规划期还不存在。
+                if blocked["task_id"] not in held_for_human:
+                    held_for_human.add(blocked["task_id"])
+                    human_exits.append({
+                        "task_id": blocked["task_id"], "title": blocked["title"],
+                        "role": blocked["role"],
+                        "why": _blocked_reason(cp, plan_id, blocked["task_id"]),
+                        "await": kind,
+                        "decision": "held_for_human",
                     })
                 continue
             acted = True

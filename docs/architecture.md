@@ -29,7 +29,7 @@ flowchart TB
     AG["Agents<br/>maos/agents/**<br/>软件域 6 + 退款域 4"]
     SK["Skills<br/>maos/skills/builtin/**<br/>九要素契约"]
     TL["ToolPorts<br/>maos/tools/**<br/>sandbox · gateway"]
-    DM["业务对象<br/>maos/domain/refund/**<br/>14 张新表 + settled guard"]
+    DM["业务对象<br/>maos/domain/refund/**<br/>16 张新表 + settled guard"]
   end
 
   subgraph SIDE["旁路（可缺席，不阻塞主链路）"]
@@ -172,17 +172,50 @@ flowchart LR
 | `plan` / `task` / `artifact` / `event_log` / `processed_key` | 内核（Phase 0） | **DDL 被 `.contracts.lock` 指纹锁死**，禁改 |
 | `knowledge` | 内核（Phase 4 新增表） | 复盘条目 |
 | `kb_doc` | 知识层（`maos/kb/`） | 结构化知识：政策 / 历史案例 / 失败提示 / 错误码手册 |
-| 退款域 14 张 | `maos/domain/refund/schema.sql` | `refund_case` / `refund_request` / `payment_observation` / `finance_entry` / `business_ref` / … |
+| 退款域 16 张 | `maos/domain/refund/schema.sql` | `refund_case` / `refund_request` / `payment_observation` / `finance_entry` / `business_ref` / … |
+
+### 业务对象与知识层在 PolarDB，控制面在本地 SQLite
+
+这条切分是**有意划的，不是迁移做了一半**：
+
+| 面 | 表 | 落在哪 | 怎么切过去 |
+| :-- | :-- | :-- | :-- |
+| **业务对象 + 知识层** | 退款域 16 张 + `kb_doc` | 可切 PolarDB PG | `MAOS_DOMAIN_BACKEND=postgres` + `MAOS_PG_DSN`，经 `maos/domain/_dbport.py` |
+| **控制面** | `plan` / `task` / `artifact` / `event_log` | 本地 SQLite | 暂不可切：`maos/flows/common.py` 的 `build()` 仍写死 `SqliteStore` |
+
+**为什么这样切。** 控制面那四张表是**本进程的事务日志** —— 状态迁移、闸的判定、产物指纹，
+它们的读者只有这一次运行自己，和事后拿它重放的 `scripts/verify.py`；没有第二个系统要查它们，
+搬上托管库只换来一次网络往返和一个新的失败模式。业务对象反过来：`refund_case` /
+`payment_observation` / `business_ref` 这些是**要给外部系统与评委查的东西** —— 要活过这一次运行、
+要能被别的服务连上去读、要能按租户横向扩。那正是 PolarDB 该接的面。
+
+`maos/domain/_dbport.py` 是这条切分的实现，口径是 **DDL 只写一份**：片段作者仍然只写
+SQLite 方言的 `schema.sql`，PG 侧由 `to_pg_ddl()` 现翻，翻不动的构造抛 `UnsupportedDdlError`
+而不是静默跳过 —— 静默跳过等于 PG 上少一张表，而少一张表的症状要到跑的时候才出现，
+且只在配了 PG 的那台机器上出现。
+
+**实测到哪一步**（口径与 `docs/submission-checklist.md` 的 A-4 表逐字一致，别说过头）：
+本机 Docker `pgvector/pgvector:pg16` 上同构验证跑通；阿里云 PolarDB PostgreSQL 版真实例
+2026-08-30 冒烟跑通 —— 高权限账号五步 5/5，控制台建的普通账号 2/5（建扩展与 `public` 建表
+两处 `InsufficientPrivilege`）。三步怎么迁在 `deploy/polardb.md`，真实例上跑通了哪几条、
+没跑通哪几条在 `deploy/polardb-live.md`。
+🔴 **不许说「本仓库缺省支持中文分词检索」** —— `zhparser` 在那台实例上装成过、中文召回也实测过，
+但仓库缺省的 `MAOS_PG_FTS_CONFIG` 没指 `zhcfg`，走的是 `simple`。
 
 后端可插拔：`maos/store/port.py` 定义 `StorePort`，`sqlite_store.py` 是默认实现，
-`pg_store.py` 是 Postgres / PolarDB 分支的**空壳**（当前一律
-`NotImplementedError`，`maos/store/pg_store.py:45`）。**空壳阶段就定死了一条：
-选 postgres 后端一律抛错，绝不静默回落 sqlite**（`maos/store/__init__.py:70`）——
-回落是这类后端最容易出的无症状错误，先把口子堵上，再谈填实现。
+`pg_store.py` 是 Postgres / PolarDB 分支的**真实现**（全文走 `to_tsvector` / `ts_rank`，
+向量走 pgvector 的 `<=>`）。没装驱动 / 没配 DSN / 连不上时一律抛 `PgBackendUnavailable`，
+**绝不静默回落 sqlite** —— 回落是这类后端最容易出的无症状错误：你会以为 PG 验过了，
+其实一行 PG 代码都没执行。它继承 `NotImplementedError` 是有意的，为的是让「不许静默回落」
+那条冻结测试在有驱动和无驱动两种环境下都绿，语义一个字没松。
 
-⚠️ 如实说明：`maos/store/**` 是纯新增包，**主链路目前一个 import 都没接**
-（`maos/flows/common.py::build()` 里仍是写死 `:memory:` 的 `SqliteStore`）。
-所以「后端可插拔」当前是**有地基、未接线**，已记 `docs/BACKLOG.md ## task-W2`。
+⚠️ 如实说明，两个面的接线程度**不一样**，别混着说：
+
+- **控制面仍写死 SQLite。** `maos/flows/common.py` 的 `build()` 里是 `SqliteStore()`，
+  `maos/store/**` 那套 `StorePort` 在主链路上一个 import 都没接 —— **有地基、未接线**，
+  已记 `docs/BACKLOG.md ## task-W2`。
+- **业务对象层已可插拔。** 退款域 16 张表 + `kb_doc` 经 `maos/domain/_dbport.py` 走双后端；
+  不设 `MAOS_DOMAIN_BACKEND` 时走 sqlite 分支，行为与本模块出现之前**逐字节相同**。
 
 ---
 

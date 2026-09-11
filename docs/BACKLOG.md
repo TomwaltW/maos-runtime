@@ -2412,3 +2412,15 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | 「整合期 p10-a」那三处 roundtable / router 接线仍未做（`outcome_commands` 进 router、财务岗卡片接投影、`verdict.py` 角色名对齐），本轮 push 只合三轨 | 房间里 `/assign /resolve /confirm /complain` 仍无人应答；财务岗仍按老文案说状态 | 复赛前单开一轨（白名单 `maos/ingress/router.py` + `maos/roundtable/**`），先定「命令对着哪个库」：T113 的 `MAOS_INGRESS_DB` 让 router 的 store 落文件，但 `/refund` 的处置仍在 `custom_case` 自建的 `:memory:` 里 |
 | 2026-09-11 | p10 | T114 的 `gateway_fail` 路径没有 `REWORK`：可重试码让付款跑三趟时 `payment_execute.py:143/163` 同渠道重试会留 2 条悬空 `business_ref`（verify 第 2 项判负），只好换终态失败码绕开 | 单案例束里「返工」这一环只能指去 `evidence/scenario-2/` | skill 面单独一轨：重试时先作废上一条引用再挂新的 |
 | 2026-09-11 | p10 | `source ~/.maos.env && python3 scripts/make_evidence.py` 仍 exit 2：空补丁集已放行，现在停在模型产出质量（`corrupt patch` / 回归 4 过 1 挂） | 带 key 的 shell 下 `test_cost_metrics` 那一条仍红；Scripted 口径不受影响 | 复赛口径保持「证据束一律 Scripted 产，真模型束单独标」；要治只能在 coding 岗提示词 + `git apply --check` 重试那一轨 |
+## task-t121（材料轨的范围外发现，2026-09-11）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | `scripts/verify.py` 的模块 docstring 抬头仍写「**九项**：」并只列到第 9 项 `provenance`，第 10 项 `case-outcome` 没进那份清单（函数本体与 `CHECKS` 都在，输出也是 10 项） | 读代码的人从抬头数出来是 9 项，与 `RESULT: 10/10 PASS` 对不上；材料侧只能绕开抬头去引 `CHECKS` | 本轨不碰 `.py`（停手条件 1）。下一次动 `scripts/verify.py` 的轨顺手把抬头补成十项，同时把第 10 项那两句「失败意味着什么」一并写进去 |
+| 2026-09-11 | p10 | `scripts/render_trace.py` 的束扫描写死 `glob("scenario-*")`，`evidence/case-real-01/**` 与 `evidence/contrast-R8/` 进不了 `report.html` | 本仓库的**主证据**（单案例纵切）在可视化页上一格都没有；材料里只能反复写「别在 report.html 里找单案例」 | 复赛前值得单开一轨：把 glob 放宽成「有 `trace.json` 的目录」，或显式加一份束清单。改完要连 `report.html` 一起重渲染并核 `case-real-01` 的四束都出得来 |
+| 2026-09-11 | p10 | `scripts/make_case_bundle.py` 把库建在临时目录、跑完即销毁，`evidence/case-real-01/**` 各束里**没有 `maos.db`** | `scripts/replay_roundtable.py`（零模型回放）指不到这几束 —— 台上演「圆桌顺序从 `event_log` 重建」只能先用 `scripts/room_team_smoke.py --db` 现落一个别的库，演的不是这一单 | 与上一条同轨：让 `--keep-db` 之类的开关把库留在束里（注意 `.gitignore` 已挡 `*.db`，不入版本库，只在本机重跑后存在）。不改也能过，但台上那句解释每次都得说 |
+| 2026-09-11 | p10 | `docs/demo-script.md` 新主线九镜的**逐字念词尚未定稿**，秒数表里给的是「念词预算」上限而非实测 | 录制前如果直接按预算写词，很可能超 —— 上一版那张表的每一镜富余都只有 3–5 秒 | 念词定稿后重掐一遍，把「念词预算」列换成「讲稿字数 / 念完约需 / 富余」三列（上一版的口径：中文 4 字/秒，英文标识符按 1.5 字粗算） |
+| 2026-09-11 | p10 | `docs/submission-checklist.md` 的 `metric:frozen` 举例行里举的是 `802 passed` / `7/7 PASS` / `35/35`，三个都已过期 | 读者可能把举例当现行值。该行自带注释说明「这里是举例说明什么算一个数字，不是现行读数」 | **不动**（本轨白名单排除 `metric:frozen` 区）。下次有人重写那一节时换成不带具体数字的举例，或换成当时的现行值并保留 frozen 标记 |
+| 2026-09-11 | p10 | 四条路径的 `hitl-trace.json` 里 `kind` 只有 `plan_approval` / `task_approval` / `blocked` / `drift`，**没有 `rework`**；实跑可见闸判 `gateway: fail -> rework` 紧跟着 `gateway_needs_human`，直接转人工、不走 REWORK 那一跳 | 「返工 / HITL Trace」这一条在单案例上指不到证据，只能指去 `evidence/scenario-2/` 与 `evidence/scenario-7/` | **T124 在做**（契约 §A 的返工证据轨）。它落地后，README 映射表第 4 行、`docs/defense-brief.md` 的「实话」第三条、`docs/ppt-outline.md` P6b 末条、`docs/demo-script.md` 镜 3 四处的占位要一起按实跑改 |
+| 2026-09-11 | p10 | 房间里的真人审批还没进任何证据束：`evidence/room/` 那五张截图跑的是 `role=coding` 的软件域任务，不是退款案例 | 「HITL 是真人在房间里做的」这句话今天只能说到 `/approve` `/reject` 命令生效，说不到「这一单是在房间里批的」 | **9/18 真跑日**采集。采完要改的四处与上一行同一批（`docs/demo-script.md` 镜 7 的红线里已写死了这一句占位） |
+

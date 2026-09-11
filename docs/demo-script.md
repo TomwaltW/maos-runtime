@@ -1,10 +1,22 @@
-# Demo 分镜（九镜 · 总长 5 分 26 秒 / 326s）
+# Demo 分镜（九镜 · 总长 7 分 15 秒 / 435s，上限 8 分钟）
 
-**主线：退款失败路径（场景 7）。** 不演「一切顺利」—— 顺利路径谁都能演，
-这个 Demo 要证明的是**业务没成功的时候系统怎么如实记录**。
+**主线：一条脱敏真实案例的失败路径。** 骨架是一条命令：
 
-**本分镜按屏幕上真能看到的东西写。** 每一镜的命令都在 `27c9e18`（T 轮基线）上
-真跑过，输出是实贴的，耗时是实测的。念词里没有一句是屏幕上找不到的 —— 这是本文件唯一的判准。
+```bash
+python3 scripts/make_case_bundle.py --path gateway_fail
+```
+
+不演「一切顺利」—— 顺利路径谁都能演，这个 Demo 要证明的是
+**业务没成功的时候系统怎么如实记录**。换成单案例（`RC-2026-0904-001`）而不再用场景 7，
+是因为评委三段建议要的是**一条真实诉求的纵切**：同一个 case 上，圆桌五岗、DAG 六个任务、
+8 个 Skill、两次人工停点、十类业务对象、四判据收口，全在**一条** `event_log` 时间线上。
+
+**本分镜按屏幕上真能看到的东西写。** 每一镜的命令都在 `4756832` 上真跑过，
+耗时是实测的。念词里没有一句是屏幕上找不到的 —— 这是本文件唯一的判准。
+
+> **上一版主线（场景 7 九镜）没有删**，降级为**素材库与应急回退**，原样留在本文件下半部分的
+> 「附录 A · 场景 7 九镜」一节。它的每一镜都实测过，讲政策裁定、RAG 改变计划、
+> 换渠道 replan 那几段仍然是现成的好素材。
 
 ---
 
@@ -16,59 +28,50 @@
 
 | 必含项 | 落在哪一镜 | 屏幕上看到的是什么 |
 | :-- | :-- | :-- |
-| **Agent 协作过程** | **镜 1**（主）＋镜 4／5／6 | 镜 1 的 Plan 表：4 个任务 × 状态 × `attempt` × `risk`，一条诉求被 Manager 拆成 DAG；镜 4/5/6 的状态迁移轨迹是这条 DAG 在状态机上真实走过的路 |
-| **Skill 调用过程** | **镜 7（T 轮新补）** | 注册表 13 个 skill × 九要素 → `event_log` 里同一条 case 的 10 次 `SkillInvoked`（带版本、`invocation_id`、`duration_ms`）→ 白名单外一律 `PermissionDenied` |
-| **AgentTeams 状态展示** | **Element 房间实拍**（默认路径）<br>镜 1 + 镜 4／5 纯终端（应急回退） | 默认：`--matrix` 起真房间，事件逐条刷进 Element，镜 4 现场手打 `/approve`、镜 6 现场 `/reject`。回退：Team 成员当前在干什么（镜 1 的任务 × 角色 × 状态）＋事件链与 HITL 停点（镜 4/5 轨迹里的 `gate_needs_human` / `human_approve` / `human_reject`），且**必须补一句「今天走的是降级路径，真房间证据在 `evidence/room/`」**。两条路的前置与触发条件见文末「录制前必须确认的三件事」第 1 条 |
+| **Agent 协作过程** | **镜 2**（圆桌五岗，主）＋ **镜 1**（DAG 六任务）＋ 镜 3 | 镜 1 的 Plan 表：6 个任务 × 状态 × `attempt` × `risk` —— 一条诉求被拆成 DAG，其中「渠道商核销」那一条是 Planner 按政策建议加出来的；镜 2 在编辑器里开 `roundtable.json`，受理 / 规则 / 证据 / 风险 / 财务五岗的结论逐条摆出来；镜 3 的状态迁移轨迹是这条 DAG 在状态机上真实走过的路 |
+| **Skill 调用过程** | **镜 5**（主）＋ 镜 6 | 镜 5 打开 `evidence/case-real-01/gateway_fail/skills.json`：契约钉死的 8 个 Skill 逐个 `present` / `invocation_id` / `input_digest` / `output_hash` / 版本，这一束是 `7/8`（驳回路径走不到 `notify.customer`），外加补偿路径的 `refund.compensate` 与 `refund.compensation_close` 两个 `present=true`；镜 6 的 `event-chain.json` 里 `SkillInvoked` 与圆桌、DAG 排在同一条 `seq` 上 |
+| **AgentTeams 状态展示** | **镜 7** | 默认走房间实拍：Element 里 `/pending` 列出待办与等人审批的任务，镜头给回执。**免房间的等价回退**（本轮实测跑通）：`python3 scripts/room_team_smoke.py --db <路径>` 落库，再 `python3 scripts/replay_roundtable.py --db <路径> --list` —— 五岗顺序是**从 `event_log` 零模型重建**出来的，不是截图。走回退时必须补一句「今天走的是免房间路径，真房间证据在 `evidence/room/`」 |
 
-> 🔴 **镜 7 是 T 轮补的，补之前这份分镜全文一次都没提到 Skill**（`grep -i skill` 零命中），
-> 而「Skill 调用过程」是必含项、「Skill 工程体系」在评审里占一档权重。
-> 少这一镜不是润色问题，是**第一眼就少一个必含要素**。
+> 🔴 **三个必含项一个都不能靠「说」交差**，每一项都要有当屏画面。
+> 上一版曾经全文一次都没提到 Skill（`grep -i skill` 零命中），那不是润色问题，
+> 是第一眼就少一个必含要素。
 
 ---
 
-## 逐镜耗时表（`27c9e18` 实测，2026-08-29 · T 轮重掐）
+## 逐镜耗时表（`4756832` 实测，2026-09-11）
 
-中文口播按 **4 字/秒**折算。字数口径：汉字逐字计，阿拉伯数字一串算 1 字，
-英文标识符（`payment.observe` 这类）按 1.5 字粗算，标点不计。
-「富余」= 分配时长 −（命令耗时 + 念完约需）。
+中文口播按 **4 字/秒**折算。「念词预算」= 分配时长扣掉命令耗时后，按 4 字/秒能念完的
+**上限字数**，留 ≥ 5 秒余量。
 
-| 镜 | 时间轴 | 命令 | 实测命令耗时 | 讲稿字数 | 念完约需 | 富余 |
-| :-- | :-- | :-- | --: | --: | --: | --: |
-| 1 | 00:00 — 00:24 (24s) | `run.py --scenario 7` | 0.27s | 75 | 18.8s | +4.9s |
-| 2 | 00:24 — 00:50 (26s) | 无（编辑器开证据文件） | — | 91 | 22.8s | +3.2s |
-| 3 | 00:50 — 01:38 (48s) | `kb.experiment` + `cat run.log` | 0.52s | 169 | 42.3s | +5.2s |
-| 4 | 01:38 — 02:08 (30s) | 无（回看主终端） | — | 107 | 26.8s | +3.2s |
-| 5 | 02:08 — 03:00 (52s) | 无（回看主终端） | — | 190 | 47.5s | +4.5s |
-| 6 | 03:00 — 03:37 (37s) | 无（回看主终端） | — | 131 | 32.8s | +4.2s |
-| **7** | **03:37 — 04:27 (50s)** | **`gen_docs --check` + `sqlite3` + `pytest -k`** | **0.64s** | **182** | **45.4s** | **+4.0s** |
-| 8 | 04:27 — 04:58 (31s) | `verify.py` | 0.09s | 111 | 27.8s | +3.1s |
-| 9 | 04:58 — 05:26 (28s) | `git diff --stat` | 0.02s | 101 | 25.2s | +2.8s |
-| | **合计** | | **1.55s** | **1157** | **289.4s** | |
+> 🔴 **念词预算是上限，不是已定稿的字数。** 上一版那张表里的「讲稿字数 / 念完约需 / 富余」
+> 是逐字数过真念词得来的；本版主线刚换，**逐字念词尚未定稿**，所以这里给的是预算而不是实测。
+> 念词定稿后必须重掐一遍，把这张表换成实测值 —— 别把预算当成已经验过。
 
-**总长 5 分 26 秒（326s）**，在 `docs/submission-checklist.md` C 段要求的 3–5 分钟略上方、
-但**离规则上限还有富余**（上限见 **OQ-2**，待核实）。
+| 镜 | 时间轴 | 命令 | 实测命令耗时 | 念词预算 |
+| :-- | :-- | :-- | --: | --: |
+| 1 | 00:00 — 00:50 (50s) | `make_case_bundle.py --path gateway_fail`（一条命令跑完；镜 1、3、4 看这一屏） | 1s | ≤ 190 字 |
+| **2** | **00:50 — 01:35 (45s)** | **编辑器开 `roundtable.json`**（必含项：Agent 协作 —— 圆桌五岗） | — | ≤ 180 字 |
+| 3 | 01:35 — 02:30 (55s) | 无（回终端：七道闸 + 两次人工停点） | — | ≤ 215 字 |
+| 4 | 02:30 — 03:10 (40s) | 无（回终端：收口那三行） | — | ≤ 155 字 |
+| **5** | **03:10 — 04:00 (50s)** | **编辑器开 `skills.json`**（必含项：Skill 调用过程） | — | ≤ 190 字 |
+| **6** | **04:00 — 04:55 (55s)** | **编辑器开 `event-chain.json`**（必含项：AgentTeams 事件链） | — | ≤ 215 字 |
+| **7** | **04:55 — 05:45 (50s)** | **房间 `/pending`**，或 `room_team_smoke.py --db` + `replay_roundtable.py --list` | 0s + 0s | ≤ 185 字 |
+| 8 | 05:45 — 06:35 (50s) | 编辑器开 `outcome.json`，再 `verify.py` | 1s | ≤ 185 字 |
+| 9 | 06:35 — 07:15 (40s) | `git diff --stat` | 0s | ≤ 150 字 |
+| | **合计** | | **约 2s** | **≤ 1665 字** |
 
-> **上限是上限，不是目标。** T 轮补镜 7 时刻意没有把富余花光：多讲两分钟不会多拿分，
-> 评委的注意力才是稀缺资源。要再加内容就**从别的镜里借时间**，不要往后拉总长。
+**总长 7 分 15 秒（435s）**，复赛手册口径是 **≤ 8 分钟（480s）**，富余 **45 秒**。
 
-**T 轮的时长改动**（一共 +46s）：
+> **上限是上限，不是目标。** 富余的 45 秒是给现场意外留的（命令卡一下、念错一句重来），
+> 不是拿来多讲两段的。多讲两分钟不会多拿分，评委的注意力才是稀缺资源。
+> 要再加内容就**从别的镜里借时间**，不要往后拉总长。
 
-| 改动 | 秒 |
-| :-- | --: |
-| 新增镜 7（Skill 调用过程，必含项补齐） | **+50** |
-| 镜 3 加时：R5 的 `[2/3]` 段实测输出变了，念词从 154 字涨到 169 字 | **+5** |
-| 从富余大的镜借回：镜 2 −2、镜 4 −1、镜 5 −3、镜 6 −1、镜 8 −2 | **−9** |
-| | **+46** |
-
-命令耗时合计只有 **1.55 秒**，九镜没有一处因等命令而卡顿；
-**超时风险全在念词长度上**，每一镜的富余都已留到 ≥ 2.8 秒。
-念词是掐着这张表写的 —— **临场加词会超**，要加就先从富余大的镜（3、1、5、6）里借。
-
-> 字数口径说明：T 轮只重数了**被改动的两镜**（镜 3 的念词按实测重写、镜 7 全新），
-> 其余七镜沿用上一轮的字数 —— 那几镜的念词一个字没动，重数一遍只会引入抄写误差。
+命令耗时合计只有约 **2 秒**（`make_case_bundle.py --path gateway_fail` 实测 1s、
+`verify.py` 实测 1s、回放两条各 0s），九镜没有一处因等命令而卡顿 ——
+**超时风险全在念词长度上**。
 
 > 参考：`run.py`（场景 1–7 全跑）与 `make_evidence.py` 都在**录制前置**里跑完
-> （`bash scripts/demo_preflight.sh`，整条 5 步实测 19.4s），不占分镜时间。
+> （`bash scripts/demo_preflight.sh`），不占分镜时间。
 
 ---
 
@@ -82,11 +85,21 @@ T 轮把原来那 5 条人肉命令收敛成了一条脚本。它**不是跑完�
 
 | 步 | 跑什么 | 断言 |
 | :-- | :-- | :-- |
-| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望（当前 1069），且 0 failed |
+| 1 | `python3 -m pytest maos/tests -q` | 从输出**解析**出的条数 == 期望，且 0 failed |
 | 2 | `python3 run.py` | exit=0 |
-| 3 | `python3 run.py --scenario 7` | exit=0，且屏幕上**仍有**镜 5 的 `disposition=replan_channel` 与镜 6 的 `业务状态  : compensated` |
-| 4 | `python3 scripts/make_evidence.py` | 落盘 **8 束**（数出来的，不是假定的） |
-| 5 | `python3 scripts/verify.py` | 输出含 `RESULT: 8/8 PASS` 且 exit=0 |
+| 3 | `python3 run.py --scenario 7` | exit=0，且屏幕上**仍有**附录 A 镜 5 的 `disposition=replan_channel` 与镜 6 的 `业务状态  : compensated` |
+| 4 | `python3 scripts/make_evidence.py` | 落盘的束数 == 期望（数出来的，不是假定的） |
+| 5 | `python3 scripts/verify.py` | 输出含期望的 `RESULT` 行且 exit=0 |
+
+🔴 **上面三条「期望」一个字面量都不写在这里。** `scripts/demo_preflight.sh` 从
+[`docs/expected-metrics.json`](expected-metrics.json) 读（键分别是 `pytest_passed_nopg`、
+`evidence_bundles`、`verify_result_line`），本文档也跟着它走 —— 写死在分镜里的读数
+每隔几天就对不上，而对不上的读数会让人以为前置红了。要看现行值就打开那份 json。
+
+> ⚠️ **前置第 3 步守的是附录 A（场景 7）那条线，不是本版主线。** 本版主线的哨兵是
+> 第 4 步与第 5 步；单案例束本身由 `python3 scripts/make_case_bundle.py --all-paths`
+> 现产，**不在前置脚本里**（它跑的是 `make_evidence.py`）。录制前手动补跑一次，
+> 确认屏幕上有 `[OK] evidence/case-real-01/gateway_fail  plan=FAILED biz=compensated`。
 
 **任一条不符 → 非 0 退出，退出码就是出错的步号**，并打印「实际 vs 期望」+ 日志末 5 行
 （失败时日志目录保留，成功时清理）。第 3 步那两条 `grep` 是**分镜的哨兵**：
@@ -95,9 +108,11 @@ T 轮把原来那 5 条人肉命令收敛成了一条脚本。它**不是跑完�
 期望值可用环境变量覆盖，不必改脚本 —— 这也是自证脚本真会失败的办法：
 
 ```bash
-MAOS_EXPECT_TESTS=999 bash scripts/demo_preflight.sh     # -> exit=1，指出是第 1 步
-MAOS_EXPECT_VERIFY='RESULT: 8/8 PASS' bash scripts/demo_preflight.sh   # -> exit=5
+MAOS_EXPECT_TESTS=999 bash scripts/demo_preflight.sh             # -> exit=1，指出是第 1 步
+MAOS_EXPECT_VERIFY='RESULT: 1/1 PASS' bash scripts/demo_preflight.sh   # -> exit=5
 ```
+
+（两条都是**负例自证**：故意给一个不可能对的期望值，看脚本会不会红。会红，才说明它真在判。）
 
 **这一跑零出网、不读任何 API key**（全程 `ScriptedModelClient` 路径）。脚本第 0 步会
 把这句显式打在屏幕上 —— 评委在没有任何密钥的机器上跑，得到的是同一份确定性结果，
@@ -151,6 +166,274 @@ Error: unable to open database "evidence/scenario-7/maos.db": unable to open dat
 > ✅ 原来的第三处「换渠道 replan 演不出来」**已在整合轮 5 解除** —— Y-4 合入后
 > 场景 7 真能演，见镜 5。前置从 6 条 → 5 条（Y-3）→ **T 轮收敛成 1 条脚本**。
 > **录制当天仍以实跑为准。**
+
+---
+
+## 逐镜内容（单案例失败路径）
+
+> 每一镜给四样：**镜头 / 屏幕上的原话 / 讲什么 / 这一镜的红线**。
+> 「屏幕上的原话」全部取自 `4756832` 上的实跑，**逐字**。念词还没定稿，
+> 这里给的是「要讲到的点」，定稿后按上面那张表的预算掐字数。
+
+---
+
+### 镜 1（00:00 — 00:50）　一条命令，一条真实案例从头跑到尾
+
+**镜头**　全屏终端，敲这一条：
+
+```bash
+python3 scripts/make_case_bundle.py --path gateway_fail
+```
+
+**屏幕上的原话**（节选，实跑）
+
+```text
+INFO  maos.roundtable 圆桌预检 case=RC-2026-0904-001 发起人=沈思锴 第 1 轮（本轮新增 0 份证据）
+INFO  maos.cp      创建计划 plan_a9ad93c7e2aa，共 6 个任务
+INFO  maos.plan_approval [plan_a9ad93c7e2aa] 沈思锴（after_sales_supervisor） 批准，6 个任务开跑
+...
+Plan: FAILED  |  处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额
+  · 受理多源退款诉求并聚合证据                        DONE             attempt=1 risk=L
+  · 按下单锁定的政策版本裁定退款资格                     DONE             attempt=1 risk=L
+  · 渠道商核销                                DONE             attempt=1 risk=M
+  · 核算退款金额并写财务分录                         DONE             attempt=1 risk=M
+  · 发起退款并观察网关终态                          FAILED           attempt=1 risk=M
+  · 通知客户裁定结果                             PENDING          attempt=0 risk=L
+```
+
+**讲什么**
+一条脱敏的真实退款诉求，案号 `RC-2026-0904-001`，一条命令跑完 —— 一秒。
+先是五岗圆桌预检，再拆成六个任务的 DAG，然后送人审批。
+**第三条「渠道商核销」不是我们手写进去的** —— 它是 Planner 从知识层里查出来的：
+这一单走经销渠道，政策规则 `AS-004@v1` 要求多这一步。这条线第六镜会再回来讲。
+最后一列的 `risk` 决定哪几步要停下来等人：`risk=M` 的两条后面都停了。
+
+**红线**
+- 🔴 **别说「五岗在这一屏上说话」。** 这条命令的 stdout 里只有 `圆桌预检` 那一行；
+  五岗的发言全文在 `roundtable.json` 里，下一镜才打开。说过头会被当场翻文件核。
+- 🔴 **别说「Plan FAILED 是出了 bug」。** 这条路径演的就是业务没成功，
+  `FAILED` 是它该有的终态。
+
+---
+
+### 镜 2（00:50 — 01:35）　圆桌五岗：先议、再拆、才执行
+
+**镜头**　编辑器打开 `evidence/case-real-01/gateway_fail/roundtable.json`，
+折起 JSON 骨架，只留 `seats` 数组里五个 `title` + `speech`。
+
+**画面上的内容**（取自实跑的 `roundtable.json`，**为上镜压成了单行**；原文每岗是多行事实卡）
+
+```text
+申请受理岗：订单号 ORD-2026-AG-0413 / 实付 1280.00 / 申报 1280.00 / 质量问题 / 随案证据 4 份
+规则审核岗：裁定 批准 · 命中 4 条 AS- 规则 · 下单锁定的政策版本 v2 · 放行需要 region_manager
+证据核验岗 / 风险反欺诈岗 / 财务执行岗：各自的结论卡
+```
+
+**讲什么**
+五个岗位依次出结论，每一岗只说自己那一格的事实：受理岗报金额与证据份数，
+规则岗报命中了哪几条规则、**按下单那天锁定的 v2 政策**裁、放行要谁批。
+这五段不是聊天记录 —— 每一段都对应库里一条 `RoundtableSeatSpoke` 事件，第六镜能看到它们的位置。
+
+**红线**
+- 🔴 **别说「五个 Agent 各自调了模型想出来的」。** 这一束是 Scripted 跑的，
+  每一岗的 `spoken_by_model` 都是 `false`、`fallback_reason` 是 `no_model` ——
+  发言内容是**确定性事实卡**，这正是它能被逐字节重放的原因。
+  真模型那一版在 `evidence/case-real-01/happy-live/`，`verify.py` 按口径跳过它。
+
+---
+
+### 镜 3（01:35 — 02:30）　七道闸，和两次「停下来等人」
+
+**镜头**　回终端，往上滚到闸的判定行与状态迁移轨迹。
+
+**屏幕上的原话**（实跑）
+
+```text
+INFO  maos.gate    [task-...-finance] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
+INFO  maos.cp      [task-...-finance] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-...-finance] BLOCKED -> DONE (human_approve)
+INFO  maos.gate    [task-...-payment] Gate {... 'finance': 'pass', 'gateway': 'fail'} -> rework
+WARNING maos.cp      [task-...-payment] gateway_needs_human —— 机器返工修不好，一次转人工，不再重发
+INFO  maos.cp      [task-...-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
+INFO  maos.cp      [task-...-payment] BLOCKED -> FAILED (human_reject)
+```
+
+**讲什么**
+七道闸对每个任务逐项判，判定是**规则驱动的、不是模型说了算**。
+财务那一步七道全过，但因为它是高风险动作，仍然停在 `BLOCKED` 等人 —— 主管放行，落 `human_approve`。
+付款那一步不一样：六道过了，**第七道 `gateway` 判 fail**。
+注意紧接着那行 warning：机器返工修不好，一次转人工，**不再重发** —— 这就是「无限重试」那条的答案。
+人看过回执之后拒签，任务落 `FAILED`。两次人工介入，各自留了操作者和时间。
+
+**红线**
+- 🔴 **闸判了 `rework`，但状态机上没有 REWORK 那一跳。** 屏幕上是 `-> rework` 紧跟着
+  `gateway_needs_human`：这条路径**直接转人工**，没有真的走返工。
+  所以这一单的 `hitl-trace.json` 里**没有 `kind=rework`**。
+  **T124 落地后按实跑改这一镜** —— 在那之前，别把这屏念成「系统自动返工了一次」。
+  真的返工轨迹（`AWAITING_REVIEW -> REWORK [gate_rework]`）在附录 A 的场景 7 那条线上。
+- 🔴 **别说「重试到上限」。** 这里一次都没重发。
+
+---
+
+### 镜 4（02:30 — 03:10）　收口：钱没退成，系统怎么如实记
+
+**镜头**　回终端最后三行。
+
+**屏幕上的原话**（实跑）
+
+```text
+INFO  maos.tools.gateway 收到人工线下凭证 request=gw_ab0da987365e4d1a outcome=failed 提交人=@payops:maos.local
+INFO  maos.finalizer [plan_a9ad93c7e2aa] case RC-2026-0904-001 -> ('failure_hint', 'failed')（到账=unsettled）
+  [OK] evidence/case-real-01/gateway_fail  plan=FAILED biz=compensated skills=7/8 business_success=False
+```
+
+**讲什么**
+钱没退成。系统做了三件事：开补偿工单并派人、把线下凭证按 `payment.observe` 回填成一条观察行、
+把这一单判成 `failure_hint` 而不是成功案例。业务状态收在 `compensated`，
+**全程一次都没进过 `settled`** —— `settled` 只有 `payment.observe` 写得进去，
+而它只认真实回执。最后那行 `business_success=False`：
+所有 Agent 都回复完成了，业务仍然没成功，这两件事在这里是分开记的。
+
+**红线**
+- 🔴 **别说「补偿把钱退给客户了」。** 补偿是开工单 + 转人工，不是替代退款。
+  对客户的口径是 `已补偿（未到账）`，第八镜会看到它。
+
+---
+
+### 镜 5（03:10 — 04:00）　Skill 调用过程：8 个契约 Skill，逐个可回查
+
+**镜头**　编辑器打开 `evidence/case-real-01/gateway_fail/skills.json`，
+镜头停在 `contract_skills` 数组与末尾的 `present` / `total`。
+
+**讲什么**
+跨轨契约钉死了 8 个退款 Skill。这一束是 `7/8` —— 少的那个是 `notify.customer`，
+因为这一单在付款那步就被拒签了，**走不到通知客户**。`present=false` 是如实记录，不是缺数据。
+每一个 `present=true` 的都带 `invocation_id`、`input_digest`、`output_hash` 和版本号，
+`invocation_id` 能在 `event_log` 里回查到那一条 `SkillInvoked` —— 核验器第 10 项就在核这件事。
+失败路径上另有两个：`refund.compensate` 和 `refund.compensation_close`，都是 `present=true`。
+
+**红线**
+- 🔴 **别把 `7/8` 说成「有一个 Skill 坏了」。** 它是路径决定的，`happy` 束就是 `8/8`。
+- 🔴 **别说「13 个 skill 全调了」。** 注册表里的数和契约钉的 8 个不是一回事，
+  这一屏说的是后者。
+
+---
+
+### 镜 6（04:00 — 04:55）　AgentTeams 事件链：圆桌与 DAG 在同一条时间线上
+
+**镜头**　编辑器打开 `evidence/case-real-01/gateway_fail/event-chain.json`，
+先给 `by_type` 那一块，再滚 `events` 数组看 `seq` 连号。
+
+**讲什么**
+这是这一镜要证的全部：**圆桌和 DAG 不是两套日志**。
+`events` 按 `event_log.seq` 升序，圆桌那五条 `RoundtableSeatSpoke` 排在前面，
+`PlanApproved` 之后才是 DAG 的 `StateTransition` 和 `SkillInvoked` —— 谁先谁后不是我们讲出来的，
+是库里排好的。`by_type` 给各类计数，这一束 64 条事件。
+`KbRetrieved` 之后紧跟着 `PlanAdvised`：第一镜那条「渠道商核销」就是从这里来的，
+建议带着 `doc_id` 引用，查得到出处。
+
+**红线**
+- 🔴 **别在 `evidence/report.html` 里找这条时间线。** 渲染器只扫 `scenario-*`，
+  单案例束进不去那张可视化页。要看就打开这个 json。
+
+---
+
+### 镜 7（04:55 — 05:45）　AgentTeams 状态展示
+
+**默认路径 · 房间实拍**　Element 房间里敲 `/pending`，镜头给回执：待办与等人审批的任务逐条列出。
+
+**免房间的等价回退**（本轮实测跑通，两条都是 0 秒）
+
+```bash
+python3 scripts/room_team_smoke.py --db /tmp/rt.db
+python3 scripts/replay_roundtable.py --db /tmp/rt.db --list
+```
+
+**屏幕上的原话**（回退路径，实跑）
+
+```text
+库 rt.db 里的圆桌行：
+  · roundtable:RC-ORD-2026-0004（9 条，...）
+  · roundtable:RC-ORD-2026-0005（18 条，...）
+  · roundtable:RC-ORD-2026-0006（18 条，...）
+```
+
+**讲什么**
+Team 成员当前在干什么、哪几步卡在等人 —— 房间里一条 `/pending` 就能看到。
+回放这条更硬：`replay_roundtable.py` **一次模型都不调**，只读 `event_log`，
+把五岗的顺序重建出来。所以「这五岗到底说了什么、按什么顺序」不靠截图证明，靠库证明。
+
+**红线**
+- 🔴 **回放指不到本案例。** `make_case_bundle.py` 的库建在临时目录、跑完即销毁，
+  `evidence/case-real-01/` 各束里**没有 `maos.db`**。所以回退路径演的是圆桌机制本身
+  （用 `room_team_smoke.py` 现落的库，案号是 `RC-ORD-2026-000x`），**不是这一单**。
+  走回退时必须说清这一句。
+- 🔴 **真人在房间里审批这条退款案例，还没采集。** `evidence/room/` 那五张截图跑的是
+  一个 `role=coding` 的软件域任务。**9/18 真跑日采集后按实跑改这一镜**；
+  在那之前走房间实拍，只能演 `/pending` 与命令回执，别说「这一单是在房间里批的」。
+- 🔴 **房间实拍的前置一条都没松**：系统 `python3` 没装 matrix-nio，必须用
+  `~/.maos-matrix/venv/bin/python` 才走得到活路径，拿系统解释器起房间会**静默降级 log-only**
+  （终端照刷「房间消息」，房间里一条没有）。详见文末「录制前必须确认的三件事」第 1 条。
+
+---
+
+### 镜 8（05:45 — 06:35）　四判据，和评委自己能跑的那条命令
+
+**镜头**　先开 `evidence/case-real-01/gateway_fail/outcome.json`，给 `case_outcome` 与
+`public_status`；再切终端跑 `python3 scripts/verify.py`（实测 1 秒）。
+
+**画面上的内容**（字段与取值逐字取自实跑的 `outcome.json`，**为上镜排成了两列**）
+
+```text
+"arrival": "unsettled"          "manual_correction": "compensated"
+"customer_confirmation": "none" "complaint": "none"
+"evidence_complete": false      "business_success": false
+"biz_status": "compensated"     "public_status": "已补偿（未到账）"
+```
+
+**讲什么**
+四个判据判这一单成没成：到账、客户确认、人工纠错、投诉。这里到账是 `unsettled`、
+人工纠错是 `compensated`，算出来 `business_success` 就是 false。
+`arrival` 不是谁填的，是从 `payment_observation` 那几行重新数出来的，
+`arrival_basis` 指回具体哪一条回执 —— 指不回去的到账不叫判据，叫说法。
+对客户只说一句 `已补偿（未到账）`，这五个字面值的唯一产出处是投影函数，
+系统别处不另拼一句话。然后是给评委的那条命令：`verify.py`，逐项重放校验，全绿退 0。
+
+**红线**
+- 🔴 **`verify.py` 的分子分母别念死。** 它随证据束增减而变，台上以当场输出为准；
+  现行期望在 `docs/expected-metrics.json`。
+- 🔴 **别说「新克隆直接跑 `verify.py` 就有满分」** —— `*.db` 不入 git，
+  直接跑会报缺数据库并退出 2，这是设计行为。录制前置已经跑过 `make_evidence.py`。
+
+---
+
+### 镜 9（06:35 — 07:15）　一屏总结：冻结契约一个字节没动
+
+**镜头**　`git diff --stat -- maos/contracts/ maos/core/`，空输出；再给一眼证据目录树。
+
+**讲什么**
+整场演示跑完，冻结契约一个字节没动 —— 这条由三重机制守着，不是口头约定。
+今天看到的每一样东西都在 `evidence/` 下，一条命令重产，出处 sha 写在每个文件第一行；
+核验器第 9 项专门核这个：**这束证据是不是当前这份代码跑出来的**。
+
+**红线**
+- 🔴 **这一镜必须是干净工作区。** 手滑少打路径限定、或顺手 `git status` 给个空镜头，
+  画面就穿帮 —— 评委看到的不是「零改动」而是一堆 `evidence/` 行。
+
+---
+
+## 附录 A · 场景 7 九镜（上一版主线，现为素材库与应急回退）
+
+> 下面整段是**上一版主线**（`run.py --scenario 7`，九镜 5 分 26 秒），
+> 每一镜都在 `27c9e18` 上实测过，念词逐字定过稿。它现在有两个用途：
+>
+> 1. **素材库** —— 政策裁定（镜 2）、RAG 改变计划（镜 3）、第六道闸（镜 4）、
+>    换渠道 replan（镜 5）这几段，本版主线没有覆盖，要补讲直接从这里取。
+>    **真正的返工轨迹**（`AWAITING_REVIEW -> REWORK [gate_rework]`）也只有这条线上有。
+> 2. **应急回退** —— 录制当天单案例那条命令出问题时，整段照录仍是一份合格的 Demo。
+>
+> 🔴 **它的时间轴、读数、镜号与上半部分的新主线不通用**，别混着念。
+> 下面各节的标题仍是旧时间轴（`00:00 — 00:24` 这种），那是旧分镜的内部编号。
 
 ---
 

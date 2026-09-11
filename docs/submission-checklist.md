@@ -31,7 +31,7 @@ python3 scripts/gen_docs.py --check      # □ exit=0，打印「3 份文档与�
 # ⑤
 python3 scripts/make_evidence.py         # □ 「8 场景落盘，0 场景缺模块」（含 R5）；⚠️ 之后工作区 50 行脏
 # ⑥
-python3 scripts/verify.py                # □ 9/9 PASS，exit=0，另有 1 行 warn（1 类，见 A-2）
+python3 scripts/verify.py                # □ 10/10 PASS，exit=0，另有几行 info/warn（见 A-2）
 # ⑦
 git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动过）
 ```
@@ -39,8 +39,10 @@ git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动
 > ⑤ 缺省一并产出 `scenario-R5`（整合轮 5 / Y-3 起）。`--no-r5` 可显式跳过，
 > 届时 `verify.py` 第 5、7 项判 `[SKIP]` 而不是 0/0 PASS —— 空转不再印成满分。
 
-- [ ] **新克隆冒烟**：`git clone` 到全新目录，严格按 README 从零跑到 `verify.py` 7/7，
-      **掐表 ≤ 15 分钟**。过不了就改 README 直到过 —— 改 README，不是改口径。
+- [ ] **新克隆冒烟**：`git clone` 到全新目录，严格按 README 从零跑到 `verify.py` 全绿
+      （现行是 `RESULT: 10/10 PASS`；期望值真源是 [`docs/expected-metrics.json`](expected-metrics.json)
+      的 `verify_result_line`），**掐表 ≤ 15 分钟**。过不了就改 README 直到过 ——
+      改 README，不是改口径。
 - [ ] 冒烟用的是**没有任何 API key** 的环境（评审多半没有 key）。
 
 > ✅ **整合轮 5 已实跑**（Z-5 + 编排侧复跑）：全新克隆 + 无任何 API key，
@@ -69,7 +71,7 @@ git diff --stat maos/contracts/          # □ 空输出（冻结契约未被动
 
 上面所有冒烟读数都是从**「clone 对了分支之后」**开始掐的表，于是
 「裸 clone 拿错分支」与「远端落后于本地」这两件事对它们的影响都是 **0** ——
-18.3 秒、6.97s、`7/7 PASS` 照样全绿，而评委在自己机器上第一条命令就卡住。
+18.3 秒、6.97s、核验器照样全绿，而评委在自己机器上第一条命令就卡住。
 这两条不是定性描述，各自可跑、各自有期望输出：
 
 ```bash
@@ -118,14 +120,21 @@ git rev-parse goai-restructure                             # 本地
 - [ ] 证据束里 grep 不到任何真密钥（生成脚本已做出口脱敏 + 哨兵反查，
       但**提交前再人肉扫一遍** `MAOS_LLM_API_KEY` / `MATRIX_TOKEN` 的值）。
 
-#### verify.py 的 1 行 warn 是**已知缺口，不是回归**
+#### verify.py 的几行 info / warn 是**已知缺口，不是回归**
 
-`verify.py` 报 7/7 PASS 的同时会打印 1 行 `· warn:`，只此 1 类（**T12 收尾轮后**实测）。
+`verify.py` 全绿（现行 `RESULT: 10/10 PASS`）的同时仍会打印若干 `· info:` 与 `· warn:`。
 **第一次看到的人会以为是回归 —— 不是。** 逐类对照：
 
 | 类 | 行数 | 内容 | 出处 |
 | :-- | :-- | :-- | :-- |
 | E | 1 | `authoritative-fact` 项下：`scenario-7 case=case-s7-0002` 有回执但案子**停在中间态** `gateway_accepted` | **D-1** 带来的：第二笔撞终态失败码后走第三出口转人工、被主管驳回 |
+| F | 3 | `provenance` 项下：`evidence/room/` 那束的出处 sha 与 HEAD 不符（两份落后 HEAD，一份是脏工作区跑的） | **本来就该 warn**：真房间那束**没有生成器**，截图与逐字副本靠人工采集，重跑要按 [`docs/matrix-room-runbook.md`](matrix-room-runbook.md) 来。第 9 项对它点名不判负，正是为了让「这束是人工采的」这件事一直显形 |
+
+> 🔴 **这几类的行数会随证据束增减而变，别把某一次的行数写成判据。**
+> 譬如 E 类按「场景 7 里未 settled 的退款 case 数」走 —— 每加一笔演示就 +1；
+> F 类按「`evidence/room/` 下人工采集的文件数」走。写死一个数当判据，
+> 下一轮加演示时它自己会变成假警报源。`info:` 行同理（`trace-tree` 与 `provenance`
+> 项下各有若干，都是点名不判负的提示）。
 
 **A 类（产物没有来源事件）已归零**：三条绕开 `on_task_result` 的旁路
 （`flows/common.py::patch_verifier`、`agents/testing.py::seed_scripted_report`、
@@ -249,19 +258,19 @@ Z-1 允许拆子页（`P8a`/`P8b`），但**不许改 P1–P14 的编号**，所
 
 | # | 评委要求 | PPT 页 | 四维 | 证据 | ✓ |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| 1 | 一条脱敏真实退款需求的可执行纵向切片 | P3 → P10 | `OQ-1` | `evidence/scenario-6,7/` | ☐ |
-| 2 | AgentTeams 事件链 | P6 | `OQ-1` | `docs/agentteams-mapping.md` + `trace.json` | ☐ |
-| 3 | 关键 Skill 的真实调用 | P7 | `OQ-1` | `event_log` 的 `SkillInvoked` | ☐ |
-| 4 | 返工 / HITL Trace | P10 | `OQ-1` | `evidence/scenario-2,3,5,7/trace.json` | ☐ |
-| 5 | Evidence Bundle | P11 | `OQ-1` | `verify.py` 7/7 | ☐ |
-| 6 | 业务对象关联到同一案例 | P3 / P11 | `OQ-1` | verify 第 2 项（`business-ref 35/35`） | ☐ |
+| 1 | 一条脱敏真实退款需求的可执行纵向切片 | P3 → P10 | `OQ-1` | `evidence/case-real-01/`（四条路径 + 真模型束） | ☐ |
+| 2 | AgentTeams 事件链 | P6 → P6b | `OQ-1` | `evidence/case-real-01/happy/event-chain.json`（圆桌与 DAG 同一条 `seq`）+ `docs/agentteams-mapping.md` | ☐ |
+| 3 | 关键 Skill 的真实调用 | P7 | `OQ-1` | `evidence/case-real-01/happy/skills.json`（契约钉死的 8 个，逐个带 `invocation_id`） | ☐ |
+| 4 | 返工 / HITL Trace | P10 | `OQ-1` | `evidence/case-real-01/happy/hitl-trace.json`（每条人做的动作带操作者）。🔴 **返工那一格今天是空的**（四束里都没有 `kind=rework`），真返工轨迹在 `evidence/scenario-2/`、`evidence/scenario-7/`；单案例上的 **T124 落地后补** | ☐ |
+| 5 | Evidence Bundle | P11 → P11b | `OQ-1` | `scripts/verify.py` 全绿（现行 `RESULT: 10/10 PASS`） | ☐ |
+| 6 | 业务对象关联到同一案例 | P3 / P9b | `OQ-1` | verify 第 2 项 + `evidence/case-real-01/happy/business-objects.json`（十类对象带版本，`dangling 0`；`business_ref_coverage` 顺利路径 9/10，第十类在 `evidence/case-real-01/gateway_fail/`） | ☐ |
 | 7 | 外部系统保留权威事实，区分已提出/处理中/已到账 | P9 | `OQ-1` | verify 第 3 项 + 越权拒绝单测 | ☐ |
-| 8 | RAG 面向 workflow 规划 | P8 | `OQ-1` | `kb-hits.json` + `dag-diff.json` | ☐ |
+| 8 | RAG 面向 workflow 规划 | P8 | `OQ-1` | `evidence/case-real-01/happy/kb-hits.json` + `evidence/contrast-R8/dag-diff.json`（建议有无对照）+ `evidence/scenario-R5/dag-diff.json`（检索有无对照） | ☐ |
 | 9 | 先结构化过滤再组合召回（评委给的字段顺序） | P8 | `OQ-1` | `maos/kb/retriever.py` + 跨租户不召回单测 | ☐ |
 | 10 | 减少遗漏财务复核 / 错误套用政策 / 无限重试 | P5 | `OQ-1` | 第六道闸 + 政策版本锁定 + `MAOS_MAX_REPLAN`；**「无限重试」这条现在有实跑证据**：`run.py --scenario 7` 打出 `换渠道重试: 1 次 replan（40005 触发，ACQ.SYSTEM_ERROR 一票否决，没有自旋）`，`test_replan_gateway.py` 19 条守着 | ☐ |
 | 11 | 历史流程不能替代当前订单事实和人工授权 | P9 | `OQ-1` | `maos/kb/guardrails.py` 三条断言 + 护栏单测 | ☐ |
-| 12 | 以到账 / 客户确认 / 人工纠错验证 DAG | P10 | `OQ-1` | `result.json` 的 `business_outcome` | ☐ |
-| 13 | 只有证据完整且外部结果明确的案例进默认知识层 | P8 → P11 | `OQ-1` | verify 第 7 项（`history-case 1/1`） | ☐ |
+| 12 | 以到账 / 客户确认 / 人工纠错验证 DAG | P10 → P11b | `OQ-1` | `evidence/case-real-01/happy/outcome.json` 的 `case_outcome` 四判据 + verify 第 10 项 `case-outcome` | ☐ |
+| 13 | 只有证据完整且外部结果明确的案例进默认知识层 | P8 → P11b | `OQ-1` | verify 第 7 项 + `CasePromoted` 事件；没成的聚成 `failure_hint` 与 `failure_hint_index`（渠道 × 返回码 × 规则号），实例在 `evidence/scenario-7/` 的库里 | ☐ |
 
 > ✅ 第 8 条的证据已在整合轮 5 变厚：Y-2 让场景 6 播上 W-1 语料（候选集 0 → 3），
 > `kb-hit` 从 4/4 涨到 **7/7**。
@@ -274,8 +283,8 @@ Z-1 允许拆子页（`P8a`/`P8b`），但**不许改 P1–P14 的编号**，所
 
 | 诊断（P2 提出） | 回应页 | 台上跑这条 | ✓ |
 | :-- | :-- | :-- | :-- |
-| 没有可执行制品和运行证据 | P11 | `python3 scripts/verify.py` → 8/8 PASS | ☐ |
-| 现实业务锚点不足 | P3 | `python3 run.py --scenario 6` → 退款域纵切，不是软件域自证式 demo | ☐ |
+| 没有可执行制品和运行证据 | P11 | `python3 scripts/verify.py` → `RESULT` 全绿（现行 10/10） | ☐ |
+| 现实业务锚点不足 | P3 | `python3 scripts/make_case_bundle.py --path happy` → 一条脱敏真实案例的纵切，不是软件域自证式 demo | ☐ |
 | 「所有 Agent 都回复完成」≠ 业务成功 | P10 | `python3 run.py --scenario 7` → Plan 终态 FAILED、`biz_status=compensated`、`settled` 观察 0 条 | ☐ |
 
 ### PPT 逐页自查
@@ -290,11 +299,14 @@ Z-1 允许拆子页（`P8a`/`P8b`），但**不许改 P1–P14 的编号**，所
 
 ## C. Demo 视频
 
-- [ ] 按 [`docs/demo-script.md`](demo-script.md) 录，**失败路径为主线**。
+- [ ] 按 [`docs/demo-script.md`](demo-script.md) 录，**失败路径为主线** ——
+      现行主线是单案例 `RC-2026-0904-001` 的 `gateway_fail` 那条，
+      不再是 `run.py --scenario 7`（后者降级为该文件的附录 A，素材库兼应急回退）。
 - [ ] 录制前跑完该文件的「录制前置」五条命令，全绿。
 - [ ] 录制前确认该文件末尾的**三件事**（Element 是否接通 / replan 是否合并 /
       审批由谁驱动），按现状调整念词 —— **不许演不存在的功能**。
-- [ ] 时长 3–5 分钟（手册口径）。官方上限 → 见
+- [ ] 时长 **≤ 8 分钟（复赛手册口径）**。本版分镜实排 7 分 15 秒，富余 45 秒；
+      逐镜秒数表在 [`docs/demo-script.md`](demo-script.md)。官方上限 → 见
       [`docs/open-questions.md`](open-questions.md) **OQ-2**。
 - [ ] 终端字号够大，后排能看清；窗口 ≥ 100 列。
 - [ ] 画面里没有露出任何 key、token、homeserver 地址

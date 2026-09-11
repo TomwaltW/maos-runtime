@@ -2628,3 +2628,22 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | **跨轨契约的 §A 分区只写生产代码，不写测试文件**。本波 T135 与 T136 各自改了 `maos/tests/test_room_outcome_commands.py` 的不同段落 —— 两轨的白名单都只说「测试」，没说哪些测试文件归谁 | 这次侥幸自动合了（两段相隔很远），但同一个文件被两轨改的一般情形是冲突，而整合期手工合测试文件比合生产代码更容易出错（断言之间没有语法依赖，串了也不报错） | 下一波派单时把**测试文件也写进 §A 的分区表**，尤其是几个被反复改的大文件（`test_room_outcome_commands.py` / `test_roundtable_verdict.py` / `test_trace_evidence.py`）。写不清就明确「这个文件本波谁都不许改，要加断言就新建文件」 |
 | 2026-09-12 | p10 | `pytest -k pg` 与真正的 PG 门控条数差了 **12 条**（`-k pg` 数 93，门控实为 78+15=93… 实际门控 78 条里有 12 条名字不含 `pg`）。T132 的 `test_kb_flow_backend.py`（7 条）与 T133 的 `test_schema_util_t133.py`（4 条）整文件都选不中，加上 T126 那 1 条 | 拿 `-k pg` 当门控计数的人会漏掉 12 条，而 `docs/expected-metrics.json` 的 `pg_gated_tests` 又是「有库档 = 无库档 + N」那条算式的地基。差距还在扩大 | 两条路任选：① 给 PG 门控测试统一加一个 pytest marker（`@pytest.mark.pg`），计数改用 `-m pg`；② 在 `test_expected_metrics.py` 里加一条「按 skip 原因数门控条数」的自动判据，不再靠人记。前者更彻底但要动十几个文件的装饰器，后者是一条断言。**复赛前不必做**，记着别再用 `-k pg` 数就行 |
 | 2026-09-12 | p10 | 铁律 9（`maos/kb/**` 不许 import 退款域）在 `maos/kb/plan_advice.py` 上**实际是有例外的**：`_ticket_role()`（T119）与 `_approver_role()`（T136）都用「局部 import + 兜底」问退款域要缺省岗位名 | 不是 bug（拿不到就回落到本模块字面量，内核仍能独立跑），但铁律的字面与代码的实况不一致，下一个读铁律的人会以为这两处是违规 | 把这条边界写进 `CLAUDE.md` 铁律 9 的括号里，或写进 `maos/kb/__init__.py` 的模块 docstring：**取值可以局部 import + 兜底，断言不行**。整合期 p10-e 的 DECISIONS 有完整原文。材料面归 9/20–9/21 那一轮，一起改 |
+
+## task-t139（PG 上的检索真成立，2026-09-12）
+
+先结掉三条旧账（都在 `## task-t132`，原文不改，以本节为准）：
+
+- **第 1 条「按错误码检索恒不命中」→ 已解决**。全文改查影子表 `kb_doc_fts` +
+  `to_tsquery`，`fts_search(body,'acq')` 从 0 命中变成命中。
+- **第 3 条「PG 上没有 HNSW」→ 已解决**。PG 侧加 `embedding_vec vector(64)` 生成列 +
+  `idx_kb_doc_embedding_hnsw`，执行计划实测 `Index Scan`。`## task-t115` 里同一笔账
+  （「要真用 HNSW 得单开一列并双写，是形状分叉的决定，值得一轨」）一并结掉。
+- **第 2 条「中文通道在 PG 上退化」→ 没结，但有判据了**。见下面第 2 行。
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | **`## task-t132` 第 1 条对病根的描述不够准确**。原文写「`to_tsvector('simple', body)` 把 `ACQ.TRADE_NOT_EXIST` 当成**一个** token `acq.trade_not_exist`」。本轨实测：默认 parser 在第一个下划线处断开，实际切成 `'acq.trade'` / `'not'` / `'exist'` **三个** token | 不影响结论（带点的前缀被黏住，查 `acq` 照样 0 命中），但照原文去复现的人会以为自己搞错了 | 已在 `test_error_code_is_searchable_after_the_shadow_table_switch` 的 docstring 里写清实测形状，并把断言改成钉 `'acq.trade' in tv and 'acq' not in tv`。t132 那节的原文**不改**（历史记录照留） |
+| 2026-09-12 | p10 | **PG 上中文全文通道仍然是 0 分通道**，`## task-t132` 第 2 条那笔账没结。换影子表之后 `simple` 档技术上已经匹配得上（影子表里的中文已按字切开），但 `fts_search` 仍然对 CJK 抛 `LookupError` —— 这是 T139 **有意保留**的口径（按字 AND 不是中文检索，当成「中文通了」会诱出那句不许说的话），不是漏改 | 本机 PG 上跑 DAG 时 fts 这一路记 0 分，四通道实际只有向量与精确两路在算。混合召回的权重分布与 SQLite 上不一样，而两边都不报错 | 真正的解法仍是装 `zhparser` / `pg_jieba`（要改 Docker 镜像，不是本轨的面）。**但要先想清楚形状**：影子表口径下 zhparser 拿到的是已按字切开的文本，词典分词能力发挥不出来；要让它真按词切就得把 zhcfg 索引建回 `kb_doc` 原文列且查询侧不过 `fts_text()`，那会把错误码通道重新打瞎。两者不可兼得，取舍与两档判据见 `docs/DECISIONS.md ## task-t139` 与 `deploy/polardb.md` §1 |
+| 2026-09-12 | p10 | 旧的两条 GIN 索引 `idx_kb_doc_fts_simple_{title,body}`（建在 `kb_doc` 原文列上）**今天没有调用方**：`fts_search("kb_doc", ...)` 已改查影子表 | 只费写入开销与磁盘，不影响正确性。留着是因为跨轨契约只许新增索引不许删（删了在别人的库上不可逆），且影子表不在的旧库上 `_fts_target()` 会回落查 `kb_doc`，那时它们还得上 | 等影子表这条路在 PolarDB 真实例上也跑过一轮之后，单独一轨收掉。**别顺手删** —— 删索引这件事在持久库上没有回头路 |
+| 2026-09-12 | p10 | `PgStorePort.query()` 现在会剔除 `_ACCEL_COLUMNS` 里的列。这是一份**手工维护的清单**，将来 PG 侧再加派生列时容易忘记加进去 | 忘了的症状与本轨踩到的一模一样：`prefilter` 在两个后端返回的行不再相等，`test_kb_pg_prefilter.py::test_prefilter_limit_is_honoured_on_both` 变红，案例证据束的「逐字一致」也跟着破。**这次是有测试兜住的**，所以症状会当场显形，不算无声失效 | 加列的人自己记得加。真要机器化，可以让 `_ACCEL_COLUMNS` 从 `pg_schema.sql` 里现解析（那份 DDL 已经是单一事实源），但正则解析 DDL 又是一处新的漂移源 —— 条目只有一条时不值得 |
+| 2026-09-12 | p10 | `deploy/polardb-live.md` §3.6 那组 `ef_search` 实测读数（HNSW p50 0.62ms、召回 99.3%、20 万行）量的是 **8/30 当时临时建的 `kb_doc_pg`**，不是装配路径上的 `kb_doc`。T139 把同类能力接到了 `kb_doc` 上，但**没有在 20 万行规模上重量过** | 那组数字现在更有参考价值了（同一种索引、同一个算子），但仍然不是 `kb_doc` 的读数。对外引用时别把两者说成一回事 | 真跑日若有余裕，在 PolarDB 上对 `kb_doc` 跑一次同规模的对照，把读数补进 `polardb-live.md` 的新一节。**不是必须**：复赛演示的语料只有几百条，HNSW 与顺序扫描在这个规模上都看不出差别，那组 20 万行的数字本来就是「能撑住」的旁证而非演示路径的读数 |

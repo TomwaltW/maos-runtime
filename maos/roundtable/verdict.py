@@ -260,6 +260,11 @@ def _approver(recommend: str, seats: dict[str, dict], blockers: list[str]) -> st
     进来的 `approver_role` 可能是两套写法里的任意一套（政策规则的 `params` 里写的是
     房间那套，角色目录里是职责全名那套）。本函数**一进门就归一到目录名**，
     内部一律按目录名对账，出口再由 `_spoken` 翻回房间那套 —— 对外文案一个字不变。
+
+    降级用的缺省审批岗取 `roles.DEFAULT_APPROVER_SEAT`，不在这里写第二个字面量：
+    Planner 侧的缺省审批岗是 `maos.kb.plan_advice.DEFAULT_APPROVER_ROLE`（别名那套写法），
+    两处指同一个岗，由 `test_refund_roles.py` 的等价判据钉着。两边各写一个常量、
+    靠人记着它们相等，分叉时的症状是房间里念出来的审批人和 Planner 建议的不是同一个人。
     """
     role = str((seats.get("refund-policy") or {}).get("approver_role") or "")
     canon = roles.canonical_role(role)
@@ -276,8 +281,8 @@ def _approver(recommend: str, seats: dict[str, dict], blockers: list[str]) -> st
         seat_ok = True
     if not seat_ok:
         log.warning("审批角色 %r 不是审批岗（目录里没有 verdict_role），"
-                    "按缺省审批岗 %r 处理", role, roles.ROLE_AFTER_SALES_SUPERVISOR)
-        canon = roles.ROLE_AFTER_SALES_SUPERVISOR
+                    "按缺省审批岗 %r 处理", role, roles.DEFAULT_APPROVER_SEAT)
+        canon = roles.DEFAULT_APPROVER_SEAT
         role = canon
 
     spoken = _spoken(canon, role)

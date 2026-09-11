@@ -2493,3 +2493,16 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | `scripts/make_evidence.py --live-model` 产出的束落在与 Scripted 束**同一个** `evidence/scenario-*` 目录（不像 `make_case_bundle.py` 出到 `<path>-live/`），而 `verify.py` 不看 `model_mode` | 真模型束可以覆盖 Scripted 束并照样过 verify。本轮修掉了「标签说谎」那一半（旗标现在真能传到子进程），但「覆盖」这一口子还在 | 让 `--live-model` 出到独立根目录，或让 `verify.py` 直接拒 `model_mode=live` 的束。复赛前做 |
 | 2026-09-11 | p10 | `code_repo_patch.py` 的重问提示词不带上一版 diff 原文，模型看不到 `corrupt patch at line 6` 指的是哪一行 | 只影响自修复命中率，不影响正确性 | 下次调这个 skill 的提示词时一起带上。另：重问轮里模型抛异常或产非法 JSON 会直接 failed，把第一轮那份「合法但打不上、本可交给 Gate」的补丁丢掉了 |
 | 2026-09-11 | p10 | `MAOS_FORCE_SCRIPTED` 与 kb 三个旋钮共四个仍不进 `maos/config/source.py` 的 `GOVERNED_KEYS` | 能治理（Nacos 上改得到、不用重启），但变更不落 `ConfigChanged` 审计。这个旋钮一改，整批证据束的成本读数含义就变了，比 kb 那三个更值得审计 | 「四行改动 + 一条断言」，`test_config_source.py` 那条按数目写的测试要一起改名。`## task-T35` 记的是同一笔账，本轮只更正了数目笔误没有补齐 |
+
+## task-t130（角色名收口之后的范围外发现，2026-09-11）
+
+> 上面 `## 整合期 p10-c` 小节里的两条由本轨收掉了：「两份缺省审批岗各写各的」（现有
+> `test_refund_roles.py::test_the_two_spellings_of_the_default_approver_seat_agree` 钉着）
+> 与「`canonical_role()` 只 `strip` 不折大小写」（已折，矩阵测试钉着）。那两行按契约不归本轨改，记在这里。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | `docs/expected-metrics.json` 的 `pytest_passed_nopg` 欠本轨 +10（3746 -> 3756，worktree 口径 3743 -> 3753） | `test_expected_metrics` 一条红。派单与契约都要求各轨不动这个文件，所以这是**有意欠着**的账 | 整合期合完本波六轨，按合并树的实跑末行一次刷到位 |
+| 2026-09-11 | p10 | 跨轨契约 §E 写「`maos/kb/**` 是领域无关内核，不许 import 退款域」，实测 `maos/kb/promotion.py:54` 是**模块级** `from maos.domain.refund import guard, objects, outcome`，`experiment.py` 有 7 处函数内局部 import | 契约那句话今天只对 `plan_advice.py` 成立（本轨给它立了 AST 判据）。`import maos.kb.promotion` 会实打实拖进整个退款域 —— 换个业务域就得改这个文件 | 要么承认 `promotion.py` 是按域写的知识层、把契约那句话收窄成「`plan_advice.py` + 检索内核」，要么给它也做局部 import 化。前者是文档活，后者要动 `promotion.py`（不在任何轨的白名单）。`docs/domain-portability.md` 末尾本来就说「`flows/` 与 `kb/` 本就是按域写的，不在内核零改动的主张范围内」，与契约 §E 口径不一 —— 两处措辞一起对齐 |
+| 2026-09-11 | p10 | `scenarios/refund/roles.json` 的角色名与 `verdict_role` **必须全小写**（`canonical_role()` 折大小写之后，目录里写大写名字会查不到自己），但这条约束没有机器校验 | 今天全小写，撞不上。将来有人往目录里加一个 `Night_Lead`，`role_of` / `accounts_of` 会静默查不到，症状是「这个岗查不到人」而不报错 | `_load()` 里加一条 `name == name.lower()` 的校验（连带 `verdict_role`），或在 `test_refund_roles.py` 加一条扫目录的断言。一行的活，下次动 `roles.py` 的轨顺手做 |
+| 2026-09-11 | p10 | `verdict._approver` 对「政策没写审批人」（空串）的处置是**原样留空**，房间里那句话渲染成「请 ⟨两个空格⟩ 拍板」 | 十六格矩阵里的 `("", low)` / `("", high)` 两格。不是本轨引入的（改前改后逐格相同），但那行文案在真房间里会被人看见 | 按 `plan_advice` 那边的口径，空审批人应当是「没人知道该谁批」而不是「不需要审批」（`guardrails` 第三条红线就拦这个）。要么降级到 `roles.DEFAULT_APPROVER_SEAT`、要么让 headline 换一句话。改的是房间里念出来的字，会动 `PLAIN_STDOUT_MD5`，得单开一轨并当场重刷指纹 |

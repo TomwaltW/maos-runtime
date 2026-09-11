@@ -2628,3 +2628,24 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | **跨轨契约的 §A 分区只写生产代码，不写测试文件**。本波 T135 与 T136 各自改了 `maos/tests/test_room_outcome_commands.py` 的不同段落 —— 两轨的白名单都只说「测试」，没说哪些测试文件归谁 | 这次侥幸自动合了（两段相隔很远），但同一个文件被两轨改的一般情形是冲突，而整合期手工合测试文件比合生产代码更容易出错（断言之间没有语法依赖，串了也不报错） | 下一波派单时把**测试文件也写进 §A 的分区表**，尤其是几个被反复改的大文件（`test_room_outcome_commands.py` / `test_roundtable_verdict.py` / `test_trace_evidence.py`）。写不清就明确「这个文件本波谁都不许改，要加断言就新建文件」 |
 | 2026-09-12 | p10 | `pytest -k pg` 与真正的 PG 门控条数差了 **12 条**（`-k pg` 数 93，门控实为 78+15=93… 实际门控 78 条里有 12 条名字不含 `pg`）。T132 的 `test_kb_flow_backend.py`（7 条）与 T133 的 `test_schema_util_t133.py`（4 条）整文件都选不中，加上 T126 那 1 条 | 拿 `-k pg` 当门控计数的人会漏掉 12 条，而 `docs/expected-metrics.json` 的 `pg_gated_tests` 又是「有库档 = 无库档 + N」那条算式的地基。差距还在扩大 | 两条路任选：① 给 PG 门控测试统一加一个 pytest marker（`@pytest.mark.pg`），计数改用 `-m pg`；② 在 `test_expected_metrics.py` 里加一条「按 skip 原因数门控条数」的自动判据，不再靠人记。前者更彻底但要动十几个文件的装饰器，后者是一条断言。**复赛前不必做**，记着别再用 `-k pg` 数就行 |
 | 2026-09-12 | p10 | 铁律 9（`maos/kb/**` 不许 import 退款域）在 `maos/kb/plan_advice.py` 上**实际是有例外的**：`_ticket_role()`（T119）与 `_approver_role()`（T136）都用「局部 import + 兜底」问退款域要缺省岗位名 | 不是 bug（拿不到就回落到本模块字面量，内核仍能独立跑），但铁律的字面与代码的实况不一致，下一个读铁律的人会以为这两处是违规 | 把这条边界写进 `CLAUDE.md` 铁律 9 的括号里，或写进 `maos/kb/__init__.py` 的模块 docstring：**取值可以局部 import + 兜底，断言不行**。整合期 p10-e 的 DECISIONS 有完整原文。材料面归 9/20–9/21 那一轮，一起改 |
+
+## task-t137（驳回之后的三件，2026-09-12）
+
+> `## task-t135` 那三条账**本轨全部处理完**，按契约 §A.3 不回头改中间那几行，在这里划掉：
+>
+> 1. 「付款被驳回之后，客户一条通知都收不到」—— **已补**。房间那条路补在 `/resolve`
+>    成功之后（`router._tell_customer_after_resolve`），案子被整体驳回那一档补在
+>    `custom_case` 闸循环的驳回分支。那条反向测试
+>    `test_a_rejected_payment_leaves_the_customer_un_notified` 已改判成正向
+>    `test_a_rejected_payment_still_tells_the_customer_what_happened`。
+> 2. 「核算那道闸的操作者仍是 CLI 写死的常量」—— **已透传**。`run_payload(gate_operator=…)`，
+>    房间那条路传 `msg.sender`；不给仍是 `APPROVER`，CLI 缺省逐字节未变。
+> 3. 「房间那次驳回不落 `approval_record`」—— **已补**（`router._record_gate_approval`），
+>    放行那一支一并落。两种驳回的区分方式见 `docs/DECISIONS.md ## task-t137`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | **证据束那条补偿路径（`gateway_fail`）仍然不通知客户**。房间走 `/resolve` -> router 补一次，而 `scripts/make_case_bundle.py::_compensate()` 是直接经 `SkillInvoker` 调 `refund.compensate` + `refund.compensation_close`，不经过 router，于是那一束 `notification` 仍是 0 行 | 演示与证据两条路在「客户被告知了没有」这件事上不一致：真跑日演的房间那条有通知（真跑日会当场演），而评委翻 `evidence/case-real-01/gateway_fail/` 时查不到。不是错的（那一束如实记录了它自己那一跑发生过什么），但两条路该收敛 | `scripts/make_case_bundle.py` 是 **T140 独占**，本轨一个字没动（铁律 4）。改法是在 `_compensate()` 的第三步之后调一次 `custom_case.notify_customer(store, tenant_id, case_id, plan_id=…, trace_id=…)` —— 那个函数已经是公开的，正为第二个调用方准备。归 T140 或整合期，代价约两行 |
+| 2026-09-12 | p10 | **`run.py` 场景 7 的补偿收口同样不通知客户**（`maos/flows/scenario_7.py` 走 `refund.compensation_close` 关单，结论 `settled`） | 同上一条，第三条路。场景 7 是八个场景束里演「流程卡住后应由谁补偿」的那一个，客户那一侧在它里面仍是空白 | `maos/flows/scenario_7.py` 在本轨白名单外，一个字没动。改法与上一条逐字相同（调一次 `custom_case.notify_customer`）。它会让场景 7 的输出多一行、`notification` 多一条 —— 也就是会动八个场景束的证据字节，所以**不该在本波做**，归复赛之后 |
+| 2026-09-12 | p10 | `docs/expected-metrics.json` 的 `collected` 仍是基线值，本轨新增 18 条测试后 worktree 实跑 `3889 passed, 93 skipped` | `test_expected_metrics::test_collected_count_matches_source_of_truth` 红。**预期内**（契约 §0 点名） | 整合期按合并树的实跑末行一次刷到位 |
+| 2026-09-12 | p10 | `notify.customer` 的正文只落 `content_digest`，**表上不存正文**。于是「客户到底被告知了哪一句」只能靠拿库里的事实**重算一遍**再比对摘要（本轨的两处测试都是这么钉的） | 今天够用（重算走的就是 `_default_content` 那一条路，措辞漂了摘要就对不上）。但证据束里查不到那句话本身 —— 评委问「给客户发的是什么」，要么跑一次重算，要么读代码 | 加一列存正文会动 `schema.sql`（冻结面）。可做的形状：`compensation_close` / `notify.customer` 落事件时把正文进 `detail`（事件表不冻结），那样束里 `grep` 一下就能看到。代价约三行，归下次动那两个 skill 的轨 |

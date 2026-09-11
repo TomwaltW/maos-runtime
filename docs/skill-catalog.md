@@ -36,7 +36,7 @@
 | `issue.aggregate` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/issue_aggregate.py:66` |
 | `kb.retrieve` | `1.1.0` | 软件交付域 | `manager`、`coding` | escalate | （空） | `maos/skills/builtin/kb_retrieve.py:88` |
 | `kb.sink` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/kb_sink.py:29` |
-| `notify.customer` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤2 次） | （空） | `maos/skills/builtin/refund/notify.py:22` |
+| `notify.customer` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤2 次） | （空） | `maos/skills/builtin/refund/notify.py:36` |
 | `payment.execute` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.refund` | `maos/skills/builtin/refund/payment_execute.py:34` |
 | `payment.observe` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/payment_observe.py:52` |
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:363` |
@@ -435,7 +435,7 @@
 
 ### notify.customer @ 1.0.0
 
-实现：`NotifyCustomerSkill` @ `maos/skills/builtin/refund/notify.py:22`
+实现：`NotifyCustomerSkill` @ `maos/skills/builtin/refund/notify.py:36`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
@@ -446,7 +446,7 @@
 | `depends_tools` | ⑤ 依赖工具 | （空） |
 | `failure_policy` | ⑥ 失败策略 | retry |
 | `max_retries` | ⑥ 失败策略 · 重试上限 | 2 |
-| `security_boundary` | ⑦ 安全边界 | 只写 notification；不改 biz_status、不调模型、不碰支付网关；正文只含案子编号与金额结论，不带证据原文与任何凭证 |
+| `security_boundary` | ⑦ 安全边界 | 只写 notification；不改 biz_status、不调模型、不碰支付网关；正文只含案子编号、对外三态，以及补偿收口那一档的工单号与凭证引用（T137），不带客户证据原文；**没有到账观察就一个字不许说到账**——到账口径只由 projection.public_status 产出 |
 | `reuse_note` | ⑧ 复用说明 | 任何「通知了但对端未确认」的场景都可照此写：记 needs_followup，不阻塞主流程 |
 | `owner_roles` | ⑨ 归属角色 | `refund_intake` |
 

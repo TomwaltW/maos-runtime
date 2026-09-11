@@ -34,7 +34,7 @@ import textwrap
 import pytest
 
 from maos.core.store import SqliteStore
-from maos.domain.refund import objects, outcome as OUT, projection, roles
+from maos.domain.refund import guard, objects, outcome as OUT, projection, roles
 from maos.flows import custom_case
 from maos.flows.common import build
 from maos.ingress import outcome_commands as OC
@@ -42,7 +42,9 @@ from maos.ingress.contracts import (
     CHANNEL_FEISHU, CHANNEL_MATRIX, CHANNEL_WECHAT_KF, InboundMessage, OutboundMessage,
 )
 from maos.ingress.router import KNOWN_VERBS, IngressRouter
+from maos.skills.builtin.refund import _common as C
 from maos.skills.builtin.refund import compensate as CP
+from maos.skills.builtin.refund.notify import NotifyCustomerSkill as NOTIFY
 
 #: 演示底账里那一单。质保期内质量问题 -> 批准 -> 走到付款。
 ORDER = "ORD-2026-0001"
@@ -465,24 +467,49 @@ def test_the_happy_path_still_runs_the_gates_the_old_way(settled_chain):
     assert "收在 DONE" in out, f"钱退出去了，Plan 就该收在 DONE：\n{out}"
 
 
-def test_a_rejected_payment_leaves_the_customer_un_notified(chain):
-    """🔴 付款被驳回之后 notify 这一步**不再跑** —— 客户一条通知都没收到。
+def test_a_rejected_payment_still_tells_the_customer_what_happened(chain):
+    """付款被驳回、补偿收口之后，客户**收到了**一条如实的通知（T137 把它改判成正向）。
 
-    这是 T135 之后浮出来的真实缺口，不是回归：改造前那条通知是在一个**本不该
-    完成**的任务（被代签的付款闸）跑完之后才发出去的。补偿路径上该怎么通知客户，
-    归 `refund.compensation_close` 那一侧，本轨白名单外 —— 记在
-    `docs/BACKLOG.md ## task-t135`，不当场改。
+    这条测试的前身是 `test_a_rejected_payment_leaves_the_customer_un_notified` ——
+    T135 之后浮出来的那个真实缺口：`notify.customer` 在 DAG 上依赖付款那一步，
+    付款闸被真人驳回、任务落 FAILED 之后它停在 PENDING 再也不跑，于是钱没退出去、
+    工单开了也关了，而**客户从头到尾没被告知过任何事**，`/confirm` 因此在补偿链上
+    无路可走。补在 `/resolve` 成功之后（`router._tell_customer_after_resolve`）。
 
-    钉住它是为了让这件事**有人知道**：不钉的话，下一个人只会看到 `/confirm`
-    回一句「先跑 notify.customer」，而查不到它是从哪一步起不再发生的。
+    三件事一起钉，少一件这条通知就又变回一句空话：
+
+    1. **真的发出去了一条**，而不是「回帖上说发了」；
+    2. **正文与按库里事实重算的逐字节相同** —— 措辞只许有一个产出处（契约 §D），
+       在别处拼第二遍的症状是两个出口对同一个案子说得不一样；
+    3. **补上的那一段一个字不宣布资金结果**（铁律 8）。这一跑的关单结论是 settled
+       （人在渠道后台核对过、`payment.observe` 落了那条观察），所以投影句说得出
+       「退款已到账」—— 那句有观察撑着，是真的；而「原路退回未成功，已转线下补偿」
+       这一段说的只是**观察与安排**，它必须在任何一跑里都不碰到账口径，
+       因为关单结论换成 `not_settled` 时它一个字都不会变。
     """
-    rows = objects.query(chain["store"],
+    store = chain["store"]
+    rows = objects.query(store,
                          "SELECT * FROM notification WHERE tenant_id=? AND case_id=?",
                          (TENANT, CASE))
-    assert rows == [], "补偿路径上居然发出了通知 —— 那 BACKLOG 那条就该销了"
+    assert len(rows) == 1, "补偿收口之后客户仍然一条通知都没收到"
 
+    case = guard.get_case(store, TENANT, CASE)
+    tail = NOTIFY._compensation_tail(store, TENANT, CASE, case)
+    content = NOTIFY._default_content(
+        case, NOTIFY._public_status(store, TENANT, CASE, case), tail)
+    assert C.digest(content) == rows[0]["content_digest"], (
+        f"发出去的那条与按库里事实重算的对不上 —— 措辞在别处被拼了第二遍：\n{content}")
+
+    for word in ("已到账", "已退回", "退款成功", projection.PUBLIC_SETTLED):
+        assert word not in tail, f"补偿那一段宣布了它无权宣布的事（{word}）：{tail}"
+    assert f"工单 {TICKET}" in tail, f"客户拿不到工单号，这条通知就只剩一句结论：{tail}"
+    assert EVIDENCE.split()[0] in tail, f"凭证流水没进正文，客户无从对账：{tail}"
+
+    # `/confirm` 的前提是「有通知发出去过」。T135 之后它在补偿链上是条死路
+    # （回一句「一条通知都没发出去，客户无从确认」），现在走得通了。
     out = chain["router"].handle(_msg(f"/confirm {CASE}", msg_id="c8"))
-    assert "一条通知都没发出去" in out, f"缺口的症状变了，去核对 BACKLOG：\n{out}"
+    assert "一条通知都没发出去" not in out, f"/confirm 在补偿链上仍是死路：\n{out}"
+    assert "客户确认" in out and "customer_confirmation=confirmed" in out
 
 
 def test_complain_opens_a_complaint_and_sinks_business_success(chain):

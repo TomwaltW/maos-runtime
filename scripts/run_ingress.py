@@ -32,7 +32,9 @@ from maos.core.store import SqliteStore                      # noqa: E402
 from maos.ingress.contracts import (                              # noqa: E402
     CHANNEL_FEISHU, Attachment, InboundMessage,
 )
-from maos.ingress.router import IngressRouter, describe_config     # noqa: E402
+from maos.ingress.router import (                                  # noqa: E402
+    IngressRouter, describe_config, ensure_room_schema,
+)
 from maos.ingress.server import ROUTES, IngressServer, build_adapters  # noqa: E402
 
 BAR = "=" * 68
@@ -59,9 +61,15 @@ class _ConsoleAdapter:
 
 
 def _store() -> SqliteStore:
-    """幂等用的库。`:memory:` 意味着重启后重推会被当成新消息 —— 见 --db。"""
+    """幂等用的库。`:memory:` 意味着重启后重推会被当成新消息 —— 见 --db。
+
+    建表口径与 `hiclaw/room_ingress.py::wire()` **共用一个** `ensure_room_schema()`
+    （T129）：从前那边有退款域的三句 ensure、这边只有 `init_schema()`，同样是「起
+    房间」，两个入口的库形状不一样。今天靠 Skill 层的懒建表撑住不崩，但读代码的人
+    会在「`/assign` 在这个入口能用吗」这一问上卡住，而两处各写一份迟早还要再分叉一次。
+    """
     store = SqliteStore(":memory:")
-    store.init_schema()
+    ensure_room_schema(store)
     return store
 
 

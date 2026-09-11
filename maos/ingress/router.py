@@ -84,7 +84,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from maos.domain.refund import (
-    annotation, objects as _refund_objects, projection as _projection,
+    annotation, objects as _refund_objects, outcome as _refund_outcome,
+    projection as _projection,
 )
 from maos.ingress import classify as _classify
 from maos.ingress import outcome_commands as _outcome_cmds
@@ -157,7 +158,8 @@ USAGE = """MAOS 退款助手 · 可用命令
   /resolve <工单号> <流水号> <摘要>   提交线下凭证关单（第一个词当凭证引用）
                                       关单人必须是这张单的承接人
   /confirm  <案号>                    记下客户确认收到退款
-  /complain <案号> <内容>             记一条客户投诉（投诉一开，这单业务就没算成）"""
+  /complain <案号> <内容>             记一条客户投诉（投诉一开，这单业务就没算成）
+  /compensate <案号>                  补开一张补偿工单（自动开单没成时用，已有单不重开）"""
 
 
 class CommandError(ValueError):
@@ -204,6 +206,70 @@ def _load_room_smoke():
     sys.modules[key] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+#: 「此刻没有可对外说的三态」时房间里念的那一句。**它不是第六个对外口径**：
+#: 五个字面值的唯一来源仍是 `domain/refund/projection.py` 的 `PUBLIC_*`，这一句
+#: 说的是「投影投不出来」这件事本身，与那五句不在一个层面上。
+PUBLIC_STATUS_PENDING_LINE = "对客户口径：尚未到可对外说的三态"
+
+#: 对外口径那一行的前缀。拼在这里一处，两张嘴都从 `public_status_line()` 取。
+PUBLIC_STATUS_PREFIX = "对客户口径："
+
+
+def public_status_line(public: str | None, *, case_id: str = "") -> str:
+    """把 `public_status` 渲染成房间里那一行；不该打这一行时返回 `""`（T129）。
+
+    ## 为什么是一个函数，而不是两处各写一遍
+
+    房间里有**两张嘴**会念这句话：圆桌财务岗的事实卡
+    （`maos/roundtable/stages.py::facts_finance_result`）与 `/approve` 的回帖卡
+    （`IngressRouter._render`）。T129 之前两处各有一份判定，空串时一处打
+    「尚未到可对外说的三态」、另一处**整行不打** —— 同一个案子在同一个房间里
+    有了两种说法。这正是 `domain/refund/projection.py` 抬头警告的事：措辞漂在
+    这件事上不是排版问题，而是「谁对客户说了什么」有了两个答案。
+
+    ## 三档，各自的理由不一样
+
+    1. **五句之一** -> 原样念。字面值只来自 `projection.PUBLIC_*`，本函数一个
+       新字面值都不拼（跨轨契约 §C 禁止自造措辞）。
+    2. **空串** -> 念 `PUBLIC_STATUS_PENDING_LINE`。空串是 `public_status()` 的
+       **正常产出**（`submitted`、以及 `approved` 但还没落 `refund_request` 行
+       那两档），照实说「还没到」；不回落到内部七态去凑一个对外说法，那等于
+       把内部进度当成了对客户的交代。
+    3. **不在五句里** -> **整行不打**，并留一条 WARNING。与第 2 档分开是刻意的：
+       空串时我们知道「这一单还没到那三态」，是一句真话；而拿到一个来路不明的
+       字符串时，我们**不知道**这一单到哪了（它完全可能已经到账，只是标签被
+       写坏了），此时念「尚未到可对外说的三态」就是替这个案子宣布一件没人核实过
+       的事（铁律 8）。宁可不说，也不说一句可能是假的。
+
+    `case_id` 只进日志，不进那一行 —— 卡片上案号已经有了，重复一遍是噪声。
+    """
+    text = str(public or "").strip()
+    if not text:
+        return PUBLIC_STATUS_PENDING_LINE
+    if text not in _projection.PUBLIC_STATUSES:
+        log.warning("案子 %s 的对外口径 %r 不在契约 §C 的五个字面值里，本行不打",
+                    case_id or "(未指名)", text)
+        return ""
+    return f"{PUBLIC_STATUS_PREFIX}{text}"
+
+
+def ensure_room_schema(store) -> None:
+    """把房间那个库建到四条结果面命令能用的形状。**两个房间入口共用这一份**（T129）。
+
+    从前 `hiclaw/room_ingress.py::wire()` 里写着三句 ensure，而
+    `scripts/run_ingress.py::_store()` 只有 `init_schema()` —— 两个入口的建表口径
+    不一样。今天靠 Skill 层的懒建表撑住不崩，但读代码的人会被绊：同样是「起房间」，
+    一个入口的库里有退款域的表、另一个没有。
+
+    **三句的顺序不许换**：`ensure_ticket_schema` 只 `ALTER TABLE ... ADD COLUMN`，
+    表还不在时它自己会抛 `no such table: compensation_record`。三句都幂等，连跑无副作用。
+    """
+    store.init_schema()
+    _refund_objects.ensure_schema(store)
+    _outcome_cmds.CP.ensure_ticket_schema(store)
+    _refund_outcome.ensure_outcome_schema(store)
 
 
 @dataclass
@@ -1212,10 +1278,14 @@ class IngressRouter:
         # 多半是没看到第一次的回帖，他要的就是这句话。
         ran = self._case_row(ticket.case_id)
         if ran is not None:
+            # 这道闸拦对了，但从前它是条死路：自动开单也失败的案子，`/assign`
+            # `/resolve` 都走 `require_ticket`（明写不补开），于是长命库里那个案子
+            # 永久锁死。T129 之后指一条出路 —— `/compensate` 补开一张（已有单不重开）。
             return (f"{ticket.case_id} 已经在本房间跑过一次（plan {ran['plan_id']}，"
                     f"当前业务状态 {ran['biz_status']}），不重跑。\n"
                     f"要看这一单现在怎么样了：/pending；"
-                    f"钱没退出去的话按上一条回帖里的 /assign、/resolve 往下走")
+                    f"钱没退出去的话按上一条回帖里的 /assign、/resolve 往下走；"
+                    f"连工单都没开出来就先 /compensate {ticket.case_id}")
 
         # `is not None` 而不是 `or`：注入的处置器完全可能是个 falsy 的可调用对象
         # （测试里那个继承 list 的记录器就是），`or` 会静默把它换成真跑的那个。
@@ -1294,7 +1364,13 @@ class IngressRouter:
             extras={"plan_id": plan_id, "task_id": payment, "trace_id": trace_id})
         if res.status != "ok" or not isinstance(res.output, dict):
             log.warning("案子 %s 网关失败但补偿工单没开出来：%s", case_id, res.error)
-            return f"\n⚠️ 这一单钱没退出去，但补偿工单没开出来（{res.error}）—— 请人工介入"
+            # 回帖去掉异常类名（T129，口径同 `outcome_commands.humanize`），并把**补开
+            # 那条命令**说出来：T129 之前这里是条死路 —— `/approve` 被「不重跑」拦死、
+            # `/assign` `/resolve` 都走 `require_ticket`（明写不补开），长命库里这种案子
+            # 只能换库。一句「请人工介入」不告诉人介入的入口，等于没说。
+            return (f"\n⚠️ 这一单钱没退出去，但补偿工单没开出来"
+                    f"（{_outcome_cmds.humanize(res.error)}）\n"
+                    f"  补开：/compensate {case_id}")
 
         out = res.output
         # 把补偿**之后**的事实写回观测，好让紧接着跑的 `_render` 照新库讲话
@@ -1349,22 +1425,16 @@ class IngressRouter:
                 f"（政策 v{r.get('policy_version_used')}，依据 {r.get('rule_refs')}）")
         lines.append(f"业务状态：{rr.STATUS_CN.get(r.get('biz_status'), r.get('biz_status'))}")
 
-        # 对客户口径（跨轨契约 §D）—— 上面那行 `STATUS_CN` 是**内部七态**，给房间里
+        # 对客户口径（跨轨契约 §C）—— 上面那行 `STATUS_CN` 是**内部七态**，给房间里
         # 干活的人看；这一行是同一个案子对外能说的话，五个字面值唯一来源
         # `domain/refund/projection.py` 的 `PUBLIC_*`，`custom_case._observe()` 已经
-        # 算好放在 `public_status` 里。这里**不另拼一句**：拼第二处的症状是两张嘴对
-        # 同一个案子说得不一样，而其中一句迟早会在没有观察行的时候说出「退款已到账」
-        # （铁律 8）。空串就不打这一行 —— 「没有对外口径」与「口径是空」是两回事，
-        # 硬打一行空的等于替这个案子编了一句对外的话。
-        # 打之前再验一次成员：来路不明的字符串一个字都不许当对外口径念出去
-        # （契约 §D 禁止自造措辞）。不在五句里就**不打这一行**并留一条 WARNING，
-        # 宁可少说一句，也不替客户编一个状态。
-        public = str(r.get("public_status") or "")
-        if public and public not in _projection.PUBLIC_STATUSES:
-            log.warning("案子 %s 的对外口径 %r 不在契约 §D 的五个字面值里，本行不打",
-                        r.get("case_id"), public)
-        elif public:
-            lines.append(f"对客户口径：{public}")
+        # 算好放在 `public_status` 里。**渲染走 `public_status_line()`**（T129）：
+        # 圆桌财务岗的事实卡念的是同一个函数的返回，两张嘴从此不可能说得不一样。
+        # 三档的判据与理由全在那个函数的 docstring 里，这里不复述、更不重写一份。
+        public_line = public_status_line(r.get("public_status"),
+                                         case_id=str(r.get("case_id") or ""))
+        if public_line:
+            lines.append(public_line)
 
         # 铁律 8：钱到没到账只认观察。没有 settled 观察就明说没有，不含糊。
         settled = r.get("settled_observations") or 0
@@ -1475,6 +1545,39 @@ class IngressRouter:
             return None
         return rows[0] if rows else None
 
+    def _command_extras(self, plan_id: str) -> dict:
+        """房间命令落事件时挂的 trace 三件套（T129）。
+
+        T129 之前这里只给 `plan_id`，于是 `/assign` `/resolve` `/confirm` `/complain`
+        落下的 `CompensationAssigned` / `CompensationResolved` / `CaseOutcomeComputed`
+        三个事件 `trace_id` 与 `task_id` 都是空的 —— 而同一个文件里的
+        `_compensate_if_stuck` 三者齐全。后果是按 trace 串「这一单发生过什么」时，
+        DAG 那一半串得起来，房间里这一串命令**接不上去**：它们在事件表里像是
+        另一件事的记录。
+
+        `task_id` 取**付款那一步**的，口径逐字同 `_compensate_if_stuck`：房间里这几条
+        命令都是在收拾「钱没退出去」的尾巴，挂到别的任务上，「补偿是因为哪一步走不通」
+        在 trace 里就断了。
+
+        查不到一律留空串，不猜也不抛：这几条命令的价值在于**动作本身已经生效**，
+        为了一个审计字段把它翻成失败是本末倒置（口径同 `_record_denied`）。
+        """
+        if not plan_id:
+            return {"plan_id": "", "trace_id": "", "task_id": ""}
+        try:
+            trace_id = str((self.store.get_plan(plan_id) or {}).get("trace_id") or "")
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("查 plan %s 的 trace_id 失败（%s）—— 事件里留空", plan_id, exc)
+            trace_id = ""
+        try:
+            task_id = next(
+                (str(t.get("task_id")) for t in (self.store.list_tasks(plan_id) or [])
+                 if str(t.get("task_id", "")).endswith("-payment")), "")
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("查 plan %s 的付款任务失败（%s）—— 事件里留空", plan_id, exc)
+            task_id = ""
+        return {"plan_id": plan_id, "trace_id": trace_id, "task_id": task_id}
+
     def handle_outcome(self, msg: InboundMessage, cmd: Command) -> str:
         """`/assign` `/resolve` `/confirm` `/complain` -> `maos/ingress/outcome_commands.py`。
 
@@ -1514,7 +1617,7 @@ class IngressRouter:
             tenant_id=str((row or {}).get("tenant_id") or ""),
             sender=msg.sender, approvers=approvers,
             identity=_outcome_cmds.TICKET_DESK_IDENTITY,
-            extras={"plan_id": str((row or {}).get("plan_id") or "")})
+            extras=self._command_extras(str((row or {}).get("plan_id") or "")))
         # `ignored` 不发帖：那是「这压根不是本模块的命令」，而 `_dispatch` 已经按
         # 命令词把它转进来了，走到这里说明两张词表分叉了 —— 静默是对的，但要留痕。
         if res.kind == _outcome_cmds.KIND_IGNORED:

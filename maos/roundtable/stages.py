@@ -542,7 +542,7 @@ def facts_finance_result(result: dict) -> tuple[str, dict]:
     本函数只是把它留住。圆桌自己拿 `biz_status` 推三态就是铁律 8 里那个 bug ——
     「已到账」的判据是观察行，而观察行不在这个入参里。
     """
-    from maos.domain.refund import projection
+    from maos.ingress.router import public_status_line
 
     keys = ("amount_approved", "policy_version_used", "rule_refs", "biz_status",
             "settled_observations", "payment_observations", "human_exits", "plan_state",
@@ -553,18 +553,17 @@ def facts_finance_result(result: dict) -> tuple[str, dict]:
     exits = list(data["human_exits"] or [])
     biz_status = str(data["biz_status"] or "")
 
-    # 投影产出的五句之外一个字都不认。**不是洁癖**：这一行是「对客户口径」那句话的
-    # 最后一道闸，而上游传一个自造措辞过来的症状是房间里多出第六句对外说法，
-    # 且它长得和那五句一样像真的。认不出就当作「此刻没有可对外说的」，并留 WARNING。
-    public = str(data["public_status"] or "").strip()
-    if public and public not in projection.PUBLIC_STATUSES:
-        log.warning("对外口径 %r 不在契约 §D 的五个字面值里，本轮不对外说", public)
-        public = ""
-    # 空串是 `projection.public_status()` 的正常产出（`submitted`、以及 `approved`
-    # 但还没落 `refund_request` 行的那两档），不是出错 —— 照实说「还没到」，
-    # 不回落到七态那句去凑一个对外说法。
-    public_line = (f"对客户口径：{public}" if public
-                   else "对客户口径：尚未到可对外说的三态")
+    # 「对客户口径」那一行**不在这里渲染**（T129）：它与 `/approve` 回帖卡上的同一行
+    # 共用 `router.public_status_line()`。从前两处各判一次，空串时一处说「尚未到可
+    # 对外说的三态」、另一处整行不打 —— 同一个案子在同一个房间里两种说法，而
+    # `projection.py` 的抬头正是在警告这件事。三档的判据与理由全在那个函数里。
+    #
+    # **依赖方向**：roundtable -> ingress，与本文件第 65 行
+    # `from maos.ingress.router import _load_run_requests` 同向。反过来（让 router
+    # import 圆桌）是错的：router 在**没接圆桌**时也要渲染这张卡（`team=None` 是
+    # 缺省），拿一个可选层去撑核心渲染，等于给房间加了一条不必要的必需依赖。
+    public_line = public_status_line(data["public_status"],
+                                     case_id=str(result.get("case_id") or ""))
 
     if settled > 0:
         payment_line = (f"付款观察：{len(observations)} 条，其中确认结算 {settled} 条 —— "
@@ -580,7 +579,9 @@ def facts_finance_result(result: dict) -> tuple[str, dict]:
         f"政策版本：v{data['policy_version_used']}",
         f"依据：{_refs_text(data['rule_refs'])}",
         f"业务状态：{status_cn_of(biz_status)}（{biz_status or '未知'}）",
-        public_line,
+        # 空串 = 这一行整条不打（来路不明的口径那一档）。**不能原样塞进 lines**：
+        # 房间里一个空行读起来是「这一岗没话说」，而这一岗是有话说的。
+        *([public_line] if public_line else []),
         payment_line,
         f"Plan 内任务级审批点：{len(exits)} 个"
         f"（{'、'.join(str(e.get('title') or '') for e in exits) or '无'}）",

@@ -2493,3 +2493,13 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | `scripts/make_evidence.py --live-model` 产出的束落在与 Scripted 束**同一个** `evidence/scenario-*` 目录（不像 `make_case_bundle.py` 出到 `<path>-live/`），而 `verify.py` 不看 `model_mode` | 真模型束可以覆盖 Scripted 束并照样过 verify。本轮修掉了「标签说谎」那一半（旗标现在真能传到子进程），但「覆盖」这一口子还在 | 让 `--live-model` 出到独立根目录，或让 `verify.py` 直接拒 `model_mode=live` 的束。复赛前做 |
 | 2026-09-11 | p10 | `code_repo_patch.py` 的重问提示词不带上一版 diff 原文，模型看不到 `corrupt patch at line 6` 指的是哪一行 | 只影响自修复命中率，不影响正确性 | 下次调这个 skill 的提示词时一起带上。另：重问轮里模型抛异常或产非法 JSON 会直接 failed，把第一轮那份「合法但打不上、本可交给 Gate」的补丁丢掉了 |
 | 2026-09-11 | p10 | `MAOS_FORCE_SCRIPTED` 与 kb 三个旋钮共四个仍不进 `maos/config/source.py` 的 `GOVERNED_KEYS` | 能治理（Nacos 上改得到、不用重启），但变更不落 `ConfigChanged` 审计。这个旋钮一改，整批证据束的成本读数含义就变了，比 kb 那三个更值得审计 | 「四行改动 + 一条断言」，`test_config_source.py` 那条按数目写的测试要一起改名。`## task-T35` 记的是同一笔账，本轮只更正了数目笔误没有补齐 |
+
+## task-t129
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | `CaseOutcomeComputed` 事件只挂得上 `plan_id`，`trace_id` / `task_id` 落库为空 | 按 trace 串「这一单发生过什么」时，四判据那几条事件接不上 DAG 那一半。房间命令面的另两个事件（`CompensationAssigned` / `CompensationResolved`）T129 已补齐，只剩这一条 | 要动 `maos/domain/refund/outcome.py`（今天在契约 §A 禁动面上）。那个面解冻时，给 `record_case_outcome` 加一对 `trace_id` / `task_id` 入参并在 `append_event_log` 里带上即可。现状由 `test_room_outcome_commands.py::test_case_outcome_computed_still_only_carries_the_plan_id` 钉着，改完那条测试会当场提醒 |
+| 2026-09-11 | p10 | `hiclaw/room_ingress.py::wire()` 里仍是三句手写的 ensure，没换成 T129 新抽的 `router.ensure_room_schema()` | 建表口径今天**一致**（`test_both_room_entrypoints_build_the_same_schema` 逐表比对钉着），但仍是两份写法，再加一张表时可能只改一处 | `hiclaw/**` 不在 T129 白名单上。下次动房间入口的轨把那三句换成一次 `ensure_room_schema(store)`，删掉重复的注释 |
+| 2026-09-11 | p10 | `maos/tests/test_compensation_close.py:580` 的 docstring 仍提到已删的 `KIND_PENDING` | 只是历史叙述（「T117 时它们停在…」），读起来会以为那个常量还在 | 该文件不在 T129 白名单上。下次动它的轨顺手把那半句改成「停在一个待落库的过渡结局」 |
+| 2026-09-11 | p10 | `docs/demo-script.md` 与 `docs/defense-brief.md` 里都写「结果面的**四条**命令」，T129 之后是五条（多了 `/compensate`） | 材料与代码对不上一个数。不影响运行，但台上被问「房间里能做哪些动作」会漏掉补开这条救命路径 | 材料面归 **9/20–9/21** 那一轮（与「房间真人审批 9/18 采集」同批）。改的时候连 `docs/ingress-setup.md` 一起 grep 一遍 |
+| 2026-09-11 | p10 | `/compensate` 补开的工单，承接岗落在**打命令那个人**的岗上（走 `compensate._opening_role` 的缺省），演示里就是 `after_sales_supervisor` | 与自动开单行为一致，不是 bug；但补开的场景里「支付运维」几乎总是真正该接的人，多一步 `/assign` | 若真跑日觉得那一步多余，可给 `/compensate` 加一个可选的第二参数（岗位）透传成 `assignee_role`。今天刻意不加：派单要求的是「有救」，多一个参数就多一处要测的鉴权面 |

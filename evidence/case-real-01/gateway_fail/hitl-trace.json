@@ -1,9 +1,9 @@
-# generated at 2026-09-11T02:43:36.224454+00:00 from 283ce68ade5725d67fb0af0c6ecca1efcbb0b3f1
+# generated at 2026-09-11T04:06:57.696745+00:00 from fe6ab80236a9e72a6f7da0cc8ad68d39be67fb9c
 {
   "trace": [
     {
       "seq": 16,
-      "at": "2026-09-11T02:43:36.114013+00:00",
+      "at": "2026-09-11T04:06:57.592471+00:00",
       "kind": "plan_approval",
       "event_type": "PlanApproved",
       "task_id": "",
@@ -14,7 +14,7 @@
     },
     {
       "seq": 38,
-      "at": "2026-09-11T02:43:36.169794+00:00",
+      "at": "2026-09-11T04:06:57.627895+00:00",
       "kind": "blocked",
       "event_type": "StateTransition",
       "task_id": "task-rc-2026-0904-001-finance",
@@ -25,7 +25,7 @@
     },
     {
       "seq": 39,
-      "at": "2026-09-11T02:43:36.172516+00:00",
+      "at": "2026-09-11T04:06:57.630713+00:00",
       "kind": "task_approval",
       "event_type": "StateTransition",
       "task_id": "task-rc-2026-0904-001-finance",
@@ -36,7 +36,18 @@
     },
     {
       "seq": 49,
-      "at": "2026-09-11T02:43:36.184642+00:00",
+      "at": "2026-09-11T04:06:57.645187+00:00",
+      "kind": "rework",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-payment",
+      "transition": "AWAITING_REVIEW->REWORK [gate_rework]",
+      "operator": null,
+      "actor": "gate",
+      "note": "gate_rework"
+    },
+    {
+      "seq": 58,
+      "at": "2026-09-11T04:06:57.657572+00:00",
       "kind": "blocked",
       "event_type": "StateTransition",
       "task_id": "task-rc-2026-0904-001-payment",
@@ -46,8 +57,8 @@
       "note": "gate_needs_human"
     },
     {
-      "seq": 50,
-      "at": "2026-09-11T02:43:36.187873+00:00",
+      "seq": 59,
+      "at": "2026-09-11T04:06:57.660926+00:00",
       "kind": "task_approval",
       "event_type": "StateTransition",
       "task_id": "task-rc-2026-0904-001-payment",
@@ -57,19 +68,19 @@
       "note": "主管驳回"
     },
     {
-      "seq": 53,
-      "at": "2026-09-11T02:43:36.198552+00:00",
+      "seq": 62,
+      "at": "2026-09-11T04:06:57.671410+00:00",
       "kind": "compensation",
       "event_type": "CompensationExecuted",
       "task_id": "task-rc-2026-0904-001-payment",
       "transition": "",
       "operator": "沈思锴（after_sales_supervisor）",
       "actor": "human",
-      "note": "网关明确失败（ACQ.SELLER_BALANCE_NOT_ENOUGH），机器返工修不好，转人工线下退款"
+      "note": "网关明确失败（ACQ.SELLER_BALANCE_NOT_ENOUGH），机器已按可重试码（40005）返工重发过一次仍失败，转人工线下退款"
     },
     {
-      "seq": 55,
-      "at": "2026-09-11T02:43:36.200147+00:00",
+      "seq": 64,
+      "at": "2026-09-11T04:06:57.673408+00:00",
       "kind": "compensation",
       "event_type": "CompensationAssigned",
       "task_id": "",
@@ -79,8 +90,8 @@
       "note": "@boss:maos.local 把工单派给 payment_ops"
     },
     {
-      "seq": 58,
-      "at": "2026-09-11T02:43:36.204080+00:00",
+      "seq": 67,
+      "at": "2026-09-11T04:06:57.677225+00:00",
       "kind": "compensation",
       "event_type": "CompensationResolved",
       "task_id": "task-rc-2026-0904-001-payment",
@@ -90,7 +101,7 @@
       "note": "@payops:maos.local 提交线下凭证关单：not_settled"
     }
   ],
-  "count": 8,
+  "count": 9,
   "human_actions": 6,
   "operators": [
     "@boss:maos.local",

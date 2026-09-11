@@ -468,26 +468,86 @@ def test_the_card_and_the_ticket_notice_tell_the_same_story(chain):
     assert "对客户口径：" + projection.PUBLIC_FILED not in out
 
 
-def test_public_status_line_is_skipped_when_there_is_none(tmp_path):
-    """没有对外口径就不打这一行 —— 硬打一行空的等于替这个案子编了一句对外的话。"""
+class _Silent(list):
+    """一个不真跑 Plan 的处置器。`public_status` 由调用方指定，别的字段最小可渲染。"""
+
+    def __init__(self, public_status: str = "") -> None:
+        super().__init__()
+        self.public_status = public_status
+
+    def __call__(self, payload, **kw):
+        self.append(payload)
+        return {"case_id": CASE, "decision": "approve", "why": "x",
+                "amount_approved": "1.00", "policy_version_used": 1,
+                "rule_refs": "AS-002@v1", "biz_status": "submitted",
+                "settled_observations": 0, "payment_observations": [],
+                "human_exits": [], "plan_id": "plan-x", "plan_state": "DONE",
+                "public_status": self.public_status}
+
+
+def _card_with_public_status(tmp_path, public_status: str, *, tag: str) -> str:
     store = _room_store()
-
-    class Silent(list):
-        def __call__(self, payload, **kw):
-            self.append(payload)
-            return {"case_id": CASE, "decision": "approve", "why": "x",
-                    "amount_approved": "1.00", "policy_version_used": 1,
-                    "rule_refs": "AS-002@v1", "biz_status": "submitted",
-                    "settled_observations": 0, "payment_observations": [],
-                    "human_exits": [], "plan_id": "plan-x", "plan_state": "DONE",
-                    "public_status": ""}
-
     r, _ad = _router(store, _ledger_file(tmp_path))
-    r._runner = Silent()
-    r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="p1"))
-    out = r.handle(_msg(f"/approve {CASE}", msg_id="p2"))
+    r._runner = _Silent(public_status)
+    r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id=f"{tag}1"))
+    return r.handle(_msg(f"/approve {CASE}", msg_id=f"{tag}2"))
 
+
+def test_no_public_status_says_so_instead_of_staying_silent(tmp_path):
+    """🔴 投不出三态时照实说「还没到」—— 与圆桌事实卡**逐字同一句**（T129）。
+
+    T129 之前这里整行不打，而圆桌那边打「尚未到可对外说的三态」：同一个案子在
+    同一个房间里，主管从卡片上读不到任何对外说法，从圆桌那一段读到「还没到」。
+    两张嘴现在共用 `router.public_status_line()`，不可能再分叉。
+    """
+    from maos.ingress.router import PUBLIC_STATUS_PENDING_LINE
+
+    out = _card_with_public_status(tmp_path, projection.NO_PUBLIC_STATUS, tag="p")
+
+    assert PUBLIC_STATUS_PENDING_LINE in out
+    for literal in projection.PUBLIC_STATUSES:
+        assert f"对客户口径：{literal}" not in out, "没投出来就不许念那五句里的任何一句"
+
+
+def test_a_made_up_public_status_is_not_spoken_on_the_card(tmp_path, caplog):
+    """🔴 来路不明的口径：卡片上**整行不打**，并留 WARNING。
+
+    与空串那一档分开：空串时我们知道这一单还没到那三态；拿到一个不认识的字符串时
+    我们不知道它到哪了（可能已经到账，只是标签写坏了），此时连「还没到」都不许说 ——
+    那同样是替这个案子宣布一件没人核实过的事（铁律 8）。
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="maos.ingress.router"):
+        out = _card_with_public_status(tmp_path, "钱已经打过去了", tag="q")
+
+    assert "钱已经打过去了" not in out
     assert "对客户口径" not in out
+    assert any("不在契约" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_the_card_and_the_roundtable_speak_through_the_same_helper(tmp_path):
+    """🔴 同一个案子，回帖卡与圆桌事实卡的那一行逐字相同（两张嘴一个口径）。
+
+    `/approve` 的回帖卡走 `IngressRouter._render`，圆桌财务岗走
+    `roundtable/stages.py::facts_finance_result` —— 两处都只从
+    `router.public_status_line()` 取那一行，本测试并排比对两者的产出。
+    """
+    from maos.ingress.router import public_status_line
+    from maos.roundtable import stages
+
+    for public in (projection.PUBLIC_COMPENSATED, projection.NO_PUBLIC_STATUS):
+        card = _card_with_public_status(tmp_path, public, tag=f"s{len(public)}")
+        facts, _ = stages.facts_finance_result(
+            {"case_id": CASE, "amount_approved": "1.00", "policy_version_used": 1,
+             "rule_refs": "AS-002@v1", "biz_status": "submitted",
+             "settled_observations": 0, "payment_observations": [], "human_exits": [],
+             "plan_state": "DONE", "public_status": public})
+
+        on_card = [ln for ln in card.splitlines() if ln.startswith("对客户口径")]
+        at_table = [ln for ln in facts.splitlines() if ln.startswith("对客户口径")]
+        assert on_card == at_table == [ln for ln in [public_status_line(public)] if ln], (
+            f"public_status={public!r} 时两张嘴说得不一样：卡片 {on_card}／圆桌 {at_table}")
 
 
 # ==========================================================================
@@ -662,3 +722,250 @@ def test_an_unknown_slash_command_is_still_not_taken_over(tmp_path):
     r, _ad = _router(store, _ledger_file(tmp_path))
 
     assert r.handle(_msg("/deploy prod")) == ""
+
+
+# ==========================================================================
+# 13. 补开工单（T129）—— 自动开单失败之后房间里唯一的救
+# ==========================================================================
+def _ticket_rows(store) -> list[dict]:
+    """这个案子落了几行人工工单。**按行数判，不按单号判**：单号由案号推出，
+    补开两次也只有一个号，但会有两行 —— 而第二行会把派单/关单的结果甩在前一行上。"""
+    return objects.query(
+        store,
+        "SELECT * FROM compensation_record WHERE tenant_id=? AND case_id=? AND kind=?",
+        (TENANT, CASE, CP.KIND_MANUAL_TICKET))
+
+
+@pytest.fixture
+def stuck(tmp_path, monkeypatch):
+    """网关失败、**且自动开单也失败**的一单 —— T129 之前的死局。
+
+    让 `refund.compensate` 在注册表里消失来造这个失败：比起去 mock 一个异常，
+    它走的是 invoker 真实的 `skill_not_found` 分支，回帖措辞也是真实的那一句。
+    """
+    from maos.skills import registry
+
+    store = _room_store()
+    r, _ad = _router(store, _ledger_file(tmp_path, {ORDER: FAIL_CODE}))
+
+    real = registry.get
+    monkeypatch.setattr(
+        registry, "get",
+        lambda name, version=None: None if name == "refund.compensate"
+        else real(name, version))
+    said = {"refund": r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="k1")),
+            "approve": r.handle(_msg(f"/approve {CASE}", msg_id="k2"))}
+    monkeypatch.undo()                                  # 之后的 /compensate 要真开单
+    return {"store": store, "router": r, "said": said}
+
+
+def test_a_failed_auto_open_leaves_no_ticket_and_points_at_the_way_out(stuck):
+    """🔴 开单失败的回帖：说实话、不回显异常类名、**给出补开那条命令**。
+
+    T129 之前这里只说「请人工介入」，而房间里当时无路可走：`/approve` 被「不重跑」
+    拦死，`/assign` `/resolve` 都走 `require_ticket`（明写不补开）。长命库里这种
+    案子只能换库 —— 演示当场撞上就没救。
+    """
+    out = stuck["said"]["approve"]
+
+    assert "补偿工单没开出来" in out
+    assert f"/compensate {CASE}" in out, "不给入口的「请人工介入」等于没说"
+    assert "Error:" not in out and "Exception:" not in out, f"回帖里有异常类名：\n{out}"
+    assert _ticket_rows(stuck["store"]) == [], "开单明明失败了，库里却有单"
+
+
+def test_compensate_reopens_the_ticket_that_never_got_opened(stuck):
+    """🔴 `/compensate` 把那张没开出来的单补上，并说出下一步。"""
+    store, r = stuck["store"], stuck["router"]
+
+    out = r.handle(_msg(f"/compensate {CASE}", msg_id="k3"))
+
+    assert "已补开补偿工单" in out and TICKET in out
+    assert f"/assign {TICKET} payment_ops" in out, "补开完不给下一步，人还是接不了"
+    rows = _ticket_rows(store)
+    assert len(rows) == 1, f"补开落了 {len(rows)} 行工单"
+    assert CP.ticket_of(store, TENANT, CASE) is not None
+
+
+def test_compensate_twice_still_opens_exactly_one_ticket(stuck):
+    """🔴 幂等：连打两次不许开出两张单，第二次照实说「不用补开」并指回那张单。"""
+    store, r = stuck["store"], stuck["router"]
+
+    first = r.handle(_msg(f"/compensate {CASE}", msg_id="k4"))
+    again = r.handle(_msg(f"/compensate {CASE}", msg_id="k5"))
+
+    assert "已补开补偿工单" in first
+    assert "不用补开" in again and TICKET in again
+    assert len(_ticket_rows(store)) == 1, "第二次把同一个案子开成了两行工单"
+
+
+def test_compensate_from_outside_the_approver_list_is_denied_and_recorded(stuck):
+    """🔴 名单外的人补不了单，且这次越权要留痕 —— 与另四条命令同一道闸。"""
+    store, r = stuck["store"], stuck["router"]
+
+    out = r.handle(_msg(f"/compensate {CASE}", sender=OUTSIDER, msg_id="k6"))
+
+    assert "无权限" in out and OUTSIDER in out
+    assert _ticket_rows(store) == [], "名单外的人把单开出来了"
+    denied = objects.query(
+        store, "SELECT * FROM event_log WHERE event_type=? AND detail LIKE ?",
+        (OC.EVENT_COMMAND_DENIED, f'%"command": "{OC.CMD_COMPENSATE}"%'))
+    assert denied, "越权补开没留痕 —— 拒绝本身就是要拿给评委看的证据"
+
+
+def test_compensate_on_an_outside_channel_is_refused_by_the_channel_gate(tmp_path):
+    """渠道闸在最前面：客服号发 `/compensate` 与发 `/assign` 一样被拒。"""
+    store = _room_store()
+    ad = FakeAdapter(CHANNEL_WECHAT_KF)
+    r, _ = _router(store, _ledger_file(tmp_path), adapter=ad)
+
+    out = r.handle(_msg(f"/compensate {CASE}", channel=CHANNEL_WECHAT_KF))
+    assert "不受理结果面命令" in out
+
+
+def test_compensate_is_a_known_verb_without_router_redefining_it():
+    """第五个动词进 router 靠的是同一份词表，router 那边一个字都没重新定义。"""
+    from maos.ingress.router import CMD_OUTCOME
+
+    assert OC.CMD_COMPENSATE in KNOWN_VERBS
+    assert CMD_OUTCOME is OC.COMMANDS
+    assert OC.case_id_of(OC.CMD_COMPENSATE, [CASE]) == CASE, "补开吃的是案号，不是单号"
+
+
+def test_pending_kind_is_gone_and_kinds_refuses_it():
+    """`KIND_PENDING` 已删（T122 之后再没人产出过它）；`KINDS` 也不再认这个值。"""
+    assert not hasattr(OC, "KIND_PENDING")
+    assert OC.KINDS == frozenset({OC.KIND_DONE, OC.KIND_DENIED, OC.KIND_USAGE,
+                                  OC.KIND_IGNORED})
+    with pytest.raises(ValueError):
+        OC.CommandResult(kind="pending", text="x")
+
+
+# ==========================================================================
+# 14. 回帖是人话，不是异常日志（T129）
+# ==========================================================================
+def test_resolving_a_closed_ticket_replies_in_plain_words(chain):
+    """🔴 重复 `/resolve` 的回帖不许带 `ValueError:` —— 那是一次**被正确拒绝**的
+    重复操作，不是崩溃，而房间里看到一行 Python 异常名只会以为系统炸了。"""
+    out = chain["router"].handle(_msg(f"/resolve {TICKET} {EVIDENCE}",
+                                      sender=PAYOPS, msg_id="h1"))
+
+    assert "关单未生效" in out
+    assert "ValueError" not in out and "Error:" not in out, f"回帖里有异常类名：\n{out}"
+    # 人话那半截得**原样**留着：剃掉的只有 invoker 拼的类名前缀，不是整句重写。
+    # （这一句来自 `compensation_close.py` 自己的那道闸，比 `resolve_ticket` 里那句早。）
+    assert "已于" in out and "重复关单会盖掉已回填的观察" in out
+
+
+def test_humanize_keeps_the_invoker_failure_codes_intact():
+    """`skill_not_found:<名字>` 与 `precondition_failed:<字段>` 是**码**，不许被剃掉前缀
+    —— 去掉它们就查不到这次失败的出处了。判据是「冒号后面有没有空格」。"""
+    assert OC.humanize("ValueError: 工单已关闭") == "工单已关闭"
+    assert OC.humanize("skill_not_found:refund.compensate") == "skill_not_found:refund.compensate"
+    assert OC.humanize("precondition_failed:tenant_id,case_id") == (
+        "precondition_failed:tenant_id,case_id")
+    assert OC.humanize(None) == "未知原因"
+
+
+# ==========================================================================
+# 15. 事件挂得住（T129）
+# ==========================================================================
+def _events(store, event_type: str) -> list[dict]:
+    return objects.query(store, "SELECT * FROM event_log WHERE event_type=?",
+                         (event_type,))
+
+
+def test_room_commands_hang_their_events_on_the_same_trace(chain):
+    """🔴 `/assign` 与 `/resolve` 落的事件带 `trace_id` 与 `task_id`。
+
+    从前 `handle_outcome` 的 extras 只有 `plan_id`，于是房间里这一串命令在事件表里
+    像是另一件事的记录：按 trace 串「这一单发生过什么」时，DAG 那一半串得起来，
+    命令这一半接不上去。`task_id` 取**付款那一步**的，口径逐字同
+    `router._compensate_if_stuck` —— 挂到别的任务上，「补偿是因为哪一步走不通」就断了。
+    """
+    store = chain["store"]
+    plan_id = objects.query(store, "SELECT plan_id FROM refund_case WHERE case_id=?",
+                            (CASE,))[0]["plan_id"]
+
+    for event_type in (CP.EVENT_COMPENSATION_ASSIGNED, CP.EVENT_COMPENSATION_RESOLVED):
+        rows = _events(store, event_type)
+        assert rows, f"{event_type} 一条都没落"
+        row = rows[-1]
+        assert row["plan_id"] == plan_id
+        assert row["trace_id"], f"{event_type} 的 trace_id 是空的"
+        assert str(row["task_id"] or "").endswith("-payment"), (
+            f"{event_type} 的 task_id 没挂在付款那一步上：{row['task_id']!r}")
+
+
+def test_case_outcome_computed_still_only_carries_the_plan_id(chain):
+    """`CaseOutcomeComputed` **只有 `plan_id`** —— 这一条 T129 补不了，钉住现状。
+
+    它由 `maos/domain/refund/outcome.py::record_case_outcome` 落，而那个文件在
+    跨轨契约 §A 的禁动面上（`{projection,objects,guard,outcome}.py` 一个字不许动）；
+    它 append 事件时压根没有 `trace_id` / `task_id` 这两个键，命令层把 extras 填满
+    也传不进去。钉成测试而不是只写进 BACKLOG：不钉的话「三个事件里有一个挂不上」
+    这件事会随着下次有人读代码重新发现一遍。
+    """
+    rows = _events(chain["store"], OUT.EVENT_OUTCOME_COMPUTED)
+    assert rows, "CaseOutcomeComputed 一条都没落"
+    assert rows[-1]["plan_id"], "plan_id 是它今天唯一挂得上的一格"
+    assert not rows[-1]["trace_id"], (
+        "trace_id 居然有值了 —— outcome.py 变了，本测试与 BACKLOG 那条要一起改")
+
+
+# ==========================================================================
+# 16. 两个房间入口建表口径一致（T129）
+# ==========================================================================
+def _tables(store) -> set[str]:
+    return {r["name"] for r in objects.query(
+        store, "SELECT name FROM sqlite_master WHERE type='table'", ())}
+
+
+def test_both_room_entrypoints_build_the_same_schema(tmp_path, monkeypatch):
+    """🔴 `scripts/run_ingress.py::_store()` 与 `hiclaw/room_ingress.py::wire()`
+    建出同一副表。
+
+    从前 `_store()` 只有 `init_schema()`，`wire()` 还多三句退款域的 ensure ——
+    同样是「起房间」，两个入口的库形状不一样。今天靠 Skill 层懒建表撑住不崩，
+    但读代码的人会在「`/assign` 在这个入口能用吗」这一问上卡住。
+    """
+    import importlib.util
+
+    from hiclaw import room_ingress
+
+    class _Channel:
+        def listen(self, on_message, on_attachment) -> None:
+            pass
+
+        def send(self, plain, html=None) -> None:
+            pass
+
+    spec = importlib.util.spec_from_file_location(
+        "_t129_run_ingress",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "scripts", "run_ingress.py"))
+    run_ingress = importlib.util.module_from_spec(spec)
+    sys.modules["_t129_run_ingress"] = run_ingress
+    spec.loader.exec_module(run_ingress)
+
+    monkeypatch.setenv("MAOS_INGRESS_DB", str(tmp_path / "room.db"))
+    wired = room_ingress.wire(_Channel(), room_id="!r:maos.local").store
+
+    assert _tables(run_ingress._store()) == _tables(wired), (
+        "两个房间入口的建表口径又分叉了 —— 两处都该走 router.ensure_room_schema()")
+
+
+def test_ensure_room_schema_is_idempotent():
+    """连跑两次无副作用：`wire()` 对一个已经存在的文件库就是这么用的。"""
+    from maos.ingress.router import ensure_room_schema
+
+    store = SqliteStore(":memory:")
+    ensure_room_schema(store)
+    before = _tables(store)
+    ensure_room_schema(store)
+
+    assert _tables(store) == before
+    cols = {c for _t, c, _d in CP.ticket_columns()}
+    have = {row["name"] for row in objects.query(
+        store, "SELECT name FROM pragma_table_info('compensation_record')", ())}
+    assert cols <= have, "加列探针没跑到 —— 三句 ensure 的顺序被换了？"

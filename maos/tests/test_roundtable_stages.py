@@ -311,21 +311,46 @@ def test_public_status_is_absent_when_upstream_did_not_project_one() -> None:
 
 def test_a_made_up_public_status_is_refused_not_repeated(
         caplog: pytest.LogCaptureFixture) -> None:
-    """🔴 不是那五句的一律不念，并留 WARNING。
+    """🔴 不是那五句的一律不念，**整行不打**，并留 WARNING（T129 收窄）。
 
     这一行是「对客户口径」的最后一道闸。上游传一个自造措辞过来的症状是房间里
     多出第六句对外说法，而它长得和那五句一样像真的。
+
+    T129 之前这一档回落到「尚未到可对外说的三态」那句。改成整行不打，是因为
+    两档知道的事不一样：空串时我们**知道**这一单还没到那三态（那是投影的正常
+    产出），说出来是一句真话；而拿到一个来路不明的字符串时，我们不知道这一单
+    到哪了 —— 它完全可能已经到账，只是标签被写坏了。此时说「尚未到」就是替这个
+    案子宣布一件没人核实过的事（铁律 8）。判定与措辞都在
+    `router.public_status_line()` 一处，圆桌与 `/approve` 回帖卡共用。
     """
     from maos.tests.test_ingress_router import RESULT_SETTLED
 
-    with caplog.at_level(logging.WARNING, logger="maos.roundtable"):
+    with caplog.at_level(logging.WARNING, logger="maos.ingress.router"):
         facts, data = stages.facts_finance_result(
             {**RESULT_SETTLED, "public_status": "钱已经打过去了"})
 
     assert data["public_status"] == "钱已经打过去了", "data 留原样，可追溯"
     assert "钱已经打过去了" not in facts
-    assert "对客户口径：尚未到可对外说的三态" in facts
+    assert "对客户口径" not in facts, "认不出的口径连「还没到」都不许说"
+    assert "" not in facts.splitlines(), "整行不打 ≠ 打一行空的"
     assert any("不在契约" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_both_mouths_render_the_public_line_through_one_helper() -> None:
+    """🔴 两张嘴同一个函数：圆桌事实卡与 `/approve` 回帖卡的「对客户口径」逐字相同。
+
+    钉的是**同源**，不是「两处碰巧长得一样」：从前两处各判一次，空串那一档一处
+    说「尚未到可对外说的三态」、另一处整行不打 —— 同一个案子在同一个房间里两种
+    说法，而其中一句迟早会漂到「退款已到账」那边去（`projection.py` 抬头警告的事）。
+    """
+    from maos.ingress.router import public_status_line
+    from maos.tests.test_ingress_router import RESULT_SETTLED
+
+    for public in (*projection.PUBLIC_STATUSES, projection.NO_PUBLIC_STATUS):
+        facts, _ = stages.facts_finance_result({**RESULT_SETTLED, "public_status": public})
+        spoken = [ln for ln in facts.splitlines() if ln.startswith("对客户口径")]
+        assert spoken == [public_status_line(public)], (
+            f"public_status={public!r} 时圆桌念的与 helper 不一致：{spoken}")
 
 
 def test_settled_wording_and_public_status_point_the_same_way() -> None:

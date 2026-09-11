@@ -1,4 +1,5 @@
-"""结果面的四条命令（T117）——`/assign`、`/resolve`、`/confirm`、`/complain`。
+"""结果面的命令（T117）——`/assign`、`/resolve`、`/confirm`、`/complain`，
+外加 T129 补的第五条 `/compensate`（补开工单，见 `handle_compensate`）。
 
 ## 接线已完成（T122）
 
@@ -33,8 +34,9 @@ router 自己的库上 —— 命令与处置共用一个库，这四条命令�
 
 ## `/confirm` 与 `/complain` 现在真的落库了（T122）
 
-T117 时它们只到「解析 + 鉴权 + 返回 `KIND_PENDING`」，`data` 里带着**该写什么**，
-等 T120 把 `case_outcome` 建出来。两件事都已就位，于是这两条命令改为真写表：
+T117 时它们只到「解析 + 鉴权 + 返回一个待落库的结局」，`data` 里带着**该写什么**，
+等 T120 把 `case_outcome` 建出来（那个过渡结局值 T129 已删，见 `KINDS`）。
+两件事都已就位，于是这两条命令改为真写表：
 走 `domain/refund/outcome.py` 的 `record_confirmation()` / `record_complaint()`
 （两者写完各自重算一次四判据），返回 `KIND_DONE` 并把 `case_outcome` 那一行带回
 `data`。字面值仍逐字取自跨轨契约 §E，本模块不自造措辞。
@@ -46,6 +48,7 @@ T117 时它们只到「解析 + 鉴权 + 返回 `KIND_PENDING`」，`data` 里�
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
@@ -62,7 +65,11 @@ CMD_ASSIGN = "assign"
 CMD_RESOLVE = "resolve"
 CMD_CONFIRM = "confirm"
 CMD_COMPLAIN = "complain"
-COMMANDS: tuple[str, ...] = (CMD_ASSIGN, CMD_RESOLVE, CMD_CONFIRM, CMD_COMPLAIN)
+#: 补开一张补偿工单（T129）。自动开单失败之后**房间里唯一的救**，理由见
+#: `handle_compensate` 的 docstring。
+CMD_COMPENSATE = "compensate"
+COMMANDS: tuple[str, ...] = (CMD_ASSIGN, CMD_RESOLVE, CMD_CONFIRM, CMD_COMPLAIN,
+                             CMD_COMPENSATE)
 
 #: 越权尝试的事件类型。**逐字对齐** `hiclaw/matrix_bus.py::EVENT_APPROVAL_DENIED`。
 #: 这里硬编码而不 import：hiclaw 是可选依赖层，`maos.ingress` 不该为读一个字符串把它
@@ -121,18 +128,37 @@ COMPENSATION_DESK_IDENTITY = AgentIdentity(
 # ---------------------------------------------------------------- 结局
 KIND_DONE = "done"          # 动作已生效
 KIND_DENIED = "denied"      # 鉴权没过，已落 ApprovalDenied
-KIND_USAGE = "usage"        # 名单内但参数不合法，什么都没做
+KIND_USAGE = "usage"        # 名单内但参数不合法（或这一步没生效），什么都没做
 KIND_IGNORED = "ignored"    # 不是本模块的命令
-KIND_PENDING = "pending"    # 解析与鉴权都过了，但落库那一步归 T120（见模块抬头）
-KINDS = frozenset({KIND_DONE, KIND_DENIED, KIND_USAGE, KIND_IGNORED, KIND_PENDING})
+#: T129 删掉了 `KIND_PENDING`。它是 T117 的过渡态（「解析与鉴权都过了，但落库那一步
+#: 归 T120」），T122 把四条命令全都接上真落库之后**再没有任何一处产出过它**，
+#: 全仓也没有任何消费方。留着一个永不出现的结局值，读代码的人会去找「什么时候会
+#: pending」，而答案是「不会」—— 死常量的代价从来不是那一行，是那一趟白找。
+KINDS = frozenset({KIND_DONE, KIND_DENIED, KIND_USAGE, KIND_IGNORED})
 
 USAGE = (
     "用法：\n"
     "  /assign <工单号> <角色>            把补偿工单派给一个岗\n"
     "  /resolve <工单号> <凭证摘要>       提交线下凭证关单（第一个词当凭证引用）\n"
     "  /confirm <案号>                    客户确认收到退款\n"
-    "  /complain <案号> <内容>            记一条客户投诉"
+    "  /complain <案号> <内容>            记一条客户投诉\n"
+    "  /compensate <案号>                 补开一张补偿工单（自动开单没成时用）"
 )
+
+#: `SkillInvoker` 把失败拼成 `f"{type(exc).__name__}: {exc}"`（见 `invoker.py`）。
+#: 回帖是给房间里的人读的，`ValueError: ` 这半截对他毫无信息量，只会让一句本来
+#: 是人话的提示看起来像崩溃日志。**只去掉「标识符 + 冒号 + 空格」这一种形状**：
+#: invoker 另外两种失败码 `skill_not_found:<名字>` 与 `precondition_failed:<字段>`
+#: 冒号后面没有空格，不会被误伤 —— 那两个是**码**，去掉前缀就查不到出处了。
+_EXC_PREFIX = re.compile(r"^([A-Za-z_]\w*): (?=\S)")
+
+
+def humanize(error: object) -> str:
+    """把 invoker 的错误串改成人话。空的一律报「未知原因」，不回一句空白。"""
+    text = str(error or "").strip()
+    if not text:
+        return "未知原因"
+    return _EXC_PREFIX.sub("", text, count=1)
 
 
 @dataclass(frozen=True)
@@ -171,7 +197,9 @@ def case_id_of(verb: str, args: list[str]) -> str:
     """一条命令指向哪个案子。参数拿不到案号时返回空串。
 
     `/assign` `/resolve` 的第一个参数是**工单号**（`MT-<案号>`），`/confirm`
-    `/complain` 的是**案号**本身。这个差别属于本模块，调用方不该各自重写一遍 ——
+    `/complain` `/compensate` 的是**案号**本身 —— 补开的时候单还不存在，拿单号当
+    入参就成了「请你按这个号补一张」，而单号该由开单方按案号推出，不由发命令的人
+    指定。这个差别属于本模块，调用方不该各自重写一遍 ——
     router 要先按案号查 `tenant_id` 才调得动 `dispatch()`，而它认不认得工单前缀
     不该成为第二处知识（漏掉前缀的症状是「这个案子没在本房间跑过」，指错方向）。
     """
@@ -241,6 +269,10 @@ def handle_assign(args: list[str], *, store, tenant_id: str, sender: str,
     store.append_event_log({
         "trace_id": str((extras or {}).get("trace_id") or ""),
         "plan_id": str((extras or {}).get("plan_id") or ""),
+        # `task_id` 与另两个一起挂（T129）：少这一格，「派单是在哪一步之后发生的」
+        # 在 trace 里就断了，而同一条链上 `CompensationExecuted` / `CompensationResolved`
+        # 都挂着付款那一步 —— 三条事件挂法不一致比三条都不挂更难查。
+        "task_id": str((extras or {}).get("task_id") or ""),
         "event_type": CP.EVENT_COMPENSATION_ASSIGNED,
         "reason": f"{sender} 把工单派给 {role}",
         "detail": {"domain": "refund", "tenant_id": tenant_id, "case_id": case_id,
@@ -305,7 +337,11 @@ def handle_resolve(args: list[str], *, store, tenant_id: str, sender: str,
     }, extras=dict(extras or {}))
     if res.status != "ok" or not isinstance(res.output, dict):
         # 关单没成不许回一句「已关单」。房间里的人会据此以为这件事办完了。
-        return CommandResult(kind=KIND_USAGE, text=f"关单未生效：{res.error}",
+        # 措辞过一道 `humanize`（T129）：重复关单那一句本来是 `resolve_ticket` 写好的
+        # 人话（「已于 … 关闭，要改结论请重开一张工单」），但它被 invoker 拼上了
+        # `ValueError: ` 才回到房间 —— 房间里看到一行 Python 异常名，像是系统崩了，
+        # 而实际上这是一次**被正确拒绝**的重复操作。
+        return CommandResult(kind=KIND_USAGE, text=f"关单未生效：{humanize(res.error)}",
                              command=CMD_RESOLVE, case_id=case_id)
 
     out = res.output
@@ -330,6 +366,103 @@ def handle_resolve(args: list[str], *, store, tenant_id: str, sender: str,
               f"提交人 {sender}\n"
               f"回填观察：{out['observation_id']}（observed_state="
               f"{out['observed_state']}，来源 人工线下凭证）" + verdict),
+        data=dict(out))
+
+
+# ---------------------------------------------------------------- /compensate
+def handle_compensate(args: list[str], *, store, tenant_id: str, sender: str,
+                      approvers: Iterable[str], extras: dict | None = None) -> CommandResult:
+    """`/compensate <案号>` —— 补开一张补偿工单（T129）。
+
+    ## 为什么必须有这条命令
+
+    自动开单在 `router._compensate_if_stuck` 里，它失败时只回一句「⚠️ 工单没开出来」。
+    在那之后房间里**没有任何一条命令能把单补上**：
+
+      · `/approve` 被「这个案子已经在本房间跑过一次，不重跑」那道闸拦死（拦得对 ——
+        重跑会给同一个案子产出第二套付款请求与观察）；
+      · `/assign` `/resolve` 都走 `CP.require_ticket`，而它明写「不补开」。
+
+    于是 `MAOS_INGRESS_DB` 指到文件的长命库里，这种案子**永久锁死，只能换库**。
+    演示当场撞上就没救 —— 这条命令就是那个救。
+
+    ## 为什么是新命令，不是放松 `/approve` 那道闸
+
+    放松闸意味着 `/approve` 有时是「放行并执行」、有时是「什么都不跑只补张单」，
+    同一个词两种语义，而人在房间里按的是同一个键。补开是一件**独立的、人做的决定**
+    （理由同 `_compensate_if_stuck` 的模块注释：补偿是看过事实之后的决定），
+    给它自己的词，回帖、审计、权限三处才都指得准。
+
+    ## 幂等：已经有单就不开第二张
+
+    判据是 `CP.ticket_of()` 查得到 —— 不是「biz_status 是不是 compensated」。
+    后者答不了这个问题：自动开单失败的案子**状态可能已经推到 compensated 了**
+    （`refund.compensate` 里推状态在开单之后，但更早的失败点会留下别的组合），
+    而这条命令要补的恰恰是「有状态、没有单」那一格。工单号由案号推出
+    （`CP.ticket_id_of`），所以连打两次不会产生两个号，但会产生**两行**
+    `compensation_record`（主键带 `executed_at`）—— 那就是两张单，第二行会把
+    `_update_ticket` 的派单/关单结果甩在前一行上。所以在这里拦住。
+
+    ## 业务判据留在 skill 里，本函数不复制一份
+
+    「已经到账的案子不许补偿」由 `refund.compensate` 自己抛（它查 `biz_status`）。
+    本函数只管三道：名单闸、幂等、把失败翻成人话。判据写两份的症状是 CLI 与房间
+    对同一个案子给出不同答案。
+
+    与自动开单那一条的**判据刻意不同**：`_compensate_if_stuck` 只在最后一条观察是
+    `failed` 时才动手（`unknown` / `unobserved` 一律不补，下落不明不等于失败）。
+    这条命令没有那道收窄 —— 打它的是人，而「这一单我看过了，卡住了，开单」正是
+    人该做的决定；机器不替他把这个决定也做了。
+    """
+    case_id = str(args[0]) if args else ""
+    if not in_approver_list(sender, approvers):
+        return _deny(store, sender=sender, command=CMD_COMPENSATE, case_id=case_id,
+                     why=f"{sender} 不在 MAOS_APPROVERS 名单内", extras=extras)
+    if len(args) != 1:
+        return CommandResult(kind=KIND_USAGE, text=USAGE, command=CMD_COMPENSATE,
+                             case_id=case_id)
+
+    existing = CP.ticket_of(store, tenant_id, case_id)
+    if existing is not None:
+        ticket_id = CP.ticket_id_of(case_id)
+        role = str(existing.get("assignee_role") or "")
+        seat = (f"（承接岗 {roles.title_of(role)}，接单人 "
+                f"{existing.get('assignee') or '未指名'}）" if role else "")
+        return CommandResult(
+            kind=KIND_USAGE, command=CMD_COMPENSATE, case_id=case_id,
+            text=(f"不用补开：{case_id} 已经有工单 {ticket_id}{seat}\n"
+                  f"  改派：/assign {ticket_id} payment_ops\n"
+                  f"  关单：/resolve {ticket_id} <渠道流水号> <线下凭证摘要>"),
+            data=dict(existing))
+
+    res = SkillInvoker(COMPENSATION_DESK_IDENTITY, store).invoke(
+        SKILL_COMPENSATE,
+        {"tenant_id": tenant_id, "case_id": case_id, "operator": sender,
+         # 说清这一张是**补**开的：审计上「自动开单没成、人在房间里补了一张」
+         # 与「机器按失败观察开的」是两件事，事件里读得出区别才查得清。
+         "reason": f"{sender} 在房间里补开：自动开单没成，钱没退出去，转人工线下退款"},
+        extras=dict(extras or {}))
+    if res.status != "ok" or not isinstance(res.output, dict):
+        # 补开没成不许回一句「已补开」。这条命令存在的理由就是「上一次没开成」，
+        # 这一次也没开成时更要说实话，不然人会以为单已经在等人接。
+        return CommandResult(kind=KIND_USAGE, text=f"补开未生效：{humanize(res.error)}",
+                             command=CMD_COMPENSATE, case_id=case_id)
+
+    out = res.output
+    opened = out.get("ticket") if isinstance(out.get("ticket"), dict) else {}
+    ticket_id = CP.ticket_id_of(case_id)
+    role = str(opened.get("assignee_role") or "")
+    seat = (f" · 当前承接岗 {roles.title_of(role)}（{role}）"
+            f"· 接单人 {opened.get('assignee') or '未指名'}" if role else "")
+    return CommandResult(
+        kind=KIND_DONE, command=CMD_COMPENSATE, case_id=case_id,
+        text=(f"已补开补偿工单：{ticket_id}{seat}\n"
+              # 最后观察到的下落原样报出来 —— 补偿记录里留的就是它，人工对账认的也是它，
+              # 房间里读不到这一格，接单的人得自己再去翻一次库（铁律 8）。
+              f"最后观察到的下落：{out.get('last_observed_state')}"
+              f"（业务状态 {out.get('biz_status')}）\n"
+              f"  改派：/assign {ticket_id} payment_ops\n"
+              f"  关单：/resolve {ticket_id} <渠道流水号> <线下凭证摘要>"),
         data=dict(out))
 
 
@@ -412,13 +545,16 @@ def handle_complain(args: list[str], *, store, tenant_id: str, sender: str,
 
 
 # ---------------------------------------------------------------- 派发
-#: 命令词 -> 处理函数。**整合期由主会话在 `maos/ingress/router.py` 里接这一张表**，
-#: 本轨一个字都不动那个文件（见模块抬头）。
+#: 命令词 -> 处理函数。`maos/ingress/router.py::handle_outcome` 经 `dispatch()` 接这
+#: 一张表，router 那边 `CMD_OUTCOME = _outcome_cmds.COMMANDS` —— 词表只有这一份，
+#: 加一条命令只需改 `COMMANDS` 与本表，router 的 `KNOWN_VERBS` 与 `_dispatch`
+#: 自动跟上（`test_room_outcome_commands.py` 两处都钉着）。
 COMMAND_HANDLERS: dict[str, Callable[..., CommandResult]] = {
     CMD_ASSIGN: handle_assign,
     CMD_RESOLVE: handle_resolve,
     CMD_CONFIRM: handle_confirm,
     CMD_COMPLAIN: handle_complain,
+    CMD_COMPENSATE: handle_compensate,
 }
 
 

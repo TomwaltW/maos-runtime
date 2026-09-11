@@ -78,6 +78,38 @@ def _wrap_matrix(inner: EventBus) -> EventBus:
         return inner
 
 
+#: **装配级**业务域后端开关（T126）。设成 `postgres` 时，这一次 `build()` 装出来的
+#: store 上的业务域连接走 `MAOS_PG_DSN` 那个库；不设时**一个字节都不变**。
+#:
+#: 为什么另起一个变量，而不是直接用既有的 `MAOS_DOMAIN_BACKEND`：那个是**进程级**
+#: 的，一设就把本进程每一条业务域连接都拨到 PG，包括按设计就该是一次性副本的库。
+#: 完整的坑与实测症状记在 `maos/domain/_dbport.py::STORE_BACKEND_ATTR` 上 ——
+#: 一句话版：圆桌的核算预演用 `_memory_store()` 现造一个一次性内存库，进程级开关
+#: 会让它写的 `refund_case` 落进真 PG 库，紧接着真跑的 `refund.intake` 撞上受理
+#: 幂等闸，整条 DAG 停在第一步。装配级开关把「一次性副本」的语义原样保住。
+#:
+#: **控制面不跟着走**：`plan` / `task` / `artifact` / `event_log` 仍在本地 SQLite，
+#: 与 `docs/architecture.md` §5 那张表逐字一致，也是 `docs/phases/phase-10.md` §8
+#: 「控制面表上 PG」明确不做的那条。这里换的只有业务对象那 16 张表。
+FLOW_DOMAIN_BACKEND_ENV = "MAOS_FLOW_DOMAIN_BACKEND"
+
+
+def _mark_flow_domain_backend(store: object) -> None:
+    """把 `MAOS_FLOW_DOMAIN_BACKEND` 的值盖到这条 store 上。没设就什么都不做。
+
+    值不认（拼错一个字母）时**当场抛**，不回落 sqlite —— 口径同
+    `_dbport.backend_name()`：回落的话你会以为验过了 PG，其实一行都没跑。
+    """
+    import os                                                  # noqa: PLC0415
+
+    name = os.environ.get(FLOW_DOMAIN_BACKEND_ENV, "").strip()
+    if not name:
+        return
+    from maos.domain import _dbport                            # noqa: PLC0415
+
+    _dbport.mark_store_backend(store, name)
+
+
 def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | None = None,
           model_factory: Callable[[str, str], ModelClient] | None = None,
           store: object | None = None):
@@ -108,6 +140,9 @@ def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | 
     写死内存版。差别不在默认行为（逐字节相同），在于这句话到底能不能说。
     """
     store = SqliteStore() if store is None else store
+    # 业务域后端：`MAOS_FLOW_DOMAIN_BACKEND` 设了才盖标记，没设是 no-op（缺省
+    # 逐字节不变）。控制面照旧 SQLite —— 换的只有那 16 张业务表落在哪个库。
+    _mark_flow_domain_backend(store)
     store.init_schema()
     bus = create_event_bus()
     if matrix:

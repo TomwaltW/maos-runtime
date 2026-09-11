@@ -284,6 +284,147 @@ def _file_backed_store(db_path: str):
         common.SqliteStore = original                          # type: ignore[assignment]
 
 
+# ---------------------------------------------------------------------------
+# PG 束（T126）：业务对象落 PolarDB / PostgreSQL，控制面照旧本地 SQLite
+# ---------------------------------------------------------------------------
+#: `--domain-backend postgres` 时业务表落在哪个库。缺省 sqlite，缺省路径逐字节不变。
+#:
+#: **为什么不走 `_file_backed_store`**：那层猴补丁是为 SQLite 写的 —— 它把
+#: `common.SqliteStore` 换成绑了文件路径的同一个类，解决的是「`:memory:` 跑完就没了」。
+#: PG 这边要换的不是控制面落哪个文件，而是**业务域那 16 张表落哪个库**，两件事
+#: 正交：PG 束里控制面仍然是那份 `maos.db`（`docs/architecture.md` §5 的口径，
+#: 也是 `docs/phases/phase-10.md` §8 明确不做的那条）。硬塞进同一个补丁的后果是
+#: 两个语义缠在一起，哪天谁改了其中一个都会顺手把另一个也改了。
+_BACKENDS = ("sqlite", "postgres")
+
+#: PG 束的缺省输出根。与 SQLite 束**分开放**：同一个目录里放两份跑法不同的束，
+#: `verify.py` 与 `INDEX.json` 都分不出哪份是哪份，而它们的 `business-objects.json`
+#: 内容天然不一样 —— 混在一起等着人误读。
+DEFAULT_PG_OUT = os.path.join(ROOT, "evidence", "case-real-01-pg")
+
+
+def _case_identity(payload: dict) -> dict:
+    """这一案的 `(tenant_id, case_id)`。取自 `fixtures.case_seed_of`，不另解析 payload。"""
+    from maos.domain.refund import fixtures
+
+    seed = fixtures.case_seed_of(payload)
+    return {"tenant_id": str(seed["tenant_id"]), "case_id": str(seed["case_id"])}
+
+
+@contextlib.contextmanager
+def _pg_domain_scope(backend: str):
+    """在这一段里把**装配级**业务域后端拨到 ``backend``。跑完原样复原。
+
+    拨的是 `maos.flows.common.FLOW_DOMAIN_BACKEND_ENV`（装配级）而**不是**
+    `MAOS_DOMAIN_BACKEND`（进程级）—— 这个区分是本轨的全部要点，理由在
+    `maos/domain/_dbport.py::STORE_BACKEND_ATTR` 上有完整一段。一句话版：
+    进程级开关会把圆桌核算预演那个**按设计就该用完即弃**的 `:memory:` 库也拨到
+    PG，于是预演写的 `refund_case`（`plan_id='preview'`）落进真库，紧接着真跑的
+    `refund.intake` 撞上受理幂等闸，整条 DAG 停在第一步 —— 实测如此。
+    """
+    from maos.flows.common import FLOW_DOMAIN_BACKEND_ENV
+
+    if backend not in _BACKENDS:
+        raise EvidenceError(f"未知的业务域后端 {backend!r}：只认 {_BACKENDS}")
+    if backend == "sqlite":
+        yield
+        return
+    if not os.environ.get("MAOS_PG_DSN"):
+        raise EvidenceError(
+            "--domain-backend postgres 要一条可用的 MAOS_PG_DSN（铁律 6：只从环境变量读）。"
+            " 没配就抛，不回落 sqlite —— 回落的话「这一束在 PolarDB 上跑出来」是假的。")
+    previous = os.environ.get(FLOW_DOMAIN_BACKEND_ENV)
+    os.environ[FLOW_DOMAIN_BACKEND_ENV] = backend
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(FLOW_DOMAIN_BACKEND_ENV, None)
+        else:
+            os.environ[FLOW_DOMAIN_BACKEND_ENV] = previous
+
+
+def _pg_clear_case(tenant_id: str, case_id: str) -> dict:
+    """PG 上清掉这一案的既有行，让重产是**重产**而不是撞幂等闸。
+
+    SQLite 束每跑一次都是一个全新的库文件，「上一次的残留」这件事根本不存在；
+    PG 是**持久**的，同一个 case_id 第二次跑会撞上 `guard.create_case` 的受理幂等闸
+    （实测：「库里 'preview'、这次 'plan_xxx'」），三次重试全败。所以 PG 束在开跑前
+    必须先清场 —— 这不是绕过闸，是把 SQLite 那份「一跑一库」的前提在 PG 上补回来。
+
+    **只清本租户本案**：`tenant_id` + `case_id` 两个都收窄，有 `case_id` 列的表按两者
+    清，没有的（`business_ref` 按 plan/task 组织）按租户清。别的租户（例如 PG 门控
+    测试的 `tnt-t115`）一行都不碰。
+    """
+    from maos.domain import _dbport
+    from maos.domain.refund import objects as refund_objects
+    from scripts.pg_case_snapshot import DOMAIN_TABLES, _columns_of, pg_store
+
+    store = pg_store()
+    cleared: dict[str, int] = {}
+    for table in DOMAIN_TABLES:
+        cols = _columns_of(store, table)
+        if not cols or "tenant_id" not in cols:
+            continue
+        if "case_id" in cols:
+            sql = f"DELETE FROM {table} WHERE tenant_id=? AND case_id=?"
+            params: tuple = (tenant_id, case_id)
+        else:
+            sql = f"DELETE FROM {table} WHERE tenant_id=?"
+            params = (tenant_id,)
+        before = refund_objects.query(
+            store, sql.replace("DELETE FROM", "SELECT count(*) AS n FROM", 1), params)
+        n = int(before[0]["n"]) if before else 0
+        if not n:
+            continue
+        # `refund_case` 的写入口被 `objects._guarded()` 挡着（铁律 8：不许旁路 guard），
+        # 清场走底层连接 —— 这里清的是**上一次跑的残留**，不是在改一个活着的案子的
+        # 业务状态。清完立刻重跑，案子由 `guard.create_case` 重新建。
+        conn = _dbport.DomainConn.open(store)
+        with conn.lock:
+            conn.raw.execute(sql, params)
+            conn.raw.commit()
+        cleared[table] = n
+    return cleared
+
+
+@contextlib.contextmanager
+def _pg_business_objects_note(backend: str):
+    """PG 束里 `business-objects.json` 的那句 note 换成真话。
+
+    `make_evidence.collect_business_objects()` 只认 `maos.db` 里的 `business_ref`：
+    PG 束里那张表在**另一个库**，于是它会写下「本库无 business_ref 表（退款域未落地），
+    本轮无业务对象引用」—— 前半句对，后半句是**错的**，退款域落地了，而且这一束的
+    全部业务对象正躺在 PG 里。往证据里写一句能被一条命令当场证伪的话，比留空更坏。
+
+    那个文件是 T128 的面，一个字节都不动；与本脚本既有的两处猴补丁同一套手法。
+    真正的业务对象证据在同目录的 `pg-tables.json`，这里只负责指路。
+    """
+    if backend != "postgres":
+        yield
+        return
+    import scripts.make_evidence as _me
+
+    original = _me.collect_business_objects
+
+    def wrapped(db_path, conn, tables):                        # noqa: ANN001
+        return {
+            "objects": [],
+            "backend": "postgres",
+            "note": ("本束的业务对象落在 PostgreSQL（--domain-backend postgres），"
+                     "不在这份 maos.db 里 —— 后者是控制面（plan / task / artifact / "
+                     "event_log），按 docs/architecture.md §5 的口径本期不上 PG。"
+                     "逐条明细（各表行数、十二类抽样、business_ref 现解）见同目录的 "
+                     "pg-tables.json，那份是从 MAOS_PG_DSN 指的库里直接读的。"),
+        }
+
+    _me.collect_business_objects = wrapped                     # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        _me.collect_business_objects = original                # type: ignore[assignment]
+
+
 @contextlib.contextmanager
 def _gateway_retry_injection():
     """让 `payload["gateway"]` 上的 `fail_times` / `then_fail_with` 真的生效。
@@ -638,28 +779,62 @@ def collect_model_usage(conn, tables: set, *, live: bool) -> dict:  # noqa: ANN0
             "note": note}
 
 
-def collect_outcome(conn, row: dict, tables: set) -> dict:      # noqa: ANN001
-    """业务四判据那一行 + 对外三态字面值。**只从库里取，不从任务状态反推**（铁律 8）。"""
+def _sqlite_biz_reader(conn, tables: set):                     # noqa: ANN001
+    """业务表的读取口径（SQLite 束）：业务表与控制面同库，直接用这条只读连接。"""
+    def read(table: str, sql: str, params: tuple) -> list[dict]:
+        if table not in tables:
+            return []
+        return [dict(r) for r in conn.execute(sql, params)]
+    return read
+
+
+def _pg_biz_reader():
+    """业务表的读取口径（PG 束）：业务表在 `MAOS_PG_DSN` 那个库，不在 `maos.db`。
+
+    走 `objects.query` 而不是自己拼连接：`?` 占位符的翻译、`sqlite_master` 的翻译、
+    借锁，全在 `_dbport` 那一层收着口 —— 这里另开一条路就是第二份方言口径。
+    """
+    from maos.domain.refund import objects as refund_objects
+    from scripts.pg_case_snapshot import pg_store
+
+    store = pg_store()
+
+    def read(table: str, sql: str, params: tuple) -> list[dict]:
+        del table                                              # PG 上这些表一定在
+        return refund_objects.query(store, sql, params)
+    return read
+
+
+def collect_outcome(conn, row: dict, tables: set, *, biz=None) -> dict:  # noqa: ANN001
+    """业务四判据那一行 + 对外三态字面值。**只从库里取，不从任务状态反推**（铁律 8）。
+
+    ``biz`` 是业务表的读取口径。缺省 ``None`` 时用 ``conn``（业务表与控制面同库，
+    行为逐字节不变）；PG 束传 `_pg_biz_reader()`，那四张表从 PG 读 —— 不传的话
+    这一段会在 `maos.db` 里找一张**根本不在那儿**的表，然后如实报「没有」：
+    `biz_status` 空、`business_success` false，一束真的跑成功的证据长得像跑挂了。
+    """
     from maos.domain.refund import projection
 
+    read = biz if biz is not None else _sqlite_biz_reader(conn, tables)
+    ident = (row["tenant_id"], row["case_id"])
+
     outcome = None
-    if "case_outcome" in tables:
-        hit = conn.execute("SELECT * FROM case_outcome WHERE tenant_id=? AND case_id=?",
-                           (row["tenant_id"], row["case_id"])).fetchone()
-        if hit is not None:
-            outcome = {k: hit[k] for k in hit.keys()}
-            outcome["evidence_complete"] = bool(outcome.get("evidence_complete"))
-            outcome["business_success"] = bool(outcome.get("business_success"))
-    observations = [dict(r) for r in conn.execute(
-        "SELECT * FROM payment_observation WHERE tenant_id=? AND case_id=? ORDER BY observed_at",
-        (row["tenant_id"], row["case_id"]))] if "payment_observation" in tables else []
-    case = conn.execute("SELECT biz_status FROM refund_case WHERE tenant_id=? AND case_id=?",
-                        (row["tenant_id"], row["case_id"])).fetchone() \
-        if "refund_case" in tables else None
-    has_request = bool(conn.execute(
-        "SELECT 1 FROM refund_request WHERE tenant_id=? AND case_id=? LIMIT 1",
-        (row["tenant_id"], row["case_id"])).fetchone()) if "refund_request" in tables else False
-    biz_status = str(case["biz_status"]) if case is not None else ""
+    hits = read("case_outcome",
+                "SELECT * FROM case_outcome WHERE tenant_id=? AND case_id=?", ident)
+    if hits:
+        outcome = dict(hits[0])
+        outcome["evidence_complete"] = bool(outcome.get("evidence_complete"))
+        outcome["business_success"] = bool(outcome.get("business_success"))
+    observations = read(
+        "payment_observation",
+        "SELECT * FROM payment_observation WHERE tenant_id=? AND case_id=?"
+        " ORDER BY observed_at", ident)
+    cases = read("refund_case",
+                 "SELECT biz_status FROM refund_case WHERE tenant_id=? AND case_id=?", ident)
+    has_request = bool(read(
+        "refund_request",
+        "SELECT 1 FROM refund_request WHERE tenant_id=? AND case_id=? LIMIT 1", ident))
+    biz_status = str(cases[0]["biz_status"]) if cases else ""
     return {
         "tenant_id": row["tenant_id"], "case_id": row["case_id"], "plan_id": row["plan_id"],
         "case_outcome": outcome,
@@ -701,12 +876,17 @@ def _index_files(directory: str) -> list[dict]:
 
 
 def build_path(path: str, payload: dict, out_root: str, *, sha: str,
-               secrets: dict[str, str], live: bool, transcript: str | None) -> dict:
+               secrets: dict[str, str], live: bool, transcript: str | None,
+               backend: str = "sqlite") -> dict:
     """跑一条路径并攒出 ``<out_root>/<path>[-live]/``。任何一步失败都不留下半份目录。
 
     骨架逐字照 `make_evidence.py::build_scenario`：先在 `.tmp-*` 里攒齐、脱敏反查
     过关，才 `os.replace` 挪到位；中途任何异常（含 KeyboardInterrupt）都连临时目录
     一起删 —— 半份目录比没有更坏，它看起来像跑通了。
+
+    ``backend`` 是**业务域**的后端（T126）。缺省 ``sqlite`` 时下面每一步逐字节不变；
+    ``postgres`` 时那 16 张业务表落在 `MAOS_PG_DSN` 指的库，控制面仍是这份 `maos.db`，
+    并额外产一份 `pg-tables.json`（从 PG 直读的行数 / 抽样 / 引用解析）。
     """
     name = f"{path}-live" if live else path
     final = os.path.join(out_root, name)
@@ -716,14 +896,24 @@ def build_path(path: str, payload: dict, out_root: str, *, sha: str,
 
     try:
         db_path = os.path.join(tmp, "maos.db")
-        row, log_text, compensation = run_path(path, payload, db_path, live=live)
-        if not os.path.exists(db_path):
-            raise EvidenceError(
-                f"路径 {path} 跑完却没有落库（{db_path} 不存在）：SqliteStore 注入点"
-                f"可能已失效，不生成任何产物")
+        cleared: dict[str, int] = {}
+        if backend == "postgres":
+            # 先清场再跑：PG 是持久的，同一个 case_id 第二次跑会撞受理幂等闸。
+            # 见 `_pg_clear_case` 的 docstring —— 清的是上一次的残留，不是绕闸。
+            seed = _case_identity(payload)
+            cleared = _pg_clear_case(seed["tenant_id"], seed["case_id"])
+            if cleared:
+                print(f"    · PG 清场（{seed['tenant_id']} / {seed['case_id']}）：{cleared}")
+        with _pg_domain_scope(backend), _pg_business_objects_note(backend):
+            row, log_text, compensation = run_path(path, payload, db_path, live=live)
+            if not os.path.exists(db_path):
+                raise EvidenceError(
+                    f"路径 {path} 跑完却没有落库（{db_path} 不存在）：SqliteStore 注入点"
+                    f"可能已失效，不生成任何产物")
 
-        bundle = write_bundle(db_path, tmp, scenario=f"case-{path}", exit_code=0,
-                              wall_ms=row["wall_ms"], log=log_text, sha=sha, secrets=secrets)
+            bundle = write_bundle(db_path, tmp, scenario=f"case-{path}", exit_code=0,
+                                  wall_ms=row["wall_ms"], log=log_text,
+                                  sha=sha, secrets=secrets)
 
         conn = connect_ro(db_path)
         try:
@@ -744,10 +934,46 @@ def build_path(path: str, payload: dict, out_root: str, *, sha: str,
                        collect_hitl(conn), sha=sha, secrets=secrets)
             write_json(os.path.join(tmp, "model-usage.json"),
                        collect_model_usage(conn, tables, live=live), sha=sha, secrets=secrets)
-            outcome = collect_outcome(conn, row, tables)
+            # PG 束的四张业务表在**另一个库**：不换读取口径，这一段会在 maos.db 里
+            # 找一张不在那儿的表然后如实报「没有」，于是一束真跑成功的证据长得像跑挂了
+            # （实测：`biz=` 空、`business_success=false`）。
+            outcome = collect_outcome(conn, row, tables,
+                                      biz=_pg_biz_reader() if backend == "postgres" else None)
             write_json(os.path.join(tmp, "outcome.json"), outcome, sha=sha, secrets=secrets)
         finally:
             conn.close()
+
+        pg_snapshot = None
+        if backend == "postgres":
+            # 「对象真在 PG 表里」的那一份证据：行数 + 十二类抽样 + business_ref 现解，
+            # 全部从 MAOS_PG_DSN 指的库直读。`write_json` 带出处首行与出口脱敏两道。
+            from scripts.pg_case_snapshot import snapshot as _pg_snapshot
+
+            pg_snapshot = _pg_snapshot(tenant_id=row["tenant_id"], case_id=row["case_id"],
+                                       plan_id=row["plan_id"])
+            pg_snapshot["cleared_before_run"] = cleared
+            write_json(os.path.join(tmp, "pg-tables.json"), pg_snapshot,
+                       sha=sha, secrets=secrets)
+
+            # 同构比对：SQLite 束在的话当场比一次。**比的是语义不是字节** ——
+            # 哪些字段必须逐字相同、哪些每跑一次都必然新生成，由 pg_case_snapshot
+            # 分三栏列清楚。两边的行为一个字都没为了对齐而改过。
+            peer = os.path.join(DEFAULT_OUT, name)
+            if os.path.isdir(peer):
+                from scripts.pg_case_snapshot import compare as _pg_compare
+
+                iso = _pg_compare(peer, tmp)
+                # 报最终落点，不报 `.tmp-*` —— 那个目录一挪走这份路径就指不到东西了。
+                iso["pg_bundle"] = os.path.relpath(final, ROOT)
+                write_json(os.path.join(tmp, "isomorphism.json"), iso,
+                           sha=sha, secrets=secrets)
+                print(f"    · 同构比对 vs {os.path.relpath(peer, ROOT)}："
+                      f"{iso['verdict']}（相同 {iso['identical_count']} / "
+                      f"不符 {len(iso['mismatches'])} / "
+                      f"可疑相同 {len(iso['suspicious_identical'])}）")
+            else:
+                print(f"    · 同构比对跳过：没有 {os.path.relpath(peer, ROOT)}，"
+                      f"先跑一次不带 --domain-backend 的同名路径")
 
         # 圆桌与计划审批停靠点的观测：它们是**跑的时候**才有的事实（谁说了话、
         # 是不是模型说的），库里那条时间线记不下 —— 圆桌基线上不落库（T113 未并入）。
@@ -766,6 +992,9 @@ def build_path(path: str, payload: dict, out_root: str, *, sha: str,
             "git_sha": sha,
             "case_id": row["case_id"], "tenant_id": row["tenant_id"],
             "path": path, "model_mode": "live" if live else "scripted",
+            # 业务域落哪个库。控制面无论如何都是这份 maos.db（architecture.md §5）。
+            "domain_backend": backend,
+            "control_plane_backend": "sqlite",
             "title": PATHS[path]["title"],
             "dir": os.path.relpath(final, ROOT),
             "plan_id": row["plan_id"], "plan_state": row["plan_state"],
@@ -820,7 +1049,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="圆桌五岗走真模型，单独出到 <path>-live/（verify 不认这一束）")
     parser.add_argument("--room-transcript", default=None,
                         help="把一份真房间逐字记录原样收进束（首行出处由本脚本写）")
-    parser.add_argument("--out", default=DEFAULT_OUT, help="输出根，缺省 evidence/case-real-01")
+    parser.add_argument("--domain-backend", choices=_BACKENDS, default="sqlite",
+                        help="业务对象那 16 张表落哪个库；postgres 时读 MAOS_PG_DSN，"
+                             "输出根默认改成 evidence/case-real-01-pg（控制面照旧 SQLite）")
+    parser.add_argument("--out", default=None,
+                        help="输出根，缺省 evidence/case-real-01（--domain-backend postgres "
+                             "时缺省 evidence/case-real-01-pg）")
     args = parser.parse_args(argv)
 
     if not args.all_paths and not args.path:
@@ -829,6 +1063,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--path 与 --all-paths 不能同用")
     if args.room_transcript and not os.path.isfile(args.room_transcript):
         parser.error(f"--room-transcript 指的文件不存在：{args.room_transcript}")
+    if args.out is None:
+        args.out = DEFAULT_PG_OUT if args.domain_backend == "postgres" else DEFAULT_OUT
 
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)-5s %(name)-12s %(message)s")
@@ -843,16 +1079,26 @@ def main(argv: list[str] | None = None) -> int:
     # 而这一批证据的出处只有一个 —— 开跑那一刻的 HEAD（口径同 make_evidence.pin_sha）。
     sha = pin_sha()
     secrets = secret_values()
+    if args.domain_backend == "postgres":
+        # `MAOS_PG_DSN` 这个名字**不匹配** `secret_values()` 的命名规则
+        # （api_key|secret|token|password|…），所以它不会被自动纳入出口脱敏与哨兵
+        # 反查 —— 而 DSN 里带口令。补两条哨兵进去，既有的那两道就自动覆盖它
+        # （铁律 6）。补的是值，名字只用于替换后的占位符。
+        from scripts.pg_case_snapshot import pg_secrets
+
+        secrets = {**secrets, **pg_secrets(os.environ.get("MAOS_PG_DSN", ""))}
     os.makedirs(args.out, exist_ok=True)
     print(f"单案例证据束 · sha={sha} · 路径={wanted} · "
-          f"模型={'live' if args.live_model else 'scripted'} · 输出={args.out}")
+          f"模型={'live' if args.live_model else 'scripted'} · "
+          f"业务域={args.domain_backend} · 控制面=sqlite · 输出={args.out}")
     if secrets:
         print(f"脱敏哨兵：{sorted(secrets)}（值不打印）")
 
     produced = []
     for path in wanted:
         info = build_path(path, payload, args.out, sha=sha, secrets=secrets,
-                          live=args.live_model, transcript=args.room_transcript)
+                          live=args.live_model, transcript=args.room_transcript,
+                          backend=args.domain_backend)
         produced.append(info)
         print(f"  [OK] {info['dir']}  plan={info['plan_state']} "
               f"biz={info['biz_status']} skills={info['skills_present']} "
@@ -867,6 +1113,8 @@ def main(argv: list[str] | None = None) -> int:
             "case_id": produced[0]["case_id"] if produced else "",
             "case_file": os.path.relpath(args.case, ROOT),
             "model_mode": "scripted",
+            "domain_backend": args.domain_backend,
+            "control_plane_backend": "sqlite",
             "paths": [p["path"] for p in produced],
             "bundles": produced,
             "files": _index_files(args.out),

@@ -519,6 +519,53 @@ def rewrite_upsert(sql: str, pk_of: Callable[[str], Sequence[str]]) -> str:
             f" ON CONFLICT ({target}) {action}")
 
 
+#: `sqlite_master` 的 PG 等价。两列与 SQLite 的同名列对齐（`name` / `type`），
+#: 所以调用方那句 `WHERE type='table' AND name=?` 一个字都不用改。
+#:
+#: 为什么翻而不是让调用方分叉：`maos/kb/__init__.py::has_kb_table` 走的是分叉那条
+#: 路（它自己按 `dialect_of` 问两个目录），而 `maos/domain/refund/outcome.py` 的
+#: `has_outcome_table()` 走不了 —— 那个文件是冻结面，一个字都不许动。它问的
+#: `SELECT name FROM sqlite_master WHERE type='table' AND name='case_outcome'`
+#: 在 PG 上直接 `UndefinedTable`，而它是**建表路径的探针**：探不动就没有
+#: `case_outcome`，四判据整段落空。`sqlite_master` 本来就是 SQLite 方言的一部分，
+#: 翻它正是本模块的职责。
+#:
+#: 索引那一路也带上：`sqlite_master` 里索引与表同表共存，只映射表会让
+#: `WHERE type='index'` 的调用方恒答「没有」—— 又一次无症状失效。
+_SQLITE_MASTER_PG = (
+    "(SELECT table_name AS name, 'table' AS type"
+    " FROM information_schema.tables WHERE table_schema = current_schema()"
+    " UNION ALL"
+    " SELECT indexname AS name, 'index' AS type"
+    " FROM pg_indexes WHERE schemaname = current_schema()) AS sqlite_master"
+)
+
+_SQLITE_MASTER_REF = re.compile(r"\b(FROM|JOIN)\s+sqlite_master\b", re.IGNORECASE)
+
+
+def rewrite_sqlite_master(sql: str) -> str:
+    """`FROM sqlite_master` 换成 PG 的目录查询。字符串字面量里的同形字原样保留。
+
+    与本模块别处同一条口径：**按引号状态扫一遍**，不用裸正则替换。
+    `WHERE note LIKE '%from sqlite_master%'` 是合法 SQL，改了它不报错、只是语义变了。
+    """
+    if "sqlite_master" not in sql.lower():
+        return sql
+    quoted = {i for i, _ch, inside in _scan(sql) if inside}
+    out: list[str] = []
+    last = 0
+    for m in _SQLITE_MASTER_REF.finditer(sql):
+        if m.start() in quoted:
+            continue
+        out.append(sql[last:m.start()])
+        out.append(f"{m.group(1)} {_SQLITE_MASTER_PG}")
+        last = m.end()
+    if not out:
+        return sql
+    out.append(sql[last:])
+    return "".join(out)
+
+
 def to_pg_sql(sql: str, pk_of: Callable[[str], Sequence[str]], *,
               with_params: bool) -> str:
     """一条 SQLite 方言的语句翻成 PG 方言。DDL 走 `to_pg_ddl()`，其余走 DML 那套。
@@ -528,7 +575,7 @@ def to_pg_sql(sql: str, pk_of: Callable[[str], Sequence[str]], *,
     """
     if is_ddl(sql):
         return to_pg_ddl(sql)
-    text = rewrite_upsert(sql, pk_of)
+    text = rewrite_sqlite_master(rewrite_upsert(sql, pk_of))
     return translate_placeholders(text) if with_params else text
 
 
@@ -712,6 +759,58 @@ def backend_name(env: dict | None = None) -> str:
     return name
 
 
+#: **装配级**后端标记挂在 store 上的属性名（T126）。
+#:
+#: 为什么需要它，而 `MAOS_DOMAIN_BACKEND` 不够：那个变量是**进程级**的，
+#: 一设就把这个进程里每一条业务域连接都拨到 PG —— 包括那些**按设计就该是
+#: 一次性副本**的库。`maos/roundtable/stages.py::facts_finance_preview` 的原话是
+#: 「走的是与 DAG 里逐字相同的三个 skill，只是库换成 `:memory:` 的一次性副本」：
+#: 它用 `_memory_store()` 现造一个内存库，跑完即弃，写进去的 `refund_case`
+#: 本来到不了真库。
+#:
+#: 进程级开关让这层隔离**无声消失**：预演写的 case（`plan_id='preview'`）落进真
+#: PG 库，紧接着真跑的 `refund.intake` 撞上 `guard.create_case` 的幂等闸
+#: （「库里 'preview'、这次 'plan_xxx'」），三次重试全败、整条 DAG 停在第一步。
+#: 实测如此（T126 回执），而且症状指向受理幂等，不指向后端开关。
+#:
+#: 所以本模块把「这条 DAG 的业务域落在哪」变成**装配的属性**而不是进程的属性：
+#: 经 `flows/common.build()` 装配出来的 store 带标记 -> PG；`_memory_store()` 这类
+#: 不经装配的一次性库没标记 -> 照旧 sqlite，一次性副本的语义原样保住。
+#: `MAOS_DOMAIN_BACKEND` 的进程级语义**一个字没动**（90 条 PG 门控测试按它写）。
+STORE_BACKEND_ATTR = "_maos_domain_backend"
+
+
+def mark_store_backend(store: Any, backend: str | None) -> None:
+    """给这条 store 打上「本次装配的业务域后端」。`None` / 空串是摘掉标记。
+
+    只认两个字面量，别的当场抛 —— 与 `backend_name()` 同一条「不回落缺省」的口径。
+    """
+    if not backend:
+        with contextlib.suppress(AttributeError):
+            delattr(store, STORE_BACKEND_ATTR)
+        return
+    name = str(backend).strip().lower()
+    if name not in (SQLITE, POSTGRES):
+        raise ValueError(
+            f"未知的业务域后端 {backend!r}：只认 {SQLITE!r} 或 {POSTGRES!r}。")
+    setattr(store, STORE_BACKEND_ATTR, name)
+
+
+def backend_of(store: Any) -> str:
+    """这条 store 该用哪个后端：**先看装配级标记，没有才读环境变量**。
+
+    没标记时逐字节退回 `backend_name()`，所以不打标记的调用方一个字节都不受影响。
+    """
+    marked = getattr(store, STORE_BACKEND_ATTR, None)
+    if not marked:
+        return backend_name()
+    name = str(marked).strip().lower()
+    if name not in (SQLITE, POSTGRES):
+        raise ValueError(
+            f"store 上的业务域后端标记 {marked!r} 不认：只认 {SQLITE!r} 或 {POSTGRES!r}。")
+    return name
+
+
 class DomainConn:
     """业务域的一条连接 —— 「拿连接、执行、事务、建表」四件事的收口。
 
@@ -736,12 +835,13 @@ class DomainConn:
 
     @classmethod
     def open(cls, store: Any) -> DomainConn:
-        """按 `MAOS_DOMAIN_BACKEND` 选后端，交一条能用的连接。
+        """选后端交一条能用的连接：**先看 store 上的装配级标记，没有才读环境变量**。
 
         sqlite 分支的行为与本模块出现之前**逐字节一致**：同一条 `store._conn`、
-        同一把 `store._lock`。
+        同一把 `store._lock`。没打标记的 store 走的还是 `MAOS_DOMAIN_BACKEND`
+        那条老路（见 `backend_of` 与 `STORE_BACKEND_ATTR`）。
         """
-        backend = backend_name()
+        backend = backend_of(store)
         if backend == POSTGRES:
             conn, lock = pg_connection()
             return cls(POSTGRES, conn, lock)

@@ -1,11 +1,17 @@
 """结果面的四条命令（T117）——`/assign`、`/resolve`、`/confirm`、`/complain`。
 
-## 只做模块，不接线
+## 接线已完成（T122）
 
-本文件**不改** `maos/ingress/router.py`（同期另一会话在大改它）。这里只导出处理函数
-与一张 `COMMAND_HANDLERS` 表，整合期由主会话在 router 里接一行。这不是偷懒，是并行
-纪律：两轨同改一个 2000 行的路由文件，冲突几乎必然，而合并冲突改错一行的症状是
-「某条命令悄悄不响应了」。
+T117 写本模块时 router 正被另一会话大改，所以当时只导出处理函数与一张
+`COMMAND_HANDLERS` 表，一个字都不碰路由文件。**T122 把那一行接上了**：
+`maos/ingress/router.py::handle_outcome` 过一道渠道闸、查出 `tenant_id`、
+调本模块的 `dispatch()`，按 `CommandResult.kind` 回帖。
+
+接线之前还要先填一个更深的坑：处置从前跑在 `run_payload` 自建又随手丢掉的
+`:memory:` 库里，于是工单根本不在 router 的库中，`/assign` 必撞
+`require_ticket` 的 `LookupError`。T122 给 `flows/common.py::build` 与
+`flows/custom_case.py::run_payload` 加了 `store=` 入参，房间处置从此跑在
+router 自己的库上 —— 命令与处置共用一个库，这四条命令才可能成立。
 
 ## 判定顺序不许换（逐字沿用 `hiclaw/matrix_bus.py::RoomApprovalBridge` 的那三步）
 
@@ -25,16 +31,16 @@
 这正是「流程卡住后应由谁补偿」这一问落到可执行处的样子 —— 不然角色目录就只是
 一份好看的通讯录，谁都能替支付运维签字说钱退了。
 
-## `/confirm` 与 `/complain` 的边界：本轨只到「解析 + 鉴权 + 返回结构」
+## `/confirm` 与 `/complain` 现在真的落库了（T122）
 
-它们要写的 `case_outcome`（跨轨契约 §E 的四判据：`customer_confirmation`、
-`complaint` …）由 **T120** 定义建表。本模块因此只产出一份 `KIND_PENDING` 的结果，
-`data` 里带着**该写什么**（字面值逐字对齐契约 §E），一个字不落库。
+T117 时它们只到「解析 + 鉴权 + 返回 `KIND_PENDING`」，`data` 里带着**该写什么**，
+等 T120 把 `case_outcome` 建出来。两件事都已就位，于是这两条命令改为真写表：
+走 `domain/refund/outcome.py` 的 `record_confirmation()` / `record_complaint()`
+（两者写完各自重算一次四判据），返回 `KIND_DONE` 并把 `case_outcome` 那一行带回
+`data`。字面值仍逐字取自跨轨契约 §E，本模块不自造措辞。
 
-刻意不抛 `NotImplementedError`：那样调用方拿不到任何可测的东西，整合期只能整段重写。
-返回结构之后，T120 接线时改的是「把 `data` 写进表」一处，解析与鉴权都不必重做，
-而本轨的测试现在就能钉住鉴权与解析。**本模块不碰 `compensation_record` 之外的任何表**
-—— 事实上这两条命令一张表都不碰。
+**它们碰的表只有 `case_outcome` / `complaint` / `notification.ack_at`**，一个新状态
+都不加（铁律 9）：客户确认与投诉是业务对象自己的字段，不是 Task 状态。
 """
 
 from __future__ import annotations
@@ -43,7 +49,9 @@ import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from maos.domain.refund import roles
+from maos.agents.base import AgentIdentity
+from maos.domain.refund import outcome as OUT, roles
+from maos.model.client import Tier
 from maos.skills.builtin.refund import compensate as CP
 from maos.skills.invoker import SkillInvoker
 
@@ -64,6 +72,51 @@ EVENT_COMMAND_DENIED = "ApprovalDenied"
 
 #: 被调 skill。改这一行等于改「谁把人工凭证落成观察」，该一眼看得见。
 SKILL_COMPENSATION_CLOSE = "refund.compensation_close"
+
+#: 房间里 `/resolve` 用的最小授权 identity（T122）。**形状逐字取自**
+#: `maos/flows/scenario_7.py::TICKET_DESK_IDENTITY` —— 那一段是本流程的 CLI 范式，
+#: 房间是它的第二个入口，两处给的权限必须一模一样，不然「同一件事在群里能做、
+#: 在命令行不能做」就成了一条没人说得清的差异。
+#:
+#: **两个 skill 都要**：关单本身（`refund.compensation_close`），以及它要经 invoker
+#: 调的 `payment.observe` —— 后者是全系统唯一写得进 settled 的 actor，关单借道它而
+#: 不是自己开一条写终态的路（铁律 8）。少给一个，invoker 当场抛 PermissionDenied。
+#:
+#: 不 import scenario_7 那一个：`maos.ingress` 不该为拿一个常量把整个演示场景
+#: （22 个 Agent、沙箱、靶场补丁）挂到自己的 import 图上。两份的一致由
+#: `test_room_outcome_commands.py` 逐字段钉着。
+TICKET_DESK_IDENTITY = AgentIdentity(
+    agent_id="refund-ticket-desk",
+    role="refund_payment_ops",
+    duty="补偿工单的派单与关单：把人工线下凭证经 payment.observe 回填成一条观察",
+    allowed_skills=frozenset({SKILL_COMPENSATION_CLOSE, "payment.observe"}),
+    allowed_tools=frozenset(),
+    write_scope=frozenset(),
+    max_risk="M",
+    model_tier=Tier.LIGHT,
+)
+
+#: 被调 skill：开工单那一步。与关单分开是刻意的，见下。
+SKILL_COMPENSATE = "refund.compensate"
+
+#: 房间里**开**补偿工单用的 identity（T122）。形状逐字取自
+#: `maos/flows/scenario_7.py::COMPENSATION_IDENTITY`。
+#:
+#: **与 `TICKET_DESK_IDENTITY` 分成两个，不合并成一个全能的**：开单是「这一单走不通了，
+#: 留档最后观察、推 compensated、开张单」，关单是「我把钱线下退了，这是凭证」。
+#: 现实里这是两个岗（主管开、支付运维关），合成一个 identity 等于说「开单的人自己
+#: 就能签字说钱退了」—— 那正是 T117 要消灭的东西（见 `handle_resolve` 的第二道闸）。
+#: 白名单机制就是用来表达这种最小授权的，省一个常量换来的是一条说不清的授权边界。
+COMPENSATION_DESK_IDENTITY = AgentIdentity(
+    agent_id="refund-compensation-desk",
+    role="refund_compensation",
+    duty="退款走不通之后的域内补偿收口：留档最后观察、开人工工单、推进 compensated",
+    allowed_skills=frozenset({SKILL_COMPENSATE}),
+    allowed_tools=frozenset(),
+    write_scope=frozenset(),
+    max_risk="M",
+    model_tier=Tier.LIGHT,
+)
 
 # ---------------------------------------------------------------- 结局
 KIND_DONE = "done"          # 动作已生效
@@ -114,6 +167,20 @@ def parse(text: str) -> tuple[str, list[str]]:
     return (verb, parts[1:]) if verb in COMMANDS else ("", [])
 
 
+def case_id_of(verb: str, args: list[str]) -> str:
+    """一条命令指向哪个案子。参数拿不到案号时返回空串。
+
+    `/assign` `/resolve` 的第一个参数是**工单号**（`MT-<案号>`），`/confirm`
+    `/complain` 的是**案号**本身。这个差别属于本模块，调用方不该各自重写一遍 ——
+    router 要先按案号查 `tenant_id` 才调得动 `dispatch()`，而它认不认得工单前缀
+    不该成为第二处知识（漏掉前缀的症状是「这个案子没在本房间跑过」，指错方向）。
+    """
+    if not args:
+        return ""
+    first = str(args[0])
+    return CP.case_id_of_ticket(first) if verb in (CMD_ASSIGN, CMD_RESOLVE) else first
+
+
 # ---------------------------------------------------------------- 鉴权
 def _record_denied(store, *, sender: str, command: str, case_id: str, why: str,
                    extras: dict | None = None) -> None:
@@ -145,7 +212,7 @@ def _deny(store, *, sender: str, command: str, case_id: str, why: str,
                          command=command, case_id=case_id)
 
 
-def _in_list(sender: str, approvers: Iterable[str]) -> bool:
+def in_approver_list(sender: str, approvers: Iterable[str]) -> bool:
     """只查名单，不按岗收窄 —— `roles.can_approve` 传空角色就是这个语义。"""
     return roles.can_approve(sender, "", approvers=approvers)
 
@@ -155,7 +222,7 @@ def handle_assign(args: list[str], *, store, tenant_id: str, sender: str,
                   approvers: Iterable[str], extras: dict | None = None) -> CommandResult:
     """`/assign <工单号> <角色>` —— 把补偿工单派给一个岗。"""
     case_id = CP.case_id_of_ticket(args[0]) if args else ""
-    if not _in_list(sender, approvers):
+    if not in_approver_list(sender, approvers):
         return _deny(store, sender=sender, command=CMD_ASSIGN, case_id=case_id,
                      why=f"{sender} 不在 MAOS_APPROVERS 名单内", extras=extras)
     if len(args) != 2:
@@ -200,7 +267,7 @@ def handle_resolve(args: list[str], *, store, tenant_id: str, sender: str,
     没有出处的凭证只是一句断言。
     """
     case_id = CP.case_id_of_ticket(args[0]) if args else ""
-    if not _in_list(sender, approvers):
+    if not in_approver_list(sender, approvers):
         return _deny(store, sender=sender, command=CMD_RESOLVE, case_id=case_id,
                      why=f"{sender} 不在 MAOS_APPROVERS 名单内", extras=extras)
     if len(args) < 2:
@@ -242,58 +309,106 @@ def handle_resolve(args: list[str], *, store, tenant_id: str, sender: str,
                              command=CMD_RESOLVE, case_id=case_id)
 
     out = res.output
+    # 关单刚刚回填了一条观察，而「到账」这一判据的唯一依据就是观察 —— 不重算的话
+    # `case_outcome` 停在关单**之前**的样子，房间里读到的四判据是过期的，
+    # 而过期的结论比没有结论更坏（它看起来是新的）。`record_case_outcome` 本来就
+    # 设计成可以反复调（T120：「结论随观察变」）。
+    #
+    # 重算失败不许把一次**已经生效**的关单翻成失败：钱确实退了、观察确实落了，
+    # 回帖里说「关单未生效」会让人再去线下退一次。
+    verdict = ""
+    try:
+        row = OUT.record_case_outcome(
+            store, tenant_id=tenant_id, case_id=case_id,
+            plan_id=str((extras or {}).get("plan_id") or "") or None)
+        verdict = "\n" + _verdict_line(row)
+    except Exception as exc:                            # noqa: BLE001
+        log.warning("关单后重算四判据失败（%s）—— 关单本身已生效", exc)
     return CommandResult(
         kind=KIND_DONE, command=CMD_RESOLVE, case_id=case_id,
         text=(f"已关单 {CP.ticket_id_of(case_id)}（{out['resolution_kind']}）· "
               f"提交人 {sender}\n"
               f"回填观察：{out['observation_id']}（observed_state="
-              f"{out['observed_state']}，来源 人工线下凭证）"),
+              f"{out['observed_state']}，来源 人工线下凭证）" + verdict),
         data=dict(out))
 
 
 # ---------------------------------------------------------------- /confirm /complain
+#: 回帖里报出去的四判据。顺序固定，读的人每次看到的是同一张脸。
+_VERDICT_FIELDS = ("arrival", "customer_confirmation", "manual_correction", "complaint")
+
+
+def _verdict_line(row: dict) -> str:
+    """四判据的一行摘要。`business_success` 单列 —— 它是那四条算出来的结论，
+    与判据本身混在一行会让人以为它也是一条独立观察。"""
+    body = " ".join(f"{k}={row.get(k)}" for k in _VERDICT_FIELDS)
+    return f"四判据：{body}；业务是否成功={bool(row.get('business_success'))}"
+
+
 def handle_confirm(args: list[str], *, store, tenant_id: str, sender: str,
                    approvers: Iterable[str], extras: dict | None = None) -> CommandResult:
-    """`/confirm <案号>` —— 客户确认收到退款。**本轨只解析与鉴权，不落库。**
+    """`/confirm <案号>` —— 客户确认收到退款。**真写 `case_outcome`**（T122）。
 
-    落库归 T120：`case_outcome.customer_confirmation` 由它建表定义（契约 §E）。
-    `data` 里的字面值逐字对齐那份契约，整合期照搬即可。
+    落库走 `outcome.record_confirmation()`：它顺手把该 case 的通知标成已 ack，
+    再重算四判据。命令层**不自己拼 UPDATE** —— 「客户认了没有」在
+    `notification.ack_at` 与 `case_outcome.customer_confirmation` 上各有一份，
+    两处只能由同一个函数一起写，分开写的症状是「四判据说确认了，晋升规则说没有」。
+
+    一条通知都没发出去时 `record_confirmation` 会抛 `OutcomeError`（客户无从确认）。
+    那是**一句人话，不是崩溃**：翻成 `KIND_USAGE` 回帖，不落任何动作。
     """
     case_id = str(args[0]) if args else ""
-    if not _in_list(sender, approvers):
+    if not in_approver_list(sender, approvers):
         return _deny(store, sender=sender, command=CMD_CONFIRM, case_id=case_id,
                      why=f"{sender} 不在 MAOS_APPROVERS 名单内", extras=extras)
     if len(args) != 1:
         return CommandResult(kind=KIND_USAGE, text=USAGE, command=CMD_CONFIRM,
                              case_id=case_id)
+    try:
+        # 字面值 `confirmed` 取自跨轨契约 §E 的 `customer_confirmation` 值域。
+        row = OUT.record_confirmation(store, tenant_id=tenant_id, case_id=case_id,
+                                      decision=OUT.CONFIRMATION_CONFIRMED,
+                                      channel="room",
+                                      plan_id=str((extras or {}).get("plan_id") or "") or None)
+    except OUT.OutcomeError as exc:
+        return CommandResult(kind=KIND_USAGE, text=f"确认未生效：{exc}",
+                             command=CMD_CONFIRM, case_id=case_id)
     return CommandResult(
-        kind=KIND_PENDING, command=CMD_CONFIRM, case_id=case_id,
-        text=f"已收到 {case_id} 的客户确认（落库待 case_outcome 接线）",
-        # 字面值取自跨轨契约 §E 的 `customer_confirmation` 值域，不自造措辞。
-        data={"tenant_id": tenant_id, "case_id": case_id, "by": sender,
-              "field": "customer_confirmation", "value": "confirmed",
-              "owner_track": "t120"})
+        kind=KIND_DONE, command=CMD_CONFIRM, case_id=case_id,
+        text=(f"已记下 {case_id} 的客户确认（{sender} 代录，渠道 room）\n"
+              f"{_verdict_line(row)}"),
+        data=dict(row))
 
 
 def handle_complain(args: list[str], *, store, tenant_id: str, sender: str,
                     approvers: Iterable[str], extras: dict | None = None) -> CommandResult:
-    """`/complain <案号> <内容>` —— 记一条客户投诉。**本轨只解析与鉴权，不落库。**
+    """`/complain <案号> <内容>` —— 记一条客户投诉。**真写 `complaint`**（T122）。
 
-    落库归 T120：`case_outcome.complaint` 由它建表定义（契约 §E）。
+    投诉一开就是 `open`，而 open 一票否决 `business_success`（契约 §E）——
+    回帖因此必须把重算后的结论一起说出来：钱到了、客户也签收了，只要投诉还开着，
+    这单业务就没算成，房间里看不到这一点就等于没记。
     """
     case_id = str(args[0]) if args else ""
-    if not _in_list(sender, approvers):
+    if not in_approver_list(sender, approvers):
         return _deny(store, sender=sender, command=CMD_COMPLAIN, case_id=case_id,
                      why=f"{sender} 不在 MAOS_APPROVERS 名单内", extras=extras)
     if len(args) < 2:
         return CommandResult(kind=KIND_USAGE, text=USAGE, command=CMD_COMPLAIN,
                              case_id=case_id)
+    content = " ".join(args[1:])
+    try:
+        row = OUT.record_complaint(store, tenant_id=tenant_id, case_id=case_id,
+                                   content=content, channel="room",
+                                   plan_id=str((extras or {}).get("plan_id") or "") or None)
+    except OUT.OutcomeError as exc:
+        return CommandResult(kind=KIND_USAGE, text=f"投诉未记下：{exc}",
+                             command=CMD_COMPLAIN, case_id=case_id)
     return CommandResult(
-        kind=KIND_PENDING, command=CMD_COMPLAIN, case_id=case_id,
-        text=f"已记录 {case_id} 的投诉（落库待 case_outcome 接线）",
-        data={"tenant_id": tenant_id, "case_id": case_id, "by": sender,
-              "field": "complaint", "value": "open",
-              "text": " ".join(args[1:]), "owner_track": "t120"})
+        kind=KIND_DONE, command=CMD_COMPLAIN, case_id=case_id,
+        # 存摘要不存原文（`outcome.digest_of`）—— 回帖里报摘要，人才回查得到是哪一条。
+        text=(f"已记下 {case_id} 的投诉（{sender} 代录，摘要 "
+              f"{OUT.digest_of(content)}）\n{_verdict_line(row)}"),
+        data=dict(row))
 
 
 # ---------------------------------------------------------------- 派发

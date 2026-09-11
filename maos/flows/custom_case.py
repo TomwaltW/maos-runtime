@@ -165,14 +165,31 @@ def _gateway_of(payload: dict, *, fail_with: str | None) -> MockGateway:
 
     码必须在 `gateway_codes.ALL_CODES` 里，`MockGateway.__init__` 当场校验 ——
     未收录的码不许兜底成「默认可重试」，那正是最贵的一类 bug。
+
+    三个来源，从强到弱，**先命中先算**：
+
+    1. `fail_with` 入参（CLI 的 `--fail-with`、`make_case_bundle` 的那条路径）；
+    2. 底账 `gateway.fail_with` —— 整份底账**每一单**都按这个码失败；
+    3. 底账 `gateway.fail_orders`（T122 新增）—— `{订单号: 码}`，**只有登记的那一单失败**。
+
+    第 3 条是为房间演示加的：要在群里演一遍「网关失败 -> 开工单 -> `/assign` ->
+    `/resolve` 关单」，底账里就得有一单退不出去，而第 2 条做不到这件事 ——
+    它是整份底账的开关，打开之后同一份底账里**每一单**都失败，顺利路径当场没了。
+    缺省（底账不写这个键）时行为逐字节不变。
     """
     cfg = payload.get("gateway") if isinstance(payload.get("gateway"), dict) else {}
     settle_after = int(cfg.get("settle_after") or DEFAULT_SETTLE_AFTER)
     code = fail_with or cfg.get("fail_with")
+    per_order = cfg.get("fail_orders")
+    per_order = per_order if isinstance(per_order, dict) else {}
     script = None
-    if code:
+    if code or per_order:
+        # `case_seed_of` 留在分支里：三个来源都没给码时它一次都不该被调到
+        # （`_gateway_of` 不该因为一份没有 `case` 块的 payload 而抛）。
         order_id = str(fixtures.case_seed_of(payload)["order_id"])
-        script = {order_id: str(code)}
+        code = code or per_order.get(order_id)
+        if code:
+            script = {order_id: str(code)}
     return MockGateway(settle_after=settle_after, script=script)
 
 
@@ -535,7 +552,8 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
                 plan_approval: str | None = None,
                 approval_operator: str = APPROVER,
                 plan_feedback: str = "",
-                reject_roles: tuple[str, ...] = ()) -> dict:
+                reject_roles: tuple[str, ...] = (),
+                store=None) -> dict:                              # noqa: ANN001
     """跑一份自定义 case，返回**观测到的事实**（不含任何期望值）。
 
     `drift=True` 注入一次外部改单（`--drift`）：订单系统的版本被推高一格，
@@ -556,6 +574,12 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     `approve` 走。缺省空元组 = 全按 `approve`，行为不变。它存在的理由只有一个：
     网关明确失败时，人在付款闸上该做的是**不放行**（钱没退出去，不能签「这一步完成了」），
     而核算那一步照常批 —— 一个全局布尔表达不了「这一步批、那一步不批」。
+
+    `store` 给了就跑在那个库上（透给 `build`），没给照旧自建一个 `:memory:`（T122）。
+    房间入口由此让 `/refund` 跑出来的十一张退款域表落在 router 自己的库里，
+    紧接着的 `/assign` `/resolve` 才查得到工单。**缺省行为逐字节不变。**
+    共享库上同一单可能被跑第二遍（复检、人手滑），靶场装载因此要幂等 ——
+    见 `fixtures.seed_case`。
     """
     seed = fixtures.case_seed_of(payload)
     tenant_id, case_id = str(seed["tenant_id"]), str(seed["case_id"])
@@ -565,7 +589,8 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     # 后填的内容到不了客户端，症状是 Plan 里一个任务都没有且不报错）。
     script: dict[str, str] = {"用户请求": "{}"}
     model = select_model_client(script, force_scripted=True)
-    store, bus, cp, model, worker, gate = build(script, matrix=matrix, model=model)
+    store, bus, cp, model, worker, gate = build(script, matrix=matrix, model=model,
+                                                store=store)
 
     if matrix and not allow_degraded:
         # 早失败：靶场都灌完了才发现没进房间，那一屏「房间消息」已经骗过人一次了。

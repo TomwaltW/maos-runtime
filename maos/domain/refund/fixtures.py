@@ -144,6 +144,22 @@ def seed_case(store: Any, payload: dict) -> dict[str, int]:
     灌的全是**外部系统快照**：MAOS 执行前读到的那一版，不是外部系统的当前值
     （铁律 8）。`customer_evidence` 在登记表里但由 `refund.intake` 落库，
     这里跳过它 —— 见 `evidence_signals_of`。
+
+    ## 重灌保留旧行，不覆盖（T122）
+
+    写入从 `INSERT OR REPLACE` 换成 `ON CONFLICT DO NOTHING`。两条理由：
+
+    1. 跨轨契约 §B.3 点名不许 `INSERT OR REPLACE` —— PG 上没有这个语法，
+       而退款域的业务表可以经 `MAOS_DOMAIN_BACKEND=postgres` 落到 PG。
+    2. 房间入口（T122）让处置跑在 router 那个**长命的**库上，同一份底账因此会被
+       反复灌。这时「覆盖」是错的方向：快照是执行前读到的那一版，重灌一遍就把
+       上一单裁定所依据的那一版悄悄换掉了，而已经落库的裁定不会跟着重算 ——
+       症状是案子的结论与它写明的依据对不上，没有任何报错。保留旧行则相反：
+       先到的那一版就是当时读到的那一版，这正是铁律 8 要的。
+
+    代价是「改了底账再重灌」不再生效，要换一个干净的库。这是对的默认值：
+    真要换快照，换的是外部事实，该有一个明确的时刻（口径同 `router.ledger()`
+    「改了底账要重启进程」）。
     """
     from maos.domain.refund import objects
 
@@ -155,8 +171,8 @@ def seed_case(store: Any, payload: dict) -> dict[str, int]:
             continue
         rows = experiment._checked_rows(payload, table, columns)
         marks = ", ".join("?" for _ in columns)
-        sql = (f"INSERT OR REPLACE INTO {table} ({', '.join(columns)})"
-               f" VALUES ({marks})")
+        sql = (f"INSERT INTO {table} ({', '.join(columns)})"
+               f" VALUES ({marks}) ON CONFLICT DO NOTHING")
         for row in rows:
             objects.execute(store, sql, tuple(row[c] for c in columns))
         counted[table] = len(rows)

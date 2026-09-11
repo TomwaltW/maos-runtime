@@ -1,0 +1,25 @@
+# generated at 2026-09-11T02:31:38.005462+00:00 from 128398d715d027cbe0a52b45ee93063c9b184cf8
+{
+  "bundle": "contrast-R8",
+  "kind": "aux",
+  "experiment": "R8 · Planner 建议有无对照",
+  "variable": "MAOS_KB_ADVICE=0 / 1，两段的计划脚本逐字节相同，检索两段都开着",
+  "files": [
+    "business-objects.json",
+    "dag-diff.json",
+    "kb-dump.json",
+    "kb-hits.json",
+    "maos.db",
+    "result.json",
+    "run.log",
+    "trace.json",
+    "INDEX.json"
+  ],
+  "conclusion": "关掉建议：计划漏排 ['refund_channel.refund_channel']，审批人落在缺省的 supervisor，重试预算 2 次用满（实际重规划 2 次）才转人工；打开建议：同一份脚本补上 ['refund_channel.refund_channel']，审批人由 AS-004 指定为 region_manager，重试预算收到 1 次（实际重规划 1 次）即转人工。建议只加任务、只收紧预算、只指定审批人 —— 一条任务没删、一次审批没跳。",
+  "citations": [
+    "kb-policy-tnt-mfg-a-AS-004-v1",
+    "kb-ecp-mfga-40005",
+    "kb-tp-mfga-dealer-writeoff",
+    "failure_hint_index:ch-dealer:40005:AS-001@v1"
+  ]
+}

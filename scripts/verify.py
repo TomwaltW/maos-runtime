@@ -7,7 +7,7 @@
 **这是给评委的答案。** 检索不准顶多说效果一般；无法核验就是零分。所以本文件的
 每一项都必须能被外人独立跑一遍，且失败时说得出「失败意味着什么」。
 
-九项：
+十项：
 
     1 hash-integrity      每个 skill/tool 调用的 input_digest / output_hash 与
                           event_log 一致          -> 失败 = 证据被篡改或事后手写
@@ -34,10 +34,22 @@
                                                   -> 失败 = 这束证据不是当前代码跑的，
                                                      前八项绿得很诚实，只是绿的不是
                                                      人以为的那件事
+   10 case-outcome        业务四判据（到账 / 客户确认 / 人工纠错 / 投诉）齐全且取值
+                          合法，business_success 是那三个值算出来的，arrival=settled
+                          时 arrival_basis 指得回库里那条 payment_observation
+                                                  -> 失败 = 「这单成没成」是报告自己
+                                                     填的，不是从观察行数出来的
 
-前八项校验的是这束证据**内部自洽**；第 9 项校验的是**它是哪份代码产的**。
-两件事分开：一束一年前的证据可以八项全绿，而「可重放的证据链」是这个仓库最硬的
+第 9 项之外的九项校验的是这束证据**内部自洽**；第 9 项校验的是**它是哪份代码产的**。
+两件事分开：一束一年前的证据可以九项全绿，而「可重放的证据链」是这个仓库最硬的
 卖点 —— 出处指向一个复现不出来的地方，那句卖点就不成立（铁律 3）。
+
+**真模型束不核**（T128）：``INDEX.json`` 自报 ``model_mode: live`` 的束，以及
+``case-*/<路径>-live/``，一律不进这十项的分子，只在结尾点名。真模型每跑一次说的
+话都不一样，拿它当重放比对的基准，第 4 项 ``trace-tree`` 会在没有任何 bug 的情况
+下红 —— 而一个只会红的守卫等于没写。这不是网开一面：核验器认的是**确定性**证据，
+真模型那一跑的价值在「它真的打了网络」，不在「它能逐字节重放」。判据在生成侧：
+``make_evidence.py --live-model`` 出到 ``evidence/live/``，不与 Scripted 束同根。
 
 **SKIP 的纪律**：上游能力没落地的项输出 ``[SKIP]`` 并在结尾显式列名，
 **不计进 PASS 的分子**。静默跳过等于谎报 —— 一个 7/7 里藏着两个没跑的，
@@ -1137,6 +1149,102 @@ def check_cost_attribution(cases: list[Case]) -> Check:
 CASE_BUNDLE_PREFIX = "case-"
 LIVE_SUFFIX = "-live"
 
+#: ``INDEX.json`` 里「这束是真模型产的」那个字面值。``scripts/make_evidence.py``
+#: 的 ``MODE_LIVE`` 与 ``scripts/make_case_bundle.py`` 写的是同一个词，本文件
+#: **另存一份**而不是 import 过来：核验器的判据不能由被审那一侧提供（同
+#: ``_ARRIVAL_VALUES`` 的理由）。两边分叉时这里认不出来，那一束会从「不计入分子」
+#: 变回「计入分子」—— 方向是**更严**，不会静默放行。
+MODE_LIVE = "live"
+
+
+def index_model_mode(directory: str) -> str | None:
+    """``<directory>/INDEX.json`` 自报的 ``model_mode``；没有索引或读不出就 None。
+
+    **刻意宽容**：这里不校验出处首行、不校验 JSON 合法性 —— 那是
+    ``load_evidence_json`` 与第 9 项的活。本函数只回答「这束自称是不是真模型产的」，
+    读不出来就当没自称，照旧进核验（**不认识就从严**，不是从宽）。
+    """
+    path = os.path.join(directory, "INDEX.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fh.readline()               # 出处首行
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    mode = (doc or {}).get("model_mode") if isinstance(doc, dict) else None
+    return mode if isinstance(mode, str) else None
+
+
+def is_live_bundle(directory: str) -> bool:
+    """这个目录是不是真模型产的束。两个信号取或。
+
+    ``<路径>-live/`` 是 ``make_case_bundle.py`` 立的目录名口径（T114），
+    ``model_mode: live`` 是索引里的自报（T125）。两个都认，是因为它们各自都能
+    单独存在：目录被改名拷走时只剩索引，老束（索引里还没有这个字段）只剩名字。
+    """
+    return (os.path.basename(directory).endswith(LIVE_SUFFIX)
+            or index_model_mode(directory) == MODE_LIVE)
+
+
+def live_scenario_names(evidence_root: str) -> set[str]:
+    """根索引里自报 ``model_mode: live`` 的场景束名（相对 ``evidence_root``）。
+
+    ``scenario-*`` 目录自己**没有** ``INDEX.json``，它们的 ``model_mode`` 逐束记在
+    根索引的 ``produced[]`` 里（``make_evidence.py::_bundle_info``），所以这一层
+    只能从根索引读。根索引顶层自报 ``live`` 时，整根的场景束全算真模型束 ——
+    那正是 ``evidence/live/`` 被 ``--evidence`` 直接指到时的情形。
+    """
+    doc_mode = index_model_mode(evidence_root)
+    names: set[str] = set()
+    path = os.path.join(evidence_root, "INDEX.json")
+    if not os.path.exists(path):
+        return names
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fh.readline()
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return names
+    if not isinstance(doc, dict):
+        return names
+    entries = [e for e in doc.get("produced", []) if isinstance(e, dict)]
+    for entry in entries:
+        directory = entry.get("dir")
+        if not directory:
+            continue
+        if doc_mode == MODE_LIVE or entry.get("model_mode") == MODE_LIVE:
+            names.add(os.path.basename(str(directory)))
+    return names
+
+
+def skipped_live_dirs(evidence_root: str) -> list[str]:
+    """本根下**不进核验**的真模型束，按名字排序。结尾那行点名印的就是它。
+
+    静默跳过等于谎报（见文件头「SKIP 的纪律」）：一束真模型证据摆在
+    ``evidence/`` 里而屏幕上一个字都没有，与「核过了」在读者眼里长得一模一样。
+    """
+    if not os.path.isdir(evidence_root):
+        return []
+    names = set(live_scenario_names(evidence_root))
+    for name in os.listdir(evidence_root):
+        directory = os.path.join(evidence_root, name)
+        if not os.path.isdir(directory) or name.startswith("."):
+            continue
+        if is_live_bundle(directory):
+            names.add(name)
+            continue
+        # 单案例束的路径子目录各是一次独立的跑，模式也各自标（happy 与 happy-live
+        # 同在一个 case- 束里）。只看束顶层的话，那一束的真模型路径会漏掉。
+        if name.startswith(CASE_BUNDLE_PREFIX):
+            for child in os.listdir(directory):
+                child_path = os.path.join(directory, child)
+                if os.path.isdir(child_path) and not child.startswith(".") \
+                        and is_live_bundle(child_path):
+                    names.add(f"{name}/{child}")
+    return sorted(names)
+
 _PROVENANCE_HINT_DEFAULT = "在干净工作区上重跑 python3 scripts/make_evidence.py"
 #: 单案例束（T114）由另一条命令产。见 `provenance_hint`。
 _PROVENANCE_HINT_CASE = (
@@ -1258,11 +1366,17 @@ def provenance_anchors(evidence_root: str) -> list[tuple[str, str]]:
     """
     anchors: list[tuple[str, str]] = []
     index = os.path.join(evidence_root, "INDEX.json")
-    if os.path.exists(index):
+    if os.path.exists(index) and index_model_mode(evidence_root) != MODE_LIVE:
         anchors.append(("evidence/", index))
     for name in sorted(os.listdir(evidence_root)):
         directory = os.path.join(evidence_root, name)
         if name.startswith("scenario-") or not os.path.isdir(directory):
+            continue
+        # 真模型束（`evidence/live/`、`<路径>-live/`）不进本项的分母：它们不进
+        # 前九项，出处却照旧要求「== HEAD」的话，这一项就成了唯一一个把真模型束
+        # 算进分子的地方 —— 而它红起来只能靠再烧一次真模型跑才消得掉。跳过的束
+        # 由 `skipped_live_dirs` 在结尾点名，不是悄悄放过（T128）。
+        if is_live_bundle(directory):
             continue
         aux_index = os.path.join(directory, "INDEX.json")
         if os.path.exists(aux_index):
@@ -1273,7 +1387,8 @@ def provenance_anchors(evidence_root: str) -> list[tuple[str, str]]:
             if name.startswith(CASE_BUNDLE_PREFIX):
                 for child in sorted(os.listdir(directory)):
                     child_index = os.path.join(directory, child, "INDEX.json")
-                    if os.path.exists(child_index):
+                    if (os.path.exists(child_index)
+                            and not is_live_bundle(os.path.join(directory, child))):
                         anchors.append((f"{name}/{child}", child_index))
             continue
         for child in sorted(os.listdir(directory)):
@@ -1604,7 +1719,7 @@ def case_bundle_dirs(evidence_root: str) -> tuple[list[str], list[str]]:
             path = os.path.join(bundle, child)
             if not os.path.isdir(path) or child.startswith("."):
                 continue
-            if child.endswith(LIVE_SUFFIX):
+            if is_live_bundle(path):
                 skipped.append(os.path.relpath(path, evidence_root))
                 continue
             if _is_bundle(path):
@@ -1615,12 +1730,22 @@ def case_bundle_dirs(evidence_root: str) -> tuple[list[str], list[str]]:
 def load_cases(evidence_root: str, db_arg: str | None) -> list[Case]:
     if not os.path.isdir(evidence_root):
         raise VerifyError(f"证据目录不存在: {evidence_root}")
-    dirs = sorted(
+    found = sorted(
         os.path.join(evidence_root, d) for d in os.listdir(evidence_root)
         if d.startswith("scenario-") and os.path.isdir(os.path.join(evidence_root, d)))
-    if not dirs:
+    if not found:
         raise VerifyError(
             f"{evidence_root} 下没有 scenario-* 目录；先跑 python3 scripts/make_evidence.py")
+    # 真模型束不进核验（T128，见文件头「真模型束不核」）。**在这里滤而不是在各
+    # CHECKS 里滤**：滤在入口，十项就都拿不到这些束，不必逐项记得跳过 —— 第 10 项
+    # 那种后加的项，漏记一次就等于把真模型束悄悄算进了分子。
+    live = live_scenario_names(evidence_root)
+    dirs = [d for d in found if os.path.basename(d) not in live]
+    if not dirs:
+        raise VerifyError(
+            f"{evidence_root} 下的 scenario-* 全是真模型束（model_mode={MODE_LIVE}）——"
+            f" 核验器只认脚本回放产的确定性证据，真模型束单独标、不进核验。"
+            f"要核的是 Scripted 束：python3 scripts/verify.py --evidence evidence/")
     # 同一 flow 的独立 runtime 保持各自事件 seq/快照主键，不合并数据库。
     dirs = [directory for scenario in dirs for directory in [scenario, *sorted(
         os.path.join(scenario, child) for child in os.listdir(scenario)
@@ -1692,7 +1817,7 @@ def main(argv: list[str] | None = None) -> int:
         code = render(results, cases, args.json)
         # 跳过的束**要点名**：静默跳过等于谎报（同文件头「SKIP 的纪律」）。
         # `--json` 那一路不印 —— 那个模式的 stdout 是给机器解析的。
-        skipped_live = case_bundle_dirs(args.evidence)[1] if os.path.isdir(args.evidence) else []
+        skipped_live = skipped_live_dirs(args.evidence)
         if skipped_live and not args.json:
             print(f"未核验（真模型束，重放比不了）：{', '.join(skipped_live)}")
         return code

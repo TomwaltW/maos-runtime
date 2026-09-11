@@ -5,7 +5,7 @@
     python3 scripts/make_evidence.py --scenarios 1,2    # 只跑指定场景（不含 R5）
     python3 scripts/make_evidence.py --contrast         # 只产 contrast-R3/R4/R6
     python3 scripts/make_evidence.py --domains          # 1-10 + R5，缺省落到 evidence/domains/
-    python3 scripts/make_evidence.py --live-model       # 用真模型产（缺省是脚本回放）
+    python3 scripts/make_evidence.py --live-model       # 用真模型产，落到 evidence/live/
 
 **缺省一律脚本回放**（T125，契约 §G）：``main()`` 里
 ``os.environ.setdefault("MAOS_FORCE_SCRIPTED", "1")``，子进程继承。于是在
@@ -16,6 +16,13 @@
 ``--live-model`` 是唯一的显式出口，它产的束在 ``INDEX.json`` 与每条 ``produced[]``
 里都标 ``model_mode: live``（字面值与 ``scripts/make_case_bundle.py`` 对齐）。
 哨兵反查不受影响：``secret_values()`` 照旧从 ``os.environ`` 取 key 当哨兵扫产物。
+
+**真模型束不与 Scripted 束共用一个根**（T128）：``--live-model`` 的缺省产出根是
+``evidence/live/``（``--domains`` 时 ``evidence/live/domains/``），见
+``default_out_root``；显式 ``--out`` 指进另一种模式的根会被 ``assert_root_mode``
+当场拦下。此前两者都落 ``evidence/``，一次 ``--live-model`` 就能把八束 Scripted
+证据原地换成真模型产的 —— 而 ``verify.py`` 从前不看 ``model_mode``，换完照样
+``10/10 PASS``（铁律 3 上的一个洞，``docs/BACKLOG.md`` 记的就是这笔账）。
 
 ``--domains`` 显式扩展到四个业务域，默认使用独立的 ``evidence/domains/`` 根目录，
 可用 ``--out`` 覆盖。无参仍只产 ``scenario-1..7 + scenario-R5`` 八束。
@@ -81,10 +88,13 @@ _SECRET_NAME = re.compile(
     r"(?i)(api[_-]?key|access[_-]?key|secret|token|password|passwd|credential|private[_-]?key)")
 #: 派单点名的两个，无论命名规则是否命中都必须纳入。
 #: ``MAOS_LLM_BASE_URL`` 是第三个：它不是密钥，但铁律 6 明文点名「凡是可能回显
-#: env 或 URL 的命令，输出前必须过脱敏」，而 ``select_model_client()`` 的
-#: 「启用真模型：base_url=…」那一行**会**把它写进 ``run.log``（``--live-model``
-#: 跑出来的每一束都有）。内网网关地址进证据即是泄漏，何况自建网关常把凭据
-#: 编在路径里。名字里没有 key/secret/token，正则命不中，只能点名。
+#: env 或 URL 的命令，输出前必须过脱敏」。内网网关地址进证据即是泄漏，何况自建
+#: 网关常把凭据编在路径里。名字里没有 key/secret/token，正则命不中，只能点名。
+#:
+#: T128 之后 ``select_model_client()`` 那一行只打 host（``base_url.host=…``），
+#: 整条 URL 不再进 ``run.log``。**这个哨兵照旧留着**：它守的是「凡是可能回显」，
+#: 不是「现在已知会回显的那一处」—— 下一个把 env 打进产物的调用点出现时，
+#: 名单先于它在那儿。名单少一项的代价是一整批证据带着网关地址发出去。
 _ALWAYS_SECRET = ("MAOS_LLM_API_KEY", "MATRIX_TOKEN", "MAOS_LLM_BASE_URL")
 #: 太短的值当哨兵会把正常文本全打成命中（"1"、"on" 之类），反而掩盖真泄漏。
 _MIN_SECRET_LEN = 6
@@ -101,6 +111,65 @@ _FORCE_OFF_VALUES = ("", "0", "false", "no", "off")
 #: 完整答案 —— 值不一样的话，跨束筛一次就漏。
 MODE_SCRIPTED = "scripted"
 MODE_LIVE = "live"
+
+#: ``--live-model`` 的缺省产出根在 ``evidence/`` 下的这一层。见 ``default_out_root``。
+LIVE_SUBDIR = "live"
+
+
+def default_out_root(*, live: bool, domains: bool) -> str:
+    """没给 ``--out`` 时这一跑该往哪写。
+
+    **真模型束与 Scripted 束不共用一个根**（T128）。此前两者都落 ``evidence/``：
+    一次 ``--live-model`` 就把八束 Scripted 证据原地换成真模型产的，而
+    ``verify.py`` 从前不看 ``model_mode``，换完照样 ``10/10 PASS`` —— 产物上
+    看不出来，核验器也不说话，那正是铁律 3 要挡的那种「证据不真实」。
+
+    取向与 ``scripts/make_case_bundle.py`` 的 ``<path>-live/`` 相同，分的位置不同：
+    那边一条路径一份 ``INDEX.json``，分到束名就够；这边**一整批共用一份**
+    ``INDEX.json``，只把束名改掉的话那份索引仍然会被覆盖，所以分的必须是根。
+
+    留在 ``evidence/`` 之内而不是另起一个顶层目录，是为了两件既有的事照旧成立：
+    收尾的 ``git clean -fd evidence/`` 仍然收得干净（顶层新目录不在 ``.gitignore``
+    里，会长期留在 ``git status`` 上），``scan_aux_bundles`` 也会把它登记进索引 ——
+    「evidence/ 里有什么」仍然一处答全。``verify.py`` 只按 ``scenario-*`` 前缀在
+    根的**顶层**挑核验对象，所以它一眼看不到 ``evidence/live/`` 里的束；
+    真被 ``--evidence`` 指进去时，那边按 ``model_mode`` 另有一道（见该文件）。
+    """
+    root = os.path.join(ROOT, "evidence")
+    if live:
+        root = os.path.join(root, LIVE_SUBDIR)
+    return os.path.join(root, "domains") if domains else root
+
+
+def assert_root_mode(out_root: str, mode: str) -> None:
+    """``out_root`` 里已有的束与本次是同一种 ``model_mode`` 吗；不是就报错、一字不写。
+
+    ``default_out_root`` 分开的只是**缺省**。显式 ``--out evidence/ --live-model``
+    仍能把真模型束指进 Scripted 束的根，那条路一样会把八束证据原地换掉 ——
+    只修缺省等于留一半洞（T125 的教训）。这里按目标根 ``INDEX.json`` 自报的
+    ``model_mode`` 挡一道：一个根只装一种模式的束。
+
+    反向也拦：拿 Scripted 跑覆盖一批真模型束，丢的是**重跑不回来**的东西 ——
+    真模型每跑一次说的话都不一样，且那一跑烧的是钱。
+
+    读不出（没有索引、不是合法 JSON）就放行：本项守的是「别覆盖另一种模式」，
+    不是证据格式，那是 ``verify.py`` 的活。索引缺失最常见的情形恰恰是空目录。
+    """
+    path = os.path.join(out_root, "INDEX.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fh.readline()               # 出处首行，本项不校验
+            existing = (json.load(fh) or {}).get("model_mode")
+    except (OSError, ValueError):
+        return
+    if existing and existing != mode:
+        raise EvidenceError(
+            f"{os.path.relpath(out_root, ROOT)} 里已有的是 model_mode={existing} 的束，"
+            f"本次是 {mode} —— 一个根只装一种模式，不许互相覆盖。"
+            f"换一个 --out，或去掉 --out 走缺省根"
+            f"（{mode} 的缺省根见 --help）")
 
 
 def model_mode() -> str:
@@ -1089,7 +1158,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="make_evidence", description="生成 evidence/scenario-<N>/ 证据束")
     parser.add_argument("--out", default=None,
-                        help="输出根目录，缺省 evidence/；--domains 时缺省 evidence/domains/")
+                        help="输出根目录，缺省 evidence/；--domains 时缺省 evidence/domains/；"
+                             "--live-model 时缺省 evidence/live/（--domains 则 evidence/live/domains/）")
     parser.add_argument("--scenarios", default=None,
                         help="逗号分隔的场景号；缺省取 maos.main.DEFAULT_SCENARIOS（1-7）")
     parser.add_argument("--domains", action="store_true",
@@ -1105,7 +1175,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="只产三组对照束 contrast-R3/R4/R6；不碰 scenario-* 也不重写 INDEX.json")
     parser.add_argument("--live-model", action="store_true",
                         help="用真模型产这一批束（默认强制 ScriptedModelClient）；"
-                             "产出的 INDEX.json 会标 model_mode=live")
+                             "单独出到 evidence/live/，产出的 INDEX.json 标 model_mode=live，"
+                             "verify.py 不把这种束算进分子")
     parser.add_argument("--_child", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_contrast", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_db", default=None, help=argparse.SUPPRESS)
@@ -1113,7 +1184,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.domains and (args.scenarios or args.contrast):
         parser.error("--domains 不能与 --scenarios / --contrast 同用")
     if args.out is None:
-        args.out = os.path.join(ROOT, "evidence", "domains") if args.domains else os.path.join(ROOT, "evidence")
+        args.out = default_out_root(live=args.live_model, domains=args.domains)
 
     # 缺省把这一跑（连同它 fork 出去的每个场景子进程）钉死在脚本回放上（T125，契约 §G）。
     # **写进 `os.environ` 而不是给 `subprocess.run` 传 `env=`**：子进程是本文件用
@@ -1148,6 +1219,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args._db:
             raise SystemExit("--_contrast 必须配 --_db")
         return run_child_contrast(args._contrast, args._db)
+
+    # 三条产出路径（缺省 / --domains / --contrast）共用这一道：本次的模式与目标根
+    # 里已有的束对不上就一个字节都不写。放在这里而不是各分支里，是因为**漏掉一条
+    # 分支**正是 T125 那个 bug 的形状 —— 只修了一半的洞与没修一样大。
+    assert_root_mode(args.out, model_mode())
 
     # 对照束走一条**完全独立**的路径：缺省那一支（下面整段）一个字节不变，
     # 缺省仍然恒为 8 束。两条路唯一共用的是 build_contrast 里的 write_bundle。

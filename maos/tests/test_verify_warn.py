@@ -148,6 +148,25 @@ def test_retired_warn_classes_stay_retired(verify_report):
             f"再出现是回归，不是已知缺口。")
 
 
+def test_module_docstring_lists_all_ten_checks():
+    """抬头那份清单要与 ``CHECKS`` 一样长 —— 差一项，读代码的人就数错。
+
+    抬头长期写着「九项：」并只列到第 9 项 ``provenance``，而 `CHECKS` 与屏幕上都是
+    10 项（`docs/BACKLOG.md` 的 `## task-t121` 记的就是这笔账，T128 补上）。
+    文档与代码分叉本身不会让任何测试红 —— 所以给它一条。第 11 项进来那天，
+    这条会红在「抬头没跟着改」上，而不是等着谁去数。
+
+    只钉「几项」与「每一项的 key 都出现在抬头里」，不钉措辞：判据要挡的是漏登记，
+    不是行文。
+    """
+    doc = verify.__doc__ or ""
+    assert len(verify.CHECKS) == 10, "CHECKS 变长/变短了，抬头和本条都要跟着改"
+    assert "十项：" in doc, "抬头的项数与 CHECKS 对不上"
+    for fn in verify.CHECKS:
+        key = fn.__name__.removeprefix("check_").replace("_", "-")
+        assert key in doc, f"第 {key} 项在 CHECKS 里，却没进抬头那份清单"
+
+
 def test_verify_still_ten_of_ten(verify_report):
     """收口 warn 的过程中一次都不许把判据判坏 —— 其余项全 PASS，一项都不许 SKIP。
 

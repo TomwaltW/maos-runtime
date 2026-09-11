@@ -2493,3 +2493,13 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | `scripts/make_evidence.py --live-model` 产出的束落在与 Scripted 束**同一个** `evidence/scenario-*` 目录（不像 `make_case_bundle.py` 出到 `<path>-live/`），而 `verify.py` 不看 `model_mode` | 真模型束可以覆盖 Scripted 束并照样过 verify。本轮修掉了「标签说谎」那一半（旗标现在真能传到子进程），但「覆盖」这一口子还在 | 让 `--live-model` 出到独立根目录，或让 `verify.py` 直接拒 `model_mode=live` 的束。复赛前做 |
 | 2026-09-11 | p10 | `code_repo_patch.py` 的重问提示词不带上一版 diff 原文，模型看不到 `corrupt patch at line 6` 指的是哪一行 | 只影响自修复命中率，不影响正确性 | 下次调这个 skill 的提示词时一起带上。另：重问轮里模型抛异常或产非法 JSON 会直接 failed，把第一轮那份「合法但打不上、本可交给 Gate」的补丁丢掉了 |
 | 2026-09-11 | p10 | `MAOS_FORCE_SCRIPTED` 与 kb 三个旋钮共四个仍不进 `maos/config/source.py` 的 `GOVERNED_KEYS` | 能治理（Nacos 上改得到、不用重启），但变更不落 `ConfigChanged` 审计。这个旋钮一改，整批证据束的成本读数含义就变了，比 kb 那三个更值得审计 | 「四行改动 + 一条断言」，`test_config_source.py` 那条按数目写的测试要一起改名。`## task-T35` 记的是同一笔账，本轮只更正了数目笔误没有补齐 |
+
+## task-t126（PolarDB 束之后的范围外发现，2026-09-11）
+
+| 日期 | Phase | 现象 | 影响 | 建议 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | 知识层（`kb_doc` 与它的全文影子表）**仍在 SQLite**，本轨只把退款域业务表搬上了 PG。`docs/architecture.md` §5 的标题「业务对象**与知识层**在 PolarDB」因此比实况说得多半句 | 答辩时若照标题说「知识层也在 PolarDB 上」，一条 `\dt` 就能证伪 | 归持有 `maos/kb/**` 或 `docs/architecture.md` 的轨。知识层走的是另一套开关（`MAOS_STORE_BACKEND` + `kb.port_of(store)`），`pg_store.py` 的 tsvector / pgvector 两条通道都已填实，缺的是把它接到装配上。**在接上之前，材料面口径应改成「业务对象在 PolarDB，知识层可切、本轮未切」** |
+| 2026-09-11 | p10 | `docs/architecture.md:183` 那一行只写了 `MAOS_DOMAIN_BACKEND=postgres`（进程级），本轨之后还有一个**装配级**的 `MAOS_FLOW_DOMAIN_BACKEND` —— 而两者的差别不是风格问题：只设进程级那个，整条 DAG 会停在第一步 | 照文档那一行操作的人会撞上「受理幂等闸失败」，而报错完全不提后端开关 | 归持有 `docs/architecture.md` 的轨（本轨白名单外，没动）。补一行并点名「跑整条 DAG 用装配级那个」。成因与实测症状见 `docs/DECISIONS.md ## task-t126` 第 1 条 |
+| 2026-09-11 | p10 | PG 束的 `business-objects.json` 是**空的**（内容在同目录 `pg-tables.json`），因此 `verify.py` 第 2 项（business_ref 解析）对 PG 束必判负 | `verify.py` 目前只跑 `evidence/case-real-01/`，PG 束不在它的扫描面上，所以现在不红。但哪天有人把 PG 束也喂进去，会得到一条看起来像回归的假警 | 两条路任选：让 `verify.py` 认 `INDEX.json` 的 `domain_backend` 字段、PG 束改判 `pg-tables.json`；或让 `make_evidence.collect_business_objects()` 接受一个可替换的业务连接。后者更收口，但那个文件是 T128 的面 |
+| 2026-09-11 | p10 | `maos/kb/promotion.py:414` 与 `maos/domain/rtv/objects.py:141` 也用 `sqlite_master` 探表。本轨的方言翻译让它们**顺带**能在 PG 上工作了，但没有针对性测试 | 现在是「能用但没证过」。RTV 域真要上 PG 时，`SELECT name FROM sqlite_master WHERE type='table'`（不带 name 收窄）那一句会把 `information_schema` 里**全部**表都列出来，包括不属于该域的 | 归各自的轨。翻译本身有测试（`test_flow_domain_backend.py` 三条），缺的是这两个调用点的端到端确认 |
+| 2026-09-11 | p10 | PG 束与 SQLite 束的 `business_ref` 行数对不上：PG 侧 62 条里只有 34 条 resolve 得动（跨多次跑累积，旧版本对象被覆盖后引用悬空）。清场之后本案是干净的，但**清场只清本租户本案** | 同一个库上跑过别的案子时，`business_ref` 会留下解析不动的历史行。不影响本案判据（都按 `plan_id` 收窄），但全表扫的人会看到一堆悬空引用 | 不是 bug，是 PG 持久性的自然结果。真上 PolarDB 时按租户/案号定期清理，或给 `business_ref` 加一条按 `plan_id` 的保留策略。本轮不做 |

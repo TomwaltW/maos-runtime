@@ -1,4 +1,4 @@
-# generated at 2026-09-11T06:12:14.830048+00:00 from f2a3bb2ea0a1671e32cd831f34e3131bfffdfb01
+# generated at 2026-09-11T10:14:35.181980+00:00 from cc86ed09127447f520cdbce34b3993333402d3d7
 场景 6：制造企业售后退款（顺利路径），无 key 确定性复现
 
 待主管审批: 核算退款金额并写财务分录
@@ -38,11 +38,11 @@ Plan: DONE  |  处理客户对轴承订单的退款诉求：多源诉求已到�
 
   业务状态: settled（settled 只可能由 payment.observe 写入）
   核准金额: 6800.00（政策 v1，依据 ["AS-01@v1"]）
-  支付观察: 1 条，终态 settled，actor=ab5e6c24…
+  支付观察: 1 条，终态 settled，actor=398dce27…
   业务引用: 12 条（DAG -> 业务对象，只存引用不存副本）
   客户通知: 1 条，ack=未确认（needs_followup，不阻塞）
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_bb218a2398cd，共 5 个任务
+INFO  maos.cp      创建计划 plan_ea3dfb542a6c，共 5 个任务
 INFO  maos.cp      [task-s6-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s6-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s6-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -69,5 +69,5 @@ INFO  maos.cp      [task-s6-notify] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s6-notify] RUNNING -> AWAITING_REVIEW (submit_result)
 INFO  maos.gate    [task-s6-notify] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s6-notify] AWAITING_REVIEW -> DONE (gate_pass)
-INFO  maos.finalizer [plan_bb218a2398cd] case case-s6-0001 -> ('history_case', 'success')（到账=settled）
-INFO  maos.finalizer [plan_bb218a2398cd] 复盘完成，沉淀 1 条
+INFO  maos.finalizer [plan_ea3dfb542a6c] case case-s6-0001 -> ('history_case', 'success')（到账=settled）
+INFO  maos.finalizer [plan_ea3dfb542a6c] 复盘完成，沉淀 1 条

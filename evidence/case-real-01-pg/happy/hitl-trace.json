@@ -1,0 +1,46 @@
+# generated at 2026-09-11T10:14:49.470171+00:00 from cc86ed09127447f520cdbce34b3993333402d3d7
+{
+  "trace": [
+    {
+      "seq": 16,
+      "at": "2026-09-11T10:14:49.299432+00:00",
+      "kind": "plan_approval",
+      "event_type": "PlanApproved",
+      "task_id": "",
+      "transition": "",
+      "operator": "沈思锴（after_sales_supervisor）",
+      "actor": "human",
+      "note": ""
+    },
+    {
+      "seq": 38,
+      "at": "2026-09-11T10:14:49.374409+00:00",
+      "kind": "blocked",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "transition": "AWAITING_REVIEW->BLOCKED [gate_needs_human]",
+      "operator": null,
+      "actor": "gate",
+      "note": "gate_needs_human"
+    },
+    {
+      "seq": 39,
+      "at": "2026-09-11T10:14:49.379928+00:00",
+      "kind": "task_approval",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "transition": "BLOCKED->DONE [human_approve]",
+      "operator": "沈思锴（region_manager）",
+      "actor": "human",
+      "note": "按 region_manager 权限放行"
+    }
+  ],
+  "count": 3,
+  "human_actions": 2,
+  "operators": [
+    "沈思锴（after_sales_supervisor）",
+    "沈思锴（region_manager）"
+  ],
+  "unattributed_human_actions": [],
+  "note": "每一条人做的动作都带操作者与时间；机器判的返工与转人工出口如实记 operator=null / actor=gate —— 把机器的动作记在人头上，「这一单人介入过几次」就永远算不准。unattributed_human_actions 非空即证据不合格（verify.py 第 10 项在核它）。"
+}

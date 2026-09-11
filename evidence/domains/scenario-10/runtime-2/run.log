@@ -1,4 +1,4 @@
-# generated at 2026-09-11T06:12:16.652464+00:00 from f2a3bb2ea0a1671e32cd831f34e3131bfffdfb01
+# generated at 2026-09-11T10:14:36.890474+00:00 from cc86ed09127447f520cdbce34b3993333402d3d7
 场景 10（顺利路径）：应付账款三单匹配与付款 —— 银行给了流水号才算付掉
 
 [1] 三单匹配: 通过（跑了 11 条判据）
@@ -14,7 +14,7 @@
     幂等键  : ap:tnt-mfg-ap:case-ap-0001 —— 由 (租户, 案子) 唯一确定，一张发票只允许有一笔付款
 
 [4] 银行回单: settled（问了 2 次）
-    流水号  : bkref-bab724e1e1c0  起息 2026-08-31
+    流水号  : bkref-bbbe984558ab  起息 2026-08-31
     —— settled 是**问出来的**：把银行换成一步返回 settled 的桩，ap.observe 就没有存在理由了
 
 ====================================================================
@@ -46,7 +46,7 @@ Plan: DONE  |  支付华东紧固件 2026-08 月结货款：三单匹配后按 B
     task-s10-pay  BLOCKED          -> DONE             [human_approve]
 
   业务状态  : settled
-  settled 观察: 1 条，流水号 ['bkref-bab724e1e1c0']
+  settled 观察: 1 条，流水号 ['bkref-bbbe984558ab']
   Plan 终态 : DONE
 
 场景 10（失败路径）：三单无异议、四个 Agent 全回 ok —— 而这笔钱付没付出去，系统说不知道
@@ -103,7 +103,7 @@ Plan: FAILED  |  支付华东紧固件密封件货款：三单无异议，但银
   Plan 终态 : FAILED（主管驳回，业务确实没成功）
   Agent 自述 : {'task-s10b-intake': 'ok', 'task-s10b-match': 'ok', 'task-s10b-plan': 'ok', 'task-s10b-pay': 'ok'} —— 四个全 ok，而案子没成
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_69661ca7b041，共 4 个任务
+INFO  maos.cp      创建计划 plan_e1ddf175f03e，共 4 个任务
 INFO  maos.cp      [task-s10-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s10-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s10-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -127,7 +127,7 @@ INFO  maos.gate    [task-s10-pay] Gate {'schema': 'pass', 'acceptance': 'pass', 
 INFO  maos.cp      [task-s10-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s10-pay] BLOCKED -> DONE (human_approve)
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_06d2d0d0c73e，共 4 个任务
+INFO  maos.cp      创建计划 plan_074cb0a51a99，共 4 个任务
 INFO  maos.cp      [task-s10b-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s10b-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s10b-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -151,5 +151,5 @@ INFO  maos.gate    [task-s10b-pay] Gate {'schema': 'pass', 'acceptance': 'pass',
 INFO  maos.cp      [task-s10b-pay] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s10b-pay] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s10b-pay] BLOCKED -> FAILED (human_reject)
-INFO  maos.finalizer [plan_69661ca7b041] 复盘完成，沉淀 1 条
-INFO  maos.finalizer [plan_06d2d0d0c73e] 复盘完成，沉淀 2 条
+INFO  maos.finalizer [plan_e1ddf175f03e] 复盘完成，沉淀 1 条
+INFO  maos.finalizer [plan_074cb0a51a99] 复盘完成，沉淀 2 条

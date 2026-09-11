@@ -540,6 +540,38 @@ def test_run_py_does_not_override_an_explicit_choice():
         os.environ[ENV_FORCE_SCRIPTED] = "1"
 
 
+def test_the_two_places_that_must_not_set_it_really_do_not():
+    """契约 §G 点名**不设**该变量的两处，静态核对。
+
+    房间入口（``hiclaw/room_ingress.py``）与 ``make_case_bundle.py --live-model``
+    要的就是真模型 —— 本轨一个字节都没碰它们，这条从源码正面确认没有被顺手加上。
+    行为侧由 ``test_the_room_path_still_gets_a_real_gateway`` 从另一头钉住。
+    """
+    for relpath in ("hiclaw/room_ingress.py", "scripts/make_case_bundle.py"):
+        text = (ROOT / relpath).read_text(encoding="utf-8")
+        assert ENV_FORCE_SCRIPTED not in text, (
+            f"{relpath} 设了 {ENV_FORCE_SCRIPTED}，真模型那条路被堵上了（契约 §G）")
+
+
+def test_ap_smoke_was_already_setting_it_and_now_it_finally_works():
+    """``scripts/ap_smoke.py`` **在 T125 之前就设了这个变量**，而当时没人读。
+
+    那一行（``env["MAOS_FORCE_SCRIPTED"] = "1"``，紧跟在剥掉 ``*API_KEY`` /
+    ``*BASE_URL`` / ``*_TOKEN`` 之后）把「这个子进程要确定性」写得明明白白，
+    只是 ``select_model_client()`` 从来没读过它 —— 与 ``AgentIdentity.max_self_repair``
+    是同一种东西：**语义早就写下了，只是没有读取点**。所以本轨用的不是一个新发明的
+    名字，是把仓库里已有的那个意图接上电。
+
+    这条测试的用处是：谁要是把 ``ENV_FORCE_SCRIPTED`` 改名，``ap_smoke.py`` 会
+    **静默**退回「设了没人读」的老样子 —— 它剥 key 那几行仍在，所以它照样不打网络，
+    症状只有「ap_smoke 的子进程在有 key 时行为变了」，而没有任何红灯。
+    """
+    text = (ROOT / "scripts" / "ap_smoke.py").read_text(encoding="utf-8")
+    assert f'env["{ENV_FORCE_SCRIPTED}"] = "1"' in text, (
+        f"ap_smoke.py 不再设 {ENV_FORCE_SCRIPTED} 了 —— 要么它改了写法，"
+        f"要么这个变量被改名了，两种都要人看一眼")
+
+
 def test_make_evidence_labels_the_bundle_with_the_model_mode(monkeypatch):
     """``INDEX.json`` 的 ``model_mode`` 与跑的时候读的是同一个变量，不会分叉。
 

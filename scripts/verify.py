@@ -554,11 +554,20 @@ def check_trace_tree(cases: list[Case]) -> Check:
                     chk.bad(f"{case.name} plan={trace['plan_id']}: {e}")
             else:
                 chk.ok()
+        # 圆桌那一族（T134）同样过一遍无孤儿无环 —— 它是树，就得守树的规矩。
+        for trace in case.trace.get("roundtable_traces", []):
+            errs = check_span_tree(trace["spans"])
+            if errs:
+                for e in errs:
+                    chk.bad(f"{case.name} roundtable={trace['plan_id']}: {e}")
+            else:
+                chk.ok()
         replay = json.loads(json.dumps(export_trace_bundle(case.db_path), ensure_ascii=False))
         if replay != case.trace:
             chk.bad(f"{case.name}: trace.json 与库重放结果不一致（证据被改过或库已变）")
         else:
             chk.ok()
+        _check_roundtable_trees(chk, case)
         _warn_stray_events(chk, case)
         unsourced = case.trace.get("summary", {}).get("unsourced_artifacts", 0)
         if unsourced:
@@ -625,6 +634,129 @@ def _check_seeded_provenance(chk: Check, case: Case) -> None:
         chk.info(f"{case.name}: {count} 份产物走旁路入库（未经 on_task_result），"
                  f"来源已由 ArtifactSeeded 事件点名：{'；'.join(sources)}。"
                  f"这说的是入库路径，不是内容真伪 —— 判真伪看 sandbox.mode")
+
+
+#: 圆桌那一摊行的 ``plan_id`` 前缀（``maos/obs/trace.py::ROUNDTABLE_PLAN_PREFIX``）。
+_ROUNDTABLE_PREFIX = "roundtable:"
+
+
+def _check_roundtable_trees(chk: Check, case: Case) -> None:
+    """圆桌那一段**真的被树收走了**，而不是被判据放过去了（T134）。
+
+    这一条是随「圆桌事件从 stray_events 搬进自己的树」一起长出来的判据，不补它就是
+    拿四行 warn 换一个新洞：从前那 8 条在证据里明明白白是「不在任何一棵树内」，
+    谁也骗不了谁；现在只要把 ``stray_events`` 的判据写成「``plan_id`` 带
+    ``roundtable:`` 前缀就豁免」，warn 一样消失、而那 8 条**哪儿都不在** ——
+    屏幕上和真收进树里长得一模一样。
+
+    所以这里**回库数**，不读 trace.json 自己报的数：
+
+    1. 库里每一条带前缀的事件，必须**恰好**出现在一个地方 —— 某棵圆桌树的 span 里，
+       或者 ``stray_events`` 里。两头都不在 = 被藏了（判负）；两头都在 = 重复计数
+       （判负，那会让 ``summary`` 的条数虚高）。
+    2. 每棵树自报的 ``event_count`` 必须等于库里属于它那个伪 plan_id 的行数 ——
+       树收了一半也算收，但数字不许对不上。
+    3. 用量同理：库里 ``trace_id`` 为空且带前缀的每一行，要么在某棵圆桌树的
+       ``model_usage`` 里，要么在 ``unattributed_usage`` 里，**不许两头都不在**。
+
+    判据因此比改动前**更紧**：改动前这些行只要出现在 stray 清单里就算如实，
+    现在它们必须被某一族接住，且接住的那一族要数得对。
+    """
+    trees = case.trace.get("roundtable_traces", [])
+    like = f"{_ROUNDTABLE_PREFIX}%"
+    db_events: dict[int, str] = {
+        r["seq"]: r["plan_id"] for r in case.conn.execute(
+            "SELECT seq, plan_id FROM event_log WHERE plan_id LIKE ?"
+            " AND plan_id NOT IN (SELECT plan_id FROM plan) ORDER BY seq", (like,))}
+    if not db_events and not trees:
+        return                          # 这束里没有圆桌，本判据一次都不执行
+
+    # 树里认的 seq：只认真的落成了 span 的那些（同 export_trace_bundle 的口径）。
+    in_tree: dict[int, str] = {}
+    dupes: list[int] = []
+    for t in trees:
+        for s in t["spans"]:
+            seq = s["attributes"].get("maos.event.seq")
+            if seq is None or s["attributes"].get("maos.event.type") is None:
+                continue                # 圆桌根 span 与无头轮不对应任何一条事件行
+            if seq in in_tree:
+                dupes.append(seq)
+            in_tree[seq] = t["plan_id"]
+    in_stray = {r.get("seq") for r in case.trace.get("stray_events") or []}
+
+    for seq, plan_id in db_events.items():
+        where = f"{case.name} seq={seq} plan_id={plan_id!r}"
+        if seq in in_tree and seq in in_stray:
+            chk.bad(f"{where}: 既在圆桌树里、又在 stray_events 里 —— 同一条事件被数了"
+                    f"两次，summary 的条数因此虚高")
+        elif seq in in_tree:
+            chk.ok()
+        elif seq in in_stray:
+            chk.ok()                    # 没收进树，但如实点名了 —— 洞看得见
+        else:
+            chk.bad(f"{where}: 带 roundtable: 前缀却既不在任何圆桌树里、也不在"
+                    f" stray_events 里 —— 判据被放宽成「有前缀就豁免」了，"
+                    f"这条事件在证据里哪儿都找不到")
+    for seq in dupes:
+        chk.bad(f"{case.name} seq={seq}: 同一条事件出现在两棵圆桌树里")
+
+    for t in trees:
+        mine = sum(1 for p in db_events.values() if p == t["plan_id"])
+        got = t["summary"]["event_count"]
+        if got == mine:
+            chk.ok()
+        else:
+            chk.bad(f"{case.name} roundtable={t['plan_id']}: 自报 {got} 条事件，"
+                    f"库里属于这个伪 plan_id 的有 {mine} 条 —— 数对不上")
+
+    _check_roundtable_usage(chk, case, trees, like)
+    _info_roundtable_timeline(chk, case, trees)
+
+
+def _check_roundtable_usage(chk: Check, case: Case, trees: list, like: str) -> None:
+    """圆桌那几次模型调用一条都没丢（判据 3，见 :func:`_check_roundtable_trees`）。"""
+    if "model_usage" not in case.tables:
+        return
+    in_tree: dict[int, str] = {}
+    for t in trees:
+        for r in t["model_usage"]:
+            in_tree[r["seq"]] = t["plan_id"]
+    named = {r.get("seq") for r in case.trace.get("unattributed_usage") or []}
+    for row in case.conn.execute(
+            "SELECT seq, plan_id, agent_role FROM model_usage"
+            " WHERE trace_id='' AND plan_id LIKE ? ORDER BY seq", (like,)):
+        where = f"{case.name} usage seq={row['seq']} ({row['agent_role']})"
+        if row["seq"] in in_tree and row["seq"] in named:
+            chk.bad(f"{where}: 既算进圆桌树的 cost、又列在 unattributed_usage 里"
+                    f" —— 同一笔花销被数了两次")
+        elif row["seq"] in in_tree or row["seq"] in named:
+            chk.ok()
+        else:
+            chk.bad(f"{where}: 圆桌的用量行既没归进圆桌树的 cost、也没列在"
+                    f" unattributed_usage 里 —— 有花销，证据里指不到")
+
+
+def _info_roundtable_timeline(chk: Check, case: Case, trees: list) -> None:
+    """把圆桌那一段印出来。
+
+    ``info`` 不是 ``warn``：这不是缺口，是「这一段现在有树了」这件事本身要看得见
+    （纪律同 ``_check_seeded_provenance`` 末尾那段 —— 洞补上了，被补的**是什么**
+    不许随着 warn 一起消失）。T134 之前评委在这一栏读到的是 8 条读不懂的游离事件。
+    """
+    for t in trees:
+        s = t["summary"]
+        cost = t["cost"]
+        seats = "、".join(seat["seat"] for r in t["rounds"] for seat in r["seats"])
+        skills = "、".join(sk["skill"] for r in t["rounds"] for sk in r["skills"])
+        money = (f"{cost['calls']} 次模型调用 / {cost['tokens_total']} tokens"
+                 f"（{'真实计量' if cost['measured_calls'] else '估算'}）"
+                 if cost["calls"] else "无模型用量行（缺省 Scripted 不记账）")
+        chk.info(f"{case.name}: 圆桌 {t['plan_id']} —— {s['round_count']} 轮 / "
+                 f"{s['seat_spoke_count']} 岗发言（其中 {s['seats_by_model']} 岗是模型说的）/ "
+                 f"{s['skill_invoked_count']} 次 SkillInvoked / {s['verdict_count']} 次合议，"
+                 f"{money}。座次：{seats or '（无）'}；skill：{skills or '（无）'}。"
+                 f"这一段不属于任何 Plan（trace_id 为空是如实的），"
+                 f"顺序与 scripts/replay_roundtable.py 从同一批行重建的一致")
 
 
 def _warn_stray_events(chk: Check, case: Case) -> None:
@@ -1104,9 +1236,17 @@ def check_cost_attribution(cases: list[Case]) -> Check:
     c. ``estimated`` 必须与 ``model`` 列相符（``scripted-*`` ⟺ ``estimated=1``）；
        ``model`` 为空时印证不了，只有「声称真实计费却说不出是哪个模型」判负。
        失败 = 估算被印成了真实计费 —— 在评委面前给出一个虚假的精确信号。
-    d. ``trace_id`` 为空的行，必须逐条出现在 ``trace.json`` 的 ``unattributed_usage`` 里。
+    d. ``trace_id`` 为空的行，必须逐条**被某一族接住** —— 要么出现在 ``trace.json``
+       的 ``unattributed_usage`` 里，要么算进某棵圆桌树的 ``cost``（T134）。
        失败 = 归属不上的成本被藏起来了。这一条是 a 的看门人：没有它，把所有
        trace_id 清空就能让 a 无条件全绿，而成本归因整个消失。
+
+       两条路而不是一条，是因为圆桌那几次调用**确实有归属** —— 归在
+       ``roundtable:<case_id>`` 这个伪 plan 上，只是没有 Run id 可挂（圆桌不属于
+       任何 Plan）。硬要它们留在 ``unattributed_usage`` 里，「真模型跑一单花多少
+       token」在 ``attributed_tokens_total`` 里就永远查不到。判据没放宽：接不住的
+       照旧判负，而「被圆桌树接住」这件事自己还要过第 4 项 ``_check_roundtable_trees``
+       的回库核对。
 
     空串 ``trace_id`` 本身**不判负**：``ManagerAgent.plan()`` 跑在 ``create_plan``
     之前，那一刻确实没有 Run id 可挂。如实记录再点名，好过编一个让它看起来有归属。
@@ -1119,11 +1259,16 @@ def check_cost_attribution(cases: list[Case]) -> Check:
 
     orphans = 0
     blind = 0
+    roundtable_rows = 0
     for case in live:
         plans = {r[0] for r in case.conn.execute("SELECT trace_id FROM plan")}
         tasks = {r[0] for r in case.conn.execute("SELECT task_id FROM task")}
         # trace.json 里点了名的那些（按 seq 认，seq 是 model_usage 的主键）
         named = {r.get("seq") for t in [case.trace] for r in t.get("unattributed_usage", [])}
+        # 圆桌树接住的那些（T134）。与上面那批**没有交集** —— 交集会被第 4 项的
+        # `_check_roundtable_usage` 当场判负，这里不重复判，只认它们也算有归属。
+        in_roundtable = {r["seq"] for t in case.trace.get("roundtable_traces", [])
+                         for r in t["model_usage"]}
 
         for r in case.conn.execute(
                 "SELECT seq, trace_id, task_id, agent_role, call_site, model, estimated"
@@ -1136,13 +1281,18 @@ def check_cost_attribution(cases: list[Case]) -> Check:
                 else:
                     chk.bad(f"{where}: trace_id={r['trace_id']!r} 在 plan 表里不存在"
                             f" —— 成本挂在了一条不存在的 run 上")
+            elif r["seq"] in in_roundtable:
+                # 有归属，只是归在伪 plan 上而不是 Run id 上（见判据 d）。
+                roundtable_rows += 1
+                chk.ok()
             else:
                 orphans += 1
                 if r["seq"] in named:
                     chk.ok()
                 else:
-                    chk.bad(f"{where}: trace_id 为空却没出现在 trace.json 的"
-                            f" unattributed_usage 里 —— 归属不上的成本被藏起来了")
+                    chk.bad(f"{where}: trace_id 为空却既没被圆桌树接住、也没出现在"
+                            f" trace.json 的 unattributed_usage 里 ——"
+                            f" 归属不上的成本被藏起来了")
 
             if r["task_id"]:
                 if r["task_id"] in tasks:
@@ -1173,11 +1323,19 @@ def check_cost_attribution(cases: list[Case]) -> Check:
         chk.skip("空转：证据束里一条 model_usage 都没有，本项判据一次都没执行"
                  "；跑 python3 scripts/make_evidence.py 重产证据束")
         return chk
+    if roundtable_rows:
+        # 这个数要印出来，且要与下面那个分开：它是「有归属、只是没有 Run id」，
+        # 与「谁花的都指不到」不是一回事。台上被问「真模型跑一单花多少 token」，
+        # 答案就在这几行里（T134 之前它们全在 orphans 那一栏）。
+        chk.info(f"{roundtable_rows} 条用量挂在圆桌的伪 plan_id 上（roundtable:<case_id>，"
+                 f"trace_id 为空是如实的：圆桌不属于任何 Plan），已算进 trace.json 的"
+                 f" roundtable_traces[].cost，并在 summary.roundtable_model_calls /"
+                 f" roundtable_tokens_total 里单列")
     if orphans:
         # info 不是 warn：这些行是**如实记录**的已知缺口，不是新出现的问题。
         # 印出来是要紧的 —— 「有多少成本归不上账」正是评委该看见的那个数。
-        chk.info(f"{orphans} 条用量归属不上任何 Run id（trace_id 为空），已在"
-                 f" trace.json 的 unattributed_usage 里逐条点名")
+        chk.info(f"{orphans} 条用量归属不上任何 Run id（trace_id 为空，且不属于圆桌），"
+                 f"已在 trace.json 的 unattributed_usage 里逐条点名")
     if blind:
         chk.info(f"{blind} 条用量的 model 列为空（判据 c 无法交叉印证，方向安全："
                  f"这些行都已标成 estimated=1）—— 出处 flows/scenario_2.py 的 FlakyModel"

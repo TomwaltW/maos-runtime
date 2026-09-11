@@ -29,20 +29,28 @@
 Nacos），自己开一条读法就是分叉的开始。所以本模块一次 `os.environ` 都不碰，
 名单从哪来由调用方说了算（`maos/ingress/outcome_commands.py` 走的是配置面）。
 
-## 两套角色名
+## 两套角色名（T123 收成了一套）
 
-`maos/roundtable/verdict.py` 的 `ESCALATION` 用 `supervisor` / `finance_manager`，
-`maos/flows/contrast.py` 用 `region_manager`；本目录用的是把职责写全的那套
-（`after_sales_supervisor` / `finance_reviewer` / `payment_ops` / `region_manager`）。
-两套并存是并行开发的代价，不是设计意图 —— `canonical_role()` 认两种写法，
-收敛成一套留给整合期（`docs/DECISIONS.md` 的 `## task-t117` 有映射表）。
-本轨不碰 `maos/roundtable/**`（同期另一会话在改）。
+本目录用的是把职责写全的那套（`after_sales_supervisor` / `finance_reviewer` /
+`payment_ops` / `region_manager`），`maos/roundtable/verdict.py` 与
+`maos/flows/contrast.py` 用的是房间里念得出口的那套（`supervisor` /
+`finance_manager` / `region_manager`）。
+
+T117 留下的欠账是**两套名字各有一份内部表**：`verdict.ESCALATION` 用房间那套写死
+升档关系，于是目录里明明有的 `region_manager` 在那张表里查不到，风险高档时静默
+不升档、只留一条 WARNING。T123 把内部表收到目录这一套上（`verdict.ESCALATION`
+现在按本目录的名字写），房间里念出来的仍是 `verdict_role_of()` 翻回去的那套 ——
+**对外文案一个字没变，变的是「内部按哪套名字对账」**。
+
+所以本模块现在是那条边的唯一翻译处：`canonical_role()` 进（认两种写法），
+`verdict_role_of()` 出（翻回房间那套）。两个方向都走目录，没有第三份映射表。
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -71,9 +79,22 @@ class UnknownRole(KeyError):
     """
 
 
+@lru_cache(maxsize=1)
 def _load() -> dict[str, Any]:
-    """读并校验目录。**不缓存**——本文件是几十行的静态语料，读它的代价可以忽略，
-    而缓存会让测试之间互相串（换一份目录得先想起来清缓存），那种耦合不值这点开销。
+    """读并校验目录。**进程内缓存一次**，清缓存走 :func:`clear_cache`。
+
+    T117 时这里刻意不缓存，理由是「几十行静态语料，读它的代价可以忽略」。
+    T123 把 `verdict._approver` 接到本目录之后那句话不再成立：`decide()` 自称纯函数、
+    被每一轮圆桌调用，而它现在每次要 `canonical_role()` + `verdict_role_of()`，
+    一次收口就是**三到四遍 `read_text` + `json.loads`**。纯函数每次去碰一次磁盘，
+    既不是纯的，也让「圆桌一轮花在哪」变得不好读。
+
+    当年顾虑的耦合（换一份目录得先想起来清缓存）用 :func:`clear_cache` 兑掉 ——
+    换目录的测试本来就要显式声明「我换了语料」，那一行比一次静默的读盘更好读。
+
+    返回的 dict 是**共享只读的**：调用方就地改它会污染整个进程的目录。
+    本模块的调用方（`all_roles` / `_spec` / `canonical_role` / `role_of`）都只读；
+    不深拷贝是因为深拷贝正好把缓存省下的那点开销又花回去。
     """
     raw = json.loads(_ROLES_PATH.read_text(encoding="utf-8"))
     roles = raw.get("roles") or {}
@@ -86,6 +107,16 @@ def _load() -> dict[str, Any]:
         if not isinstance(spec["accounts"], list):
             raise ValueError(f"角色 {name} 的 accounts 必须是数组（{_ROLES_PATH}）")
     return roles
+
+
+def clear_cache() -> None:
+    """丢掉 :func:`_load` 的缓存，下一次查目录重新读盘。
+
+    给两种调用方：换了 `roles.json` 的测试（`monkeypatch` 完 `_ROLES_PATH` 要清一次、
+    用完再清一次），以及运行期真去改了目录文件的人。生产路径上没人调它 ——
+    目录是随代码发布的语料，不是热更新的配置。
+    """
+    _load.cache_clear()
 
 
 def all_roles() -> tuple[str, ...]:
@@ -131,8 +162,23 @@ def verdict_role_of(role: str) -> str:
     `payment_ops` 就是没有对应的那个：它是**接单岗**不是审批岗，
     圆桌的 `ESCALATION` 升档表里不该有它 —— 升到一个不能拍板的岗上，
     房间里那句「请 X 拍板」就点不到能拍板的人。
+
+    目录里没有的角色名一律 :class:`UnknownRole`（经 `_spec`）。**不兜底成 `""`**：
+    `""` 在本函数里已经有确切含义（「这个岗不是审批岗」），拿它兼做「没这个岗」
+    会让 `verdict` 那边分不清「payment_ops 不该拍板」和「approver_role 写错了」——
+    前者要降级到缺省审批岗，后者要原样留着不猜。
     """
     return str(_spec(role).get("verdict_role") or "")
+
+
+def is_approver_seat(role: str) -> bool:
+    """这个岗拍不拍得了板。判据就是目录里 `verdict_role` 非空。
+
+    这是「谁能出现在 `verdict.approver_role` 里」的唯一判据 —— 审批岗的名单归目录，
+    不归圆桌那边的一张常量表。目录里没有的角色名照旧抛 :class:`UnknownRole`：
+    答不出他是哪个岗，就更答不出他拍不拍得了板，这里不替调用方猜。
+    """
+    return bool(verdict_role_of(role))
 
 
 def accounts_of(role: str) -> tuple[str, ...]:

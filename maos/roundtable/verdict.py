@@ -7,6 +7,11 @@
 连跑两次逐字一致 —— 它是 boss 唯一能信的那一行，模型只允许在房间里复述它（R1）。
 真值表自上而下第一条命中为准，顺序本身就是判断，见 `_recommend` 的逐行注释。
 
+唯一的外部读取是 `maos/domain/refund/roles.py` 的角色目录（T123 起，`_approver` 用它
+把两套角色名对账）。那份目录是随代码发布的静态语料、进程内缓存一次、没有写入侧，
+所以「同一份 reports 连跑两次逐字一致」仍然成立：目录变了结论才会变，而目录变了
+本来就该变。真要改目录做对照实验的，`roles.clear_cache()` 是显式开关。
+
 **默认不放行**：算不清楚（某岗汇总失败、reports 不足五岗、policy 缺 decision）一律
 `need_more`，让人来看。这是铁律 8 的直接后果 —— MAOS 不持有权威事实，拿不准的时候
 沉默地放行比说一句「我拿不准」危险得多。
@@ -17,6 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from maos.domain.refund import roles
 from maos.roundtable.team import TEAM_ORDER, TITLES
 
 log = logging.getLogger("maos.roundtable")
@@ -41,11 +47,37 @@ _NEUTRAL: dict[str, str] = {
     "已完成": "外部系统显示完成",
 }
 
-#: 风险高档时的审批升档表。已经是最高档就保持 —— 升到一个不存在的角色，
-#: 房间里那句「请 X 拍板」就点不到任何人。
+#: 风险高档时的审批升档表。**键与值都用角色目录那套名字**
+#: （`maos/domain/refund/roles.py`），不是房间里念的那套 —— 房间文案由
+#: `roles.verdict_role_of()` 在 `_approver` 出口翻回去，见那个函数。
+#:
+#: T117 留下的两套名字在这里收成一套。从前这张表按房间那套写
+#: （`supervisor -> finance_manager`），于是目录里明明有的 `region_manager`
+#: 在表里查不到：AS-004 的经销单风险高档时 `_approver` 走「认不出就不升档」那一支，
+#: 只留一条 WARNING，房间里那句「请 X 拍板」照旧点区域经理，却**一条二人复核的
+#: 提示都没有** —— 而 AS-004@v2 的 `dual_approval: true` 要的正是那条提示。
+#:
+#: 三条各有各的道理：
+#:
+#: · `after_sales_supervisor -> finance_reviewer`：常规档主管拍不了高风险的板，往上交。
+#: · `finance_reviewer -> finance_reviewer`：已经是最高档，没有更高的岗可交，
+#:   保持原人并追加一条二人复核。升到一个不存在的角色，房间里点不到任何人。
+#: · `region_manager -> region_manager`：**自保持，但不是因为「已经最高」。**
+#:   区域经理不是比财务复核更高的一档，他是 AS-004（渠道差异规则）**指名**的审批人 ——
+#:   经销渠道的退款按区域授权，换谁来批都不是那条规则说的那个人。风险高档要加的是
+#:   一道复核，不是换一个审批人，所以这一条同样追加二人复核而不升档。
 ESCALATION: dict[str, str] = {
-    "supervisor": "finance_manager",
-    "finance_manager": "finance_manager",
+    roles.ROLE_AFTER_SALES_SUPERVISOR: roles.ROLE_FINANCE_REVIEWER,
+    roles.ROLE_FINANCE_REVIEWER: roles.ROLE_FINANCE_REVIEWER,
+    roles.ROLE_REGION_MANAGER: roles.ROLE_REGION_MANAGER,
+}
+
+#: 自保持时追加的那条拦路条。两种自保持的理由不一样，卡上就得写不一样的话：
+#: 对财务复核说「政策指名」是错的，对区域经理说「已是最高档」也是错的
+#: （他上面还有财务复核，只是这条规则不该换人）。
+_DUAL_REVIEW_DEFAULT = "风险：已是最高审批档，建议二人复核"
+_DUAL_REVIEW: dict[str, str] = {
+    roles.ROLE_REGION_MANAGER: "风险：政策指名的审批人，不因风险升档改派，建议二人复核",
 }
 
 #: 四种建议。`recommend` 是 `Verdict` 上的一个字段，**不是** Task 状态（铁律 9）——
@@ -210,19 +242,55 @@ def _blockers(seats: dict[str, dict]) -> list[str]:
     return out
 
 
+def _spoken(canonical: str, fallback: str) -> str:
+    """目录名 -> 房间里念的名字。目录不认得就用 `fallback`（多半是原文）。
+
+    出口只有这一处，所以「内部按目录名对账、对外念 `verdict_role`」这件事
+    不会在某个分支上漏掉。
+    """
+    try:
+        return roles.verdict_role_of(canonical) or fallback
+    except roles.UnknownRole:
+        return fallback
+
+
 def _approver(recommend: str, seats: dict[str, dict], blockers: list[str]) -> str:
-    """谁来拍板。只在 `escalate` 时升档；已是最高档就保持并记一条拦路条。"""
+    """谁来拍板。只在 `escalate` 时升档；自保持的两档各记一条拦路条。
+
+    进来的 `approver_role` 可能是两套写法里的任意一套（政策规则的 `params` 里写的是
+    房间那套，角色目录里是职责全名那套）。本函数**一进门就归一到目录名**，
+    内部一律按目录名对账，出口再由 `_spoken` 翻回房间那套 —— 对外文案一个字不变。
+    """
     role = str((seats.get("refund-policy") or {}).get("approver_role") or "")
+    canon = roles.canonical_role(role)
+
+    # 接单岗不是审批岗。政策规则里把 `payment_ops` 写成 approver_role 是配置错，
+    # 而**静默照用**的后果是房间里请一个批不动的人拍板，且一路不报错 ——
+    # 支付运维的活是去渠道后台对账，不是放行一笔钱。降到缺省审批岗并留一条 WARNING：
+    # 配置错该被看见，但不该让这一单停在「点不到人」上。
+    try:
+        seat_ok = roles.is_approver_seat(canon)
+    except roles.UnknownRole:
+        # 目录压根不认得这个名字。**不降级也不升档** —— 这是「写错了」，
+        # 不是「写了个不该拍板的岗」，两者要分开：前者原样留着让人看见原文。
+        seat_ok = True
+    if not seat_ok:
+        log.warning("审批角色 %r 不是审批岗（目录里没有 verdict_role），"
+                    "按缺省审批岗 %r 处理", role, roles.ROLE_AFTER_SALES_SUPERVISOR)
+        canon = roles.ROLE_AFTER_SALES_SUPERVISOR
+        role = canon
+
+    spoken = _spoken(canon, role)
     if recommend != "escalate":
-        return role
-    upgraded = ESCALATION.get(role)
+        return spoken
+    upgraded = ESCALATION.get(canon)
     if upgraded is None:
         # 认不出的审批角色不猜着升 —— 升到一个不存在的角色，房间里点不到人。
         log.warning("审批角色 %r 不在升档表里，风险高档不升档", role)
-        return role
-    if upgraded == role:
-        blockers.append("风险：已是最高审批档，建议二人复核")
-    return upgraded
+        return spoken
+    if upgraded == canon:
+        blockers.append(_DUAL_REVIEW.get(canon, _DUAL_REVIEW_DEFAULT))
+    return _spoken(upgraded, upgraded)
 
 
 def _headline(recommend: str, seats: dict[str, dict], blockers: list[str],

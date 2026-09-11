@@ -2412,3 +2412,13 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | 「整合期 p10-a」那三处 roundtable / router 接线仍未做（`outcome_commands` 进 router、财务岗卡片接投影、`verdict.py` 角色名对齐），本轮 push 只合三轨 | 房间里 `/assign /resolve /confirm /complain` 仍无人应答；财务岗仍按老文案说状态 | 复赛前单开一轨（白名单 `maos/ingress/router.py` + `maos/roundtable/**`），先定「命令对着哪个库」：T113 的 `MAOS_INGRESS_DB` 让 router 的 store 落文件，但 `/refund` 的处置仍在 `custom_case` 自建的 `:memory:` 里 |
 | 2026-09-11 | p10 | T114 的 `gateway_fail` 路径没有 `REWORK`：可重试码让付款跑三趟时 `payment_execute.py:143/163` 同渠道重试会留 2 条悬空 `business_ref`（verify 第 2 项判负），只好换终态失败码绕开 | 单案例束里「返工」这一环只能指去 `evidence/scenario-2/` | skill 面单独一轨：重试时先作废上一条引用再挂新的 |
 | 2026-09-11 | p10 | `source ~/.maos.env && python3 scripts/make_evidence.py` 仍 exit 2：空补丁集已放行，现在停在模型产出质量（`corrupt patch` / 回归 4 过 1 挂） | 带 key 的 shell 下 `test_cost_metrics` 那一条仍红；Scripted 口径不受影响 | 复赛口径保持「证据束一律 Scripted 产，真模型束单独标」；要治只能在 coding 岗提示词 + `git apply --check` 重试那一轨 |
+
+## task-t123（圆桌三态之后的范围外发现，2026-09-11）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | 房间里的**另一张嘴**仍念七态：`maos/ingress/router.py:1199` 借 `scripts/run_requests.py` 的 `STATUS_CN` 拼回帖，没有接 `projection.public_status()` | 同一单在圆桌财务岗那里已经有了「对客户口径」，router 回帖仍是内部七态 —— 两套措辞的问题只治好了一半 | 归 T122（契约 §D 把 router 那一行明确划给它）。本轨不许动 `maos/ingress/**`。两轨合完之后房间里两张嘴才算对齐 |
+| 2026-09-11 | p10 | 整表模式（`facts_sheet_finance`）没有对外口径那一句 | 一次过一张表时，群里只有逐单预演金额与合计，没有任何一单的三态 | 刻意不做（见 DECISIONS 第 5 条）：整表是**放行前**的预演，`payment_observation` 还是空的，投不出三态。真要在整表上报三态，得先有一条「整表放行后回看」的路径，那是另一件事 |
+| 2026-09-11 | p10 | `roles._load()` 改成缓存之后，运行期改 `scenarios/refund/roles.json` 不再即时生效 | 换目录的测试与真去改目录文件的人都要显式 `roles.clear_cache()`；漏了的症状是「改了没生效」而屏幕上一切正常 | 已用一条专门的测试钉住（`test_clear_cache_picks_up_a_changed_directory_file`）。哪天目录真要热更新（Nacos 一类），把缓存换成带 mtime 判据的那种，而不是去掉缓存 |
+| 2026-09-11 | p10 | 两套角色名只在**圆桌这条边**上收敛了：`maos/flows/contrast.py` 与 `maos/kb/plan_advice.py`（`DEFAULT_APPROVER_ROLE = "supervisor"`）仍直接写房间那套字面量 | 不出错（那套名字经 `canonical_role()` 认得），但「角色名的权威在目录」这件事还差这两处才算完整 | 单开一轨把 `contrast.py` / `plan_advice.py` 的角色名也走目录常量。本轨白名单外，且 `plan_advice` 属 `maos/kb/**`（领域无关内核，不该硬依赖退款域 —— 那一轨要先定怎么传） |
+| 2026-09-11 | p10 | `maos/tests/test_expected_metrics.py::test_collected_count_matches_source_of_truth` 变红：本轨 +14 条测试后收集数 3729 与 `docs/expected-metrics.json` 的 3715 对不上 | 一条红，**预期内**（派单 §6 点名） | 整合期统一刷。契约 §A 把那个文件列进「谁都不许动」 |

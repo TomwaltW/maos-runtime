@@ -172,3 +172,80 @@ def test_payment_ops_is_not_an_approver_seat():
     升到一个不能拍板的岗上，房间里那句「请 X 拍板」就点不到能拍板的人。
     """
     assert roles.verdict_role_of(roles.ROLE_PAYMENT_OPS) == ""
+    assert roles.is_approver_seat(roles.ROLE_PAYMENT_OPS) is False
+
+
+def test_is_approver_seat_answers_for_the_three_approval_roles():
+    """三个审批岗都拍得了板；目录里没有的角色名照旧抛，不替调用方猜。"""
+    for role in (roles.ROLE_AFTER_SALES_SUPERVISOR, roles.ROLE_FINANCE_REVIEWER,
+                 roles.ROLE_REGION_MANAGER):
+        assert roles.is_approver_seat(role) is True
+    with pytest.raises(roles.UnknownRole):
+        roles.is_approver_seat("cfo")
+
+
+# ======================================================================
+# 5. 目录缓存（T123）
+# ======================================================================
+def test_directory_is_read_from_disk_only_once(monkeypatch):
+    """🔴 目录进程内只读一次盘。
+
+    `verdict.decide()` 自称纯函数、每轮圆桌调一次，而它现在每次要归一 + 翻译 ——
+    不缓存就是一次收口三到四遍 `read_text` + `json.loads`。
+    """
+    reads: list[int] = []
+
+    class CountingPath:
+        """数 `read_text` 的次数。`Path` 有 `__slots__`，打不了 monkeypatch，
+        所以整个换掉而不是补一个方法。"""
+
+        def __init__(self, real):
+            self._real = real
+            self.name = real.name
+
+        def read_text(self, *a, **kw):
+            reads.append(1)
+            return self._real.read_text(*a, **kw)
+
+    monkeypatch.setattr(roles, "_ROLES_PATH", CountingPath(roles._ROLES_PATH))
+    roles.clear_cache()
+    try:
+        for _ in range(5):
+            roles.canonical_role("supervisor")
+            roles.verdict_role_of(roles.ROLE_FINANCE_REVIEWER)
+            roles.role_of(IN_LIST_SUPERVISOR)
+    finally:
+        monkeypatch.undo()
+        roles.clear_cache()
+
+    assert len(reads) == 1, f"目录被读了 {len(reads)} 遍"
+
+
+def test_clear_cache_picks_up_a_changed_directory_file(tmp_path, monkeypatch):
+    """🔴 换一份目录 + `clear_cache()` 之后，查到的是新的那份。
+
+    这条是缓存的**代价**：不清就读不到改动。写成一条用例而不是留在注释里，
+    是因为「改了目录文件却没生效」的症状是屏幕上一切正常 —— 与 T117 当初
+    不缓存要躲的那种静默失败是同一种。
+    """
+    swapped = tmp_path / "roles.json"
+    swapped.write_text(json.dumps({"version": 1, "roles": {
+        "night_shift_lead": {"title": "夜班主管", "duty": "夜间退款的拍板人",
+                             "verdict_role": "night_lead", "accounts": ["@night:maos.local"]},
+    }}, ensure_ascii=False), encoding="utf-8")
+
+    roles.clear_cache()
+    try:
+        monkeypatch.setattr(roles, "_ROLES_PATH", swapped)
+        roles.clear_cache()
+        assert roles.all_roles() == ("night_shift_lead",)
+        assert roles.canonical_role("night_lead") == "night_shift_lead"
+        assert roles.role_of("@night:maos.local") == "night_shift_lead"
+    finally:
+        # 换回真目录**并再清一次** —— 漏了这一步，后面每个用例读到的都是夜班主管。
+        monkeypatch.undo()
+        roles.clear_cache()
+
+    assert roles.all_roles() == (
+        roles.ROLE_AFTER_SALES_SUPERVISOR, roles.ROLE_FINANCE_REVIEWER,
+        roles.ROLE_PAYMENT_OPS, roles.ROLE_REGION_MANAGER)

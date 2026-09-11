@@ -172,25 +172,30 @@ def test_source_of_truth_is_well_formed():
         assert data[key] > 0, SOURCE_REL + " 的 " + key + " 必须为正，实际 " + repr(data[key])
 
 
-def test_pg_gated_invariant_is_the_documented_67():
-    """有库档 = 无库档 + 67 这条算式里的那个 67。
+def test_pg_gated_invariant_is_the_documented_78():
+    """有库档 = 无库档 + 78 这条算式里的那个 78。
 
     它不是读数是**不变量**：22 条 test_pg_store_live.py + 7 条 test_pg_rank_parity.py
     + 19 条 test_refund_domain_pg.py + 16 条 test_kb_pg_prefilter.py（后两份 T115 加；
     2026-09-10 整合期由 29 刷成 64）+ 3 条 test_flow_domain_backend.py（T126 加，
-    2026-09-11 整合期 p10-d 刷成 67，本机 docker PG 实测：无库 79 skipped、有库 12 skipped）。
+    2026-09-11 整合期 p10-d 刷成 67）+ 7 条 test_kb_flow_backend.py + 4 条
+    test_schema_util_t133.py（T132 / T133 加，2026-09-12 整合期 p10-e 刷成 78，
+    本机 docker PG 实测：无库 90 skipped、有库 12 skipped）。
     真要变（有人给那几个文件加/删了用例），改真源的同时得回来改这条断言 ——
     多这一道手是故意的，这个数被改的时候必须有人知道。
 
-    **别拿 `pytest -k pg` 去数它**：那样只数得到 66 条，T126 那 3 条里有一条名字不含
-    `pg`、`-k` 选不中，而它照样是「没库 skip、有库真跑」。门控条数以全量两档的差值为准。
+    **别拿 `pytest -k pg` 去数它**：那样只数得到 93，与真值差 **12 条** —— T126 那 3 条里
+    有一条、`test_kb_flow_backend.py` 整 7 条、`test_schema_util_t133.py` 整 4 条，名字里
+    都不含 `pg`、`-k` 一条都选不中，而它们照样是「没库 skip、有库真跑」。差距还在随新轨
+    扩大（p10-d 时只差 1 条）。门控条数只认全量两档的差值。
     """
     data = _load_source()
-    assert data["pg_gated_tests"] == 67, (
+    assert data["pg_gated_tests"] == 78, (
         "PG 门控条数变了。它是 test_pg_store_live.py(22) + test_pg_rank_parity.py(7)"
         " + test_refund_domain_pg.py(19) + test_kb_pg_prefilter.py(16)"
-        " + test_flow_domain_backend.py(3)，"
-        "改它等于动 demo_preflight.sh 里「有库档 = 无库档 + 67」那条算式的地基，"
+        " + test_flow_domain_backend.py(3) + test_kb_flow_backend.py(7)"
+        " + test_schema_util_t133.py(4)，"
+        "改它等于动 demo_preflight.sh 里「有库档 = 无库档 + 78」那条算式的地基，"
         "确认过再连这条断言一起改。"
     )
 

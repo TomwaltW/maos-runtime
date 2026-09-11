@@ -59,6 +59,23 @@ store —— 好测，而且对照实验 R8 的「有建议 / 无建议」两段
 本模块要是为了断言去 import 退款域，就把领域耦进内核了（铁律 9）。
 改本模块的 `DEFAULT_APPROVER_ROLE`、改 `roles.DEFAULT_APPROVER_SEAT`、
 改目录里那条 `verdict_role` 映射，三者动任一个，那条当场红。
+
+## 缺省审批岗**问域要**，本模块的字面量只是兜底（T136）
+
+上面那条判据钉的是「两套写法等价」，管不到「谁说了算」。T136 之前本模块的
+`DEFAULT_APPROVER_ROLE` 是权威：目录里把缺省审批岗改成别的岗，`advise()` 照旧建议
+`supervisor`，两边各说各的且不报错。现在两处取值点（`policy_directives` 与 `advise`
+的兜底）都走 `_approver_role()` —— 局部 import 问目录要 `DEFAULT_APPROVER_SEAT`
+并翻成别名那套，问不到才回落到本模块的字面量。口径与同文件的
+`_ticket_role()` / `_FALLBACK_TICKET_ROLE` 逐字对应（那一对是 T119 就立好的形状，
+这次只是把审批岗接到同一条路上）。
+
+**字面量本身去不掉**，这是本模块能做到的上限：目录读不出来时总得给一个岗，
+给空串就是 `roundtable/verdict.py::_approver` 那句「请  拍板」。把它变成
+`advise()` 的必传参数才能真正清零，而那要改签名、且今天所有调用方都在退款域
+这一条链上（传的必是同一个值）—— T130 已判过那条路「付了签名的代价没拿到判据」。
+账记在 `docs/BACKLOG.md ## task-t136`：**第二个业务域**要用 `advise()` 的那天，
+参数化才有真调用方，那时再改。
 """
 
 from __future__ import annotations
@@ -74,10 +91,11 @@ from maos.config import get_config_source
 log = logging.getLogger("maos.kb.advice")
 
 #: 建议开关（契约 §H）。缺省开；`0` 关。R8 的「无建议」段靠它。
-#: **不进 `maos.config.GOVERNED_KEYS`** —— 那份清单被
-#: `test_config_source.py::test_governed_keys_are_exactly_the_four_this_track_owns`
-#: 钉着「就是这四个」，而那个文件不在本轨白名单里。口径因此照抄 `kb.kb_enabled`：
-#: 读取点走配置面（`MAOS_CONFIG_SOURCE=nacos` 时同样不重启就能改），只是变更不落审计。
+#: 读取点走配置面（`MAOS_CONFIG_SOURCE=nacos` 时不重启就能改），口径照抄 `kb.kb_enabled`；
+#: **变更也落审计** —— T131 把它连同 kb 另两个旋钮一起补进了 `maos.config.GOVERNED_KEYS`
+#: （T136 再补末两个，清单现在是十个）。本行原先写着「不进 `GOVERNED_KEYS`」并钉着一个
+#: 早已改名的测试函数，那是 T119 当时的实况：进清单就得改 `test_config_source.py`，
+#: 而那个文件不在 T119 的白名单里。结论已经反了，留着会让下一个加旋钮的人绕远路。
 KB_ADVICE_ENV = "MAOS_KB_ADVICE"
 
 #: 认的那几个关值，与 `kb._KB_OFF_VALUES` 同一份口径。
@@ -87,7 +105,7 @@ _ADVICE_OFF_VALUES = ("0", "false", "no", "off")
 #: 走 `append_event_log`，**不碰** `maos/contracts/events.py`（铁律 1）。
 PLAN_ADVISED_EVENT = "PlanAdvised"
 
-#: 没有任何政策规则指定审批人时的兜底角色。
+#: 没有任何政策规则指定审批人时的缺省审批岗，**角色目录读不出来时的兜底值**（T136）。
 #: 原先住在 `maos/flows/contrast.py`，随 `policy_directives` 一起搬过来；
 #: 那边留一个同名的再导出，取值一个字节没变（R4A 的 `_expected` 按它比对）。
 #:
@@ -95,6 +113,14 @@ PLAN_ADVISED_EVENT = "PlanAdvised"
 #: `maos.domain.refund.roles.DEFAULT_APPROVER_SEAT`（`after_sales_supervisor`），
 #: 等价关系见模块抬头「角色名用 … 那一套」一节 —— **改这一行会让那条判据当场红**，
 #: 那不是误报，是在问「另一半你改了吗」。
+#:
+#: T136 起它**不再是权威**：取值走 `_approver_role()`，那个函数局部 import 角色目录
+#: 问「缺省审批岗是谁」，问不到才回落到这里 —— 口径与同文件的 `_FALLBACK_TICKET_ROLE`
+#: / `_ticket_role()` 完全一致。「哪个岗是缺省审批岗」是**退款域的事实**（T130 的
+#: `roles.DEFAULT_APPROVER_SEAT` 就是这么立的），领域无关内核不该替它作主；
+#: 但内核也不能硬依赖它（铁律 9），所以是「问域要 + 兜底」，不是「import 域」。
+#: 兜底值本身去不掉：目录读不出来时总得给一个岗，给空串就是第 3 件在修的那句
+#: 「请  拍板」。DECISIONS 里 `## task-t136` 那一行写的就是这个取舍。
 DEFAULT_APPROVER_ROLE = "supervisor"
 
 #: `exception_branches[].trigger` 的值域（契约 §7 逐字）。
@@ -146,6 +172,11 @@ class PlanAdvice:
     """
 
     required_tasks: list[dict] = field(default_factory=list)
+    #: 这一处**刻意仍是常量**，不走 `_approver_role()`（T136）：它只在无参构造
+    #: `PlanAdvice()`（「没有任何建议」的占位，`is_empty()` 为真）时用得上，那种对象的
+    #: 审批人字段没有任何消费方。`default_factory` 会让每次构造去读一次角色目录，
+    #: 把一个纯数据类的默认值挂到文件系统上，换来的只是一个没人读的字段更正确。
+    #: 真正进产出的两处（`policy_directives` 与 `advise` 的兜底）都走 `_approver_role()`。
     approver_role: str = DEFAULT_APPROVER_ROLE
     exception_branches: list[dict] = field(default_factory=list)
     retry_budget: int = 0
@@ -223,7 +254,7 @@ def policy_directives(rules: list[dict]) -> dict:
             })
         if approver is None and params.get("approver_role"):
             approver = str(params["approver_role"])
-    return {"extra_tasks": extra, "approver_role": approver or DEFAULT_APPROVER_ROLE}
+    return {"extra_tasks": extra, "approver_role": approver or _approver_role()}
 
 
 # ------------------------------------------------------------------ 纯函数：建议
@@ -335,7 +366,7 @@ def advise(*, rules: list[dict] | None = None, hits: list[dict] | None = None,
         budget = min(budget, FAILED_COMBO_RETRY_BUDGET)
         _add_citation(citations, ref)
 
-    approver = str(directives["approver_role"] or DEFAULT_APPROVER_ROLE)
+    approver = str(directives["approver_role"] or _approver_role())
     _warn_unknown_role(approver)
     return PlanAdvice(required_tasks=required, approver_role=approver,
                       exception_branches=branches,
@@ -647,6 +678,29 @@ def _ticket_role() -> str:
         return str(roles.DEFAULT_TICKET_ROLE)
     except Exception:                      # noqa: BLE001 —— 目录读不到不该拖垮规划
         return _FALLBACK_TICKET_ROLE
+
+
+def _approver_role() -> str:
+    """政策没指定审批人时的缺省审批岗。**形状与 `_ticket_role()` 逐字对应**（T136）。
+
+    问的是**目录**而不是本模块的常量：「哪个岗是缺省审批岗」是退款域的事实
+    （`roles.DEFAULT_APPROVER_SEAT`，T130 立的），领域无关内核不该替它作主。
+    局部 import 的理由同 `_warn_unknown_role`：模块级 import 会让
+    `import maos.kb.plan_advice` 顺带拖进整个退款域。
+
+    翻译那一步不能省：目录那套写的是职责全名（`after_sales_supervisor`），
+    本模块与 `flows/contrast.py` 的消费方要的是 `verdict_role` 别名那套
+    （`supervisor`），两套的等价关系由 `test_refund_roles.py` 那条判据钉着。
+    翻不出来（目录里那条 `verdict_role` 被删了）时**不返回空串** —— 空审批人在
+    房间里会渲染成「请  拍板」（`roundtable/verdict.py::_approver` 的同款病），
+    所以回落到本模块的兜底常量，与目录整个读不出来时同一个落点。
+    """
+    try:
+        from maos.domain.refund import roles
+        return str(roles.verdict_role_of(roles.DEFAULT_APPROVER_SEAT)
+                   or DEFAULT_APPROVER_ROLE)
+    except Exception:                      # noqa: BLE001 —— 目录读不到不该拖垮规划
+        return DEFAULT_APPROVER_ROLE
 
 
 def _warn_unknown_role(role: str) -> None:

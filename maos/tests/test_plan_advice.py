@@ -633,3 +633,104 @@ def test_the_domain_import_is_local_not_absent():
     assert not local
     assert "from maos.domain.refund import roles" in source, (
         "本模块一处退款域 import 都没有了？那上一条判据在测一件不存在的事")
+
+
+# ==========================================================================
+# 缺省审批岗问域要，本模块的字面量只是兜底（T136）
+# ==========================================================================
+def test_the_default_approver_seat_is_the_catalog_s_call_not_this_module_s():
+    """🔴 缺省审批岗由**角色目录**说了算，`DEFAULT_APPROVER_ROLE` 只是兜底。
+
+    T136 之前本模块是权威：目录把缺省审批岗改成别的岗，`advise()` 照旧建议
+    `supervisor` —— 两边各说各的，且一路不报错。房间里那句「请 X 拍板」点的是
+    圆桌算的人（`verdict._approver` 走 `roles.DEFAULT_APPROVER_SEAT`），Planner
+    建议里写的是本模块算的人，分叉的症状是两处点名不同一个人。
+
+    判据不是「值等于 supervisor」（那只钉住今天的取值，目录改了照样绿），
+    而是**改目录、看产出跟不跟着变**。
+    """
+    from maos.domain.refund import roles
+
+    assert plan_advice._approver_role() == roles.verdict_role_of(
+        roles.DEFAULT_APPROVER_SEAT), "缺省审批岗与目录对不上"
+    assert plan_advice.policy_directives([])["approver_role"] == \
+        plan_advice._approver_role(), "两处取值点没走同一个函数"
+
+
+def test_moving_the_catalog_s_default_seat_moves_the_advice(monkeypatch):
+    """目录换一个缺省审批岗 -> 建议跟着换人。**这条才是「不硬写死」的证明。**
+
+    换的是 `roles.DEFAULT_APPROVER_SEAT`（域侧的事实），本模块一个字不动。
+    区域经理是目录里另一个拍得了板的岗（`verdict_role` 非空），所以翻得回别名那套。
+    """
+    from maos.domain.refund import roles
+
+    monkeypatch.setattr(roles, "DEFAULT_APPROVER_SEAT", roles.ROLE_REGION_MANAGER)
+
+    assert plan_advice._approver_role() == "region_manager"
+    assert plan_advice.policy_directives([])["approver_role"] == "region_manager"
+    advice = plan_advice.advise(env_max_replan=ENV_BUDGET)
+    assert advice.approver_role == "region_manager", (
+        "advise() 还在用本模块的字面量 —— 那就是没问域要")
+
+
+def test_an_unreadable_catalog_falls_back_to_a_seat_never_to_an_empty_string(monkeypatch):
+    """目录读不出来时回落到兜底常量，**不回落成空串**。
+
+    空审批人不是「不用审批」而是「没人知道该谁批」（`guardrails` 第三条红线拦的
+    就是前者），在房间里还会渲染成「请  拍板」那句带两个空格的话
+    （`roundtable/verdict.py::_approver` 的同款病，T136 一并修了）。
+    所以兜底值去不掉：总得给一个岗。
+    """
+    from maos.domain.refund import roles
+
+    def _boom(_role: str) -> str:
+        raise RuntimeError("roles.json 读不出来")
+
+    monkeypatch.setattr(roles, "verdict_role_of", _boom)
+
+    assert plan_advice._approver_role() == plan_advice.DEFAULT_APPROVER_ROLE
+    assert plan_advice._approver_role().strip(), "兜底成了空串 —— 那正是要躲的那句话"
+
+
+def test_no_third_refund_role_literal_creeps_into_this_module():
+    """🔴 本模块里的退款域角色名字面量**只剩两个兜底常量**，不许长出第三个。
+
+    两个是 `DEFAULT_APPROVER_ROLE`（审批岗）与 `_FALLBACK_TICKET_ROLE`（工单承接岗），
+    各自都有一条「先问目录、问不到才用它」的路。第三个字面量意味着又有一处
+    绕开目录自己认定了一个岗 —— 那正是 T130 收敛掉的那种分叉，而它不会让任何
+    现有判据变红：值今天是对的，错的是「谁说了算」。
+
+    docstring 不算（本模块到处在解释这两套写法），判据只看**可执行的**字符串常量，
+    口径同 `test_the_refund_domain_is_not_on_this_module_s_import_graph` 走 AST 不走子串。
+    """
+    from maos.domain.refund import roles
+
+    known = set(roles.all_roles())
+    known |= {roles.verdict_role_of(r) for r in roles.all_roles() if roles.verdict_role_of(r)}
+    allowed = {"DEFAULT_APPROVER_ROLE", "_FALLBACK_TICKET_ROLE"}
+
+    tree = ast.parse(_PLAN_ADVICE_PY.read_text(encoding="utf-8"),
+                     filename=str(_PLAN_ADVICE_PY))
+    docstrings = {ast.get_docstring(n, clean=False) for n in ast.walk(tree)
+                  if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                                    ast.ClassDef))}
+    # 两个兜底常量的赋值整棵子树放行。**按节点身份放行，不按取值** ——
+    # 按取值放行等于「'supervisor' 这个串到处都能写」，那就把判据判没了。
+    exempt = {id(sub) for node in ast.walk(tree)
+              if isinstance(node, ast.Assign) and any(
+                  isinstance(t, ast.Name) and t.id in allowed for t in node.targets)
+              for sub in ast.walk(node)}
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if id(node) in exempt:
+            continue
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value in known and node.value not in docstrings:
+                found.append(f"{node.value!r} @ line {node.lineno}")
+
+    assert not found, (
+        "本模块里出现了新的退款域角色名字面量：" + "；".join(sorted(found)) +
+        " —— 要问「谁是这个岗」就照 _approver_role() / _ticket_role() 的形状"
+        "局部 import 问目录，别在内核里认定一个岗")

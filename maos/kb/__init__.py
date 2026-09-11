@@ -28,6 +28,12 @@ PolarDB 是持久库，区别就是「上线第一天端口通道恒退化，且
 
 **开关**：`MAOS_KB_ENABLED` 是 RAG 有无对照实验（R5）的唯一变量。
 缺省**启用** —— 关掉检索是实验条件，不是缺省形态。
+
+**知识层落在哪个库**是另一件事，由两个**不同层级**的开关管，别混：
+`MAOS_STORE_BACKEND` 是**进程级**的，只作用于显式调 `maos.store.create_store()`
+的那些调用方（测试与一次性脚本）；`MAOS_FLOW_KB_BACKEND` 是 T132 加的**装配级**
+开关，只拨经 `flows/common.build()` 装出来的那一条 store。两条都不设时缺省
+sqlite，行为逐字节不变。装配级那条为什么非有不可，见 `KB_PORT_ATTR`。
 """
 
 from __future__ import annotations
@@ -171,6 +177,107 @@ def kb_enabled(env: dict | None = None) -> bool:
     return get_config_source().get(KB_ENABLED_ENV, "").strip().lower() not in _KB_OFF_VALUES
 
 
+# ------------------------------------------------- 装配级知识层后端（T132）
+#: **装配级**知识层端口挂在 store 上的属性名。`_dbport.STORE_BACKEND_ATTR` 的同位物。
+#:
+#: **为什么知识层这一面也要一个装配级开关。** 进程级的 `MAOS_STORE_BACKEND` 只是
+#: `maos.store.create_store()` 的入参缺省值，而**没有任何装配读它** ——
+#: `flows/common.build()` 造的永远是核心 `SqliteStore`，`port_of()` 对它一律返回
+#: None。后果是 T132 之前 PG 那条路整条都填实了却一次也没经装配跑过：
+#: `pg_store.py` 的 `fts_search` / `vector_search` 两条真通道在，
+#: `kb_extra_statements()` 的建表与索引语句在，`test_kb_pg_prefilter.py` 那 16 条
+#: 门控测试也真跑 —— 但它们都是**直接拿 `PgStorePort` 当 store 测的**，
+#: 整条 DAG 的知识层始终落在本地 SQLite 上。
+#:
+#: **直接把 `MAOS_STORE_BACKEND` 接进 `build()` 是错的**，理由与 T126 在业务域
+#: 那半踩到的逐字相同（原文记在 `maos/domain/_dbport.py::STORE_BACKEND_ATTR`）：
+#: 进程级开关会把本进程里每一个 store 都拨到 PG，包括按设计就该是一次性副本的库
+#: （`roundtable/stages.py::facts_finance_preview` 用 `_memory_store()` 现造的那个）。
+#: 所以「这条 DAG 的知识层落在哪」做成**装配的属性**：经 `build()` 装出来的 store
+#: 接了端口 -> PG；不经装配的一次性库没接 -> 照旧 sqlite，隔离语义原样保住。
+#: **`MAOS_STORE_BACKEND` 的进程级语义一个字没动**（`test_store_port.py` 与
+#: `test_kb_pg_prefilter.py` 按它写）。
+KB_PORT_ATTR = "_maos_kb_port"
+
+#: 接端口时要**贴到 store 本身上**的那两条检索通道。
+#:
+#: **为什么光挂一个标记不够。** 本模块的读写口径全经 `port_of()` 收口，贴不贴都走
+#: PG；但检索器的两条通道是**按 store 自己的形状探的**（`retriever._port_search`
+#: 那句 `getattr(store, channel, None)`，那里的原话是「『有这个方法』不等于『这条
+#: 通道能用』」），它看的是 store、不是端口。只挂标记的后果是：七维预过滤在 PG 上
+#: 真跑了，四通道里的 fts / vector 却在核心 `SqliteStore` 上探不到方法、静默退化成
+#: 本地实现 —— 「知识层上了 PG」只兑现一半，而两边都不报错。正是本仓库最不想要的
+#: 那种无症状失效。
+#:
+#: 贴过去的是端口的 **bound method**，调用时 self 仍是端口自己。**只贴这两条**，
+#: 不贴 `execute` / `query`：那两条由 `port_of()` 管，贴过去只会让 store 的形状在
+#: 别处被判成 StorePort。与 `retriever.PORT_CHANNELS` 是同一份口径，两边不一致时
+#: 由 `test_kb_flow_backend.py::test_port_capabilities_match_retriever_channels` 报红。
+PORT_CAPABILITIES = ("fts_search", "vector_search")
+
+
+def attach_port(store: Any, port: Any) -> None:
+    """把这条 store 的知识层那一面接到 `port` 上。`port=None` 是摘掉，store 回原样。
+
+    只动本模块自己的标记与 `PORT_CAPABILITIES` 那两条通道，**store 原有的方法一个
+    都不覆盖** —— 控制面（plan / task / artifact / event_log）仍旧走它自己那条路，
+    业务域仍旧读 `_dbport` 的标记。三面各判各的，互不借道。
+    """
+    if port is None:
+        for name in (KB_PORT_ATTR, *PORT_CAPABILITIES):
+            with contextlib.suppress(AttributeError):
+                delattr(store, name)
+        return
+    setattr(store, KB_PORT_ATTR, port)
+    for name in PORT_CAPABILITIES:
+        method = getattr(port, name, None)
+        if callable(method):
+            setattr(store, name, method)
+
+
+def attach_backend(store: Any, backend: str | None) -> Any | None:
+    """按后端名给这条 store 接上知识层端口。返回接上的端口；sqlite / 空返回 None。
+
+    值不认（拼错一个字母）**当场抛**，不回落 sqlite —— 口径同
+    `_dbport.mark_store_backend()` 与 `maos.store.create_store()`：回落的话你会以为
+    验过了 PG，其实一行 PG 代码都没执行，而这种错误没有症状。
+
+    postgres 这一支**当场连一次库再返回**（`connect()`），于是「设了开关」与「PG 真
+    的在跑」之间不留没人守的路 —— 口径同 `maos.store.create_store()` 的 postgres 支。
+    DSN 没配 / 驱动没装 / 连不上，一律 `PgBackendUnavailable` 抛出来。
+
+    **`sqlite_dialect=True` 是写死的，不读 `MAOS_PG_SQLITE_DIALECT`**（也因此不走
+    `create_store()` —— 那个工厂没有这个入参）。理由：知识层这条路上的 SQL **全是**
+    SQLite 方言 —— `schema.sql` 的建表、`upsert_doc` 的三条写入、阶段一预过滤的 `?`
+    占位符，一条都没有 PG 版本（那正是 `pg_store.SQLITE_DIALECT_ENV` 存在的理由，
+    它的原话是「打开它是为了知识层」）。不开翻译，`ensure_schema()` 的第一条 DDL 就
+    `syntax error at or near "VIRTUAL"`。让它吃环境变量等于把一件事拆成两个必须同时
+    设对的开关，而漏设第二个的症状是一句看不出所以然的语法错。
+    **`MAOS_PG_SQLITE_DIALECT` 的进程级语义一个字没动**：别的调用方照旧缺省关，
+    `test_pg_store_live.py` 那条「`?` 要报得说人话」的断言逐字不变。
+    """
+    from maos.store import POSTGRES, SQLITE                    # noqa: PLC0415 —— 惰性
+    from maos.store.pg_store import PgStorePort                # noqa: PLC0415
+
+    name = str(backend or "").strip().lower()
+    if not name or name == SQLITE:
+        attach_port(store, None)
+        return None
+    if name != POSTGRES:
+        raise ValueError(
+            f"未知的知识层后端 {backend!r}：只认 {SQLITE!r} 或 {POSTGRES!r}。"
+            " 不回落缺省 —— 拼错一个字母就静默跑 sqlite，比报错难查得多。")
+    port = PgStorePort(sqlite_dialect=True)
+    port.connect()
+    attach_port(store, port)
+    return port
+
+
+def attached_port(store: Any) -> Any | None:
+    """这条 store 上装配级接过的端口，没接过是 None。只读，供自证与测试用。"""
+    return getattr(store, KB_PORT_ATTR, None)
+
+
 # ---------------------------------------------------------------- 底层连接
 def port_of(store: Any) -> Any | None:
     """「这个 store 该走 StorePort 还是走 `_conn`」的**唯一**判据。返回端口或 None。
@@ -200,7 +307,16 @@ def port_of(store: Any) -> Any | None:
     只探 `execute` / `query` 两个方法，不探满 F-2 五个：知识层的 SQL 访问器只用
     这两个，`fts_search` / `vector_search` 由检索器自己按能力探测（那两条通道
     走不通要退化，而 execute/query 走不通没有退化路径可言）。
+
+    **T132 在最前面加了一条装配级判据**：`attach_port()` 接上去的端口一律直接返回，
+    与 `_dbport.backend_of()` 「先看装配级标记，没有才按老路判」同形。没接过端口的
+    store 一个字节都不受影响 —— 下面那两条按形状判的逐字未动，它们仍然是「没接过
+    端口时」的唯一判据。加在**前面**而不是后面：核心 `SqliteStore` 的 `_conn` 可
+    调用，排在后面就永远轮不到。
     """
+    attached = getattr(store, KB_PORT_ATTR, None)
+    if attached is not None:
+        return attached
     if store is None or callable(getattr(store, "_conn", None)):
         return None
     if callable(getattr(store, "execute", None)) and callable(getattr(store, "query", None)):

@@ -59,8 +59,13 @@ RISK_ORDER = {"L": 0, "M": 1, "H": 2}
 
 #: 建议任务里允许出现的键。多出来的键一律丢弃（不抛）——
 #: 知识层给的是「该做哪一步」，不是一份可以直接执行的任务定义。
+#:
+#: `doc_id` / `reason` 是 T119 加的**引用**两键：补进 DAG 的任务要说得出
+#: 「这一步是哪条知识建议的、为什么」。在此之前引用只存在于 `_kb_source` 这个
+#: 下划线私有键里，而下划线键按约定不进任务行 —— 于是一条被知识层补上的任务
+#: 落库之后就再也答不出自己的出处，审计只能看到「DAG 里多了一步」。
 SUGGESTION_KEYS = ("role", "title", "inputs", "acceptance", "depends_on",
-                   "risk_level", "effect_risk")
+                   "risk_level", "effect_risk", "doc_id", "reason")
 
 
 class GuardrailViolation(RuntimeError):
@@ -152,6 +157,79 @@ def assert_no_approval_skip(baseline: list[dict], proposed: list[dict]) -> None:
                     f"知识层不许动它")
 
 
+#: 权威事实所在的那两张表 / 那个字段。规划建议一个字都不许往它们上面写。
+#: 铁律 8 原话：MAOS 不持有权威事实，只持有观察与推断。
+AUTHORITATIVE_SINKS = ("order_snapshot", "biz_status")
+
+
+def assert_advice_within_bounds(advice: Any, baseline: Any = None) -> None:
+    """护栏 4（T119）：规划建议只能**加**任务、**指定**审批人、**收紧**预算。
+
+    前三条护栏管的是「知识补进 DAG 之后那份计划长什么样」，这一条管的是**建议本身**
+    —— 它在进 prompt 之前就该站得住，而不是等它改完 DAG 再去检查后果。四条判据：
+
+    1. **不替代事实**：`required_tasks` 不许携带订单事实字段，也不许出现
+       `order_snapshot` / `biz_status` 这两个权威落点。复用 `assert_no_fact_override`
+       ——「建议任务不许带事实」这件事全仓只有一份判据。
+    2. **人工授权永远在**：`approver_role` 不许为空。空审批人不是「不需要审批」，
+       是「没人知道该谁批」，而那两件事在下游长得一模一样（按岗收窄的动作静默落空）。
+    3. **只许更紧**：`retry_budget <= env_max_replan`。一个能把预算调大的建议，
+       等于让知识层决定「再自旋几次」—— 无限重试是评委点名的反模式。
+    4. **不许跳审批**：`exception_branches[].action` 里不许出现任何免审批标记。
+       「上次这类单直接放行了」不是这次可以省掉人的理由（同护栏 3 的措辞）。
+
+    `baseline` 收一份 dict，目前只用 `env_max_replan` 一个键（判据 3 需要它，而
+    `PlanAdvice` 自己不记 env 是多少）。收 dict 不收裸整数是为了让后来加判据时
+    不必改签名 —— 这一条护栏预计还会长。给 None 就跳过判据 3。
+    """
+    tasks = list(_advice_field(advice, "required_tasks") or [])
+    # 判据 1：复用护栏 2 的同一份判据，不在这里另写一遍「哪些算事实字段」。
+    assert_no_fact_override(tasks)
+    for task in tasks:
+        bad = sorted(k for k in (task or {}) if k in AUTHORITATIVE_SINKS)
+        inputs = task.get("inputs") if isinstance(task, dict) else None
+        if isinstance(inputs, dict):
+            bad += sorted(k for k in inputs if k in AUTHORITATIVE_SINKS)
+        if bad:
+            raise GuardrailViolation(
+                f"建议任务 {task.get('title') or task.get('role')!r} 想往 {sorted(set(bad))} "
+                f"上写 —— 订单快照与业务状态的权威在外部系统，MAOS 只持有观察与推断，"
+                f"规划建议一个字都不许往那里写（铁律 8）")
+
+    approver = str(_advice_field(advice, "approver_role") or "").strip()
+    if not approver:
+        raise GuardrailViolation(
+            "建议没有给出审批人 —— 空审批人不是「不需要审批」，是「没人知道该谁批」，"
+            "而按岗收窄的动作会因此静默落空且不报错（人工授权永远在）")
+
+    env_budget = _advice_field(baseline, "env_max_replan") if baseline is not None else None
+    if env_budget is not None:
+        budget = int(_advice_field(advice, "retry_budget") or 0)
+        if budget > int(env_budget):
+            raise GuardrailViolation(
+                f"建议把重试预算从 {env_budget} 放宽到 {budget} —— 知识层只许收紧预算，"
+                f"不许放松：能调大预算的建议等于让历史决定「再自旋几次」")
+
+    for branch in _advice_field(advice, "exception_branches") or []:
+        action = str((branch or {}).get("action") or "")
+        bad = sorted(k for k in APPROVAL_SKIP_KEYS if k in action)
+        if bad:
+            raise GuardrailViolation(
+                f"异常分支的处置里带了免审批标记 {bad}：{action!r} —— "
+                f"检索到「上次这类单直接放行了」不是这次可以省掉人的理由")
+
+
+def _advice_field(obj: Any, key: str) -> Any:
+    """从 `PlanAdvice`（dataclass）或它的 `to_dict()`（普通 dict）里取一个字段。
+
+    两种形状都收是刻意的：护栏要能在建议进事件**之前**（对象）和从事件里读回来
+    **之后**（dict）各判一次，而那两处判的必须是同一条判据。
+    """
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
 def check_all(baseline: list[dict], proposed: list[dict],
               suggestions: list[dict]) -> None:
     """三条护栏一次跑完。任何一条不过都抛，不返回「大体上还行」。"""
@@ -196,12 +274,30 @@ def suggested_tasks_from_docs(docs: list[dict], baseline: list[dict]) -> list[di
         inputs = dict(task.get("inputs") or {})
         # 历史 inputs 里的事实字段一律丢掉，再用当前 case 的共享参数补齐。
         inputs = {k: v for k, v in inputs.items() if k not in ORDER_FACT_FIELDS}
-        inputs.update(shared)
+        declared = set(inputs)
+        for key, value in shared.items():
+            # `amount_claimed` **只补给历史上本来就带着它的那一步**（T119）。
+            # 其余四个键是 case 的身份（租户 / 案号 / 业务域 / 渠道），谁都要；
+            # 申报金额不是身份，它是第六道闸**任务级**判据的触发量：判据要求同
+            # attempt 的产物里有 finance_entry，而那份产物只有核算那一步产得出来。
+            # 撒给别的步骤（比如经销渠道多出来的那一步核销）的后果是闸恒 blocker
+            # —— 那一步被要求交一份它根本不产的凭据，返工到额度耗尽，整个 Plan
+            # 跟着 FAILED。`flows/contrast.py::plan_tasks` 里那段注释写的是同一件事，
+            # 它靠「只挂在核算那一步」做到，这里靠「只补给声明过它的那一步」做到。
+            if key == "amount_claimed" and key not in declared:
+                continue
+            inputs[key] = value
         task["inputs"] = inputs
         task["depends_on"] = []            # 真正的前置在 _rewire 里按步骤映射
         doc = step.get("_doc") or {}
         task["_kb_source"] = {"doc_id": doc.get("doc_id"), "score": doc.get("score"),
                               "title": doc.get("title")}
+        # 引用也落成**任务自己的字段**（T119）：`_kb_source` 是下划线私有键，
+        # 按约定不进任务行，于是落库之后这一步就答不出自己的出处了。
+        # `setdefault` 不是 `=`：历史 step 自己写了 reason 时以它为准 ——
+        # 那是当时的人写下的理由，比这里现拼的一句话更有信息量。
+        task.setdefault("doc_id", doc.get("doc_id"))
+        task.setdefault("reason", f"历史知识《{doc.get('title')}》里有这一步")
         task["_depends_keys"] = [tuple(k) for k in (step.get("depends_on_keys") or [])]
         out.append(task)
     return out
@@ -295,17 +391,38 @@ def _steps_of(doc: dict) -> list[dict]:
     return [s for s in (steps or []) if isinstance(s, dict)]
 
 
-def apply_suggestions(baseline: list[dict], docs: list[dict]) -> tuple[list[dict], list[dict]]:
+def planning_kinds(advice: Any | None = None) -> tuple[str, ...]:
+    """哪几类知识**可以改写 DAG 的形状**。给了 advice 就多认 `task_pattern`。
+
+    `kb.POSITIVE_KINDS` 里没有 `task_pattern` 是有意的，理由写在
+    `retriever.retrieve_task_patterns` 的 docstring 里：
+
+        让一类知识自动改写 DAG 的形状，是**规划面的判断**，不是语料面能替它定的。
+
+    T119 给出的正是那个规划面的判断，而且它带着开关（`MAOS_KB_ADVICE`）与引用
+    （`PlanAdvice.citations`）：建议开着时 `task_pattern` 参与规划，关掉时它退回
+    「检索得到但改不动 DAG」的老样子。`kb.POSITIVE_KINDS` 一个字节没动 ——
+    那份清单答的是「哪类知识是正例」，与「哪类知识可以排任务」不是同一个问题。
+    """
+    if advice is None:
+        return tuple(kb.POSITIVE_KINDS)
+    return (*kb.POSITIVE_KINDS, kb.KIND_TASK_PATTERN)
+
+
+def apply_suggestions(baseline: list[dict], docs: list[dict], *,
+                      advice: Any | None = None) -> tuple[list[dict], list[dict]]:
     """把知识建议并进 DAG，护栏全过才返回。返回 `(新计划, 实际补上的任务)`。
 
     正例才参与规划：`failure_hint` 只用来提示「哪类组合需要额外步骤」，
     它本身不是可照做的流程（晋升规则的另一半在 `classify_case`）。
+    `advice` 非空时 `task_pattern` 也算进来，判据见 `planning_kinds`。
 
     补进来的任务会被**接进依赖图**：历史 DAG 里谁依赖这一步，当前 DAG 里的同一步
     就补上这条边。只补一步而不接边等于没补 —— 新任务与它的后继并行跑，
     后继照样在前置还没产出时就执行，症状与压根没补一模一样。
     """
-    positives = [d for d in docs if (d.get("kind") or _kind_of(d)) in kb.POSITIVE_KINDS]
+    kinds = planning_kinds(advice)
+    positives = [d for d in docs if (d.get("kind") or _kind_of(d)) in kinds]
     graph = collect_steps(positives)
     suggestions = suggested_tasks_from_docs(positives, baseline)
     if not suggestions:

@@ -2369,3 +2369,17 @@ python3 scripts/gen_docs.py --check →  3 份文档与代码逐字节一致  ex
 | 2026-09-10 | p10 | 裸跑 `python3 run.py --scenario 6` 仍不落 `case_outcome` / 晋升行（只有 `make_evidence` 那条路接了 `PlanFinalizer.poll`，T120 期人类拍板） | 演示时若直接跑 run.py 再查库会看到空表 | 演示脚本定稿前决定：要么演示走 `run_case.py` / `make_evidence.py`，要么给 `scenario_6/7` 各加一句 `poll()`（各 1 行，幂等由 claim 兜着） |
 | 2026-09-10 | p10 | `_add_column_if_missing` 三份复制（`case_pack.py` / `compensate.py` / `outcome.py`），契约 §B.2 说整合期去重 | 改一处漏两处不报错；`case_pack.py` 那份多一层 PRAGMA 回落 | Wave B 整合一并收成 `maos/domain/refund/objects.py` 的一个助手（T115 的 `DomainConn` 上 PG 后 PRAGMA 不保证有，回落分支要留） |
 | 2026-09-10 | p10 | T113 的基线是 `7af9022`，比本分支的五轨基线 `1f4bb1f` 新一个 commit，但不含本分支任何内容 | Wave B 整合时 T113 要合到本分支之上，`maos/roundtable/**` 以 T113 为准、其余以本分支为准 | 9/14 前后 T113 收工时 |
+
+## task-t119
+
+Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | `maos/flows/scenario_6.py` 的 `kb_context` 不带 `case_id`，于是场景 6 落下的 `PlanAdvised` detail 里 `case_id` 是**空串** —— 契约 §B 要求「detail 里一律带 `tenant_id` 与 `case_id`」 | 键在、值为空。按 case 回查建议时这一条挂不到任何一单上；R8 那两段自己带了 `case_id`，所以只影响裸跑 `run.py --scenario 6` 的那份证据 | 整合期给 `scenario_6.py` 的 `kb_context` 加一行 `"case_id": CASE_ID`（一行）。本轨不许动 `maos/flows/scenario_6.py`（白名单外）。同样的一行 `scenario_7.py` 大概率也要 |
+| 2026-09-11 | p10 | `scenarios/refund/kb/task_patterns.json` 里两份语料的步骤形状不一致：`kb-tp-*-happy-path` / `compensate-path` 用 `depends_on_keys`（步骤名对），而 `kb-tp-*-dealer-writeoff` 用 `depends_on` + `task_id`（`task-case-pattern-*` 这种只在那份语料里有意义的串） | `guardrails._rewire` 只认 `depends_on_keys`，所以从 dealer 那份补进 DAG 的渠道核销任务 `depends_on=[]` —— 它与受理并行跑。今天不出事（`RefundChannelAgent` 零依赖，只要 inputs 有 `rule_ref`），但语义上它该排在裁定之后 | 归 T118 / 语料那一轨：把 dealer 那份的 `depends_on` 改写成 `depends_on_keys`。改完 R8 的 `delta_tasks` 不变，只是那一步会接上「裁定之后」这条边。本轨不许动 `scenarios/**` |
+| 2026-09-11 | p10 | `MAOS_KB_ADVICE` 没进 `maos/config/source.py` 的 `GOVERNED_KEYS` —— 与 `MAOS_KB_ENABLED` / `MAOS_KB_WEIGHTS` 同一格 | **能治理，变更不落审计**：Nacos 上改得到、不用重启，但推送到达时不会落 `ConfigChanged` | 与 kb 那两个旋钮一起加。代价是「一行改动 + 一条断言」：`GOVERNED_KEYS` 加三个串，`test_config_source.py::test_governed_keys_are_exactly_the_four_this_track_owns` 跟着改名改断言。那个文件本轨不许动 |
+| 2026-09-11 | p10 | R8 的 `dag-diff.json` 没有 `kb_funnel` 段（R5 那份有）—— `experiment._kb_funnel(store)` 把 R5 的七维（`CHANNEL_ID='ch-online'` 等）写死在函数体里，R8 是经销渠道，直接调会报一份**别的渠道**的漏斗 | R8 的证据里看不到「库存 -> 同租户 -> 预过滤后」那三级数字。两段的命中逐条仍在 `kb-hits.json` 里 | 整合期把 `_kb_funnel` 的七维参数化（keyword-only、默认值取现在这几个常量，R5 的调用零改动），R8 再加一段。本轨没做是因为它要动 `run_r5` 那条路上的函数，而契约写着「`run_r5` 不动」 |
+| 2026-09-11 | p10 | `maos/tests/test_expected_metrics.py::test_collected_count_matches_source_of_truth` 变红：本轨 +42 条测试后收集数与 `docs/expected-metrics.json` 对不上 | 一条红，**预期内**（派单 §6 点名） | 整合期统一刷。契约 §A 把那个文件列进「谁都不许动」，理由是每轨都加测试、各自去改同一个整数意味着整合时多方冲突，且中间值全是错的 |
+| 2026-09-11 | p10 | `experiment._r8_replanner` 原样重出同一份规格，**不换渠道** | R8 演的是「知道什么时候该停」，不是「聪明地换一条路」。换渠道那一档由 `flows/scenario_7._switch_channel` 演 | 不必改。留这条账只为说明这是刻意的：40005 是「调用频次超限」，换哪个渠道都照撞 —— 而那正是准备段那行 `failure_hint_index` 记下来的事实 |
+| 2026-09-11 | p10 | `plan_advice.advise_and_log` 的政策规则从**命中的 `kind='policy'` 文档**重建，而不是查 `policy_rule` 表 | 知识库里没有投影过的政策规则，建议就看不见它。今天所有消费方（`experiment._seed` / `scenario_6._seed_kb` / `fixtures.seed_policy_kb`）都投影全量政策，所以取不到的情形不存在 | 真出现「库里有规则、kb_doc 里没有」的库时再说。走知识层是刻意的：`maos/kb/**` 是领域无关内核，查 `policy_rule` 表等于把退款域挂到它的 import 图上（那条边界只在证据生成器 `experiment.py` 上破例，且仅此一处），而且知识层那条路带得出 `doc_id`，`citations` 才是可回查的 |

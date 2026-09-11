@@ -60,6 +60,8 @@ from maos.contracts.events import new_id
 from maos.contracts.states import PlanState
 from maos.domain.refund import fixtures, guard, objects
 from maos.flows.common import build, dump, run_until_settled
+from maos.kb.plan_advice import DEFAULT_APPROVER_ROLE as _DEFAULT_APPROVER_ROLE
+from maos.kb.plan_advice import policy_directives as _policy_directives
 from maos.model.client import select_model_client
 from maos.runtime.gate import HumanApprovalQueue
 from maos.skills.builtin.refund import _common as C
@@ -80,7 +82,10 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
 
 #: 没有任何政策规则指定审批人时的兜底角色。R4A（自营）落在这里，
 #: R4B（经销）由 `AS-004` 的 `approver_role` 覆盖成 `region_manager`。
-DEFAULT_APPROVER_ROLE = "supervisor"
+#: 取值随 `policy_directives` 一起搬去了 `maos/kb/plan_advice.py`（T119），
+#: 这里是再导出 —— 值一个字节没变，三处消费方（本文件的 `check_r4` 与
+#: `test_contrast_cases.py` 两条）零改动。
+DEFAULT_APPROVER_ROLE = _DEFAULT_APPROVER_ROLE
 
 #: 审批是**人**的动作。名字写死，两次跑输出一致。
 APPROVER = "沈思锴"
@@ -180,37 +185,15 @@ def _applies_to(params: dict, reason_code: str) -> bool:
 def policy_directives(rules: list[dict]) -> dict:
     """从命中规则的参数里读出「规划期该照做的事」。
 
-    **逐条扫参数，不认渠道也不认租户**：读到 `extra_tasks` 就展开成任务，
-    读到 `approver_role` 就换审批人。自营渠道之所以没有核销任务，是因为
-    `AS-004` 压根没进 `rules`（`channel_scope` 在 `policy_rules_at_order`
-    那一层就把它滤掉了），不是因为这里判了渠道。
+    **函数体在 `maos/kb/plan_advice.py`**（T119 搬的），本处是同名再导出，
+    返回形状一个字节没变 —— 四个调用方（本文件 `run_case`、`ingress/router.py`、
+    `flows/custom_case.py`、`test_contrast_cases.py`）零改动。
 
-    同一个 `task_key` 只展开一次：多条规则要求同一步时，那是同一步。
-    `approver_role` 取**第一条**声明它的规则（规则按 `rule_no` 排序，口径确定）。
+    搬的理由：`plan_advice.advise()` 也要算 `approver_role`，两处各算一遍就是
+    两份口径，而分叉的症状是「屏幕上说区域经理批，事件里写主管批」——不报错。
+    谁投影谁的取向记在 `docs/DECISIONS.md ## task-t119`。
     """
-    extra: list[dict] = []
-    seen: set[str] = set()
-    approver: str | None = None
-    for rule in rules:
-        params = rule.get("params") or {}
-        for step in params.get("extra_tasks") or []:
-            if not isinstance(step, dict):
-                continue
-            key = str(step.get("task_key") or "").strip()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            extra.append({
-                "task_key": key,
-                "owner_role": str(step.get("owner_role") or ""),
-                "title": str(step.get("title") or key),
-                # 出处跟着任务走：核销任务落地时要说得出「是哪条规则要求的」，
-                # 说不出的核销任务不该被规划出来（见 channel_agent.py）。
-                "rule_ref": rule["ref"],
-            })
-        if approver is None and params.get("approver_role"):
-            approver = str(params["approver_role"])
-    return {"extra_tasks": extra, "approver_role": approver or DEFAULT_APPROVER_ROLE}
+    return _policy_directives(rules)
 
 
 def evaluate_eligibility(rules: list[dict], *, reason_code: str,
@@ -616,12 +599,50 @@ def run(*, matrix: bool = False) -> int:
     print(f"  两条路径结论相反 —— v2 已生效且通得过时间过滤，"
           f"唯一挡住它的是版本锁定本身")
 
+    _print_r8()
+
     if mismatches:
         raise AssertionError("对照结果与 case json 的 _expected 不符：\n  "
                              + "\n  ".join(mismatches))
     print("\n三组对照全部与 case json 的 _expected 一致；"
           "maos/contracts/** 与 maos/core/** 零改动。")
     return 0
+
+
+def _print_r8() -> dict:
+    """组 R8 · Planner 建议有无对照（T119）。返回 dag-diff 文档。
+
+    **单开一段，不进 `GROUPS`**：那三组由 case json 的 `_expected` 驱动
+    （`run_group` 按 `fixtures.CASE_FILES[group]` 迭代），而 R8 是**开关驱动**的
+    —— 同一份计划脚本跑两遍，唯一的变量是 `MAOS_KB_ADVICE`。硬塞进 `GROUPS`
+    会在 `fixtures.CASE_FILES["R8"]` 上当场 KeyError。位置同「组 R6 · 错误路径实跑」。
+
+    局部 import：`kb.experiment` 是对照实验的证据生成器，把它挂到本模块的
+    import 图上，`import maos.flows.contrast` 就会顺带拖进整个实验模块
+    （口径同 `flows/scenario_6._seed_kb`）。
+    """
+    import contextlib
+    import io
+
+    from maos.kb.experiment import run_r8
+
+    # 三段的过程日志进证据束时才要，屏幕上只报结论 —— 与上面三组的口径一致。
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        diff = run_r8()
+    without, with_advice = diff["without_advice"], diff["with_advice"]
+    print(f"\n组 R8 · Planner 建议有无对照"
+          f"（唯一变量 MAOS_KB_ADVICE，同一份计划脚本）")
+    print(f"  必要任务：无建议 {len(without['tasks'])} 个 -> 有建议 "
+          f"{len(with_advice['tasks'])} 个，多出 {diff['delta_tasks']}"
+          f"（出处 {[t['doc_id'] for t in diff['required_tasks_delta']]}）")
+    print(f"  审批人：{without['approver_role']} -> {with_advice['approver_role']}"
+          f"（AS-004 指名区域经理；无建议那一段错套了自营渠道的缺省）")
+    print(f"  异常分支与重试：预算 {without['retry_budget']} -> "
+          f"{with_advice['retry_budget']}，网关 {diff['gateway_code']} 实际重发 "
+          f"{without['replan_used']} -> {with_advice['replan_used']} 次，"
+          f"两段都收在 replan_limit_exceeded 转人工")
+    return diff
 
 
 def _r6_wrong_path() -> tuple[dict, list[str]]:

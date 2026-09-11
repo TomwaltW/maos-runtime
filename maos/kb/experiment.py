@@ -59,7 +59,7 @@ import os
 from typing import Any
 
 from maos import kb
-from maos.kb import guardrails
+from maos.kb import guardrails, plan_advice
 
 #: 靶场身份**逐字对齐 W-1 的语料**（`scenarios/refund/`）。
 #: 对齐不是为了好看：阶段一按 tenant/channel/region/sku/policy_version 硬过滤，
@@ -945,9 +945,547 @@ def _conclusion(without_kb: dict, with_kb: dict, delta: list[str]) -> str:
     )
 
 
-if __name__ == "__main__":                   # python3 -m maos.kb.experiment
+# ============================================================ R8：Planner 建议有无对照
+#
+# R5 问的是「有没有检索」，R8 问的是「检索回来的东西有没有被用成建议」。两者不可
+# 互相替代：R8 的两段**都**开着检索、都命中同样的文档，唯一的变量是
+# `MAOS_KB_ADVICE` —— 也就是那些命中到底有没有被拧成必要任务、审批人、异常分支
+# 与重试预算（`maos/kb/plan_advice.py`）。
+#
+# ## 为什么两段的 DAG 都带财务核算
+#
+# 「漏排财务核算」那一档已经由 R5 演过，而且它在**第一步**就被第六道闸的 plan 级
+# 判据拦下（受理那一步就 blocker -> 转人工），整条链路走不到付款 —— 于是网关码、
+# 重试预算、`replan_limit_exceeded` 一个都演不出来。R8 要演的正是后面这三样，
+# 所以两段都排了财务核算，差的是**经销渠道那一步**：
+#
+#   · 无建议：五步 DAG（受理 / 裁定 / 核算 / 付款 / 通知），漏掉 `AS-004` 要求的
+#     渠道商核销，审批人落在缺省的 `supervisor`（错套了自营渠道的政策），
+#     付款撞 40005 后按 env 给的 2 次额度反复重规划，最后 `replan_limit_exceeded`。
+#   · 有建议：**同一份计划脚本**，建议补上渠道商核销（出处 `AS-004@v1` 与
+#     `kb-tp-mfga-dealer-writeoff`）、审批人换成 `region_manager`、重试预算收到 1
+#     （出处是准备段自己栽出来的那行 `failure_hint_index`），一次重规划就转人工。
+#
+# ## 准备段栽的那一跤是真的
+#
+# 第一段跑一条**完整**的经销 case 撞同一个网关码，收口后按晋升规则落一条
+# `failure_hint`（外部结果明确地失败）并聚进 `failure_hint_index`。有建议那一段的
+# 预算 1 就是从这一行读出来的 —— 系统从自己上一次的失败里学到了东西，而不是
+# 有人在代码里写死了一个 1（铁律 3 在知识层的样子）。
+
+#: R8 的靶场身份。租户与 SKU 同 R5（语料对齐，理由见 `TENANT_ID` 那一段），
+#: **渠道换成经销** —— `AS-004` 的 `channel_scope='ch-dealer'`，自营渠道压根取不到它。
+R8_CHANNEL_ID = "ch-dealer"
+
+#: 注入的网关码。**只有这一个码**落在 `retriable=True + outcome=failed` 那一格
+#: （`GW_REPLAN_CHANNEL`），也就是四象限里唯一允许重规划的那格 —— 演「重试预算」
+#: 必须站在这一格上，别的格子压根不许重发，预算是多少都看不出差别。
+R8_GATEWAY_CODE = "40005"
+
+#: 三段各自的 case 与订单。金额与支付时刻沿用 R5 的常量（同一份语料、同一个 SKU）。
+R8_SEGMENTS = {
+    "seed": {"case_id": "case-r8-seed", "order_id": "ord-r8-seed"},
+    "without_advice": {"case_id": "case-r8-noadv", "order_id": "ord-r8-noadv"},
+    "with_advice": {"case_id": "case-r8-adv", "order_id": "ord-r8-adv"},
+}
+R8_SEGMENTS_BY_CASE = {v["case_id"]: v for v in R8_SEGMENTS.values()}
+
+R8_GATEWAY_NAME = "r8-demo"
+R8_GOAL = ("处理经销渠道客户对轴承订单的退款诉求：多源诉求已到，"
+           "需按下单当时的政策核定并退款")
+
+#: 检索的 `rule_no` 维度。**不是喂答案**：`AS-004` 的 `channel_scope='ch-dealer'`，
+#: 规划期只要知道这单走经销渠道就能确定它在适用规则里（`policy_rules_at_order`
+#: 那一层按渠道过滤，`flows/contrast.py::run_case` 也是先取 `policy_view` 再规划）。
+#: 口径同 R5 的 `RULE_NO` —— 那边给的是本案诉求类型对应的 `AS-002`。
+#:
+#: 不给这一维的实测后果：`AS-004` 掉到第 7 位、被 `DEFAULT_LIMIT=5` 截在外面，
+#: 于是审批人取不到 `region_manager` —— 对照实验少掉一半。
+R8_RULE_NO = "AS-004"
+
+#: 付款任务的返工额度。**必须大于 `MAOS_MAX_REPLAN` + 1**：控制面里
+#: `env.attempt >= max_attempts` 这条止损排在重规划判定**之前**（那个顺序是判定的
+#: 一部分，见 control_plane.py 的回归守卫注释），额度给小了就会在「重试预算用完」
+#: 之前先撞上「返工次数耗尽」—— 两段都收在 FAILED，而 `replan_limit_exceeded`
+#: 一次都演不出来，预算这条线看不出任何差别。
+#: 两段用**同一个**值，它不是变量。
+R8_MAX_ATTEMPTS = 4
+
+
+class _advice_switch:
+    """临时切 `MAOS_KB_ADVICE`。退出时**恢复原值**（包括原本没设这一情形）。
+
+    理由与 `_kb_switch` 一字不差：不恢复的话下一段跑在上一段留下的开关上，
+    两段的差异于是不再只有这一个变量，而对照实验的全部价值就在「只有这一个变量」。
+    """
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.previous: str | None = None
+
+    def __enter__(self) -> "_advice_switch":
+        from maos.kb.plan_advice import KB_ADVICE_ENV
+        self.previous = os.environ.get(KB_ADVICE_ENV)
+        os.environ[KB_ADVICE_ENV] = "1" if self.enabled else "0"
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        from maos.kb.plan_advice import KB_ADVICE_ENV
+        if self.previous is None:
+            os.environ.pop(KB_ADVICE_ENV, None)
+        else:
+            os.environ[KB_ADVICE_ENV] = self.previous
+
+
+def _r8_tasks(case_id: str) -> list[dict]:
+    """R8 三段共用的计划脚本：五步，**不含**渠道商核销。
+
+    三段逐字节相同 —— 有建议那一段多出来的那一步是规划期**算**出来的，不是这里
+    多写一个 if。两版 DAG 的 diff 里出现别的东西，就说明有人动了不该动的地方。
+    """
+    from maos.agents.refund import ROLE_FINANCE, ROLE_INTAKE, ROLE_PAYMENT, ROLE_POLICY
+
+    suffix = case_id.rsplit("-", 1)[-1]
+    shared = {"tenant_id": TENANT_ID, "case_id": case_id, "biz_type": BIZ_TYPE}
+    intake = f"task-r8-{suffix}-intake"
+    policy = f"task-r8-{suffix}-policy"
+    finance = f"task-r8-{suffix}-finance"
+    payment = f"task-r8-{suffix}-payment"
+    notify = f"task-r8-{suffix}-notify"
+    return [
+        {"task_id": intake, "role": ROLE_INTAKE, "title": "受理多源退款诉求并聚合证据",
+         "inputs": {**shared, "step": "intake", "signals": SIGNALS,
+                    "case_seed": {"tenant_id": TENANT_ID, "case_id": case_id,
+                                  "channel_id": R8_CHANNEL_ID,
+                                  "order_id": R8_SEGMENTS_BY_CASE[case_id]["order_id"],
+                                  "order_version": 1, "sku": SKU,
+                                  "reason_code": "quality_defect",
+                                  "amount_claimed": AMOUNT}},
+         "acceptance": ["多源诉求去重后建出 refund_case", "证据引用落库"],
+         "depends_on": [], "risk_level": "L"},
+        {"task_id": policy, "role": ROLE_POLICY, "title": "按下单锁定的政策版本裁定退款资格",
+         "inputs": dict(shared),
+         "acceptance": ["按订单快照锁定的政策版本判定", "给出命中的规则编号与版本"],
+         "depends_on": [intake], "risk_level": "L"},
+        {"task_id": finance, "role": ROLE_FINANCE, "title": "核算退款金额并写财务分录",
+         "inputs": {**shared, "amount_claimed": AMOUNT},
+         "acceptance": ["产出 finance_entry 且与库表一致", "金额按锁定政策版本核算"],
+         "depends_on": [policy], "risk_level": "M", "effect_risk": "H"},
+        {"task_id": payment, "role": ROLE_PAYMENT, "title": "发起退款并观察网关终态",
+         "inputs": {**shared, "gateway": R8_GATEWAY_NAME},
+         "acceptance": ["发起后不得写 settled", "终态必须由 query 观察得到"],
+         "depends_on": [finance], "risk_level": "M",
+         "max_attempts": R8_MAX_ATTEMPTS},
+        {"task_id": notify, "role": ROLE_INTAKE, "title": "通知客户退款结果",
+         "inputs": {**shared, "step": "notify", "channel": "sms"},
+         "acceptance": ["通知记录落库", "ack 缺失不阻塞"],
+         "depends_on": [payment], "risk_level": "L"},
+    ]
+
+
+def _r8_seed(store, case_id: str) -> None:
+    """装靶场：W-1 的政策语料 + 本段自己的经销订单快照 + 九类流程知识。
+
+    与 `_seed` 的差别只有渠道（`ch-dealer`）。**不复用它**是因为那个函数按
+    `SEGMENTS_BY_CASE` 找订单号，而 R8 的三段不在那张表里；把 R8 的段塞进 R5 的
+    `SEGMENTS` 会让 R5 的漏斗数字跟着变，那是两个实验互相污染。
+    """
+    from maos.domain.refund import objects
+    from maos.skills.builtin.refund import _common as C
+
+    order_id = R8_SEGMENTS_BY_CASE[case_id]["order_id"]
+    objects.ensure_schema(store)
+    _seed_domain_from_corpus(store)
+    objects.execute(
+        store,
+        "INSERT OR REPLACE INTO order_snapshot (tenant_id, order_id, version, sku, amount_paid,"
+        " paid_at, channel_id, policy_version_at_order, payload_json, read_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (TENANT_ID, order_id, 1, SKU, AMOUNT, PAID_AT, R8_CHANNEL_ID, POLICY_VERSION,
+         "{}", C.now_iso()))
+    kb.ensure_schema(store)
+    seed_kb_corpus(store)
+    seed_process_kb(store)
+
+
+def _r8_replanner(*, goal: str, findings: list[dict], open_tasks: list[dict]) -> list[dict]:
+    """重规划回调：**原样重出同一份规格**。零模型。
+
+    刻意不换渠道（`flows/scenario_7._switch_channel` 演的是那一档）：这一轨演的是
+    **预算本身**。40005 是「调用频次超限」，换哪个渠道都照撞 —— 而这正是准备段那行
+    `failure_hint_index` 记下来的事实。换渠道能演出「聪明地换一条路」，演不出
+    「知道什么时候该停」，后者才是评委点名的「无限重试」那条反模式的解药。
+
+    返回的 specs 与 `open_tasks` **等长**，理由同 `_switch_channel`：让覆写落在原
+    task_id 上，task_id、attempt 与 event_log 的因果链连续。
+    """
+    return [{"title": t["title"]} for t in open_tasks]
+
+
+def _run_r8_segment(*, case_id: str, use_advice: bool) -> dict:
+    """跑一段 R8，返回这一段的真实观测。
+
+    与 `_run_segment` 同一套装配（`flows.common.build()`，不留第二条装配路径），
+    差别有三处，都写在这里而不是去改那个函数：R8 要装 replanner、要注入网关码、
+    要按 `MAOS_KB_ADVICE` 切开关。
+    """
+    from maos.agents.manager import ManagerAgent
+    from maos.contracts.events import Topic, new_id
+    from maos.contracts.states import PlanState
+    from maos.domain.refund import guard, objects
+    from maos.flows.common import build, run_until_settled
+    from maos.model.client import ScriptedModelClient
+    from maos.runtime.gate import HumanApprovalQueue
+    from maos.skills.builtin.refund import _common as C
+    from maos.tools.gateway import MockGateway
+
+    plan_json = json.dumps({"tasks": _r8_tasks(case_id)}, ensure_ascii=False)
+    model = ScriptedModelClient({"用户请求": plan_json})
+    store, bus, cp, model, worker, gate = build({}, model=model)
+    _r8_seed(store, case_id)
+    C.reset_gateways()
+    C.register_gateway(R8_GATEWAY_NAME, MockGateway(
+        settle_after=SETTLE_AFTER,
+        script={R8_SEGMENTS_BY_CASE[case_id]["order_id"]: R8_GATEWAY_CODE}))
+    cp.set_replanner(_r8_replanner)
+
+    verdicts: list[dict] = []
+    bus.subscribe(Topic.REVIEW_VERDICT, "r8-observer",
+                  lambda env: verdicts.append({"task_id": env.task_id, **env.payload}))
+
+    trace_id, plan_id = new_id("trace"), new_id("plan")
+    mgr = ManagerAgent(model, store=store)
+    # 检索上下文比 R5 多一个 `case_id`：`PlanAdvised` 的 detail 按契约 §B 要带它，
+    # 而 `case_id` 不是检索维度（`_KB_QUERY_FIELDS` 不收它），进不了检索查询。
+    # `keyword` 刻意**不给** —— `_kb_prefetch` 会回落到 goal 本身。自己另写一句
+    # 关键词就有机会把语料标题抄进去，那才是喂答案；goal 是这一单真正的诉求原文。
+    context = {"tenant_id": TENANT_ID, "biz_type": BIZ_TYPE, "channel_id": R8_CHANNEL_ID,
+               "region": REGION, "sku": SKU, "policy_version": POLICY_VERSION,
+               "rule_no": R8_RULE_NO, "gateway_code": R8_GATEWAY_CODE,
+               "case_id": case_id, "plan_id": plan_id, "trace_id": trace_id}
+    with _advice_switch(use_advice):
+        tasks = mgr.plan(R8_GOAL, context=context)
+
+    cp.create_plan(goal=R8_GOAL, trace_id=trace_id, tasks=tasks, plan_id=plan_id)
+    C.record_approval(store, tenant_id=TENANT_ID, case_id=case_id, approver=APPROVER,
+                      decision="approved", reason="金额与订单锁定的政策 v1 一致")
+    cp.start_plan(plan_id)
+    # 重规划会把 Plan 退回 PENDING 再 start，一轮驱动循环收不住；按 env 上限多驱几轮。
+    # **两段用同一个轮数**，不按段调 —— 调它就是给对照实验加第二个变量。
+    with _advice_switch(use_advice):
+        for _ in range(4):
+            run_until_settled(bus, gate, cp, plan_id)
+            # Plan 已经收敛就停手。**人的决定之后 plan 可能当场 FAILED**，而那一刻
+            # 队列里往往还留着别的 BLOCKED 任务（有建议那一段多出来的渠道核销就是
+            # 其中一个）；再对它们 decide 一次，`_fail_plan` 会撞 FAILED -> FAILED
+            # 的非法迁移 —— 那不是状态机坏了，是这里越过收敛点继续驱动。
+            if cp.store.get_plan(plan_id)["state"] in (PlanState.DONE, PlanState.FAILED):
+                break
+            hq = HumanApprovalQueue(store, cp)
+            pending = hq.pending(plan_id)
+            if not pending:
+                break
+            for blocked in pending:
+                await_kind = _await_kind(store, plan_id, blocked["task_id"])
+                # 高风险放行照旧（既有语义一字未动）；转人工那一档一律驳回 ——
+                # 「重试到顶了」这件事放行一次也不会消失。
+                approved = await_kind != "human_decision"
+                hq.decide(blocked["task_id"], approved=approved, operator=APPROVER,
+                          note=("已核对金额与政策版本" if approved else
+                                "网关重试已到预算上限，转人工核实，不许再自旋"))
+
+    plan = cp.store.get_plan(plan_id)
+    rows = cp.store.list_tasks(plan_id)
+    case = guard.get_case(store, TENANT_ID, case_id)
+    advised = plan_advice.latest_advice(store, plan_id) or {}
+    return {
+        "plan_id": plan_id,
+        "trace_id": trace_id,
+        "plan_state": plan["state"],
+        "tasks": [t["title"] for t in rows],
+        "task_keys": [".".join(guardrails.task_key(t)) for t in rows],
+        # 审批人：有建议时由建议给，没建议时落在缺省 —— 两段都从**真实落库的那一份**
+        # 读，不从内存里的 advice 对象读（没建议那一段压根没有那个对象）。
+        "approver_role": str(advised.get("approver_role")
+                             or plan_advice.DEFAULT_APPROVER_ROLE),
+        "advice": advised or None,
+        "plan_advised_events": len(kb.query(
+            store, "SELECT seq FROM event_log WHERE event_type=? AND trace_id=?",
+            (plan_advice.PLAN_ADVISED_EVENT, trace_id))),
+        "kb_retrieved_events": len(kb.query(
+            store, "SELECT seq FROM event_log WHERE event_type='KbRetrieved'"
+                   " AND trace_id=?", (trace_id,))),
+        "retry_budget": cp._max_replan(plan_id),
+        "replan_used": cp._replan_used(plan_id),
+        "human_exits": _r8_human_exits(store, plan_id),
+        "gateway_code": R8_GATEWAY_CODE,
+        "failed_tasks": [{"title": t["title"], "error": t["last_error"]}
+                         for t in rows if t["last_error"]],
+        "observations": [o["observed_state"] for o in objects.query(
+            store, "SELECT observed_state FROM payment_observation"
+                   " WHERE tenant_id=? AND case_id=? ORDER BY observed_at",
+            (TENANT_ID, case_id))],
+        "biz_status": (case or {}).get("biz_status"),
+        "_store": store,
+    }
+
+
+def _r8_human_exits(store, plan_id: str) -> list[dict]:
+    """这一趟转了几次人工、各因为什么。从 event_log 读，不从内存拼（铁律 3）。
+
+    `reason` 就是控制面写进 `detail` 的那个字面量（`replan_limit_exceeded` /
+    `gateway_needs_human` / `plan_defect`），`replan_used` 是转人工**那一刻**已经
+    用掉的重规划次数 —— 两段的差别正在这个数上，所以它必须来自事件而不是事后现数。
+    """
+    from maos.contracts.states import TaskState
+
+    out = []
+    for e in store.list_event_log(plan_id):
+        detail = e.get("detail")
+        if e.get("to_state") != TaskState.BLOCKED or not isinstance(detail, dict):
+            continue
+        if detail.get("await") != "human_decision":
+            continue
+        out.append({"task_id": e.get("task_id"), "reason": detail.get("reason"),
+                    "replan_used": detail.get("replan_used")})
+    return out
+
+
+def run_r8(db_path: str | None = None) -> dict:
+    """跑完三段，返回 dag-diff 文档。`db_path` 非空则把库落到那个文件。
+
+    落文件库的方式与 `run_r5` 同款（进程内换 `flows.common.SqliteStore` 工厂），
+    理由一字不差：仓库里一个字节不改，落库位置由调用方提供。
+    """
+    from maos.core.store import SqliteStore
+    from maos.flows import common as flows_common
+    from maos.kb import promotion
+
+    singleton: dict[str, Any] = {}
+
+    def factory(*_args: Any, **_kwargs: Any):
+        """三段共用一个库 —— 准备段栽的那一跤要对后两段可见。"""
+        if "store" not in singleton:
+            singleton["store"] = SqliteStore(db_path or ":memory:")
+        return singleton["store"]
+
+    original = flows_common.SqliteStore
+    flows_common.SqliteStore = factory       # type: ignore[assignment]
+    try:
+        print("场景 R8：Planner 建议有无对照实验，无 key 确定性复现")
+        print(f"\n[1/3] 准备段：一条完整的经销 case 撞网关 {R8_GATEWAY_CODE}，"
+              f"收口后按晋升规则聚成失败提示")
+        seed = _run_r8_segment(case_id=R8_SEGMENTS["seed"]["case_id"], use_advice=False)
+        store = singleton["store"]
+        promoted = promotion.promote_case(
+            store, tenant_id=TENANT_ID, case_id=R8_SEGMENTS["seed"]["case_id"],
+            plan_id=seed["plan_id"])
+        hints = promotion.list_failure_hints(store, tenant_id=TENANT_ID)
+        print(f"  Plan {seed['plan_state']}，网关观察 {seed['observations']}，"
+              f"业务状态 {seed['biz_status']}")
+        if not hints:
+            raise RuntimeError(
+                "准备段没能聚出任何 failure_hint_index 行 —— 有建议那一段的重试预算"
+                f"就没有来源，对照实验不成立。（晋升判定={promoted['verdict']}，"
+                f"到账={promoted['outcome'].get('arrival')}）")
+        print(f"  晋升：{promoted['verdict']} doc_id={promoted['doc_id']}")
+        for hint in hints:
+            print(f"  失败聚合：{hint['channel_id']} × {hint['gateway_code']} × "
+                  f"{hint['rule_no']} 第 {hint['count']} 次，"
+                  f"额外步骤 {hint['extra_steps']}")
+
+        from maos.kb.plan_advice import KB_ADVICE_ENV
+        print(f"\n[2/3] without_advice：{KB_ADVICE_ENV}=0，"
+              f"命中照旧、建议不生成")
+        without = _run_r8_segment(case_id=R8_SEGMENTS["without_advice"]["case_id"],
+                                  use_advice=False)
+        _print_r8_segment(without)
+
+        print(f"\n[3/3] with_advice：{KB_ADVICE_ENV}=1，同一份计划脚本")
+        with_advice = _run_r8_segment(case_id=R8_SEGMENTS["with_advice"]["case_id"],
+                                      use_advice=True)
+        _print_r8_segment(with_advice)
+    finally:
+        flows_common.SqliteStore = original  # type: ignore[assignment]
+
+    delta = [k for k in with_advice["task_keys"] if k not in without["task_keys"]]
+    advice = with_advice.get("advice") or {}
+    required_delta = [t for t in (advice.get("required_tasks") or [])
+                      if any(k.startswith(f"{t.get('role')}.") for k in delta)]
+    for seg in (seed, without, with_advice):
+        seg.pop("_store", None)
+
+    print(f"\n差异：多出来的任务={delta}，审批人 {without['approver_role']} -> "
+          f"{with_advice['approver_role']}，重试预算 {without['retry_budget']} -> "
+          f"{with_advice['retry_budget']}（实际重规划 {without['replan_used']} -> "
+          f"{with_advice['replan_used']} 次）")
+    return {
+        "experiment": "R8 · Planner 建议有无对照",
+        "variable": (f"{KB_ADVICE_ENV}=0 / 1，两段的计划脚本逐字节相同，"
+                     f"检索两段都开着"),
+        "gateway_code": R8_GATEWAY_CODE,
+        "channel_id": R8_CHANNEL_ID,
+        "seed_segment": {
+            "case_id": R8_SEGMENTS["seed"]["case_id"],
+            "plan_id": seed["plan_id"],
+            "plan_state": seed["plan_state"],
+            "observations": seed["observations"],
+            "promoted": {"verdict": list(promoted["verdict"] or ()),
+                         "doc_id": promoted["doc_id"], "hint": promoted["hint"]},
+            "failure_hints": hints,
+        },
+        "without_advice": without,
+        "with_advice": with_advice,
+        "delta_tasks": delta,
+        "required_tasks_delta": required_delta,
+        "citations": list(advice.get("citations") or []),
+        "conclusion": _r8_conclusion(without, with_advice, delta),
+    }
+
+
+def _print_r8_segment(seg: dict) -> None:
+    """一段的屏幕口径。三行都从这一段的真实观测里取，不写死任何结论。"""
+    print(f"  {len(seg['tasks'])} 个任务，KbRetrieved {seg['kb_retrieved_events']} 条，"
+          f"PlanAdvised {seg['plan_advised_events']} 条")
+    print(f"  审批人 {seg['approver_role']}，重试预算 {seg['retry_budget']}，"
+          f"实际重规划 {seg['replan_used']} 次，网关观察 {seg['observations']}")
+    for exit_row in seg["human_exits"]:
+        print(f"  转人工：{exit_row['reason']}"
+              f"（此刻已重规划 {exit_row['replan_used']} 次）")
+    print(f"  Plan {seg['plan_state']}，业务状态 {seg['biz_status']}")
+
+
+def _r8_conclusion(without: dict, with_advice: dict, delta: list[str]) -> str:
+    if not delta and without["retry_budget"] == with_advice["retry_budget"]:
+        return "两段无差异 —— 对照实验不成立，检查建议开关与语料命中"
+    return (
+        f"关掉建议：计划漏排 {delta or '（无）'}，审批人落在缺省的 "
+        f"{without['approver_role']}，重试预算 {without['retry_budget']} 次用满"
+        f"（实际重规划 {without['replan_used']} 次）才转人工；"
+        f"打开建议：同一份脚本补上 {delta or '（无）'}，审批人由 AS-004 指定为 "
+        f"{with_advice['approver_role']}，重试预算收到 {with_advice['retry_budget']} 次"
+        f"（实际重规划 {with_advice['replan_used']} 次）即转人工。"
+        f"建议只加任务、只收紧预算、只指定审批人 —— 一条任务没删、一次审批没跳。"
+    )
+
+
+def write_r8_evidence(out_root: str | None = None) -> str:
+    """跑一次 R8 并落成一套 aux 证据束 `evidence/contrast-R8/`。返回目录路径。
+
+    **是 aux 束不是 `scenario-*`**：缺省证据束恒为 8 束是跨轨冻结口径，
+    `docs/expected-metrics.json` 的 `evidence_bundles: 8` 一个字节不动。
+    落盘与脱敏全部复用证据生成器的 `write_bundle`，与 R5 走同一套口径 ——
+    首行 header、`redact`、`scan_for_secrets` 反查，一样都不少（铁律 3 / 铁律 6）。
+
+    先在临时目录攒齐、脱敏反查过关，才 `os.replace` 挪到位：半份目录比没有更坏，
+    它看起来跟跑通了一模一样。
+    """
+    import contextlib
+    import io
+    import os.path
+    import shutil
+    import sys
+    import time
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
+    from scripts.make_evidence import (
+        git_sha, scan_for_secrets, secret_values, write_bundle, write_json)
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    out_root = out_root or os.path.join(root, "evidence")
+    final = os.path.join(out_root, "contrast-R8")
+    tmp = os.path.join(out_root, f".tmp-contrast-R8.{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+
+    sha, secrets = git_sha(), secret_values()
+    try:
+        db_path = os.path.join(tmp, "maos.db")
+        buf = io.StringIO()
+        started = time.perf_counter()
+        with contextlib.redirect_stdout(buf):
+            diff = run_r8(db_path)
+        wall_ms = int((time.perf_counter() - started) * 1000)
+
+        write_bundle(db_path, tmp, scenario="R8", exit_code=0, wall_ms=wall_ms,
+                     log=buf.getvalue(), sha=sha, secrets=secrets)
+        write_json(os.path.join(tmp, "dag-diff.json"), diff, sha=sha, secrets=secrets)
+        write_json(os.path.join(tmp, "kb-hits.json"), _r8_kb_hits(db_path),
+                   sha=sha, secrets=secrets)
+        # 本束自己的 provenance 锚。**与 `evidence/INDEX.json` 不是一回事** ——
+        # 那份是全量跑重建的全局索引（`scripts/make_evidence.py`），本轨一个字节
+        # 都不碰它。这一份只回答「这个目录里有什么、它说了什么结论、从哪个 sha 产的」，
+        # 让这个 aux 束脱开 `evidence/` 根目录也能自证出处。
+        write_json(os.path.join(tmp, "INDEX.json"), {
+            "bundle": "contrast-R8",
+            "kind": "aux",
+            "experiment": diff["experiment"],
+            "variable": diff["variable"],
+            "files": sorted(os.listdir(tmp)) + ["INDEX.json"],
+            "conclusion": diff["conclusion"],
+            "citations": diff["citations"],
+        }, sha=sha, secrets=secrets)
+
+        leaks = scan_for_secrets(tmp, secrets)
+        if leaks:
+            raise RuntimeError("R8 的产物里查到敏感值明文，目录已销毁：\n  "
+                               + "\n  ".join(leaks))
+        shutil.rmtree(final, ignore_errors=True)
+        os.replace(tmp, final)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return final
+
+
+def _r8_kb_hits(db_path: str) -> dict:
+    """两段各自的检索命中与建议，从**落盘的库**里读回来。
+
+    从库读而不是把内存里那两个 dict 直接写出去：证据要能被第三方拿着 `maos.db`
+    复算一遍，而不是只能信这份 JSON。核验器第 7 项按 doc_id 回 `kb_doc` 表查，
+    查不到就判「RAG 命中是编的」——那条判据只有在证据与库同源时才成立。
+    """
+    from maos.core.store import SqliteStore
+
+    store = SqliteStore(db_path)
+    out: dict[str, Any] = {"segments": {}}
+    for name, seg in (("without_advice", R8_SEGMENTS["without_advice"]),
+                      ("with_advice", R8_SEGMENTS["with_advice"])):
+        rows = kb.query(
+            store,
+            "SELECT event_type, detail FROM event_log WHERE event_type IN (?, ?)"
+            " AND plan_id IN (SELECT plan_id FROM refund_case WHERE case_id=?)"
+            " ORDER BY seq",
+            ("KbRetrieved", plan_advice.PLAN_ADVISED_EVENT, seg["case_id"]))
+        hits: list[dict] = []
+        advice: dict | None = None
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"])
+            except (TypeError, ValueError):
+                continue
+            if row["event_type"] == "KbRetrieved":
+                hits += [{"doc_id": d["doc_id"], "score": d["score"],
+                          "kind": d.get("kind"), "title": d.get("title")}
+                         for d in detail.get("docs") or []]
+            else:
+                advice = detail
+        out["segments"][name] = {"case_id": seg["case_id"], "hits": hits,
+                                 "advice": advice}
+    out["note"] = ("两段的命中逐条相同（同一个库、同一份查询），差别只在 advice 有没有"
+                   "生成 —— 这正是 MAOS_KB_ADVICE 那一个变量。")
+    return out
+
+
+if __name__ == "__main__":                   # python3 -m maos.kb.experiment [--r8]
     import sys as _sys
 
-    _path = write_evidence()
+    # 无参仍是 R5，逐字节不变（`scripts/make_evidence.py` 按这条路产 scenario-R5）。
+    # `--r8` 是加出来的子开关，产的是 aux 束 evidence/contrast-R8/。
+    if "--r8" in _sys.argv[1:]:
+        _path = write_r8_evidence()
+    else:
+        _path = write_evidence()
     print(f"\n证据束已落盘：{_path}")
     _sys.exit(0)

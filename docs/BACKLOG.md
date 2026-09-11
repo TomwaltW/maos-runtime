@@ -2563,3 +2563,20 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | `evidence/case-real-01-pg/` 没有顶层 `INDEX.json`（`make_case_bundle.py` 只在 `--all-paths` 跑完才写它），脚本自己会 `[WARN]` 点名 | `verify.py` 第 9 项少一个 provenance 锚（不影响 10/10，锚数从 11 变不到 12）；`report.html` 里这一组的抬头印「顶层 INDEX.json 缺失」而不是案号 | 与上一条同轨：`--all-paths` 在 PG 上能跑通那天，顶层 INDEX.json 自然就有了。在那之前不要为它单开一条「只写 INDEX 不跑路径」的旁路——那份汇总的内容正是四条路径的产出 |
 | 2026-09-11 | p10 | T129 的 `test_two_room_entries_build_the_same_schema` 断言的是**两个入口的表集合相等**，而注释写的是「两处都该走 `router.ensure_room_schema()`」。实际只有 `scripts/run_ingress.py` 改成了走它，`hiclaw/room_ingress.py::wire()` 仍是自己写的四句（`init_schema` + 三句 ensure） | 断言比注释弱一档：哪天有人往 `ensure_room_schema()` 里加第四句 ensure，两处会再次分叉，而表集合相等这条断言**抓不到**（新表两边都建了才叫分叉，只有一边建才红——正是这条断言要防的，所以它今天有效；失效的场景是有人给 `wire()` 也补上同一张表却不走共用函数） | `hiclaw/**` 在 T129 白名单外，所以这一轮没并。下一次动 `hiclaw/room_ingress.py` 的轨把那四句换成 `ensure_room_schema(store)`，断言同时收紧成「`wire()` 的源码里出现 `ensure_room_schema`」 |
 | 2026-09-11 | p10 | `maos/config/source.py::GOVERNED_KEYS` 补到八个之后，仍有两个走配置面的旋钮不在清单里：`MAOS_SANDBOX_REQUIRE_CONTAINER`（安全旋钮，要不要强制容器隔离）与 `MAOS_MAX_PLAN_REJECT` | 这两个在 Nacos 上改了**能改到、但变更不落审计**（现况与 T131 补齐前的那四个一样）。前者是安全面，比 kb 那三个更值得审计 | T131 的 `## task-t131` 已记同一笔账，这里并记一次是为了整合期的人一眼看到「本轮补了四个、还差两个」。补齐仍是「两行改动 + 一条断言」 |
+
+## task-t136（收尾四小件，2026-09-11）
+
+> `## task-t131` 的两笔账**本轨已处理**，按契约 §A 不回头改中间那两行（`merge=union` 会留下同一行的两个版本），
+> 在这里划掉：`docs/BACKLOG.md` 的 `## task-t131` 第 1 行与 `## 整合期 p10-d` 第 4 行（两条记的是同一件事）
+> —— `MAOS_SANDBOX_REQUIRE_CONTAINER` 与 `MAOS_MAX_PLAN_REJECT` 已进 `GOVERNED_KEYS`，
+> 实际代价与 T131 估的一致（两行改动 + 一条断言）。那条提醒装置测试已翻成正向判据。
+>
+> `## 整合期 p10-d` 第 3 行（两个房间入口的建表口径）也由本轨收掉：`hiclaw/room_ingress.py::wire()`
+> 现在走 `ensure_room_schema(store)`，断言收紧成「两个入口的源码里都必须出现那个调用」。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | `maos/kb/plan_advice.py` 的两个兜底角色名字面量（`DEFAULT_APPROVER_ROLE = "supervisor"` / `_FALLBACK_TICKET_ROLE = "payment_ops"`）**去不掉**。本轨把审批岗那一处接上了「先问 `roles.DEFAULT_APPROVER_SEAT`、问不到才兜底」，但目录读不出来时总得给一个岗 | 领域无关内核里仍有两个退款域的角色名。今天它们只在「目录读不出来」这条路上生效，取值由域说了算 —— 所以这是**层次上的不干净**，不是行为上的 bug | 真正清零要把它们变成 `advise()` / `_ticket_role()` 的**必传参数**，那要改签名并改所有调用方（`experiment.py` / `manager.py` / `channel_agent.py`）。等**第二个业务域**真的用 `advise()` 那天做 —— 那时参数才有第二个实参，签名的代价才换得到东西。在那之前，`test_no_third_refund_role_literal_creeps_into_this_module` 钉住「不许长出第三个」 |
+| 2026-09-11 | p10 | `GOVERNED_KEYS` 补齐到十个之后，「清单 = 走配置面的旋钮全集」这件事**没有机器判据**：`maos/config/__init__.py` 那张读取点表格仍靠人跑一遍 `grep -rn "get_config_source()"` 去核（这已经是第三次靠人核了：T131 一次、本轨一次） | 下一个人接一个新旋钮却不进清单时，现况会**静默**退回「能治理，变更不落审计」，且那张自称完整的表格会再次过期 —— 前两轮各花了一整轨去发现这件事 | 可做的形状：一条 AST 判据，扫全仓 `get_config_source().get(<第一个实参>)`，把解析得出的 key 与 `GOVERNED_KEYS` 比对，不在清单里的**逐个列出来**（不是断言为空 —— 契约上「接读取点」与「进清单」仍是两件事，可以有意不进）。它把「有没有人想过」从注释升成一次必答题。代价约三十行，归下次动 `test_config_source.py` 的轨 |
+| 2026-09-11 | p10 | `GOVERNED_KEYS` 的数目从八变十，让 `## task-t131` 记的那五处过期口径**又老了一档**：`deploy/nacos.md:142`（「只有那四个 key 会被 diff 出变更」）、`deploy/nacos-live.md:236`、`docs/agent-teams-gap-analysis.md:110`（「治理键只有 4 个全局旋钮 `source.py:96-101`」，行号也已漂到 `:108-140` 附近）、`maos/model/client.py:42`（「**不进** `GOVERNED_KEYS`」） | 只是文字，无行为影响。但 `deploy/nacos*.md` 两处是**真连 Nacos 时照着做的操作手册**，说「只有四个会落审计」会让人以为改别的旋钮不留痕 | 四处都在本轨白名单外，一个字没动（第五处 `maos/kb/plan_advice.py` 在白名单里，本轨修了）。归各自持有轨或整合期，改法是把数目改成十并删掉那句「不进」 |
+| 2026-09-11 | p10 | 空审批人那条病在**申请表批量路径**上没有判据：`scripts/room_team_smoke.py` 的演示语料每一单都写了 `approver_role`，所以第 3 件改前改后 `PLAIN_STDOUT_MD5` 逐字节相同 | 这不是问题本身，是**判据的盲区**：房间里那句「请 X 拍板」今天只被一个不会撞到空审批人的语料覆盖着。换一条没写审批人的政策规则（真房间的真政策就可能这样）当场就撞上，而没有任何束级判据会红 | 两条路：① 给演示语料加一单「政策没写审批人」的案子（会动 `PLAIN_STDOUT_MD5`，且 `scenarios/custom/refund-requests-team.csv` 一直是禁动面）；② 在 `test_room_team_recheck.py` 里加一条只跑单单元的断言。本轨走的是第三条 —— 在 `test_roundtable_verdict.py` 里钉两条针对性测试，够用但不覆盖批量路径。真跑日前若要演「政策缺字段」这一幕再说 |

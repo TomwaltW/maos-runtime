@@ -1,4 +1,4 @@
-# generated at 2026-09-11T02:43:24.025521+00:00 from 283ce68ade5725d67fb0af0c6ecca1efcbb0b3f1
+# generated at 2026-09-11T06:12:03.204156+00:00 from f2a3bb2ea0a1671e32cd831f34e3131bfffdfb01
 场景 5：治理路径演示，无模型确定性复现
 多源信号聚合：聚合 8 条 findings -> 3 个 issue（合并重复 5 条）；blocker 1 / major 2 / minor 0
 
@@ -23,9 +23,12 @@ Plan: DONE  |  修复：支付回调未校验签名
     [rule] security 闸是本轮最常被卡的一道（2 次）
     [rule] 治理动作留痕：重规划 1 次、补偿 0 次
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_394c10082a68，共 1 个任务
+INFO  maos.cp      创建计划 plan_1dad3e41de33，共 1 个任务
 INFO  maos.cp      [task-s5-payment-001] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s5-payment-001] DISPATCHED -> RUNNING (claim)
+WARNING maos.skills.code_repo_patch 补丁预检未过（stage=validate），第 1/2 次自修复重问：error: patch fragment without header at line 1: @@ -1,3 +1,5 @@
+WARNING maos.skills.code_repo_patch 补丁预检未过（stage=validate），第 2/2 次自修复重问：error: patch fragment without header at line 1: @@ -1,3 +1,5 @@
+WARNING maos.skills.code_repo_patch 补丁预检仍未过（stage=validate，已重问 2/2 次），照旧交给 Gate 真打并判定：error: patch fragment without header at line 1: @@ -1,3 +1,5 @@
 INFO  maos.cp      [task-s5-payment-001] RUNNING -> AWAITING_REVIEW (submit_result)
 INFO  maos.gate    [task-s5-payment-001] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'fail', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> rework
 INFO  maos.cp      [task-s5-payment-001] 单轮 blocker=2，触发重规划
@@ -33,7 +36,10 @@ INFO  maos.cp      [task-s5-payment-001] AWAITING_REVIEW -> REWORK (gate_rework)
 INFO  maos.cp      [task-s5-payment-001] REWORK -> PENDING (requeue)
 INFO  maos.cp      [task-s5-payment-001] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s5-payment-001] DISPATCHED -> RUNNING (claim)
+WARNING maos.skills.code_repo_patch 补丁预检未过（stage=validate），第 1/2 次自修复重问：error: patch fragment without header at line 1: @@ -1,3 +1,7 @@
+WARNING maos.skills.code_repo_patch 补丁预检未过（stage=validate），第 2/2 次自修复重问：error: patch fragment without header at line 1: @@ -1,3 +1,7 @@
+WARNING maos.skills.code_repo_patch 补丁预检仍未过（stage=validate，已重问 2/2 次），照旧交给 Gate 真打并判定：error: patch fragment without header at line 1: @@ -1,3 +1,7 @@
 INFO  maos.cp      [task-s5-payment-001] RUNNING -> AWAITING_REVIEW (submit_result)
 INFO  maos.gate    [task-s5-payment-001] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s5-payment-001] AWAITING_REVIEW -> DONE (gate_pass)
-INFO  maos.finalizer [plan_394c10082a68] 复盘完成，沉淀 3 条
+INFO  maos.finalizer [plan_1dad3e41de33] 复盘完成，沉淀 3 条

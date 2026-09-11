@@ -21,8 +21,14 @@ skill 抢着判会让 Gate 永远见不到失败样本（场景 2 的返工链�
 ## 补丁预检与自修复（T125）
 
 返回之前先 ``sandbox_git_apply(..., check_only=True)`` 干跑一遍；打不上就把 git
-的原话递回模型再问，同一次 invoke 之内最多 ``ctx.identity.max_self_repair`` 次
-（Coding 声明的是 2）。
+的原话**连同上一版补丁正文**递回模型再问，同一次 invoke 之内最多
+``ctx.identity.max_self_repair`` 次（Coding 声明的是 2）。
+
+递回正文是 T131 补的，理由是 T125 那版只递错误原话，而 git 的原话长这样：
+``corrupt patch at line 6``。**行号指的是喂给 ``git apply`` 的那份输入**，模型手里
+没有那份输入（它只记得自己吐的 JSON，而多份 diff 是首尾相接后才喂进去的），于是
+「第 6 行」对它没有意义，只能重新猜一遍。``_numbered_payload`` 按 ``sandbox.py``
+拼 payload 的同一口径重现那份输入并逐行编号，模型这才看得见自己错在哪一行。
 
 **为什么这一层是 skill 而不是 Gate 或 Agent**，四条，缺一条它就该挪走：
 
@@ -43,9 +49,12 @@ skill 抢着判会让 Gate 永远见不到失败样本（场景 2 的返工链�
 加进输入再问一次」，前者会让 attempt 计数失真，后者在一次 invoke 里收口。
 
 **它也不是一道新闸。** 次数用尽仍不合法时补丁**照旧交出去**，由 Gate 真打一次再
-判 —— 预检只增加机会，不增加判定权（详见 ``run()`` 里那段）。预检自己判死的只有
-一种情形：撞上受保护路径，那是安全事件。``max_self_repair == 0`` 的岗位连预检都
-不做，整条路径逐字节回到 T125 之前。
+判 —— 预检只增加机会，不增加判定权（详见 ``run()`` 里那段）。**重问轮自己塌了
+（模型抛异常、或吐回一份连 JSON 都不合法的东西）时同样不判死**：上一轮那份
+「合法但打不上」的补丁照旧交给 Gate，T131 补的。丢掉它等于让一次失败的重问
+比不重问更坏 —— 而自修复买的是机会，不是风险。预检自己判死的只有一种情形：
+撞上受保护路径，那是安全事件（重问轮吐出的也算，走同一个出口）。
+``max_self_repair == 0`` 的岗位连预检都不做，整条路径逐字节回到 T125 之前。
 
 **Scripted 路径逐字节不变**：``GOOD_PATCH`` / ``BAD_PATCH`` 是 ``flows/common.py``
 导入时用真 ``git diff`` 现造的，预检必过，一次都不重问，输出连
@@ -114,6 +123,32 @@ def _reject_protected_paths(files: list[dict]) -> None:
     ]
     if violations:
         raise ProtectedPathViolation(f"触碰受保护路径，已中止: {violations}")
+
+
+def _numbered_payload(files: list[dict]) -> str:
+    """把上一版补丁重现成 `git apply` 真正读到的那份输入，并逐行编号。
+
+    **拼法必须与 `sandbox.py` 的 `sandbox_git_apply` 逐字节一致**（那里是
+    `chunks.append(diff if diff.endswith("\n") else diff + "\n")` 然后 `"".join`）：
+    git 报的 `corrupt patch at line 6` 数的就是这份输入的行，两处口径一旦漂了，
+    递回去的行号会指到别的行上 —— 那比不给行号更坏，模型会照着错的行去改。
+
+    拼法而已，**不调 sandbox**：`sandbox_git_apply` 的签名与返回形状是禁动面
+    （契约 §A），而它也没有「只拼不跑」这个出口。照抄一行胜过为此改它。
+
+    不截断。截断省下的是提示词长度，丢掉的可能正好是出错那一行 —— 而那是这段
+    正文存在的全部理由。补丁本来就有 `max_self_repair ≤ 2` 这个上限兜着。
+    """
+    if not files:               # 空补丁集预检必过（带 summary），走不到重问
+        return "  （上一版补丁集为空）"
+    payload = "".join(
+        (d if (d := str(f.get("diff") or "")).endswith("\n") else d + "\n")
+        for f in files
+    )
+    lines = payload.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()             # split 尾部那个空串不是一行，编号不该多一行
+    return "\n".join(f"{i:>4} | {line}" for i, line in enumerate(lines, 1))
 
 
 @register_skill
@@ -187,9 +222,34 @@ class CodeRepoPatchSkill(Skill):
         # 现造一份干净基线，与真打那一刻逐字节同源。代价 ~80ms/次（实测，靶场 24KB）。
         workdir: str | None = None
         rounds = 0
+        # 上一轮产出的补丁。**只有它是 None 时，这一轮塌了才许把异常放出去** ——
+        # 见下面 except 那段。
+        patch: dict | None = None
         try:
             while True:
-                patch = self._parse(self._complete(ctx, user, tier).text)
+                try:
+                    patch = self._parse(self._complete(ctx, user, tier).text)
+                except ProtectedPathViolation:
+                    # 安全事件不吃下面那条兜底：重问轮吐出一份碰受保护路径的补丁，
+                    # 与首轮吐出它是同一件事，出口也必须是同一个（_SECURITY_STAGES
+                    # 那段写的是同一条取向）。吞掉它等于「模型第二次试就放行」。
+                    raise
+                except Exception as exc:                # noqa: BLE001
+                    if patch is None:
+                        # 首轮就塌了：手上什么都没有，行为逐字节同 T125 之前 ——
+                        # 这一条抛出去的正是 `_parse` 那三种（JSON 不合法 / 字段
+                        # 类型不对）与模型自己的异常，`_complete` 已记过 model_failure。
+                        raise
+                    # 重问轮塌了，但上一轮那份补丁还在手上。**交出去，不判死。**
+                    # 理由与「次数用尽仍照旧交出去」完全同源（见下面那段）：上一轮
+                    # 那份是「合法但打不上」，它本来就该由 Gate 真打一次再判；
+                    # 这里抛的话，Gate 连它都见不到，证据里只剩一个没有上下文的
+                    # skill failed —— 于是**一次失败的重问比不重问更坏**，而自修复
+                    # 买的是机会不是风险。
+                    log.warning("第 %d/%d 次自修复重问自己塌了（%s: %s），"
+                                "改交上一轮那份补丁给 Gate 真打并判定",
+                                rounds, budget, type(exc).__name__, exc)
+                    break
                 if budget == 0:
                     # **不自修复的岗位一次预检都不做**，路径逐字节回到 T125 之前。
                     # 预检存在的全部理由是驱动自修复；不修的话它就只剩两样东西：
@@ -245,11 +305,15 @@ class CodeRepoPatchSkill(Skill):
                 # rounds > 0 本身就说明模型第一次没产出合法 diff，那是要记进账的事实。
                 log.warning("补丁预检未过（stage=%s），第 %d/%d 次自修复重问：%s",
                             stage, rounds, budget, err.get("message"))
-                user = self._repair_prompt(user, err, rounds, budget)
+                user = self._repair_prompt(user, patch, err, rounds, budget)
         finally:
             if workdir:
                 shutil.rmtree(workdir, ignore_errors=True)
 
+        # 走到这里 `patch` 必非 None：唯一把它留成 None 的路是首轮就塌，而那一支
+        # 上面直接 raise 了。断言写出来是给下一个改循环的人看的 —— 少一条 break
+        # 前的赋值，症状会是 Gate 收到 None 然后崩在 .get 上，离这里很远。
+        assert patch is not None
         if rounds:
             # **只有真重问过才加这个键**，于是 Scripted 路径的输出逐字节不变
             # （GOOD_PATCH / BAD_PATCH 预检必过，rounds 恒 0）—— `SkillInvoked.detail`
@@ -349,16 +413,23 @@ class CodeRepoPatchSkill(Skill):
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _repair_prompt(user: str, error: dict, round_no: int, budget: int) -> str:
-        """把 git 的原话接在上一轮提示词后面，要一份**完整重产**的 JSON。
+    def _repair_prompt(user: str, patch: dict, error: dict,
+                       round_no: int, budget: int) -> str:
+        """把 git 的原话**与上一版补丁正文**接在上一轮提示词后面，要一份完整重产。
 
         递回去的是 `git apply --check` 自己说的那句（stage / path / hunk / message），
         不是我们转译的一句「格式不对」：转译会丢掉行号，而行号恰好是模型修得动
         这个错的关键信息。铁律 6 在这里不需要额外脱敏 —— git 的报错里只有路径与
         行号，`sandbox_git_apply` 也从不把环境变量带进 message。
 
+        **光有那句原话不够**（T131）：git 说的是 `corrupt patch at line 6`，而那个
+        行号是相对**喂给 `git apply` 的那份输入**数的 —— 模型手里没有那份输入，它
+        只记得自己吐的 JSON，而多份 diff 是首尾相接之后才喂进去的。于是「第 6 行」
+        对它没有意义，只能重新猜一遍。带上编号正文，「错在哪一行」才真的答得出来。
+
         要「完整重产」而不是「给个增量」：增量要模型自己记住上一版长什么样，而
         它上一版恰恰是错的；重产一份的成本是一次 medium 调用，比修补一份坏 diff 稳。
+        （正文递回去**不等于**让它改增量：下面那句仍明写「重新输出完整的 JSON」。）
         """
         return "\n\n".join((
             user,
@@ -367,6 +438,9 @@ class CodeRepoPatchSkill(Skill):
             f"  stage={error.get('stage')} path={error.get('path') or '未报'} "
             f"hunk={error.get('hunk') or '未报'}\n"
             f"  {error.get('message')}\n"
+            f"下面是**你上一版补丁的正文**，左边的行号与上面那句报错里的行号是"
+            f"同一套（都按喂给 `git apply` 的那份输入数，多份 diff 首尾相接）：\n"
+            f"{_numbered_payload(patch.get('files') or [])}\n"
             f"请**重新输出完整的 JSON**（不是增量、不要解释文字），"
             f"把 diff 修成 `git apply` 能接受的 unified diff："
             f"文件头、hunk 头的行号、以及上下文行都要与文件真实内容对得上。",

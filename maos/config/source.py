@@ -86,33 +86,48 @@ ORIGIN_NACOS = "nacos"
 ORIGIN_ENV = "env"
 ORIGIN_DEFAULT = "default"
 
-#: 本轮真正搬上配置面的四个旋钮。**这是一份清单，不是一道闸** ——
+#: 变更要落审计的八个旋钮。**这是一份清单，不是一道闸** ——
 #: `get()` 不校验 key 在不在里面，别的调用方照样能用本模块读自己的 key。
-#: 它的用处只有一个：Nacos 侧推来一份新文档时，按这份清单逐个 diff 出变更。
+#: 它的用处只有一个：Nacos 侧推来一份新文档时，按这份清单逐个 diff 出变更、
+#: 为每一项落一条 `ConfigChanged`（`nacos_source.py::_apply`，全仓唯一读取点）。
 #:
-#: kb 的两个旋钮（`MAOS_KB_ENABLED` / `MAOS_KB_WEIGHTS`）这一轮**不在此列**：
-#: `maos/kb/**` 归 T24 / T25，同轮并行改同一个文件必冲突。接口留成现在这个形状
-#: 就是为了它们并轨后能直接加两行进来，一行别的代码都不用改。
+#: **前四个是 T28 立的，后四个是 T131 补的。** 后四个此前的现况不是「没接上」，
+#: 而是「**能治理，但变更不落审计**」：`_resolve` 读 Nacos 快照时**不看**本清单、
+#: 对任何 key 一视同仁，所以它们在 Nacos 上改了就是能改到、不用重启；缺的只是
+#: 推送到达那一刻没人按清单为它们 diff 出变更。于是有人把 `MAOS_FORCE_SCRIPTED`
+#: 从 1 改成 0，`event_log` 里不会有任何记录 —— 而这个旋钮一改，整批证据束的
+#: 成本读数含义就全变了（`scripts/make_evidence.py` 的束标签据它写「真模型/脚本」）。
 #:
-#: 后来又有两个旋钮走了同一条路而没进这份清单 —— `MAOS_KB_ADVICE`（T119）与
-#: `MAOS_FORCE_SCRIPTED`（T125，`maos/model/client.py::forced_scripted`），
-#: 连同上面 kb 的两个，一共**四个**。
-#: 原因每次都一样：`test_config_source.py::test_governed_keys_are_exactly_the_
-#: four_this_track_owns` 钉着「就是这四个」，而那个文件从来不在加旋钮那一轨的
-#: 白名单里。**现况要写清楚，别让人以为它们没接上**：这四个旋钮
-#: （kb 两个 + advice + force_scripted）都**能治理** —— `_resolve` 读 Nacos 快照
-#: 时不看本清单，对任何 key 一视同仁，所以 Nacos 上改了就是能改到、不用重启；
-#: 它们只是**变更不落审计**（推送到达时没人按清单为它们 diff 出 `ConfigChanged`）。
-#: 补齐是「四行改动 + 一条断言」，`docs/BACKLOG.md` 的 `## task-T35` 记着这笔账。
-#: 读取点的完整表格在 `maos/config/__init__.py` 的模块 docstring 里。
+#: 拖了三轮才补，每一轮卡的都是同一堵墙，记在这里免得下一个人再查一遍：
+#: `test_config_source.py` 里那条**按数目**写的断言钉着「就是这四个」，而那个
+#: 文件从来不在加旋钮那一轨的白名单里 —— 加一行就得改它，那是越界。
+#: T35（kb 两个）/ T119（advice）/ T125（force_scripted）各自撞的都是它，
+#: 三条决策原文在 `docs/DECISIONS.md`。T131 单开一轨，一次补齐。
+#:
+#: **加进来只动审计面，不动取值**：读取路（`ConfigSource._notice`）本来就对每个
+#: 读过的 key 一视同仁地比对上次观察值，与本清单无关；缺省的 `EnvConfigSource`
+#: 压根走不到 `_apply`。所以 `run.py`、全量测试、证据束的事件数一条都不会变
+#: （T131 实测：`make_evidence` + `verify` 仍 10/10 PASS）。
+#:
+#: **本清单不是「走了配置面的旋钮」的全集**：`MAOS_SANDBOX_REQUIRE_CONTAINER`
+#: （`tools/sandbox.py::require_container`）与 `MAOS_MAX_PLAN_REJECT`
+#: （`runtime/plan_approval.py::_max_reject`）也走这条路而仍不在此列，现况与上面
+#: 那四个补齐之前一样。T131 只补了被点名的四个，那两个记在 `docs/BACKLOG.md` 的
+#: `## task-t131`。读取点的完整表格在 `maos/config/__init__.py` 的模块 docstring 里。
 GOVERNED_KEYS: tuple[str, ...] = (
+    # T28 立的四个：安全 / 成本 / 审批三类。
     "MAOS_MAX_REPLAN",
     "MAOS_FINANCE_THRESHOLD",
     "MAOS_SANDBOX_TIMEOUT",
     "MAOS_APPROVERS",
+    # T131 补齐的四个：读取点分别是 T35 / T35 / T119 / T125 接的。
+    "MAOS_KB_ENABLED",
+    "MAOS_KB_WEIGHTS",
+    "MAOS_KB_ADVICE",
+    "MAOS_FORCE_SCRIPTED",
 )
 
-#: 值一旦命中就只落掩码的 key 形态（铁律 6）。这四个旋钮**都不是密钥**，
+#: 值一旦命中就只落掩码的 key 形态（铁律 6）。这八个旋钮**都不是密钥**，
 #: 这条是护栏不是功能：哪天有人把本模块用来读一个带 TOKEN 的 key，
 #: 审计行里不会当场把它印出来。
 _SECRETISH = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|DSN|CREDENTIAL)", re.I)
@@ -376,7 +391,7 @@ _source_lock = threading.Lock()
 
 
 def get_config_source() -> ConfigSource:
-    """进程级单例。四个读取点走的都是它。
+    """进程级单例。十一个读取点走的都是它（表格见 `maos/config/__init__.py`）。
 
     单例而不是每次现造：Nacos 源持有一条长连接和一个事件循环线程，
     `_finance_threshold()` 每次判定都造一个的话，一次演示能开出几十条连接。

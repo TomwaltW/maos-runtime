@@ -19,6 +19,15 @@ export 了 ``MAOS_LLM_*``**，于是
    预检只增加机会，判定权仍在 Gate。
 2. ``test_scripted_demo_patches_come_out_byte_identical`` —— Scripted 路径的输出
    逐字节不变，连 ``self_repair_rounds`` 这个键都不该多出来。
+3. ``test_a_model_blowup_in_the_repair_round_still_hands_the_previous_patch_over``
+   （T131）—— 重问轮自己塌了也**不判死**。上一轮那份「合法但打不上」的补丁照旧
+   交给 Gate，否则一次失败的重问会比根本不重问更坏，而自修复买的是机会不是风险。
+
+T131 还补了第二件事：递回模型的不只是 git 那句原话，还有**上一版补丁正文**。
+git 说的是 ``corrupt patch at line 6``，而那个行号是相对喂给 ``git apply`` 的
+那份输入数的 —— 模型手里没有那份输入，「第 6 行」对它没有意义。
+``test_the_repair_prompt_carries_the_previous_diff_under_gits_own_line_numbers``
+把「两套行号是同一套」这件事钉成断言，而不是留成一句注释里的但愿。
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ import dataclasses
 import json
 import os
 import pathlib
+import shutil
 import sys
 
 import pytest
@@ -107,7 +117,7 @@ class _SeqModel:
 
     model = "fake-seq"
 
-    def __init__(self, *responses: str) -> None:
+    def __init__(self, *responses: str | Exception) -> None:
         self.responses = list(responses)
         self.users: list[str] = []
         self.systems: list[str] = []
@@ -118,6 +128,11 @@ class _SeqModel:
         # 问的次数超过预置响应数时，重复最后一个 —— 「模型怎么问都改不对」
         # 那一支要靠它。
         text = self.responses[min(len(self.users) - 1, len(self.responses) - 1)]
+        # 预置项给一个异常实例 = 这一轮模型自己塌了（超时 / 网关 5xx / 连接断）。
+        # 放在这里而不是另写一个假客户端：塌掉的那一轮**仍要记进 users**，
+        # 「第几次问的时候塌的」正是 T131 那几条要断言的东西。
+        if isinstance(text, Exception):
+            raise text
         return ModelResponse(text=text, tokens_in=len(user) // 4,
                              tokens_out=len(text) // 4, model=self.model)
 
@@ -245,6 +260,44 @@ def test_zero_budget_skips_the_precheck_altogether():
     assert out["files"][0]["diff"] == BROKEN_DIFF
 
 
+def test_zero_budget_never_touches_the_sandbox_at_all(monkeypatch):
+    """``max_self_repair == 0``：预检那条路上的两个函数**一次都不许被调到**。
+
+    上一条只断言「模型只被问一次」，而那在「预检跑了、结果被忽略」时同样是绿的 ——
+    于是「逐字节回到 T125 之前」这句话就没有判据。这条把它钉死：
+    ``prepare_sandbox_workdir`` 零调用（那 80ms 的 copytree 一次都不付），
+    ``sandbox_git_apply`` 零调用（一次 git 子进程都不起）。两者都是 T125 才出现在
+    这条路径上的东西，零调用即等价于它们不存在。
+
+    T131 在循环里加了一层 try/except，这条同时守住「加的那层没有把 budget==0
+    那条路拐进预检」。
+    """
+    import maos.skills.builtin.code_repo_patch as mod
+
+    made: list[int] = []
+    applied: list[int] = []
+    monkeypatch.setattr(mod, "prepare_sandbox_workdir",
+                        lambda *a, **kw: made.append(1) or "/nonexistent")
+    monkeypatch.setattr(mod, "sandbox_git_apply",
+                        lambda *a, **kw: applied.append(1) or {"ok": True, "error": None})
+
+    out = _run(_SeqModel(_patch_json(BROKEN_DIFF)), rounds=0)
+
+    assert made == [], "budget=0 还造了工作目录 —— 白付一次 copytree"
+    assert applied == [], "budget=0 还跑了预检 —— 那是一道 T125 之前没有的闸"
+    assert out["files"][0]["diff"] == BROKEN_DIFF
+    assert "self_repair_rounds" not in out
+
+
+def test_zero_budget_still_propagates_a_model_blowup():
+    """``max_self_repair == 0`` 时模型塌了仍照旧抛，兜底不许伸到这条路上来。
+
+    budget=0 的岗位压根没有「上一轮」，T131 那层 try/except 在这里必须是透明的。
+    """
+    with pytest.raises(TimeoutError):
+        _run(_SeqModel(TimeoutError("504")), rounds=0)
+
+
 def test_identity_none_behaves_like_zero_budget():
     """``ctx.identity`` 压根没有时按 0 算，不许在 getattr 上炸。"""
     model = _SeqModel(_patch_json(BROKEN_DIFF))
@@ -314,6 +367,71 @@ def test_the_repair_prompt_carries_gits_own_words():
     assert "完整的 JSON" in second, "要完整重产，不是让模型给增量"
 
 
+def test_the_repair_prompt_carries_the_previous_diff_under_gits_own_line_numbers():
+    """git 说 ``corrupt patch at line 6`` —— 第 6 行长什么样，得让模型看得见。
+
+    T125 那版只递错误原话。模型于是拿到一个**它无法定位的行号**：它手里只有
+    自己吐的那份 JSON，而 ``git apply`` 读到的是所有 diff 首尾相接后的那份输入，
+    行号按后者数。差一个文件，整个行号就错位。
+
+    所以这条断言分两截，第二截才是硬的：
+      ① 上一版 diff 的正文真的进了重问提示词；
+      ② 提示词里那份正文的行号与 ``sandbox_git_apply`` 报的行号**是同一套** ——
+         拿 git 原话里的行号去提示词里查，查到的必须是那一行本身。
+    只验 ① 的话，拼法哪天与 sandbox 漂了也不会红，而症状是模型照着错的行去改。
+    """
+    import re
+
+    from maos.tools.sandbox import prepare_sandbox_workdir, sandbox_git_apply
+
+    model = _SeqModel(_patch_json(CORRUPT_DIFF), GOOD_PATCH)
+    _run(model)
+    second = model.users[1]
+
+    # ① 正文进来了：上一版 diff 的每一行都能在提示词里找到
+    for line in CORRUPT_DIFF.rstrip("\n").split("\n"):
+        assert line in second, f"上一版 diff 的这一行没进重问提示词：{line!r}"
+    assert "上一版补丁的正文" in second
+
+    # ② 行号同源：git 报的行号 -> 提示词里的编号行
+    workdir = prepare_sandbox_workdir()
+    try:
+        checked = sandbox_git_apply(
+            {"files": [{"path": "auth/session.py", "diff": CORRUPT_DIFF}], "summary": "s"},
+            workdir, check_only=True)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    git_says = checked["error"]["message"]
+    assert "corrupt patch at line" in git_says, f"靶场的 git 换了说法：{git_says}"
+    reported = int(re.search(r"at line (\d+)", git_says).group(1))
+
+    numbered = dict(re.findall(r"^\s*(\d+) \| (.*)$", second, flags=re.M))
+    payload_lines = CORRUPT_DIFF.split("\n")[:-1]          # 末尾换行不是一行
+    for i, line in enumerate(payload_lines, 1):
+        assert numbered.get(str(i)) == line, (
+            f"提示词第 {i} 行与喂给 git 的第 {i} 行对不上："
+            f"{numbered.get(str(i))!r} != {line!r}")
+    # CORRUPT_DIFF 的病就是「hunk 头说有 5 行，正文只给到第 5 行」——
+    # git 数到第 6 行时输入已经没了，所以报的行号恰好落在正文末尾之后一行。
+    assert reported == len(payload_lines) + 1, (
+        f"git 报的是第 {reported} 行，而递回去的正文只有 {len(payload_lines)} 行 —— "
+        f"两套行号漂了")
+
+
+def test_the_repair_prompt_still_demands_a_full_rewrite_not_a_diff_of_the_diff():
+    """带上正文之后，「重新输出完整的 JSON」那句必须还在。
+
+    递回正文最容易招来的误解正是「那就给个增量吧」，而模型上一版恰恰是错的：
+    让它在一份坏 diff 上打补丁，比重产一份贵也比重产一份不稳。
+    """
+    model = _SeqModel(_patch_json(CORRUPT_DIFF), GOOD_PATCH)
+    _run(model)
+
+    second = model.users[1]
+    assert "完整的 JSON" in second
+    assert "不是增量" in second
+
+
 def test_the_system_prompt_spells_out_the_unified_diff_contract():
     """三句硬约束（文件头 / hunk 头行号真实 / 不许省略上下文）必须在 SYSTEM 里。
 
@@ -351,6 +469,84 @@ def test_a_one_shot_patch_records_exactly_one_usage_row(store):
     rows = [r for r in store.list_model_usage(trace_id=TRACE)
             if r["call_site"] == CALL_SITE]
     assert len(rows) == 1
+
+
+# ===========================================================================
+# 4b. 重问轮自己塌了：上一轮那份补丁不许跟着陪葬（T131）
+# ===========================================================================
+def test_a_model_blowup_in_the_repair_round_still_hands_the_previous_patch_over(store):
+    """第一轮产出合法但打不上，第二轮模型超时 -> **交出第一轮那份**，不判死。
+
+    丢掉它的话，一次失败的重问比根本不重问更坏：没有预检时这份补丁本来就会被
+    交出去，由 Gate 真打一次、拿 ``tool_error`` 包成 test_report、走返工链。
+    在这里抛，Gate 连见都见不到，证据里只剩一个没有上下文的 skill failed ——
+    与「次数用尽仍照旧交出去」是同一条取向（``test_repair_gives_up_but_still_
+    hands_the_patch_over`` 那条写的理由，一字不改地适用于这里）。
+
+    顺带钉住记账：塌掉那一轮走的是 ``record_model_failure`` 而不是
+    ``record_model_usage``，所以「usage 行数 = 1 + rounds」在这条路上**不成立**，
+    对账式是 usage + failure = 1 + rounds。这是事实不是缺陷，写出来免得有人
+    照着那条注释去「修」一个不存在的漏账。
+    """
+    model = _SeqModel(_patch_json(BROKEN_DIFF), TimeoutError("网关 504"))
+    out = _run(model, rounds=2, store=store)
+
+    assert len(model.users) == 2, "塌了之后还接着问 —— 预算没守住"
+    assert out["files"][0]["diff"] == BROKEN_DIFF, "上一轮那份补丁被丢掉了"
+    assert out["self_check"] == {"build": "pass", "lint": "pass"}
+    assert out["self_repair_rounds"] == 1, "重问过一次就是一次，哪怕那一次塌了"
+
+    usage = [r for r in store.list_model_usage(trace_id=TRACE)
+             if r["call_site"] == CALL_SITE]
+    assert len(usage) == 1, "塌掉那一轮不该记成一次成功调用"
+
+
+def test_garbage_json_in_the_repair_round_still_hands_the_previous_patch_over():
+    """第二轮吐回一坨连 JSON 都不是的东西 -> 同样交出第一轮那份。
+
+    与上一条是同一条出口的两个入口：上一条是模型没答上来，这条是答了但形状不成立
+    （``_parse`` 抛 ValueError）。两者对「手上那份补丁还在不在」没有任何区别。
+    """
+    model = _SeqModel(_patch_json(BROKEN_DIFF), "这不是 JSON，是一段解释文字")
+    out = _run(model, rounds=2)
+
+    assert len(model.users) == 2
+    assert out["files"][0]["diff"] == BROKEN_DIFF
+    assert out["self_repair_rounds"] == 1
+
+
+def test_a_repair_round_that_touches_a_protected_path_is_still_a_security_event():
+    """重问轮吐出一份碰受保护路径的补丁 -> 照旧 ``ProtectedPathViolation``。
+
+    上面两条的兜底**不许把这一条也吃掉**。第二次试就放行，等于把
+    ``max_self_repair`` 变成「绕过口可以多试两次」—— 与
+    ``test_a_path_escape_caught_by_the_precheck_is_a_security_event`` 同一条取向。
+    """
+    model = _SeqModel(_patch_json(BROKEN_DIFF),
+                      _patch_json(CORRUPT_DIFF, path="tests/test_session.py"))
+    with pytest.raises(ProtectedPathViolation):
+        _run(model, rounds=2)
+
+    assert len(model.users) == 2, "安全事件之后还接着重问"
+
+
+@pytest.mark.parametrize("blowup", [
+    TimeoutError("首问就 504"),
+    "这不是 JSON",
+], ids=["model-blows-up", "garbage-json"])
+def test_a_first_round_blowup_still_propagates(blowup):
+    """**首轮**塌了仍照旧抛 —— 手上一份补丁都没有，兜底无从兜起。
+
+    这条与上面三条一起才把边界划全：兜底的条件是「上一轮留下了东西」，
+    不是「只要塌了就吞掉」。少了它，``patch is None`` 那一支哪天被写成
+    「返回手上这个 None」，症状会是 Gate 收到 None 然后崩在 ``.get`` 上，
+    离这里很远。行为与 T125 之前逐字不变。
+    """
+    model = _SeqModel(blowup)
+    with pytest.raises((TimeoutError, ValueError)):
+        _run(model, rounds=2)
+
+    assert len(model.users) == 1
 
 
 # ===========================================================================

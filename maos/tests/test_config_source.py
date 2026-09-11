@@ -464,12 +464,89 @@ def test_push_diffs_only_governed_keys_and_emits_changes():
         src.close()
 
 
-def test_governed_keys_are_exactly_the_four_this_track_owns():
-    """kb 那两个旋钮这一轮不接（`maos/kb/**` 归 T24 / T25），别顺手加进来。"""
-    assert GOVERNED_KEYS == (ENV_MAX_REPLAN, FINANCE_THRESHOLD_ENV,
-                             "MAOS_SANDBOX_TIMEOUT", ENV_APPROVERS)
-    assert "MAOS_KB_ENABLED" not in GOVERNED_KEYS
-    assert "MAOS_KB_WEIGHTS" not in GOVERNED_KEYS
+def test_governed_keys_are_the_eight_whose_changes_must_land_in_the_audit():
+    """T28 立的四个 + T131 补的四个。**按清单写死，不按数目。**
+
+    上一版这条叫 `test_governed_keys_are_exactly_the_four_this_track_owns`，
+    钉的是「就是这四个」。它把三轮（T35 / T119 / T125）补审计的人挡在了门外 ——
+    那三轨的白名单里都没有本文件，加一行就得改这条断言，而那是越界。于是
+    `MAOS_FORCE_SCRIPTED` 这类旋钮一直是「能治理，变更不落审计」。
+    改名不是为了让它松一点：清单仍写死，只是不再用「四个」这种把数目当契约的说法。
+
+    第二段比第一段值钱：**字面量与各自的读取点同源**。清单里的串一旦手抖打错，
+    症状是那个旋钮悄悄不再落审计 —— 与「从来没进过清单」在 event_log 里长得
+    一模一样，没有任何一处会红。所以这里从读取点那边把常量 import 过来对。
+    """
+    assert GOVERNED_KEYS == (
+        ENV_MAX_REPLAN, FINANCE_THRESHOLD_ENV, "MAOS_SANDBOX_TIMEOUT", ENV_APPROVERS,
+        "MAOS_KB_ENABLED", "MAOS_KB_WEIGHTS", "MAOS_KB_ADVICE", "MAOS_FORCE_SCRIPTED",
+    )
+
+    from maos.kb import KB_ENABLED_ENV, KB_WEIGHTS_ENV
+    from maos.kb.plan_advice import KB_ADVICE_ENV
+    from maos.model.client import ENV_FORCE_SCRIPTED
+    # `MAOS_SANDBOX_TIMEOUT` 不在这一段里：`maos/tools/sandbox.py:116` 读的是
+    # **字面量**，全仓没有对应常量，而 sandbox.py 是禁动面（契约 §A）—— 不许为了
+    # 让这条断言整齐就去给它加一个。上面那个元组已经逐字钉住它。
+    for const in (ENV_MAX_REPLAN, FINANCE_THRESHOLD_ENV, ENV_APPROVERS,
+                  KB_ENABLED_ENV, KB_WEIGHTS_ENV, KB_ADVICE_ENV, ENV_FORCE_SCRIPTED):
+        assert const in GOVERNED_KEYS, f"{const} 的读取点还在，清单里的串却漂了"
+
+
+def test_a_push_now_audits_the_four_knobs_t131_added():
+    """推送到达 -> T131 补的四个旋钮各落一条 `ConfigChanged`。**本轨的判据。**
+
+    走的是 `NacosConfigSource._apply`（全仓唯一读 `GOVERNED_KEYS` 的地方），不是
+    读取路：读取路的 `_notice` 对每个读过的 key 一视同仁，本来就与清单无关 ——
+    拿它来验等于什么都没验，加进清单之前它也是绿的。
+
+    `MAOS_FORCE_SCRIPTED` 那条单独再断一次值：它从 1 变 0 意味着整批证据束的
+    成本读数从「脚本」变成「真模型」，而在 T131 之前 `event_log` 里一个字都没有。
+    """
+    from maos.config.nacos_source import NacosConfigSource
+    store = _store()
+    src = NacosConfigSource(connect=False)
+    set_config_source(src)
+    detach = attach_config_audit(store, plan_id="plan_t131")
+    try:
+        src._apply("MAOS_KB_ENABLED=1\nMAOS_KB_WEIGHTS=recency:1\n"
+                   "MAOS_KB_ADVICE=1\nMAOS_FORCE_SCRIPTED=1\n", first=True)
+        assert store.list_event_log("plan_t131") == [], "首次拉取不是一次配置变更"
+
+        src._apply("MAOS_KB_ENABLED=0\nMAOS_KB_WEIGHTS=recency:2\n"
+                   "MAOS_KB_ADVICE=0\nMAOS_FORCE_SCRIPTED=0\n", first=False)
+    finally:
+        detach()
+        src.close()
+
+    rows = [r for r in store.list_event_log("plan_t131")
+            if r["event_type"] == CONFIG_CHANGED_EVENT]
+    assert [r["detail"]["key"] for r in rows] == [
+        "MAOS_KB_ENABLED", "MAOS_KB_WEIGHTS", "MAOS_KB_ADVICE", "MAOS_FORCE_SCRIPTED",
+    ], "四个旋钮没有各落一条审计 —— 这正是 T131 之前的现况"
+
+    forced = next(r for r in rows if r["detail"]["key"] == "MAOS_FORCE_SCRIPTED")
+    assert (forced["detail"]["old"], forced["detail"]["new"]) == ("1", "0")
+    assert forced["detail"]["origin"] == ORIGIN_NACOS
+    assert forced["detail"]["at"], "审计行必须带时间"
+
+
+def test_the_two_knobs_t131_did_not_take_are_still_unaudited():
+    """`MAOS_SANDBOX_REQUIRE_CONTAINER` / `MAOS_MAX_PLAN_REJECT` 仍**不在**清单里。
+
+    这两个是 T131 重核 `maos/config/__init__.py` 那张「完整」表格时发现的：它们
+    也走配置面，表里却从来没有过。没一并补进清单是守派单范围（那一轨点名的是
+    四个），账记在 `docs/BACKLOG.md` 的 `## task-t131`。
+
+    这条不是「钉住现状别改」，正相反 —— 它是那笔账的提醒装置：哪天有人把它们
+    补进清单，这条会红，而红的那一刻正好该去把 BACKLOG 那行划掉。
+    """
+    from maos.runtime.plan_approval import ENV_MAX_PLAN_REJECT
+    from maos.tools.sandbox import ENV_REQUIRE_CONTAINER
+    for const in (ENV_REQUIRE_CONTAINER, ENV_MAX_PLAN_REJECT):
+        assert const not in GOVERNED_KEYS, (
+            f"{const} 进清单了 —— 去把 docs/BACKLOG.md 的 ## task-t131 那行划掉，"
+            f"并把 maos/config/__init__.py 的表格改成「是」")
 
 
 # ---------------------------------------------------------------------------

@@ -110,6 +110,40 @@ def _mark_flow_domain_backend(store: object) -> None:
     _dbport.mark_store_backend(store, name)
 
 
+#: **装配级**知识层后端开关（T132）。设成 `postgres` 时，这一次 `build()` 装出来的
+#: store 在**知识层那条路**（`kb_doc` / `kb_doc_fts` / `kb_schema_version` 三张表，
+#: 外加检索器的 fts / vector 两条通道）上走 `MAOS_PG_DSN` 那个库；不设时**一个
+#: 字节都不变**。
+#:
+#: **与 `MAOS_FLOW_DOMAIN_BACKEND` 并列，不合成一个开关**：两面各判各的 ——
+#: 业务域读 `_dbport.backend_of()` 挂在 store 上的标记，知识层读 `kb.port_of()` 认
+#: 的端口。合成一个就表达不了「业务对象上了 PG、知识层还在本地」这个真实的中间
+#: 态，而那恰是本仓库从 T115 一路走到 T132 时实际所处的状态。
+#:
+#: 为什么不直接用进程级的 `MAOS_STORE_BACKEND`：理由与业务域那半逐字相同（一次性
+#: 内存副本会被一起拨到 PG），完整原文记在 `maos/kb/__init__.py::KB_PORT_ATTR`。
+#:
+#: **控制面不跟着走**：`plan` / `task` / `artifact` / `event_log` 仍在本地 SQLite，
+#: 与 `docs/architecture.md` §5 那张表逐字一致。这里换的只有知识层那三张表。
+FLOW_KB_BACKEND_ENV = "MAOS_FLOW_KB_BACKEND"
+
+
+def _mark_flow_kb_backend(store: object) -> None:
+    """把 `MAOS_FLOW_KB_BACKEND` 的值接到这条 store 的知识层那一面。没设就什么都不做。
+
+    值不认（拼错一个字母）时**当场抛**，不回落 sqlite —— 口径逐字同
+    `_mark_flow_domain_backend()`：回落的话你会以为验过了 PG，其实一行都没跑。
+    """
+    import os                                                  # noqa: PLC0415
+
+    name = os.environ.get(FLOW_KB_BACKEND_ENV, "").strip()
+    if not name:
+        return
+    from maos import kb                                        # noqa: PLC0415
+
+    kb.attach_backend(store, name)
+
+
 def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | None = None,
           model_factory: Callable[[str, str], ModelClient] | None = None,
           store: object | None = None):
@@ -143,6 +177,9 @@ def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | 
     # 业务域后端：`MAOS_FLOW_DOMAIN_BACKEND` 设了才盖标记，没设是 no-op（缺省
     # 逐字节不变）。控制面照旧 SQLite —— 换的只有那 16 张业务表落在哪个库。
     _mark_flow_domain_backend(store)
+    # 知识层后端：同样是装配级、同样设了才动（T132）。两条**各拨各的** ——
+    # 业务对象与知识层落在不同库是允许的中间态，不是配错。
+    _mark_flow_kb_backend(store)
     store.init_schema()
     bus = create_event_bus()
     if matrix:

@@ -174,14 +174,28 @@ flowchart LR
 | `kb_doc` | 知识层（`maos/kb/`） | 结构化知识：政策 / 历史案例 / 失败提示 / 错误码手册 |
 | 退款域 16 张 | `maos/domain/refund/schema.sql` | `refund_case` / `refund_request` / `payment_observation` / `finance_entry` / `business_ref` / … |
 
-### 业务对象与知识层在 PolarDB，控制面在本地 SQLite
+### 业务对象与知识层可切 PolarDB，控制面留在本地 SQLite
 
-这条切分是**有意划的，不是迁移做了一半**：
+这条切分是**有意划的，不是迁移做了一半**。两个可切的面**各有各的开关、各走各的实现**，
+合成一句说会漏掉一半：
 
-| 面 | 表 | 落在哪 | 怎么切过去 |
-| :-- | :-- | :-- | :-- |
-| **业务对象 + 知识层** | 退款域 16 张 + `kb_doc` | 可切 PolarDB PG | `MAOS_DOMAIN_BACKEND=postgres` + `MAOS_PG_DSN`，经 `maos/domain/_dbport.py` |
-| **控制面** | `plan` / `task` / `artifact` / `event_log` | 本地 SQLite | 暂不可切：`maos/flows/common.py` 的 `build()` 仍写死 `SqliteStore` |
+| 面 | 表 | 落在哪 | 进程级开关 | 装配级开关（跑整条 DAG 用这个） | 实现在哪 |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| **业务对象** | 退款域 16 张 | 可切 PolarDB PG | `MAOS_DOMAIN_BACKEND` | `MAOS_FLOW_DOMAIN_BACKEND` | `maos/domain/_dbport.py` |
+| **知识层** | `kb_doc` / `kb_doc_fts` / `kb_schema_version` | 可切 PolarDB PG | `MAOS_STORE_BACKEND` | `MAOS_FLOW_KB_BACKEND` | `maos/kb/__init__.py::port_of()` + `maos/store/pg_store.py` |
+| **控制面** | `plan` / `task` / `artifact` / `event_log` / `processed_key` | 本地 SQLite | —— | ——（`build()` 里控制面写死 `SqliteStore`，是有意的，理由见下） | `maos/core/store.py` |
+
+两个可切的面都另需 `MAOS_PG_DSN`（铁律 6：DSN 只从环境变量读，不落文件）。缺省两个开关
+都不设，行为与这两套代码出现之前**逐字节相同**。
+
+🔴 **进程级与装配级的差别不是风格问题，跑整条 DAG 必须用装配级那个。** 进程级开关一设，
+本进程里**每一条**连接都被拨到 PG，包括那些按设计就该是一次性副本的库 ——
+`maos/roundtable/stages.py::facts_finance_preview` 用 `_memory_store()` 现造的那个内存库
+就在此列。实测后果（T126 回执）：预演写的 `refund_case`（`plan_id='preview'`）落进真库，
+紧接着真跑的 `refund.intake` 撞上受理幂等闸，三次重试全败，**整条 DAG 停在第一步，
+而报错完全不提后端开关**。装配级开关把「经 `build()` 装出来的那条 store」与「一次性副本」
+分开，隔离语义原样保住。两个开关的取值都只认 `sqlite` / `postgres`，拼错一个字母**当场抛**
+而不回落 —— 回落的话你会以为验过了 PG，其实一行 PG 代码都没执行。
 
 **为什么这样切。** 控制面那四张表是**本进程的事务日志** —— 状态迁移、闸的判定、产物指纹，
 它们的读者只有这一次运行自己，和事后拿它重放的 `scripts/verify.py`；没有第二个系统要查它们，
@@ -211,11 +225,18 @@ SQLite 方言的 `schema.sql`，PG 侧由 `to_pg_ddl()` 现翻，翻不动的构
 
 ⚠️ 如实说明，两个面的接线程度**不一样**，别混着说：
 
-- **控制面仍写死 SQLite。** `maos/flows/common.py` 的 `build()` 里是 `SqliteStore()`，
-  `maos/store/**` 那套 `StorePort` 在主链路上一个 import 都没接 —— **有地基、未接线**，
-  已记 `docs/BACKLOG.md ## task-W2`。
-- **业务对象层已可插拔。** 退款域 16 张表 + `kb_doc` 经 `maos/domain/_dbport.py` 走双后端；
-  不设 `MAOS_DOMAIN_BACKEND` 时走 sqlite 分支，行为与本模块出现之前**逐字节相同**。
+- **控制面留在 SQLite，是选择不是欠账。** `build()` 里控制面那一条永远是 `SqliteStore()`，
+  理由就是上一段那条：这四张表的读者只有这次运行自己和事后重放它的 `scripts/verify.py`。
+- **业务对象层已可插拔。** 退款域 16 张表经 `maos/domain/_dbport.py` 走双后端；
+  不设开关时走 sqlite 分支，行为与本模块出现之前**逐字节相同**。
+- **知识层已可插拔，且经装配真跑过。** `kb_doc` 那三张表经 `kb.port_of()` 认出 `PgStorePort`
+  走 PG；`MAOS_FLOW_KB_BACKEND=postgres` 跑出来的 DAG 上，七维预过滤与检索都发生在 PG，
+  本地 SQLite 上**连 `kb_doc` 这张表都不存在**（判据在 `maos/tests/test_kb_flow_backend.py`）。
+  两条检索通道的**实测**程度不一样，别说过头：全文在 PG 上走 `to_tsvector` + GIN 索引，
+  但本机 `pgvector/pgvector:pg16` 没装中文分词器，**中文查询由 `fts_search` 抛 `LookupError`、
+  检索器退化为本地实现**（不伪装成「没命中」）；向量那条因 `kb_doc.embedding` 在 PG 上仍是
+  TEXT（一份 DDL 两个后端、形状必须一样的直接代价）用不了 `<=>`，**退化成纯 Python 余弦，
+  PG 上没有 HNSW** —— 召回照常，只是不走索引。两条退化都只告警一次并记住判定。
 
 ---
 

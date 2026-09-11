@@ -382,6 +382,42 @@ def test_base_url_is_always_a_sentinel_although_it_is_not_a_key():
     assert "***REDACTED:MAOS_LLM_BASE_URL***" in out
 
 
+def test_live_model_log_line_prints_the_host_not_the_whole_url(caplog, monkeypatch):
+    """``select_model_client()`` 那一行只打 host —— 它会跟着 ``run.log`` 进证据束。
+
+    上一条守的是**产物侧**的兜底（落盘前脱敏）；这一条守的是**出口**：兜底生效
+    之前，那一行在终端与 CI 日志里是明文，而自建网关常把凭据编在路径里。
+    两道都要，缺哪道都有一类去处没人管。
+
+    这条测试挨着上一条放（同一个泄漏面的两半），也因为本轨只许动
+    `test_trace_evidence.py` / `test_verify_warn.py` 这两个测试文件。
+    **用假 URL，真的绝不进测试**（铁律 6）。
+    """
+    import logging
+
+    from maos.model import client as client_mod
+    from maos.model.client import ENV_API_KEY, ENV_BASE_URL, ENV_FORCE_SCRIPTED, ENV_MODEL
+
+    fake = f"https://robot:{SENTINEL}@gw.internal.invalid:8443/compat-mode/v1"
+    monkeypatch.delenv(ENV_FORCE_SCRIPTED, raising=False)
+    monkeypatch.setenv(ENV_BASE_URL, fake)
+    monkeypatch.setenv(ENV_API_KEY, SENTINEL)
+    monkeypatch.setenv(ENV_MODEL, "fake-model")
+
+    # logger 名从模块本身取，不写死 —— 写死的话它改名那天这条测试会静默地一行都收不到。
+    with caplog.at_level(logging.INFO, logger=client_mod.log.name):
+        client_mod.select_model_client()
+    printed = "\n".join(r.getMessage() for r in caplog.records)
+
+    assert "gw.internal.invalid:8443" in printed, "连 host 都不打，日志就不说人话了"
+    for leaked in (fake, SENTINEL, "/compat-mode/v1", "robot:"):
+        assert leaked not in printed, f"整条 base_url 的这一截进了日志：{leaked!r}"
+
+    # 解析不出 host 时不回退到原串 —— 回退等于在最可疑的那种输入上打全文。
+    assert client_mod._url_host("gw.internal.invalid/v1") == "?"
+    assert client_mod._url_host("") == "?"
+
+
 def test_scan_finds_sentinel_even_inside_a_binary_file(tmp_path):
     """按字节查而不是按行读文本：sqlite 库就在同一目录，按文本读会解码失败而跳过。"""
     (tmp_path / "blob.db").write_bytes(b"\x00\x01" + SENTINEL.encode() + b"\xff")
@@ -538,6 +574,106 @@ def test_index_registers_non_scenario_dirs_like_room(tmp_path):
     assert files["README.md"]["sourced"] is True
     assert files["shot.png"]["secret_scan"].startswith("无法核验")
     assert files["README.md"]["secret_scan"] == "可扫"
+
+
+# ---------------------------------------------------------------------------
+# 5e. 真模型束与 Scripted 束不共用一个根（T128）
+# ---------------------------------------------------------------------------
+#: 缺省那两条路的产出根**逐字节不许变**：`evidence/` 与 `evidence/domains/` 写死在
+#: `scripts/demo_preflight.sh`、复赛材料、以及 `verify.py` 的缺省 `--evidence` 里。
+SCRIPTED_ROOTS = {
+    (False, False): ROOT / "evidence",
+    (False, True): ROOT / "evidence" / "domains",
+}
+
+
+class _StopAfterResolve(Exception):
+    """产出根算完就停 —— 这几条测试只看路径，一个字节都不该落盘。"""
+
+
+def _resolved_out(argv, monkeypatch) -> str:
+    """跑一遍 ``main()`` 的参数解析，返回它**打算**写到哪。
+
+    截在 ``assert_root_mode`` 上：那是三条分支（缺省 / ``--domains`` /
+    ``--contrast``）唯一都会经过、且在 ``os.makedirs`` 之前的一处。截在各分支里
+    就得写三份不同的桩，而**漏掉一条分支**正是这一轨要修的那个 bug 的形状。
+    """
+    monkeypatch.setenv(make_evidence.FORCE_SCRIPTED_ENV, "1")   # 跑完由 monkeypatch 还原
+    seen = {}
+
+    def spy(out_root, mode):
+        seen["out"], seen["mode"] = out_root, mode
+        raise _StopAfterResolve
+
+    monkeypatch.setattr(make_evidence, "assert_root_mode", spy)
+    with pytest.raises(_StopAfterResolve):
+        make_evidence.main(argv)
+    return seen
+
+
+@pytest.mark.parametrize("domains", [False, True])
+def test_scripted_out_root_is_unchanged(domains, monkeypatch):
+    """不给 ``--live-model`` 时产出根一个字节不变 —— 这是 T128 的不回归判据。"""
+    expect = SCRIPTED_ROOTS[(False, domains)]
+    assert pathlib.Path(
+        make_evidence.default_out_root(live=False, domains=domains)) == expect
+
+    argv = ["--domains"] if domains else []
+    seen = _resolved_out(argv, monkeypatch)
+    assert pathlib.Path(seen["out"]) == expect
+    assert seen["mode"] == make_evidence.MODE_SCRIPTED
+
+
+@pytest.mark.parametrize("argv,domains", [
+    ([], False),
+    (["--domains"], True),
+    (["--contrast"], False),          # 对照那条路同样隔离（只修一条入口 = 留一半洞）
+])
+def test_live_model_never_writes_into_a_scripted_root(argv, domains, monkeypatch):
+    """``--live-model`` 的产出根必须在 ``evidence/live/`` 下，三条分支都是。
+
+    从前三条分支都落 Scripted 束的根：一次 ``--live-model`` 就把八束确定性证据
+    原地换成真模型产的，而 ``verify.py`` 不看 ``model_mode``，换完照样 10/10 PASS。
+    产物上看不出来 —— 那正是铁律 3 要挡的那种「证据不真实」。
+    """
+    live_root = pathlib.Path(make_evidence.default_out_root(live=True, domains=domains))
+    assert live_root not in SCRIPTED_ROOTS.values(), "真模型束落进了 Scripted 束的根"
+    assert live_root.parts[-2 if domains else -1] == make_evidence.LIVE_SUBDIR
+
+    seen = _resolved_out([*argv, "--live-model"], monkeypatch)
+    assert pathlib.Path(seen["out"]) == live_root
+    assert seen["mode"] == make_evidence.MODE_LIVE, (
+        "标签与实跑必须同源：这一跑标 live，产出根也得是 live 的那个")
+
+
+def _index(path, mode):
+    path.write_text(
+        make_evidence.header_line("abc") + "\n"
+        + json.dumps({"git_sha": "abc", "model_mode": mode}, ensure_ascii=False),
+        encoding="utf-8")
+
+
+def test_explicit_out_cannot_overwrite_the_other_mode(tmp_path):
+    """显式 ``--out`` 指进另一种模式的根 = 覆盖，当场拦下。
+
+    ``default_out_root`` 分开的只是**缺省**；``--out evidence/ --live-model``
+    仍能把真模型束指进 Scripted 束的根。两个方向都拦：反过来用 Scripted 覆盖真模型
+    束，丢的是重跑不回来的东西（每跑一次说的话都不一样，且烧的是钱）。
+    """
+    _index(tmp_path / "INDEX.json", make_evidence.MODE_SCRIPTED)
+    with pytest.raises(make_evidence.EvidenceError) as exc:
+        make_evidence.assert_root_mode(str(tmp_path), make_evidence.MODE_LIVE)
+    assert "不许互相覆盖" in str(exc.value)
+
+    _index(tmp_path / "INDEX.json", make_evidence.MODE_LIVE)
+    with pytest.raises(make_evidence.EvidenceError):
+        make_evidence.assert_root_mode(str(tmp_path), make_evidence.MODE_SCRIPTED)
+
+    # 同模式、空目录、读不出的索引都放行：本项守的是覆盖，不是证据格式。
+    make_evidence.assert_root_mode(str(tmp_path), make_evidence.MODE_LIVE)
+    make_evidence.assert_root_mode(str(tmp_path / "nope"), make_evidence.MODE_LIVE)
+    (tmp_path / "INDEX.json").write_text("不是 json\n", encoding="utf-8")
+    make_evidence.assert_root_mode(str(tmp_path), make_evidence.MODE_LIVE)
 
 
 # ===========================================================================
@@ -884,3 +1020,98 @@ def test_missing_database_fails_loudly_instead_of_reporting_all_pass(evidence_ro
     proc = _verify_cli(evidence_root)
     assert proc.returncode != 0
     assert "缺数据库" in proc.stderr
+
+
+# ===========================================================================
+# 9. verify.py：真模型束不进那十项的分子（T128）
+# ===========================================================================
+#: `bundle_dir` 那套文件的出处 sha。根 INDEX.json 得跟它对上，否则
+#: `load_evidence_json(expect_sha=...)` 会先一步判「出处对不上」，测的就不是本节的事了。
+FIXTURE_SHA = "deadbeef"
+
+
+def _root_index(root, produced, *, mode="scripted"):
+    """写一份根 `INDEX.json`：`produced[]` 逐束标 `model_mode`，形状同 make_evidence。"""
+    (root / "INDEX.json").write_text(
+        make_evidence.header_line(FIXTURE_SHA) + "\n" + json.dumps({
+            "git_sha": FIXTURE_SHA, "model_mode": mode,
+            "produced": [{"scenario": name, "dir": f"evidence/{name}", "model_mode": m}
+                         for name, m in produced],
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def test_live_scenario_bundle_is_skipped_not_verified(evidence_root):
+    """同一个根里混着一束真模型束时，只核 Scripted 的那束，真模型束点名跳过。
+
+    从前 `verify.py` 根本不看 `model_mode`：`make_evidence.py --live-model` 产的束
+    落在同一个 `evidence/scenario-*`，覆盖掉 Scripted 束照样 10/10 PASS。
+    """
+    shutil.copytree(evidence_root / "scenario-1", evidence_root / "scenario-2")
+    _root_index(evidence_root, [("scenario-1", "scripted"), ("scenario-2", "live")])
+
+    cases = verify.load_cases(str(evidence_root), None)
+    try:
+        assert [c.name for c in cases] == ["scenario-1"], "真模型束被算进了核验对象"
+    finally:
+        for c in cases:
+            c.conn.close()
+    assert verify.skipped_live_dirs(str(evidence_root)) == ["scenario-2"], (
+        "跳过的束必须点名 —— 静默跳过与「核过了」在屏幕上长得一模一样")
+
+
+def test_cli_names_the_live_bundle_it_did_not_verify(evidence_root):
+    """屏幕上那行「未核验（真模型束…）」是这条口径对评委唯一可见的一面。"""
+    shutil.copytree(evidence_root / "scenario-1", evidence_root / "scenario-2")
+    _root_index(evidence_root, [("scenario-1", "scripted"), ("scenario-2", "live")])
+
+    proc = _verify_cli(evidence_root)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "未核验（真模型束" in proc.stdout and "scenario-2" in proc.stdout.split(
+        "未核验（真模型束")[1]
+
+
+def test_an_all_live_root_is_refused_with_the_command_that_helps(evidence_root):
+    """整根都是真模型束时明确报错，不是 `0/0 PASS`。
+
+    分母为 0 的「全过」是这个核验器能犯的最坏的错（见 verify.py 文件头「空转也算
+    没跑」）。报错正文里得有下一步动作，否则读的人只知道不行、不知道往哪走。
+    """
+    _root_index(evidence_root, [("scenario-1", "live")])
+    with pytest.raises(verify.VerifyError) as exc:
+        verify.load_cases(str(evidence_root), None)
+    assert "真模型束" in str(exc.value) and "scripts/verify.py" in str(exc.value)
+
+
+def test_live_root_declared_only_at_the_top_level_counts_too(evidence_root):
+    """顶层标 live 就整根都是真模型束 —— `evidence/live/` 被直接 `--evidence` 指到的情形。"""
+    _root_index(evidence_root, [("scenario-1", "scripted")], mode="live")
+    assert verify.live_scenario_names(str(evidence_root)) == {"scenario-1"}
+    with pytest.raises(verify.VerifyError):
+        verify.load_cases(str(evidence_root), None)
+
+
+def test_live_bundle_is_not_a_provenance_anchor(evidence_root):
+    """第 9 项的分母里也不许有真模型束 —— 否则它是唯一一个把 live 算进分子的地方。
+
+    出处判负要以「一条命令就能重跑」为前提（同 `_MANUAL_BUNDLES` 的理由）。真模型束
+    红起来只能靠再烧一次真模型跑才消得掉，而一个消不掉的红灯等于噪音。
+    """
+    for name, mode in (("live", "live"), ("aux-scripted", "scripted")):
+        sub = evidence_root / name
+        sub.mkdir()
+        (sub / "INDEX.json").write_text(
+            make_evidence.header_line(FIXTURE_SHA) + "\n"
+            + json.dumps({"git_sha": FIXTURE_SHA, "model_mode": mode}), encoding="utf-8")
+
+    named = {name for name, _ in verify.provenance_anchors(str(evidence_root))}
+    assert "aux-scripted" in named, "Scripted 的旁束照旧要查出处"
+    assert "live" not in named, "真模型束进了第 9 项的分母"
+    assert "live" in verify.skipped_live_dirs(str(evidence_root))
+
+
+def test_a_bundle_named_live_is_caught_even_without_an_index(tmp_path):
+    """`<路径>-live/` 这个目录名口径（T114）照旧认 —— 索引丢了也还剩名字。"""
+    (tmp_path / "happy-live").mkdir()
+    assert verify.is_live_bundle(str(tmp_path / "happy-live")) is True
+    (tmp_path / "happy").mkdir()
+    assert verify.is_live_bundle(str(tmp_path / "happy")) is False

@@ -123,6 +123,28 @@ def _scrub(text: str, secret: str) -> str:
     return text.replace(secret, "***") if secret else text
 
 
+def _url_host(url: str) -> str:
+    """URL 里可以进日志的那一截：只有 ``host[:port]``，不带 userinfo / 路径 / query。
+
+    铁律 6 点名的是「凡是可能回显 env 或 **URL** 的命令，输出前必须过脱敏」。
+    网关地址本身就是泄漏面（内网拓扑），而自建网关常把凭据编在**路径**里
+    （``/v1/<token>/chat``），那种形状下打整条 URL 就是明文打 key ——
+    而这一行会跟着 ``run.log`` 进证据束（``--live-model`` 产的每一束都有）。
+
+    ``scripts/make_evidence.py`` 把 ``MAOS_LLM_BASE_URL`` 列进了恒脱敏名单，
+    那是**产物侧**的兜底；兜底生效之前，这一行在终端与 CI 日志里仍是明文。
+    两道都要：出口这一道管的是没有兜底的那些去处。
+
+    解析不出 host（没带 scheme、空串）时返回 ``?``，**不回退到原串** ——
+    回退等于在最可疑的那种输入上打全文。
+    """
+    try:
+        netloc = urllib.parse.urlsplit(url).netloc
+    except ValueError:
+        return "?"
+    return netloc.rsplit("@", 1)[-1] or "?"     # user:pass@host -> host
+
+
 def _safe_int(value: object, default: int = 0) -> int:
     """usage 计数容错：网关给了非整数就回退 default 并告警。
 
@@ -408,7 +430,10 @@ def select_model_client(script: dict[str, str] | None = None, *,
                     "/".join(missing))
         return ScriptedModelClient(script)
 
-    log.info("启用真模型：base_url=%s model=%s", env[ENV_BASE_URL], env[ENV_MODEL])
+    # 只打 host，不打整条 base_url（铁律 6，见 `_url_host`）。取值、拼接、请求逻辑
+    # 一个字没动 —— 变的只有这一行说出去多少。
+    log.info("启用真模型：base_url.host=%s model=%s",
+             _url_host(env[ENV_BASE_URL]), env[ENV_MODEL])
     return GatewayModelClient(
         base_url=env[ENV_BASE_URL], api_key=env[ENV_API_KEY],
         model=env[ENV_MODEL], timeout=_timeout_from_env(),

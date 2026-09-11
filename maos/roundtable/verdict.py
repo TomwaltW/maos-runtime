@@ -265,8 +265,28 @@ def _approver(recommend: str, seats: dict[str, dict], blockers: list[str]) -> st
     Planner 侧的缺省审批岗是 `maos.kb.plan_advice.DEFAULT_APPROVER_ROLE`（别名那套写法），
     两处指同一个岗，由 `test_refund_roles.py` 的等价判据钉着。两边各写一个常量、
     靠人记着它们相等，分叉时的症状是房间里念出来的审批人和 Planner 建议的不是同一个人。
+
+    **三种「不正常的审批人」分三支处置**，别混成一支：空串 = 政策没写，降到缺省岗；
+    目录里查得到但不是审批岗 = 配置错，也降到缺省岗；目录里压根没有 = 写错了，
+    原样留着不猜（降级会把一个拼错的角色名悄悄变成一个正常值，错就再没人看得见）。
+    前两支各留一条 WARNING。
     """
     role = str((seats.get("refund-policy") or {}).get("approver_role") or "")
+
+    # 政策没写审批人（空串）**不是**「不需要审批」，而是「没人知道该谁批」——
+    # `maos/kb/guardrails.py` 第三条红线拦的正是前者。原样留空的后果是房间里那句话
+    # 渲染成「请  拍板」（「请」和「拍板」之间两个空格）：一句话没了主语，而它是给
+    # boss 的收口卡，真房间里有人照着它去点人。落点与下面「写了个不该拍板的岗」那一支
+    # 同一个 —— 读代码的人只需记一个落点，看日志的人也只需认一种告警。
+    # 判空要 `strip()`：`"   "` 在政策规则的 JSON 里与正常值长得一样，而它走到底
+    # 是「请     拍板」—— 同一条病，症状还更难认（口径同 `guardrails` 那侧把全空白
+    # 与空串并成一条负例）。这里不把 strip 过的值写回 `role`：它只是判据，
+    # 降级之后 `role` 整个被缺省岗顶掉，原文里剩的那点空白没有保留的意义。
+    if not role.strip():
+        log.warning("政策未指定审批人（approver_role 为空），按缺省审批岗 %r 处理",
+                    roles.DEFAULT_APPROVER_SEAT)
+        role = roles.DEFAULT_APPROVER_SEAT
+
     canon = roles.canonical_role(role)
 
     # 接单岗不是审批岗。政策规则里把 `payment_ops` 写成 approver_role 是配置错，

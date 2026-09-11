@@ -57,6 +57,26 @@
 下的判断。任一轮算不出来（合议引擎没装载）整行不打 —— 「None → None」看着像
 「两轮都没结论」，实际是「引擎不在」，两件事该做的反应完全不同。
 
+## `--db` / `--events-out`：把这一轮的事件链留下来
+
+不给 `--db` 时圆桌**一个字节都不落**，屏幕输出与从前逐字节相同（那份指纹被
+`maos/tests/test_room_team_recheck.py` 钉着）。给了之后，同一轮里多出来的是：
+
+    python3 scripts/room_team_smoke.py --db /tmp/rt.db --events-out /tmp/rt-events.json
+
+  · `RoundtableRound` / `RoundtableSeatSpoke` / `RoundtableVerdict` 三类事件行；
+  · `refund.evidence_check` 与 `refund.risk_screen` 的 `SkillInvoked`
+    （`input_digest` / `output_hash` 由 `SkillInvoker` 自己写，圆桌不另算一份）；
+  · 真模型时每次调用一条 `model_usage`（本脚本是 `force_scripted=True`，所以这里恒为 0）。
+
+全部挂在 `plan_id = roundtable:<case_id>` 上 —— `plan` 表里查不到这个 id，
+所以它们如实落进 `trace.json` 的 `stray_events` / `unattributed_usage`，
+而不是伪装成一棵 Run 的树。`--events-out` 就是按这个前缀把那一摊捞出来。
+
+`--evidence-out` 落的是**屏幕那份**，`--events-out` 落的是**库那份**，两者并存：
+前者给人读、后者给机器比对，谁也替代不了谁。回放用
+`python3 scripts/replay_roundtable.py --db /tmp/rt.db --case <RC-…>`。
+
 ## 退出码
 
   0  五岗全跑通
@@ -77,6 +97,7 @@ import argparse
 import inspect
 import json
 import logging
+import sqlite3
 import subprocess
 import sys
 import time
@@ -349,25 +370,35 @@ def verdict_json(verdict) -> dict:
     return data
 
 
-def make_roundtable(team, model, voices, ledger, pace_ms: int, *, out):
+def make_roundtable(team, model, voices, ledger, pace_ms: int, *, out, store=None):
     """建圆桌，并把 `--pace` 接到**引擎认的那个口**上（跨轨契约 §3）。
 
     引擎带 `pace` 参数就走那条正路，并把发声假件的停顿清零 —— 两处都停会让
     每一岗停两次。引擎还没有那个参数（本轨基线正是如此）时退回假件自己停，
     并报一行说明：`--pace` 在两种引擎下都有效，但走的不是同一条路，读输出的人
     有权知道是哪一条。
+
+    `store`（`--db`）同一个探法：引擎不认 `store=` 就照跑，只是这一轮的事件链
+    不落库，并**往 stderr** 报一行。那一行不进 `out` 是刻意的 —— 屏幕上这份输出
+    被 `test_room_team_recheck.PLAIN_STDOUT_MD5` 逐字节钉着，`--db` 一个字都不许改它。
     """
+    try:
+        params = inspect.signature(team.RefundRoundtable).parameters
+    except (TypeError, ValueError):                     # 签名读不到就当什么都不支持
+        params = {}
     kwargs = {"ledger_loader": lambda: ledger}
     if pace_ms > 0:
-        try:
-            accepts_pace = "pace" in inspect.signature(team.RefundRoundtable).parameters
-        except (TypeError, ValueError):                 # 签名读不到就当不支持
-            accepts_pace = False
-        if accepts_pace:
+        if "pace" in params:
             kwargs["pace"] = lambda _i, _total: time.sleep(pace_ms / 1000.0)
             voices.pace_ms = 0
         else:
             print(f"引擎还没有 pace 入参，--pace {pace_ms} 毫秒由发声面代劳", file=out)
+    if store is not None:
+        if "store" in params:
+            kwargs["store"] = store
+        else:
+            print("引擎还没有 store 入参，--db 本次不生效：这一轮的事件链不落库",
+                  file=sys.stderr)
     return team.RefundRoundtable(model, voices, **kwargs)
 
 
@@ -429,7 +460,8 @@ def check_said(reports: list, said: list) -> list:
 
 # ------------------------------------------------------------------ 主流程
 def run(sheet, ledger_path, *, as_json: bool = False, out=None,
-        evidence_dir=None, pace_ms: int = 0, recheck: bool = False) -> int:
+        evidence_dir=None, pace_ms: int = 0, recheck: bool = False,
+        store=None) -> int:
     out = out or sys.stdout
     from maos.flows.custom_case import CaseFileError, load
     from maos.model.client import select_model_client
@@ -458,9 +490,16 @@ def run(sheet, ledger_path, *, as_json: bool = False, out=None,
 
     voices = _LocalVoices(getattr(team, "TITLES", None), pace_ms=pace_ms)
     model = select_model_client(None, force_scripted=True)
-    roundtable = make_roundtable(team, model, voices, ledger, pace_ms, out=notes)
+    roundtable = make_roundtable(team, model, voices, ledger, pace_ms, out=notes,
+                                 store=store)
     team_order = tuple(getattr(team, "TEAM_ORDER", ()))
+    # 有圆桌自己那个 `decide` 就用它 —— 探法与 `router.py::_attach_verdict` 逐字
+    # 同一个范式。两者算出来的收口卡**逐字节相同**（圆桌那个就是转调 `verdict.decide`），
+    # 区别只在它顺手落一条 `RoundtableVerdict`：绕开它的症状是库里有五岗发言、
+    # 没有合议结论，而屏幕上两种情况长得一模一样。
     decide = load_decide()
+    if decide is not None:
+        decide = getattr(roundtable, "decide", None) or decide
 
     # 证据先配、再开跑：配到一半才发现目录写错，前几单已经按「没证据」演完了。
     evidence = (load_evidence(evidence_dir, {r["order_id"] for r in requests}, out=notes)
@@ -584,6 +623,68 @@ def header_line() -> str:
     return f"# generated at {datetime.now(timezone.utc).isoformat()} from {sha}"
 
 
+#: 圆桌那一摊行的 plan_id 前缀（`maos/roundtable/team.py::PLAN_PREFIX`）。
+#: 抄字面量而不是 import：本脚本的全部要点是「圆桌引擎没并进来也跑得起来」
+#: （`load_team()` 的退化路径），为了一个前缀去 import 它就把那条路堵死了。
+ROUNDTABLE_PLAN_LIKE = "roundtable:%"
+
+
+def export_events(db_path, target) -> dict:
+    """把库里圆桌那一摊行导成 JSON 证据。返回写下去的那份文档（给测试比对）。
+
+    **走 SQL 而不是 `Store.list_event_log`**：那个接口只按**精确** plan_id 查，
+    而圆桌一轮一个 plan_id（`roundtable:<case_id>`），事先不知道有哪些。
+    读的是一个刚被本进程写完的库，不是第二个存储层。
+
+    `--evidence-out` 落的是**屏幕那份**（给人读的记录），本函数落的是**库那份**
+    （给机器比对的事件链）。两者并存而不是替换：stdout 的指纹被
+    `test_room_team_recheck.py` 逐字节钉着，改成从库导出会让那条测试永远红。
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        events = []
+        for r in conn.execute(
+                "SELECT seq, plan_id, task_id, event_type, detail, created_at"
+                " FROM event_log WHERE plan_id LIKE ? ORDER BY seq",
+                (ROUNDTABLE_PLAN_LIKE,)):
+            row = dict(r)
+            try:
+                row["detail"] = json.loads(row["detail"] or "{}")
+            except ValueError:                          # 库里那列不是合法 JSON
+                row["detail"] = {"_unparsed": row["detail"]}
+            events.append(row)
+        usage = [dict(r) for r in conn.execute(
+            "SELECT seq, plan_id, task_id, agent_role, call_site, model, tier,"
+            " tokens_in, tokens_out, latency_ms, estimated, created_at"
+            " FROM model_usage WHERE plan_id LIKE ? ORDER BY seq",
+            (ROUNDTABLE_PLAN_LIKE,))]
+    finally:
+        conn.close()
+
+    by_type: dict = {}
+    for e in events:
+        by_type[e["event_type"]] = by_type.get(e["event_type"], 0) + 1
+    doc = {
+        "db": Path(db_path).name,
+        "events": events,
+        "model_usage": usage,
+        "summary": {
+            "event_count": len(events),
+            "by_type": dict(sorted(by_type.items())),
+            "usage_count": len(usage),
+            "plans": sorted({e["plan_id"] for e in events}),
+        },
+    }
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as handle:
+        print(header_line(), file=handle)               # 铁律 3：首行出处
+        json.dump(doc, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    return doc
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="room_team_smoke",
@@ -608,27 +709,52 @@ def main(argv: list | None = None) -> int:
                         dest="evidence_out",
                         help="把这一轮输出原样落成证据文件，首行 "
                              "`# generated at <ISO8601> from <sha>` 由本脚本写入（铁律 3）")
+    parser.add_argument("--db", metavar="路径", default=None,
+                        help="把这一轮的圆桌事件链落进这个 SQLite 库（不给 = 不落库，"
+                             "屏幕输出逐字节不变）。库里能查到三类圆桌事件、"
+                             "两个 skill 的 SkillInvoked，真模型时还有 model_usage")
+    parser.add_argument("--events-out", metavar="文件", default=None,
+                        dest="events_out",
+                        help="把 --db 那个库里 plan_id 以 roundtable: 打头的 event_log "
+                             "与 model_usage 导成 JSON，首行同样是出处注释。需要 --db")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING,
                         format="%(levelname)-5s %(name)-12s %(message)s")
     if args.pace < 0:
         parser.error("--pace 不能是负数")
+    # 不许静默：没有库就没有事件可导，而「导出来是个空文件」与「这一轮真的没事件」
+    # 在盘上长得一模一样，后者才是该查的那一种。
+    if args.events_out and not args.db:
+        parser.error("--events-out 需要 --db —— 事件是从库里导出来的，没有库就没有事件")
+
+    store = None
+    if args.db:
+        from maos.core.store import SqliteStore
+
+        store = SqliteStore(args.db)
+        store.init_schema()                             # 全是 IF NOT EXISTS，幂等
 
     if not args.evidence_out:
-        return run(args.sheet, args.ledger, as_json=args.as_json,
-                   evidence_dir=args.evidence, pace_ms=args.pace,
-                   recheck=args.recheck)
-
-    target = Path(args.evidence_out)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as handle:
-        print(header_line(), file=handle)
         code = run(args.sheet, args.ledger, as_json=args.as_json,
-                   out=_Tee(sys.stdout, handle),
                    evidence_dir=args.evidence, pace_ms=args.pace,
-                   recheck=args.recheck)
-    print(f"\n证据已落盘：{target}", file=sys.stderr)
+                   recheck=args.recheck, store=store)
+    else:
+        target = Path(args.evidence_out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", encoding="utf-8") as handle:
+            print(header_line(), file=handle)
+            code = run(args.sheet, args.ledger, as_json=args.as_json,
+                       out=_Tee(sys.stdout, handle),
+                       evidence_dir=args.evidence, pace_ms=args.pace,
+                       recheck=args.recheck, store=store)
+        print(f"\n证据已落盘：{target}", file=sys.stderr)
+
+    if args.events_out:
+        doc = export_events(args.db, args.events_out)
+        print(f"事件链已落盘：{args.events_out}"
+              f"（{doc['summary']['event_count']} 条事件、"
+              f"{doc['summary']['usage_count']} 条用量）", file=sys.stderr)
     return code
 
 

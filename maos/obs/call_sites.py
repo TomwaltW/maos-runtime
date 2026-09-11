@@ -16,7 +16,8 @@
 地方）：这几个值的源头分别在 ``maos/agents/base.py``、``maos/skills/builtin/
 req_normalize.py``、``maos/skills/builtin/code_repo_patch.py``、
 ``maos/skills/builtin/refund/reason_classify.py``、
-``maos/skills/builtin/sheet_header_map.py``。而 ``maos/obs``
+``maos/skills/builtin/sheet_header_map.py``、
+``maos/roundtable/speaker.py``。而 ``maos/obs``
 只许 import ``maos.core.store``，不 import 任何业务域与上层模块（规矩立在
 ``obs/trace.py`` 的模块 docstring 末行）。从 agents / skills 里 import 常量会当场
 破掉那条边界，把可观测层变成上层模块的下游。
@@ -57,6 +58,17 @@ CALL_SITE_SHEET_HEADER_MAP = (
     "maos/skills/builtin/sheet_header_map.py::SheetHeaderMapSkill.run"
 )
 
+#: 退款圆桌的五岗发言与点名问答（``maos/roundtable/speaker.py`` 的 ``CALL_SITE``）。
+#: **两处调用共用一个值**：五岗发言（``Speaker.speak``）与房间里 @某一岗的问答
+#: （``team.RefundRoundtable.answer``）都经 ``Speaker.complete`` 走，座位由
+#: ``agent_role`` 区分，不靠 call_site 分。
+#:
+#: 这一行的 ``trace_id`` 恒为空串、``task_id`` 恒为 NULL —— 圆桌是旁路观察者，
+#: 不属于任何 Run，也不建 task。所以它在 ``trace.json`` 里只出现在
+#: ``unattributed_usage`` 里，而不在任何一棵树的 ``cost`` 中：**「记了账」与
+#: 「归得上账」不是一回事**，两个数分开才看得出圆桌烧了多少。
+CALL_SITE_ROUNDTABLE_SPEAKER = "maos/roundtable/speaker.py::Speaker.complete"
+
 #: 已登记的全部 ``call_site``。**穷举**：库里出现集合外的值即视为漏登记。
 REGISTERED_CALL_SITES: frozenset[str] = frozenset({
     CALL_SITE_AGENT_ASK,
@@ -64,6 +76,7 @@ REGISTERED_CALL_SITES: frozenset[str] = frozenset({
     CALL_SITE_CODE_REPO_PATCH,
     CALL_SITE_REFUND_REASON_CLASSIFY,
     CALL_SITE_SHEET_HEADER_MAP,
+    CALL_SITE_ROUNDTABLE_SPEAKER,
 })
 
 #: 报错正文里统一带上这一句 —— 红灯要给出下一步动作，不然它只是一次打扰。

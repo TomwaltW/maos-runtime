@@ -2395,3 +2395,12 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | `maos/tests/test_expected_metrics.py::test_collected_count_matches_source_of_truth` 变红：本轨 +42 条测试后收集数与 `docs/expected-metrics.json` 对不上 | 一条红，**预期内**（派单 §6 点名） | 整合期统一刷。契约 §A 把那个文件列进「谁都不许动」，理由是每轨都加测试、各自去改同一个整数意味着整合时多方冲突，且中间值全是错的 |
 | 2026-09-11 | p10 | `experiment._r8_replanner` 原样重出同一份规格，**不换渠道** | R8 演的是「知道什么时候该停」，不是「聪明地换一条路」。换渠道那一档由 `flows/scenario_7._switch_channel` 演 | 不必改。留这条账只为说明这是刻意的：40005 是「调用频次超限」，换哪个渠道都照撞 —— 而那正是准备段那行 `failure_hint_index` 记下来的事实 |
 | 2026-09-11 | p10 | `plan_advice.advise_and_log` 的政策规则从**命中的 `kind='policy'` 文档**重建，而不是查 `policy_rule` 表 | 知识库里没有投影过的政策规则，建议就看不见它。今天所有消费方（`experiment._seed` / `scenario_6._seed_kb` / `fixtures.seed_policy_kb`）都投影全量政策，所以取不到的情形不存在 | 真出现「库里有规则、kb_doc 里没有」的库时再说。走知识层是刻意的：`maos/kb/**` 是领域无关内核，查 `policy_rule` 表等于把退款域挂到它的 import 图上（那条边界只在证据生成器 `experiment.py` 上破例，且仅此一处），而且知识层那条路带得出 `doc_id`，`citations` 才是可回查的 |
+## task-t113（圆桌落库之后的范围外发现，2026-09-10）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-10 | p10 | `model_usage` 表没有一列能放 `model_call_id`，互查只能按 `(plan_id, agent_role)` 的写入顺序对齐（见 DECISIONS ## task-t113 第 2 条） | 并发跑同一 case 的同一座位时理论上会错位（真房间里一次只过一单，实际撞不上）；读的人要知道这条口径才查得动 | `maos/core/store.py` 现有表冻结（铁律 1）。哪天有一次「允许给冻结表加列」的整体决策，给 `model_usage` 加一列 `call_id TEXT`，互查就从顺序变成等值 —— 不在本轨范围 |
+| 2026-09-10 | p10 | `RefundRoundtable._tenant_of_plan` 是一个只增不减的 dict：常驻房间每过一个新 case 多一条（`plan_id -> tenant_id`，几十字节） | 演示与真房间的量级下可以忽略；跑几个月的进程会慢慢涨 | 圆桌真的常驻起来之后换成 LRU（或干脆让 `verdict_of` 的调用方把 tenant 传进来）；本轮不做 |
+| 2026-09-10 | p10 | `hiclaw/room_ingress.py::wire()` 与 `IngressRouter.__init__` 各调一次 `attach_store` | 同一个 store 调两次是幂等的，只是读代码的人会问「为什么两遍」（两处都有注释说明） | 整合期若确认 `wire()` 之外没有别的建圆桌路径，去掉 `wire()` 里那一处 |
+| 2026-09-10 | p10 | 圆桌的 `model_usage` 行 `trace_id` 恒为空串，于是 `trace.json` 的 `summary.model_calls` 会把圆桌与 DAG 的调用加在一起，而 `attributed_model_calls` 只数 DAG 的 | 「本次演示烧了多少 token」这个数现在含圆桌；看板上要分开报时得自己按 `call_site = maos/roundtable/speaker.py::Speaker.complete` 过滤 | T114 把圆桌事件并进证据束时，顺手在成本那一段按 call_site 拆一行「其中圆桌」 |
+| 2026-09-10 | p10 | `speaker.Speaker.complete` 只在**成功**的模型调用上记账；`complete()` 抛异常那次不落 `model_call_failure`（`record_model_failure` 存在但本轨没接） | 圆桌的失败调用在成本表里看不见，「网关抖了几次」这个问题在圆桌这一侧答不了 | 接 `record_model_failure` 是几行的事，但它要一个新的判据（失败行的 call_site 同样要登记），留给整合期或专门一轨 |

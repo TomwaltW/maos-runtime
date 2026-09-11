@@ -12,18 +12,30 @@
    丢掉它，事实卡与模型幻觉在下游就长得一模一样了。
 
 模型调用直接走 `model.complete(...)`，**不经 `BaseAgent.ask`**：`ask` 要 plan/task
-归属才落得下 `model_usage`，而圆桌发言不属于任何 Plan 里的任务。代价是圆桌这几次
-调用没有成本行 —— 与 AP 那份、与 `maos/ingress/chat.py` 同一个取舍，记在 BACKLOG。
+归属才落得下 `model_usage`，而圆桌发言不属于任何 Plan 里的任务。T113 之后这
+**不再等于没有成本行**：:meth:`Speaker.complete` 自己掐时、自己记账，挂在一个带
+`roundtable:` 前缀的伪 plan_id 上（`team.PLAN_PREFIX`），`trace_id` 留空、如实落进
+`trace.json` 的 `unattributed_usage`。借 `ask` 的归属才是那条走不通的路 —— 它要一条
+真的 plan 行，而给圆桌造 plan 行会让 DAG 的树凭空多出几棵不存在的。
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import time
 
 from maos.model.client import ModelClient, ScriptedModelClient
 
 log = logging.getLogger("maos.roundtable")
+
+#: 圆桌两处模型调用共用的 ``call_site``：:meth:`Speaker.speak` 与
+#: `team.RefundRoundtable.answer` 都经 :meth:`Speaker.complete` 走，所以全仓
+#: ``record_model_usage`` 在圆桌这一侧**只有一处**。
+#:
+#: 必须与 ``maos/obs/call_sites.py`` 的 ``CALL_SITE_ROUNDTABLE_SPEAKER`` 逐字节
+#: 相等 —— 那张登记表是穷举的，漂一个字符 ``test_cost_metrics.py`` 当场红。
+CALL_SITE = "maos/roundtable/speaker.py::Speaker.complete"
 
 #: 单条发言字数上限。给模型的软约束，不硬截 —— 硬截会把话切在半句上，
 #: 而房间里一句没说完的话比一句啰嗦的话更难读。
@@ -188,22 +200,71 @@ class Speaker:
     """
 
     def __init__(self, identity, model: ModelClient | None,   # noqa: ANN001
-                 title: str | None = None, *, room: str = DEFAULT_ROOM) -> None:
+                 title: str | None = None, *, room: str = DEFAULT_ROOM,
+                 store=None, plan_id: str = "", agent_role: str = "") -> None:
         self.identity = identity
         self.model = model
         self.title = title or getattr(identity, "role", "")
         self.room = room
+        #: 用量落库的去处。**缺省 `None` = 一行都不写**，圆桌的行为逐字节不变 ——
+        #: 这个包在 `--dry-run`、在测试里、在没有 store 的调用方那里都要跑得起来。
+        self.store = store
+        #: 用量行的缺省归属。**每次调用可以覆盖**（见 :meth:`complete` 的 `plan_id`）：
+        #: 一个 `Speaker` 实例在 `RefundRoundtable.__init__` 里建一次、给所有 case 用，
+        #: 而 plan_id 是**按 case 变的**。把它只存在实例上，两个线程同时过两单
+        #: （router 的工作线程与 Matrix 回调线程都会调 `handle`）就会互相踩，
+        #: 且症状是成本挂到了别人那一单上 —— 没有任何测试会红。
+        self.plan_id = plan_id
+        #: 用量行的 `agent_role`。空串就用 identity 自己的 role —— 座位与角色同源，
+        #: 在这里另起一个名字会让成本视图里多出一个 `AGENT_POOL` 里不存在的角色。
+        self.agent_role = agent_role or str(getattr(identity, "role", "") or "")
 
     @property
     def live(self) -> bool:
         """有没有真模型。假模型也算没有 —— 理由见模块抬头第 1 条。"""
         return self.model is not None and not isinstance(self.model, ScriptedModelClient)
 
-    def _ask(self, system: str, user: str) -> tuple[str, str]:
+    def complete(self, system: str, user: str, *, plan_id: str | None = None):  # noqa: ANN201
+        """一次模型调用：掐时、记账、把 `ModelResponse` **原样**还给调用方。
+
+        本包唯一的 `record_model_usage` 调用点（`call_site` 见 :data:`CALL_SITE`）。
+        原来两处调用点各自 `.complete(...).text`，当场把 `tokens_in / tokens_out /
+        model` 丢掉 —— 收敛成一处不是为了少写几行，是为了让「圆桌烧了多少 token」
+        只有一个出处，改了它两处一起改。
+
+        **异常原样上抛**：两个调用方各有各的退化路径（`speak` 退回事实卡、
+        `answer` 退回岗位职责），在这里吞掉会让两者都拿到一个空字符串，
+        而空字符串与「模型回了空话」在下游长得一模一样。
+
+        Scripted / 没有真模型时不落账（`self.live` 为假）：`ScriptedModelClient`
+        的 token 数是 `len(user) // 4` 算出来的，把它印成用量就是
+        `core/store.py::usage_is_estimated` 那段 docstring 说的「虚假的精确信号」。
+        两个调用方都已经在 `live` 上早退过，这一层是第二道 —— 直接调它的人也拦得住。
+        """
+        started = time.perf_counter()
+        response = self.model.complete(system=system, user=user,
+                                       tier=self.identity.model_tier)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        if self.store is not None and self.live:
+            from maos.core.store import record_model_usage
+
+            record_model_usage(
+                self.store, response, client=self.model,
+                agent_role=self.agent_role, call_site=CALL_SITE,
+                tier=str(self.identity.model_tier or ""), latency_ms=latency_ms,
+                # trace_id 空串是**如实记录**：圆桌不属于任何 Run，编一个让它看起来
+                # 有归属才是这里能犯的最坏的错（口径与 `ManagerAgent.plan()` 同）。
+                # task_id 同理留 None —— 非空的 task_id 必须在 task 表里查得到
+                # （`scripts/verify.py` 第 8 项 b 条），而圆桌一个 task 都没建。
+                trace_id="", plan_id=self.plan_id if plan_id is None else plan_id,
+                task_id=None)
+        return response
+
+    def _ask(self, system: str, user: str, *,
+             plan_id: str | None = None) -> tuple[str, str]:
         """一次模型调用。返回 `(文本, 失败原因)`，两者恒有一个是空串。"""
         try:
-            out = self.model.complete(system=system, user=user,
-                                      tier=self.identity.model_tier).text
+            out = self.complete(system, user, plan_id=plan_id).text
         except Exception as exc:                        # noqa: BLE001
             # 网关 5xx / 超时 / key 失效都走这里。异常文本已由客户端脱敏。
             log.warning("岗位 %s 调模型失败（%s: %s），退回事实卡",
@@ -215,9 +276,13 @@ class Speaker:
             return "", FALLBACK_EMPTY
         return text, ""
 
-    def speak(self, facts: str,
-              history: list[tuple[str, str]]) -> tuple[str, bool, str]:
+    def speak(self, facts: str, history: list[tuple[str, str]], *,
+              plan_id: str | None = None) -> tuple[str, bool, str]:
         """组织一条发言。返回 `(说出口的话, 是不是模型说的, 回退原因)`。
+
+        `plan_id` 只影响**用量行挂在哪**，一个字的发言都不改；`None` = 用
+        `self.plan_id`。带默认值是刻意的：`speak(facts, history)` 两参调用在
+        测试与调用方那里已经有一批，加一个必填参就是一片 `TypeError`。
 
         回退原因是五个字面量之一（空串 = 没回退），**不是靠 `spoken_by_model=False`
         反推**：那个布尔分不清「模型没响应」与「模型响应了但违规」，而 Evidence
@@ -254,7 +319,7 @@ class Speaker:
             said = "（你是第一个发言的）"
         user = f"【你手上的事实】\n{facts}\n\n【群里已有的发言】\n{said}"
 
-        text, reason = self._ask(system, user)
+        text, reason = self._ask(system, user, plan_id=plan_id)
         if reason:
             return facts, False, reason
 
@@ -266,7 +331,8 @@ class Speaker:
         # 模型看不见自己越了哪条界，重试出来的往往是同一段话换个说法。
         log.warning("岗位 %s 的发言没过门（%s），重试一次",
                     self.identity.agent_id, "；".join(bad))
-        text2, reason2 = self._ask(system, f"{user}\n\n{_retry_note(bad)}")
+        text2, reason2 = self._ask(system, f"{user}\n\n{_retry_note(bad)}",
+                                   plan_id=plan_id)
         if reason2:
             return facts, False, reason2
         bad2 = violations(text2, facts)

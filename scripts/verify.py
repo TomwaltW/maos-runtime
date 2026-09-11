@@ -274,6 +274,53 @@ class Case:
     evidence_root: str = ""
 
 
+#: ``INDEX.json`` 的 ``domain_backend`` 里代表「业务表就在本束的 ``maos.db`` 里」的值。
+#: 字段缺席（本轮之前产的束）同义，照常核。
+DOMAIN_BACKEND_LOCAL = "sqlite"
+
+
+def index_domain_backend(directory: str) -> str:
+    """这束自报的业务域后端。读不出就当 ``sqlite``（**不认识就从严**，照常核）。"""
+    path = os.path.join(directory, "INDEX.json")
+    if not os.path.exists(path):
+        return DOMAIN_BACKEND_LOCAL
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fh.readline()                                     # 出处首行
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return DOMAIN_BACKEND_LOCAL
+    backend = (doc or {}).get("domain_backend") if isinstance(doc, dict) else None
+    name = str(backend or "").strip().lower()
+    return name or DOMAIN_BACKEND_LOCAL
+
+
+def external_backend_skip(case: Case, what: str) -> str:
+    """业务表落在外部后端时，这一项该印的那句点名；空串 = 照常核（T126 束，整合 Wave D）。
+
+    ``--domain-backend postgres`` 产的束（``evidence/case-real-01-pg/``）里，退款域那
+    16 张表在 ``MAOS_PG_DSN`` 指的库里，**不在本束的 ``maos.db``**（控制面本期不上 PG，
+    口径见 ``docs/architecture.md`` §5）。于是依赖业务表的两项对它只有三种下场：
+
+    1. 判负 —— 而那束本身没问题，红的是「核验器手里没有那张表」；
+    2. 静默跳过 —— 违反本文件「SKIP 的纪律」，一束没核过的证据与核过的长得一样；
+    3. 连上那个库去核 —— 那就要求**复核的人手里有同一个 PG**，而核验器的整个立场是
+       「外人 checkout 下来就能独立跑一遍」。要 DSN 的核验等于不可核验。
+
+    所以取第四条：**不计进分子，结尾点名，并说清判据在哪**。这束自证的材料在束里
+    ——``pg-tables.json`` 是从那个库直读的行（带出处首行、口令已脱敏），
+    ``isomorphism.json`` 是它与同案 SQLite 束的逐字段比对，而那束是被十项全核过的。
+    读的人自己看那两份，不由本文件替他宣布核过了。
+    """
+    backend = index_domain_backend(case.directory)
+    if backend == DOMAIN_BACKEND_LOCAL:
+        return ""
+    return (f"{case.name}: 业务表在外部后端（domain_backend={backend}），不在本束的 "
+            f"maos.db 里，{what}不计入分子 —— 要 DSN 才能核的束不叫可独立复核。"
+            f"这束的判据看同目录 pg-tables.json（从那个库直读的行）与 "
+            f"isomorphism.json（与同案 SQLite 束逐字段比对，那束十项全核过）")
+
+
 # ---------------------------------------------------------------------------
 # 第 1 项：hash-integrity
 # ---------------------------------------------------------------------------
@@ -862,6 +909,10 @@ def check_business_outcome(cases: list[Case], *, domain: DomainSpec | None = Non
     chk = Check("business-outcome",
                 "Plan 终态有 business_outcome，DONE 的外部判据回查得到")
     for case in cases:
+        skip = external_backend_skip(case, "本项")
+        if skip:
+            chk.warn(skip)
+            continue
         if domain is not None and domain.case_table not in case.tables:
             continue
         domain_plans = ({r[0] for r in case.conn.execute(f"SELECT plan_id FROM {domain.case_table}")}
@@ -1518,6 +1569,10 @@ def check_case_outcome(cases: list[Case]) -> Check:
     """
     chk = Check("case-outcome", "业务四判据齐全、算得对，arrival_basis 回查得到观察行")
     for case in cases:
+        skip = external_backend_skip(case, "本项")
+        if skip:
+            chk.warn(skip)
+            continue
         if "refund_case" not in case.tables or "payment_observation" not in case.tables:
             continue
         for plan in case.result.get("plans", []):

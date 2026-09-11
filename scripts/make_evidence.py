@@ -505,7 +505,7 @@ def _loads(raw, default=None):
 
 
 def collect_result(conn: sqlite3.Connection, *, scenario: int | str, exit_code: int,
-                   wall_ms: int, provenance: dict[str, str]) -> dict:
+                   wall_ms: int, provenance: dict[str, str], biz=None) -> dict:
     """终态 + 关键指标 + business_outcome。
 
     ``business_outcome`` 一律**推导**而来，且带着推导依据一起写出去（铁律 8）：
@@ -527,7 +527,7 @@ def collect_result(conn: sqlite3.Connection, *, scenario: int | str, exit_code: 
         tasks = [dict(t) for t in conn.execute(
             "SELECT task_id, role, title, state, attempt, risk_level, effect_risk"
             " FROM task WHERE plan_id=? ORDER BY created_at", (pid,))]
-        outcome = derive_business_outcome(conn, pid, p["state"], tables, provenance)
+        outcome = derive_business_outcome(conn, pid, p["state"], tables, provenance, biz=biz)
         plans.append({
             "plan_id": pid,
             "goal": p["goal"],
@@ -567,10 +567,43 @@ def _delta_ms(a: str, b: str) -> int | None:
         return None
 
 
+def _biz_port(biz, conn, tables: set[str]):                     # noqa: ANN001
+    """业务表的读取口径 —— `(read, tables, store)` 三件套。
+
+    缺省 `biz=None` 时三件套全由 `conn` 与 `tables` 现搭，**行为逐字节不变**：
+    业务表与控制面同库，读它就是读这条只读连接。
+
+    `biz` 不是 None 时（PG 束，`make_case_bundle.py::_pg_biz_reader`），业务表在
+    `MAOS_PG_DSN` 指的**另一个库**里：不换口径的话，这一段会在 `maos.db` 里找一张
+    根本不在那儿的表，然后如实报「没有」—— 于是 `external_evidence: []`、
+    `status: undetermined`，一束真跑成功的证据长得像跑挂了，而 `verify.py` 第 6 项
+    会当场判负（实测：整合 Wave D 时 PG 束把 `RESULT` 从 10/10 打到 9/10）。
+
+    `read` 的签名 `(table, sql, params)` 与 `make_case_bundle.collect_outcome` 用的
+    那一份**逐字相同**，两处共用同一个 `_pg_biz_reader()`；`tables` / `store` 由它
+    以属性挂上来，没挂就退回 `conn` 那份（属性缺席不是错误，只是没换口径）。
+    """
+    if biz is None:
+        def read(table: str, sql: str, params: tuple = ()) -> list[dict]:
+            if table not in tables:
+                return []
+            return [dict(r) for r in conn.execute(sql, tuple(params))]
+        return read, tables, _ReadOnlyStore(conn)
+    return (biz,
+            set(getattr(biz, "tables", None) or tables),
+            getattr(biz, "store", None) or _ReadOnlyStore(conn))
+
+
 def derive_business_outcome(conn, plan_id: str, plan_state: str, tables: set[str],
-                            provenance: dict[str, str]) -> dict:
-    """按库里的观察推导业务结局，并把每一条依据的出处一起带出来。"""
+                            provenance: dict[str, str], *, biz=None) -> dict:
+    """按库里的观察推导业务结局，并把每一条依据的出处一起带出来。
+
+    ``biz`` 是业务表的读取口径（见 `_biz_port`）。缺省 ``None`` 时行为逐字节不变；
+    PG 束传 `_pg_biz_reader()`，判据二与四判据从 PG 读 —— 控制面那一路
+    （判据一的 ``artifact``）照旧走 ``conn``，本期控制面不上 PG。
+    """
     evidence: list[dict] = []
+    read, biz_tables, _store = _biz_port(biz, conn, tables)
 
     # 判据一：通过的回归报告。它是「外部判定」而非 Agent 自评（自评在 patch_set.self_check）。
     for a in conn.execute(
@@ -590,14 +623,16 @@ def derive_business_outcome(conn, plan_id: str, plan_state: str, tables: set[str
     # 判据二：各域权威终态的外部观察。状态口径来自 guard，表不在就跳过。
     # 退款字段和排列保持原样；其他域保留自己的主键与回执字段，不改业务对象。
     for domain in DOMAIN_REGISTRY.values():
-        if not {domain.case_table, domain.observation_table} <= tables:
+        if not {domain.case_table, domain.observation_table} <= biz_tables:
             continue
         states = sorted(domain.authoritative_states)
         placeholders = ",".join("?" for _ in states)
-        for c in conn.execute(
+        for c in read(
+                domain.case_table,
                 f"SELECT tenant_id, {domain.case_id_column}, biz_status FROM {domain.case_table}"
                 f" WHERE plan_id=? AND biz_status IN ({placeholders})", (plan_id, *states)):
-            for o in conn.execute(
+            for o in read(
+                    domain.observation_table,
                     f"SELECT {', '.join(domain.observation_fields)}"
                     f" FROM {domain.observation_table} WHERE tenant_id=? AND {domain.case_id_column}=?",
                     (c["tenant_id"], c[domain.case_id_column])):
@@ -616,7 +651,7 @@ def derive_business_outcome(conn, plan_id: str, plan_state: str, tables: set[str
     # 判据三/四/五：业务结果四判据（到账 / 客户确认 / 人工纠错 / 投诉）。
     # 退款域没落地的场景返回空列表，下面几支照旧 —— 软件域那几个场景的 business_outcome
     # 一个字节都不变。
-    outcomes = case_outcomes(conn, plan_id, tables)
+    outcomes = case_outcomes(conn, plan_id, tables, biz=biz)
     unsuccessful = [o for o in outcomes if not o["business_success"]]
 
     if plan_state == "FAILED":
@@ -670,8 +705,11 @@ class _ReadOnlyStore:
         self._conn = conn
 
 
-def case_outcomes(conn: sqlite3.Connection, plan_id: str, tables: set[str]) -> list[dict]:
+def case_outcomes(conn: sqlite3.Connection, plan_id: str, tables: set[str],
+                  *, biz=None) -> list[dict]:
     """这个 Plan 上每个退款 case 的四判据。退款域没落地就返回空列表。
+
+    ``biz``：业务表的读取口径（见 `_biz_port`）。缺省 ``None`` 行为逐字节不变。
 
     **两个来源，优先已落库的那一行**：
 
@@ -684,7 +722,8 @@ def case_outcomes(conn: sqlite3.Connection, plan_id: str, tables: set[str]) -> l
     库里的观察行在，结论就算得出来。留空会让「这一束证据没有四判据」与
     「这一单确实没到账」在读者眼里长得一样，而那两件事差得很远。
     """
-    if "refund_case" not in tables:
+    read, biz_tables, store = _biz_port(biz, conn, tables)
+    if "refund_case" not in biz_tables:
         return []
     try:
         from maos.domain.refund import objects as refund_objects
@@ -692,24 +731,25 @@ def case_outcomes(conn: sqlite3.Connection, plan_id: str, tables: set[str]) -> l
     except ImportError:                                # 退款域未合入：不假装有数据
         return []
 
-    store = _ReadOnlyStore(conn)
-    has_outcome_table = "case_outcome" in tables
+    has_outcome_table = "case_outcome" in biz_tables
     out: list[dict] = []
-    for case in conn.execute(
+    for case in read(
+            "refund_case",
             "SELECT tenant_id, case_id FROM refund_case WHERE plan_id=? ORDER BY created_at",
             (plan_id,)):
         tenant_id, case_id = case["tenant_id"], case["case_id"]
         stored = None
         if has_outcome_table:
-            stored = conn.execute(
-                "SELECT * FROM case_outcome WHERE tenant_id=? AND case_id=?",
-                (tenant_id, case_id)).fetchone()
+            hits = read("case_outcome",
+                        "SELECT * FROM case_outcome WHERE tenant_id=? AND case_id=?",
+                        (tenant_id, case_id))
+            stored = hits[0] if hits else None
         if stored is not None:
-            row = {k: stored[k] for k in stored.keys()}
+            row = dict(stored)
             row["source"] = "case_outcome-table"
         else:
             row = _derive_outcome(store, refund_objects, refund_outcome,
-                                  conn=conn, plan_id=plan_id,
+                                  read=read, biz_tables=biz_tables, plan_id=plan_id,
                                   tenant_id=tenant_id, case_id=case_id)
             row["source"] = "derived-at-export-time"
         row["evidence_complete"] = bool(row.get("evidence_complete"))
@@ -718,14 +758,19 @@ def case_outcomes(conn: sqlite3.Connection, plan_id: str, tables: set[str]) -> l
     return out
 
 
-def _derive_outcome(store, refund_objects, refund_outcome, *, conn, plan_id: str,
-                    tenant_id: str, case_id: str) -> dict:
-    """导出时现算一个 case 的四判据。走纯函数，本函数只负责把行取齐。"""
+def _derive_outcome(store, refund_objects, refund_outcome, *, read, biz_tables: set[str],
+                    plan_id: str, tenant_id: str, case_id: str) -> dict:
+    """导出时现算一个 case 的四判据。走纯函数，本函数只负责把行取齐。
+
+    ``read`` / ``biz_tables`` / ``store`` 三件套由 `_biz_port` 给，PG 束与 SQLite 束
+    走的是同一段代码、同一个纯函数，只是行从哪个库取不一样。
+    """
     def rows(table: str) -> list[dict]:
-        if table not in table_names(conn):
+        if table not in biz_tables:
             return []
-        return [dict(r) for r in conn.execute(
-            f"SELECT * FROM {table} WHERE tenant_id=? AND case_id=?", (tenant_id, case_id))]
+        return read(table,
+                    f"SELECT * FROM {table} WHERE tenant_id=? AND case_id=?",
+                    (tenant_id, case_id))
 
     resolved = {
         ref["object_type"] for ref in refund_objects.list_business_refs(store, plan_id=plan_id)
@@ -833,7 +878,8 @@ def scenario_module_exists(n: int) -> bool:
 
 
 def write_bundle(db_path: str, out_dir: str, *, scenario: int | str, exit_code: int,
-                 wall_ms: int, log: str, sha: str, secrets: dict[str, str]) -> dict:
+                 wall_ms: int, log: str, sha: str, secrets: dict[str, str],
+                 biz=None) -> dict:
     """把一个已经跑完的库写成一套证据文件，返回 trace bundle。
 
     与 ``build_scenario`` 分开是为了让测试能拿一个手搭的 fixture 库直接喂进来：
@@ -861,7 +907,7 @@ def write_bundle(db_path: str, out_dir: str, *, scenario: int | str, exit_code: 
         tables = table_names(conn)
         write_json(os.path.join(out_dir, "result.json"),
                    collect_result(conn, scenario=scenario, exit_code=exit_code,
-                                  wall_ms=wall_ms, provenance=provenance),
+                                  wall_ms=wall_ms, provenance=provenance, biz=biz),
                    sha=sha, secrets=secrets)
         write_json(os.path.join(out_dir, "business-objects.json"),
                    collect_business_objects(db_path, conn, tables), sha=sha, secrets=secrets)

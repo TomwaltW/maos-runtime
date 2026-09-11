@@ -793,15 +793,30 @@ def _pg_biz_reader():
 
     走 `objects.query` 而不是自己拼连接：`?` 占位符的翻译、`sqlite_master` 的翻译、
     借锁，全在 `_dbport` 那一层收着口 —— 这里另开一条路就是第二份方言口径。
+
+    返回的函数上**挂着两样东西**（`make_evidence._biz_port` 按属性取，取不到就退回
+    `maos.db` 那份）：`store` 给 `list_business_refs` / `resolve_business_ref` 这类
+    收 store 的域函数用，`tables` 是 PG 里真实的表清单 —— `result.json` 那条路上
+    好几处门槛写的是 `X in tables`，而那个 `tables` 来自 `maos.db`，PG 束里业务表
+    一张都不在其中，门槛会把整段判据静默跳过（症状：`external_evidence: []`、
+    `status: undetermined`，一束真跑成功的证据长得像跑挂了）。
     """
     from maos.domain.refund import objects as refund_objects
     from scripts.pg_case_snapshot import pg_store
 
     store = pg_store()
 
-    def read(table: str, sql: str, params: tuple) -> list[dict]:
+    def read(table: str, sql: str, params: tuple = ()) -> list[dict]:
         del table                                              # PG 上这些表一定在
         return refund_objects.query(store, sql, params)
+
+    read.store = store                                         # type: ignore[attr-defined]
+    # `sqlite_master` 这一句在 PG 上跑得动，靠的是 `_dbport.rewrite_sqlite_master`
+    # 的方言翻译（T126）—— 这里不另写一份 `information_schema` 查询。
+    read.tables = {                                            # type: ignore[attr-defined]
+        str(r["name"]) for r in refund_objects.query(
+            store, "SELECT name FROM sqlite_master WHERE type='table'", ())
+    }
     return read
 
 
@@ -911,9 +926,13 @@ def build_path(path: str, payload: dict, out_root: str, *, sha: str,
                     f"路径 {path} 跑完却没有落库（{db_path} 不存在）：SqliteStore 注入点"
                     f"可能已失效，不生成任何产物")
 
+            # 业务表的读取口径建一次、两处共用（`result.json` 的 business_outcome
+            # 与 `outcome.json` 的四判据读的是同一批表）。PG 时它带着自己的 store
+            # 与表清单，SQLite 时是 None —— 缺省路径一个字节不变。
+            biz = _pg_biz_reader() if backend == "postgres" else None
             bundle = write_bundle(db_path, tmp, scenario=f"case-{path}", exit_code=0,
                                   wall_ms=row["wall_ms"], log=log_text,
-                                  sha=sha, secrets=secrets)
+                                  sha=sha, secrets=secrets, biz=biz)
 
         conn = connect_ro(db_path)
         try:
@@ -937,8 +956,7 @@ def build_path(path: str, payload: dict, out_root: str, *, sha: str,
             # PG 束的四张业务表在**另一个库**：不换读取口径，这一段会在 maos.db 里
             # 找一张不在那儿的表然后如实报「没有」，于是一束真跑成功的证据长得像跑挂了
             # （实测：`biz=` 空、`business_success=false`）。
-            outcome = collect_outcome(conn, row, tables,
-                                      biz=_pg_biz_reader() if backend == "postgres" else None)
+            outcome = collect_outcome(conn, row, tables, biz=biz)
             write_json(os.path.join(tmp, "outcome.json"), outcome, sha=sha, secrets=secrets)
         finally:
             conn.close()

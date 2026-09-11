@@ -252,7 +252,7 @@ HITL 是房间里的斜杠命令，第五项是可观测。第五项要单说：
 | 付款那一串 | 4 × `RefundBizStatusChanged` | `submitted` → `approved` → `gateway_accepted` → `processing` → `settled`，每一跳的 `reason` 里带网关回执 |
 | 收口三条 | `CaseOutcomeComputed` → `CasePromoted` → `SkillInvoked kb.sink` | 四判据算完才谈晋升 |
 
-> **「DAG 段」那一格的两个数怎么数出来的**（`happy/event-chain.json`，做图前自己复核一遍）：
+> **「DAG 段」那一格的两个数怎么数出来的**（`evidence/case-real-01/happy/event-chain.json`，做图前自己复核一遍）：
 > `StateTransition` 全线 **25** 条，全部落在 DAG 段里 —— 第一条到最后一条之间就是这一段的边界；
 > 落在这段边界内的 `SkillInvoked` 是 **8** 条。**全线 `SkillInvoked` 是 15 条**，另外 7 条在段外：
 > 圆桌段 6 条（`refund.snapshot_check` / 两次 `refund.evidence_check` / 两次 `refund.risk_screen` /
@@ -814,7 +814,7 @@ python3 scripts/verify.py           # ② 十项逐条重放校验（读数以�
 | 10 | 减少遗漏财务复核、错误套用政策、无限重试 | **P5** | P8b | 第六道闸 `maos/runtime/gate.py` + 政策版本锁定 + `MAOS_MAX_REPLAN`；「无限重试」的实证是 `gateway_fail` 那束**只重发一次就转人工** |
 | 11 | 历史流程不能替代当前订单事实和人工授权 | **P8b** | P9 | `maos/kb/guardrails.py` 三条护栏 + `check_all` |
 | 12 | 以退款到账 / 客户确认 / 人工纠错验证 DAG | **P10** | P11 | `case-real-01/*/outcome.json` 的 `case_outcome` 四判据 ＋ verify 的 `case-outcome` 项（当场读） |
-| 13 | 只有证据完整且外部结果明确的案例进默认知识层 | **P8b** | P11 | 晋升规则 `promote_history_case` ＋ `happy/event-chain.json` 里的 `CasePromoted` ＋ verify 的 `history-case` 项（当场读） |
+| 13 | 只有证据完整且外部结果明确的案例进默认知识层 | **P8b** | P11 | 晋升规则 `promote_history_case` ＋ `evidence/case-real-01/happy/event-chain.json` 里的 `CasePromoted` ＋ verify 的 `history-case` 项（当场读） |
 
 **十三条零空行。** 每一条至少命中一个页锚，且该页在自己的「可核验证据」小节里
 给出了对应的 `文件:行号` 或可跑命令。

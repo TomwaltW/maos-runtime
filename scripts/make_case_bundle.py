@@ -768,11 +768,13 @@ def collect_model_usage(conn, tables: set, *, live: bool) -> dict:  # noqa: ANN0
     note = ("Scripted 口径：全程 ScriptedModelClient，一次网络都不走，"
             "所以这张表是空的 —— 空数组是事实，不是缺数据。")
     if live:
-        note = ("--live-model：圆桌五岗走真模型发言。"
-                "`maos/roundtable/speaker.py` 目前**不落 model_usage**"
-                "（跨轨契约 §C 把这件事划给 T113，基线 137c960 上它还没并入），"
-                "所以这里的行数只反映 model_usage 现有的调用点"
-                "（`maos/obs/call_sites.py::REGISTERED_CALL_SITES` 五个）。"
+        note = ("--live-model：圆桌五岗走真模型发言，**那几次调用就在下面的 rows 里** —— "
+                "圆桌自己记账（唯一调用点 `maos/roundtable/speaker.py::Speaker.complete`，"
+                "已登记在 `maos/obs/call_sites.py::REGISTERED_CALL_SITES`），"
+                "挂在带 `roundtable:` 前缀的伪 plan_id 上、`trace_id` 留空 —— "
+                "圆桌跑在 create_plan 之前，不属于任何 Run，编一个归属才是错的。"
+                "这几行按 `plan_id LIKE 'roundtable:%'` 归进 `trace.json` 的 "
+                "`roundtable_traces[].cost`（T134），不再算「归属不上」。"
                 "圆桌真发言的证据看本束 result.json 同级的 roundtable 段"
                 "（seats[*].spoken_by_model）。")
     return {"rows": rows, "count": len(rows), "model_mode": "live" if live else "scripted",

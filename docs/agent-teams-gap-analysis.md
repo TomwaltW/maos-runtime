@@ -107,7 +107,7 @@
 - Worker 有 ID：`worker_id` 由构造方给（`worker.py:28-30`），落在 `task.worker_id`（`control_plane.py:346`）与 `TaskResult.payload.worker_id`（`events.py:119/135`）。全仓只有 `"w1"`。
 - 名册的雏形只在圆桌层，且是写死的：`maos/roundtable/team.py:26` `TEAM_ORDER`（注释「名册顺序就是发言顺序」）、`:31` `TITLES`、`:40` `ROLE_OF`；实例内 `_speakers` 按 agent_id 索引（`:128-131`）；`roster()` `:334`，经 `/team` 渲染（`maos/ingress/router.py:428-438`、`render_roster` `:1336`）。它**复用 `AgentIdentity`**（`team.py:18`，`identity_of` `:82` 从 `AGENT_POOL` 取）但**不继承 `BaseAgent`**，直接 `model.complete`（`maos/roundtable/speaker.py:86-89`），所以这五岗的模型调用**不落 `model_usage`**。成员之间不能互相点名：发言顺序写死轮询（`_round` `:177-183`）；`answer()` `:290` 只由人经 `router._mention` `:842`（`parse_mention` `:1379`）触发。
 - 房间身份：每岗可有独立 Matrix 账号（`hiclaw/room_voices.py:57` `env_keys_of`，`own_identity` `:385`），否则主通道代言加名牌 `【title · agent_id】`（`:234-236`）；代价是五岗 = 五条通道五个事件循环（`docs/BACKLOG.md:1676`）。
-- 按 agent 分的配置：**没有**。治理键只有 4 个全局旋钮 `maos/config/source.py:96-101`（`GOVERNED_KEYS`），`maos/config/*.py` 里 role / agent_id 零命中；agent 差异化只在代码里的 `AgentIdentity`。
+- 按 agent 分的配置：**没有**。治理键是 **10 个全局旋钮** `maos/config/source.py:124-142`（`GOVERNED_KEYS`；本行原记 4 个，那是 T28 那一轮的数，T131 补四个、T136 补两个之后是十个），`maos/config/*.py` 里 role / agent_id 零命中（2026-09-12 复核：四个文件各 0 处）；agent 差异化只在代码里的 `AgentIdentity`。**这条结论没变** —— 十个旋钮照样全是全局的，没有一个按 role / agent_id 分。
 
 ---
 

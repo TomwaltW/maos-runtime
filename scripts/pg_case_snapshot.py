@@ -78,6 +78,12 @@ REF_TARGETS = refund_objects._REF_TARGETS
 #: **必然不同**的字段名片段：每跑一次都现生成，两束字节相同反而是异常
 #: （说明有一束不是真跑出来的）。命中其一即归入 `differ_by_design` 栏，
 #: 并由 `suspicious_identical` 盯着它们有没有反常地相同。
+#:
+#: **两边都空则不计可疑**（T140，见 :func:`_is_empty`）：这一族里有的字段只在
+#: 某条路径上才现生成，别的路径上恒空 —— `case_outcome.arrival_basis` 就是这样，
+#: 钱没到账时它恒为空串，于是 `drift` / `reject` 两条各报一条 `suspicious_identical`，
+#: 而那恰恰是最该干净的两条对照路径。收窄的是**分类**，不是清单：`basis` 仍留在
+#: 这里，真到账那条路上它照样每跑一次都不同、照样被盯着。
 VOLATILE_KEYS = ("plan_id", "trace_id", "request_id", "invocation_id",
                  "_at", "basis", "wall_ms")
 
@@ -319,6 +325,17 @@ def _is_digest(key: str) -> bool:
     return any(frag in key for frag in DIGEST_KEYS)
 
 
+def _is_empty(value) -> bool:                                  # noqa: ANN001
+    """「这一跑根本没生成过这个值」的形状：空串 / 空表 / 空字典。
+
+    **`0` 与 `False` 不算空**：金额 0、布尔假都是有内容的值，两束都是 0 而该字段
+    本该每跑一次都不同时，那仍是一条要报的可疑。`in` 比较对 `0` / `False` 恰好
+    也不成立（`0 == ""` 为假），所以这里不需要额外的类型判断 —— 写下这句是为了
+    下一个人改这个函数时知道它是被验过的，不是碰巧。
+    """
+    return value in ("", [], {})
+
+
 def _compare_mapping(left, right, prefix: str, same: list, differ: list, bad: list,
                      skipped: list) -> None:
     """逐键比，dict 与 list 都往下钻。`VOLATILE_KEYS` 命中的归 differ 栏，其余不等即判负。
@@ -352,6 +369,10 @@ def _compare_mapping(left, right, prefix: str, same: list, differ: list, bad: li
         if _is_volatile(key):
             differ.append({"field": field, "sqlite": _plain(lv), "pg": _plain(rv),
                            "both_present": lv is not None and rv is not None,
+                           # 两边都空 = 这条路径上根本没生成过它，不是「反常地相同」。
+                           # 显式落进产物而不是就地滤掉：读的人看得见这一条被算作
+                           # 什么，滤掉的话「为什么它不在可疑栏」就只有代码知道。
+                           "both_empty": _is_empty(lv) and _is_empty(rv),
                            "differs": lv != rv})
             continue
         if isinstance(lv, (dict, list)) or isinstance(rv, (dict, list)):
@@ -398,7 +419,11 @@ def compare(sqlite_dir: str, pg_dir: str) -> dict:
 
     # 「必然不同」的那一栏里，两边都有值却**字节相同**的，本身就是一条异常：
     # plan_id / 时间戳每跑一次都该是新的，一样说明有一束不是真跑出来的。
-    suspicious = [d for d in differ if d["both_present"] and not d["differs"]]
+    # **两边都空的除外**（T140）：空串不是「生成出来的值恰好一样」，是这条路径
+    # 上压根没生成过它（`arrival_basis` 在钱没到账的 drift / reject 两条上恒空）。
+    # 把它算进可疑，报的是一件没发生的事，而且恰好报在最该干净的两条对照路径上。
+    suspicious = [d for d in differ
+                  if d["both_present"] and not d["differs"] and not d["both_empty"]]
     return {
         "sqlite_bundle": os.path.relpath(sqlite_dir, ROOT),
         "pg_bundle": os.path.relpath(pg_dir, ROOT),
@@ -414,7 +439,9 @@ def compare(sqlite_dir: str, pg_dir: str) -> dict:
                  "case_outcome 四判据、biz_status、public_status、观察行的 "
                  "observed_state 与 gateway_code。differ_by_design：每跑一次都现生成的"
                  "（plan_id / trace_id / request_id / invocation_id / *_at），**字节相同"
-                 "反而是异常**，那种情况列进 suspicious_identical。not_compared："
+                 "反而是异常**，那种情况列进 suspicious_identical —— 但**两边都空**"
+                 "（`both_empty: true`）不算：那是这条路径上没生成过它，不是反常地"
+                 "相同（`arrival_basis` 在钱没到账的路径上恒为空串）。not_compared："
                  "input_digest / output_hash 这类内容摘要，相同与否都不携带「后端换了"
                  "没有」的信息，所以不判正也不判负（实测：8 个 skill 里 6 个的 "
                  "input_digest 两束相同、2 个不同，两种都正常）。"

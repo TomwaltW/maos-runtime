@@ -2628,3 +2628,19 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | **跨轨契约的 §A 分区只写生产代码，不写测试文件**。本波 T135 与 T136 各自改了 `maos/tests/test_room_outcome_commands.py` 的不同段落 —— 两轨的白名单都只说「测试」，没说哪些测试文件归谁 | 这次侥幸自动合了（两段相隔很远），但同一个文件被两轨改的一般情形是冲突，而整合期手工合测试文件比合生产代码更容易出错（断言之间没有语法依赖，串了也不报错） | 下一波派单时把**测试文件也写进 §A 的分区表**，尤其是几个被反复改的大文件（`test_room_outcome_commands.py` / `test_roundtable_verdict.py` / `test_trace_evidence.py`）。写不清就明确「这个文件本波谁都不许改，要加断言就新建文件」 |
 | 2026-09-12 | p10 | `pytest -k pg` 与真正的 PG 门控条数差了 **12 条**（`-k pg` 数 93，门控实为 78+15=93… 实际门控 78 条里有 12 条名字不含 `pg`）。T132 的 `test_kb_flow_backend.py`（7 条）与 T133 的 `test_schema_util_t133.py`（4 条）整文件都选不中，加上 T126 那 1 条 | 拿 `-k pg` 当门控计数的人会漏掉 12 条，而 `docs/expected-metrics.json` 的 `pg_gated_tests` 又是「有库档 = 无库档 + N」那条算式的地基。差距还在扩大 | 两条路任选：① 给 PG 门控测试统一加一个 pytest marker（`@pytest.mark.pg`），计数改用 `-m pg`；② 在 `test_expected_metrics.py` 里加一条「按 skip 原因数门控条数」的自动判据，不再靠人记。前者更彻底但要动十几个文件的装饰器，后者是一条断言。**复赛前不必做**，记着别再用 `-k pg` 数就行 |
 | 2026-09-12 | p10 | 铁律 9（`maos/kb/**` 不许 import 退款域）在 `maos/kb/plan_advice.py` 上**实际是有例外的**：`_ticket_role()`（T119）与 `_approver_role()`（T136）都用「局部 import + 兜底」问退款域要缺省岗位名 | 不是 bug（拿不到就回落到本模块字面量，内核仍能独立跑），但铁律的字面与代码的实况不一致，下一个读铁律的人会以为这两处是违规 | 把这条边界写进 `CLAUDE.md` 铁律 9 的括号里，或写进 `maos/kb/__init__.py` 的模块 docstring：**取值可以局部 import + 兜底，断言不行**。整合期 p10-e 的 DECISIONS 有完整原文。材料面归 9/20–9/21 那一轮，一起改 |
+
+## task-t140（评委会读到的四处，2026-09-12）
+
+> 本轨办结了 `## task-t134` 第 1 条（`model-usage.json` 的 note 自打自脸）、`## task-t133` 第 2 条
+> （`arrival_basis` 被判「可疑相同」）、`## task-t136` 第 3 条（`GOVERNED_KEYS` 四处口径过期）。
+> 按契约 §A 不回头改那三行，在这里划掉。第三条的四处已全部改完，行号也刷准：
+> `deploy/nacos.md:142`（连带 `:116` / `:125`）、`deploy/nacos-live.md:236`、
+> `docs/agent-teams-gap-analysis.md:110`（`source.py:96-101` → `:124-142`）、`maos/model/client.py:41-47`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | `scripts/make_case_bundle.py` 写 `roundtable.json` 那一段的注释仍写着「圆桌基线上不落库（T113 未并入）」—— 与本轨刚改掉的那条 note 是同一个过期说法的另一份 | 只在**源码注释**里，读证据的人看不到（产物里没有这句）。但下一个改这个脚本的人会照它判断 | 本轨没改：派单 §3.1 明令「别顺手改这个脚本的别的段落」，且这个脚本同时是 T139 / T141 要读的产物来源。下一次动 `make_case_bundle.py` 的轨顺手删掉那半句 |
+| 2026-09-12 | p10 | `maos/roundtable/speaker.py` 模块 docstring（`:14-18`）说圆桌用量「如实落进 `trace.json` 的 `unattributed_usage`」——**T134 之后不是了**，那几行按 `plan_id LIKE 'roundtable:%'` 归进了 `roundtable_traces[].cost`，`unattributed` 那一栏已归零 | 只是文字。但它是「圆桌的钱记在哪」这件事最权威的一段说明，照它去 `unattributed_usage` 里找那五行的人会找不到 | `maos/roundtable/**` 是本波谁都不许动的面（契约 §A.4），本轨一个字没改。归下一次动 roundtable 的轨，或材料面 9/20–9/21 那一轮 |
+| 2026-09-12 | p10 | `deploy/nacos.md` 的标题与 §1 / §8 仍写「四个治理旋钮」（`:1` / `:26` / `:54` / `:336` / `:343`），只有「今天有几个会落审计」那几处改成了十 | **有意的**，不是漏改：那几处说的是 T28 / T35 那两轮**做了什么**，是历史叙述与实测小结 | 不必改。若哪天有人觉得整份文档的标题该跟着现况走，那是一次重写，不是刷数目 —— 重写前先看这一行 |
+| 2026-09-12 | p10 | `docs/agent-teams-gap-analysis.md:109` 也写着「这五岗的模型调用**不落 `model_usage`**」——与本轨刚改掉的那条 note 是**同一个谎的第三处**（另两处：`make_case_bundle` 的 note 已改、`speaker.py` 的 docstring 见上一行） | 只是文字。这份文件是内部差距分析，不在评委的证据面上，但照它判断「圆桌的钱记在哪」会错 | 本轨没改：整份文件自述是**钉在 `8a6c2f9`（2026-09-07）的只读测绘快照**，「行号会漂，核对请用同一 sha」。派单 §3.3 只点名 `:110` 那一行的治理键数目，改它是派单明令；顺手再改 `:109` 就越过了「刷过期数目」与「重写一份快照」的界。下一次有人重写这份分析时一并改 |
+| 2026-09-12 | p10 | `docs/expected-metrics.json` 的 `collected` 落后：本轨新增 8 条测试（`test_pg_snapshot_t140.py`，**一条 PG 门控都没有**，纯单元），worktree 实跑无库档 `1 failed, 3878 passed, 93 skipped`、有库档 `1 failed, 3956 passed, 15 skipped` | `test_expected_metrics::test_collected_count_matches_source_of_truth` 红。**预期内**（契约 §0 点名「谁都不许动那个文件」） | 整合期按合并树的实跑末行一次刷到位。本轨的 8 条在两档里都 passed，所以 `pg_gated_tests` 不变（仍是 78） |

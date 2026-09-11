@@ -304,6 +304,11 @@ def chain(tmp_path_factory):
     said: dict[str, str] = {}
     said["refund"] = r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="c1"))
     said["approve"] = r.handle(_msg(f"/approve {CASE}", msg_id="c2"))
+    # **第二次人工决定**（T135）。网关回了终态失败之后，付款那一步停在控制面落的
+    # `human_decision` 闸上 —— 群里那次 `/approve` 签的是「这一单要不要办」，
+    # 签不到这里。工单也因此挪到这一步之后才开：补偿是「看过事实之后的决定」。
+    said["reject"] = r.handle(_msg(f"/reject {CASE} 钱没退出去，不签这一步",
+                                   msg_id="c2b"))
     said["assign"] = r.handle(_msg(f"/assign {TICKET} payment_ops", msg_id="c3"))
     said["resolve"] = r.handle(_msg(f"/resolve {TICKET} {EVIDENCE}",
                                     sender=PAYOPS, msg_id="c4"))
@@ -311,13 +316,36 @@ def chain(tmp_path_factory):
 
 
 def test_gateway_failure_opens_a_manual_ticket(chain):
-    """网关明确失败 -> 开一张人工补偿工单，并把下一步说出来。"""
-    out = chain["said"]["approve"]
+    """网关明确失败 -> 开一张人工补偿工单，并把下一步说出来。
+
+    开单挂在**第二次人工决定**之后（T135），不在 `/approve` 的回帖里。补偿是
+    「看过事实之后的决定」（`_compensate_if_stuck` 的 docstring）——单先开出来、
+    人再按 `/reject`，那次按键就只是给一张已经开好的单补签字，第二次决定成了
+    走过场。
+    """
+    out = chain["said"]["reject"]
     assert "钱没退出去" in out and FAIL_CODE in out
     assert f"/assign {TICKET} payment_ops" in out, "不给下一步，房间里的人无从接手"
 
     ticket = CP.ticket_of(chain["store"], TENANT, CASE)
     assert ticket is not None, "工单没落库，`/assign` 就无单可派"
+
+
+def test_the_approve_card_does_not_open_the_ticket_yet(chain):
+    """🔴 `/approve` 那张卡**不许**宣布开单，也不许说这一单已经补偿过了。
+
+    那一刻人还没做第二个决定。卡上写「已开补偿工单」等于替他宣布了一件他没做过
+    的事；写「业务状态：已补偿」更糟 —— 库里那一刻是 `gateway_accepted`，卡片说的
+    是一个尚未发生的未来。
+    """
+    out = chain["said"]["approve"]
+
+    assert "已开人工补偿工单" not in out, f"决定还没做，卡片先把单开了：\n{out}"
+    assert "业务状态：已补偿" not in out, f"卡片替这一单宣布了补偿：\n{out}"
+    assert "停在人工闸上" in out and "再决定一次" in out, (
+        f"停住了却不说要人再决定一次，那一单就没人动了：\n{out}")
+    assert f"/reject  {CASE}" in out and f"/approve {CASE}" in out, (
+        f"不给下一步的两条命令，人无从决定：\n{out}")
 
 
 def test_assign_hands_the_ticket_to_payment_ops(chain):
@@ -392,13 +420,69 @@ def test_resolve_by_someone_who_is_not_the_assignee_is_denied(chain):
 # ==========================================================================
 # 6. /confirm 与 /complain 真写表
 # ==========================================================================
-def test_confirm_records_the_customer_confirmation(chain):
-    """`/confirm` -> `customer_confirmation=confirmed`，并把四判据报回房间。"""
-    out = chain["router"].handle(_msg(f"/confirm {CASE}", msg_id="c5"))
+@pytest.fixture(scope="module")
+def settled_chain(tmp_path_factory):
+    """一单**钱真的退出去了**的链路：`/refund` -> `/approve`，没有第二道闸。
+
+    与 `chain` 的差别只有一个：底账不注入失败码。于是网关回 settled、控制面不走
+    第三出口、付款那一步一路 DONE，Plan 收在 DONE —— 顺带钉住 T135 **没有误伤**
+    `effect_risk=H` 那一类闸（核算那道仍由处置流程代跑，卡上仍是「已放行」）。
+    """
+    tmp = tmp_path_factory.mktemp("settled")
+    store = _room_store()
+    r, ad = _router(store, _ledger_file(tmp))
+    said = {"refund": r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="s1")),
+            "approve": r.handle(_msg(f"/approve {CASE}", msg_id="s2"))}
+    return {"store": store, "said": said, "router": r, "adapter": ad}
+
+
+def test_confirm_records_the_customer_confirmation(settled_chain):
+    """`/confirm` -> `customer_confirmation=confirmed`，并把四判据报回房间。
+
+    跑在**钱真的退出去了**那条链上（T135 之后）。借补偿那条链测不行：付款被驳回
+    之后 notify 这一步不再跑（DAG 上它依赖付款），客户一条通知都没收到，而
+    `/confirm` 的前提正是「有通知发出去过」。借那条链测，测的就不是这条命令本身，
+    而是它的前提碰巧还在 —— 那个前提在 T135 之前是**代签**出来的。
+    """
+    out = settled_chain["router"].handle(_msg(f"/confirm {CASE}", msg_id="s3"))
 
     assert "客户确认" in out and "customer_confirmation=confirmed" in out
-    row = OUT.read_case_outcome(chain["store"], tenant_id=TENANT, case_id=CASE)
+    row = OUT.read_case_outcome(settled_chain["store"], tenant_id=TENANT, case_id=CASE)
     assert row["customer_confirmation"] == OUT.CONFIRMATION_CONFIRMED
+
+
+def test_the_happy_path_still_runs_the_gates_the_old_way(settled_chain):
+    """🔴 T135 只扣「跑起来之后才出现的闸」，`effect_risk=H` 那一类一个字没动。
+
+    判错方向的代价是整条 happy 路径都停下来等人：演示时每一单都要按两次键，
+    而第二次按的是一道本来就该由处置流程代跑的闸。
+    """
+    out = settled_chain["said"]["approve"]
+
+    assert "任务级审批点 1 个" in out and "由处置流程代跑" in out
+    assert "停在这里等你" not in out, f"happy 路径上不该有扣住的闸：\n{out}"
+    assert "停在人工闸上" not in out
+    assert "收在 DONE" in out, f"钱退出去了，Plan 就该收在 DONE：\n{out}"
+
+
+def test_a_rejected_payment_leaves_the_customer_un_notified(chain):
+    """🔴 付款被驳回之后 notify 这一步**不再跑** —— 客户一条通知都没收到。
+
+    这是 T135 之后浮出来的真实缺口，不是回归：改造前那条通知是在一个**本不该
+    完成**的任务（被代签的付款闸）跑完之后才发出去的。补偿路径上该怎么通知客户，
+    归 `refund.compensation_close` 那一侧，本轨白名单外 —— 记在
+    `docs/BACKLOG.md ## task-t135`，不当场改。
+
+    钉住它是为了让这件事**有人知道**：不钉的话，下一个人只会看到 `/confirm`
+    回一句「先跑 notify.customer」，而查不到它是从哪一步起不再发生的。
+    """
+    rows = objects.query(chain["store"],
+                         "SELECT * FROM notification WHERE tenant_id=? AND case_id=?",
+                         (TENANT, CASE))
+    assert rows == [], "补偿路径上居然发出了通知 —— 那 BACKLOG 那条就该销了"
+
+    out = chain["router"].handle(_msg(f"/confirm {CASE}", msg_id="c8"))
+    assert "一条通知都没发出去" in out, f"缺口的症状变了，去核对 BACKLOG：\n{out}"
 
 
 def test_complain_opens_a_complaint_and_sinks_business_success(chain):
@@ -437,7 +521,9 @@ def test_reply_carries_the_public_status_line(chain):
     补偿开单**之前**渲染，念出来的是 `PUBLIC_FILED`（已提出退款）—— 它也在
     五个里，于是断言全绿而回帖自相矛盾。判据松到「五选一」就等于没判。
     """
-    out = chain["said"]["approve"]
+    # 念这一句的是**第二次决定**那张卡（T135）：补偿在那一步之后才开，
+    # `/approve` 那张卡此刻只能说「已提出退款」，而那是一句真话，不是矛盾。
+    out = chain["said"]["reject"]
     assert "对客户口径：" in out
 
     said = [ln.split("：", 1)[1] for ln in out.splitlines() if ln.startswith("对客户口径：")]
@@ -456,7 +542,7 @@ def test_the_card_and_the_ticket_notice_tell_the_same_story(chain):
 
     所以这里三样一起钉：库里的终态、卡片上的两行、以及后半截的开单提示都在。
     """
-    out = chain["said"]["approve"]
+    out = chain["said"]["reject"]
     case = CP.guard.get_case(chain["store"], TENANT, CASE) or {}
     assert case.get("biz_status") == "compensated", "前提没成立：这一跑没走到补偿"
 
@@ -693,6 +779,7 @@ def test_ticket_survives_into_a_second_process(tmp_path):
         r, _ = _router(store, {str(ledger)!r})
         r.handle(_msg(f"/refund {{ORDER}} 质量问题", msg_id="w1"))
         r.handle(_msg(f"/approve {{CASE}}", msg_id="w2"))
+        r.handle(_msg(f"/reject {{CASE}} 钱没退出去", msg_id="w3"))
     """)
     proc = subprocess.run([sys.executable, "-c", script], cwd=root,
                           capture_output=True, text=True)
@@ -755,6 +842,9 @@ def stuck(tmp_path, monkeypatch):
         else real(name, version))
     said = {"refund": r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="k1")),
             "approve": r.handle(_msg(f"/approve {CASE}", msg_id="k2"))}
+    # 开单是在**第二次人工决定**之后才发生的（T135），所以这个 fixture 要跑到那里
+    # 才谈得上「自动开单也失败」。
+    said["reject"] = r.handle(_msg(f"/reject {CASE} 钱没退出去", msg_id="k2b"))
     monkeypatch.undo()                                  # 之后的 /compensate 要真开单
     return {"store": store, "router": r, "said": said}
 
@@ -766,7 +856,7 @@ def test_a_failed_auto_open_leaves_no_ticket_and_points_at_the_way_out(stuck):
     拦死，`/assign` `/resolve` 都走 `require_ticket`（明写不补开）。长命库里这种
     案子只能换库 —— 演示当场撞上就没救。
     """
-    out = stuck["said"]["approve"]
+    out = stuck["said"]["reject"]
 
     assert "补偿工单没开出来" in out
     assert f"/compensate {CASE}" in out, "不给入口的「请人工介入」等于没说"

@@ -81,8 +81,11 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
+from maos.contracts.states import TaskState
+from maos.core.control_plane import AWAIT_HUMAN_DECISION
 from maos.domain.refund import (
     annotation, objects as _refund_objects, outcome as _refund_outcome,
     projection as _projection,
@@ -128,6 +131,25 @@ CMD_OUTCOME = _outcome_cmds.COMMANDS
 #: `test_ingress_evidence_recheck.py::test_known_verbs_covers_dispatch` 钉着两处一致。
 KNOWN_VERBS = frozenset({CMD_REFUND, CMD_HELP, CMD_PENDING, CMD_TEAM, *CMD_APPROVAL,
                          *CMD_OUTCOME})
+
+#: 房间**不代签**的那一类闸（T135）。群里那次 `/approve` 签的是「这一单可以去退」，
+#: 而 `AWAIT_HUMAN_DECISION` 的闸是控制面判定「机器已经没有别的招了」之后才落的
+#: —— 网关回执回来之前它根本不存在，按键的那一刻签不到它。把那一次签字用在它上面，
+#: 等于替按键的人做了一个他没做过的决定，而 Plan 会因此收在 DONE：「所有 Agent 都
+#: 回复完成」而钱没退出去，正是评委那句话指的病。
+#: 元组而不是单个值：控制面的第三出口与 replan 上限共用这个标记
+#: （`core/control_plane.py::_escalate_to_human`），日后再多一类也只加这里一处。
+HOLD_AWAITS = (AWAIT_HUMAN_DECISION,)
+
+#: `human_exits` 的决定在卡片上怎么念。**英文原值直接打给人看是不行的**：
+#: `held_for_human` 在群里读起来像个报错，而它恰恰是这张卡最要紧的一行 ——
+#: 人要照着它再按一次键。认不出的值原样打（`.get` 的第二参），不猜。
+EXIT_DECISION_CN = {
+    "approved": "已放行",
+    "rejected": "已驳回",
+    "held_for_drift": "扣住等人 · 订单被改过",
+    "held_for_human": "**停在这里等你**",
+}
 
 #: 待办的有效期（秒）。过期的待办**不许放行**：预检结论是按当时的政策与日期算的，
 #: 隔一天再批，窗口天数已经变了，而放行时不会重算 —— 那就是拿旧结论退新钱。
@@ -1293,17 +1315,31 @@ class IngressRouter:
         # 串行化：`run_payload` 会调 `C.reset_gateways()` 重置一个**进程级**的网关
         # 注册表。两单并发跑，后一条的 reset 会把前一条的网关摘掉，症状是前一条
         # 在发起付款时报「网关未注册」—— 而它自己的输入毫无问题。
+        # 跑起来之后才出现的闸**不代签**（T135）—— 理由见 `HOLD_AWAITS`。
+        # 照 `_accepted_extra` 的取向探参数：不认这个关键字的处置器（测试里的替身）
+        # 一个字都不多收，行为退化成 T135 之前的代签，那几条测试因此一条不受影响。
+        hold = {"hold_awaits": HOLD_AWAITS} if _takes_kw(run, "hold_awaits") else {}
         with self._lock:
             # `store=self.store`（T122）：处置跑在 **router 自己的库**上，不再是
             # `run_payload` 每次自建又随手丢掉的那个 `:memory:`。这一句是四条结果面
             # 命令（`/assign` `/resolve` `/confirm` `/complain`）成立的前提 ——
             # 工单、退款申请、到账观察从此查得到；`MAOS_INGRESS_DB` 指到文件时，
             # 连跨进程回查都成立。
-            result = run(ticket.payload, approve=True, verbose=False, store=self.store)
+            result = run(ticket.payload, approve=True, verbose=False, store=self.store,
+                         **hold)
         # 锁**释放之后**才登记。钩子里的圆桌会再碰一次 router（取底账、报待办），
         # 在锁内触发就是自己等自己 —— 而症状是房间彻底不动，没有任何报错。
         self._record(("execute", ticket.payload, result, msg.sender))
         head = f"已放行 {ticket.case_id}（操作人 {msg.sender}）\n"
+        # 停在那一类闸上时**先不开补偿工单**：补偿是「看过事实之后的决定」
+        # （`_compensate_if_stuck` 的 docstring），而这一单的决定还没做出来 ——
+        # 单先开出来，人再打 `/reject` 就成了给一个已经开好的单补一张签字，
+        # 那第二次决定就只是走过场了。开单挪到第二次决定之后
+        # （`handle_gate_decision`），两条路开的是同一张单、走同一个函数。
+        held = _held_gates(result)
+        if held:
+            return head + self._render(result, title=ticket.summary) + \
+                _gate_prompt(held, ticket.case_id, result)
         # **先补偿、再渲染**。开单那一步会把 `biz_status` 推到 `compensated`，
         # 卡片必须照补偿**之后**的库讲话。反过来（从前那样把 `_render` 写在
         # 表达式左边、靠求值序先跑）的症状是同一条回帖自相矛盾：上半截说
@@ -1451,12 +1487,20 @@ class IngressRouter:
         exits = r.get("human_exits") or []
         if exits:
             # 说清楚这是**第二层**：群里那次 /approve 决定的是「这一单要不要办」，
-            # 而这些是 Plan 跑起来之后闸门拦下的任务级审批点，由处置流程按 CLI
-            # 口径代跑。不点破，群里会以为自己刚才那次放行是多余的。
-            lines.append(f"Plan 内任务级审批点 {len(exits)} 个，由处置流程代跑"
-                         f"（与群里这次放行不是同一层）：")
-            lines += [f"  · {e.get('title')}（{e.get('decision')}）—— {e.get('why')}"
-                      for e in exits]
+            # 而这些是 Plan 跑起来之后闸门拦下的任务级审批点。不点破，群里会以为
+            # 自己刚才那次放行是多余的。
+            #
+            # **代跑的只是其中一部分**（T135）：`held_*` 那几条一个字都没代签，
+            # 正等着人。把它们一并说成「由处置流程代跑」，是在卡片上宣布一件没发生
+            # 的事 —— 而人会照着这句话以为自己不用再管了，那一单就停在那里没人动。
+            held_n = sum(1 for e in exits if _is_held(e))
+            lines.append(
+                f"Plan 内任务级审批点 {len(exits)} 个（与群里这次放行不是同一层）"
+                + (f"，其中 {held_n} 个**没有代跑**、正等你决定：" if held_n
+                   else "，由处置流程代跑："))
+            lines += [f"  · {e.get('title')}"
+                      f"（{EXIT_DECISION_CN.get(e.get('decision'), e.get('decision'))}）"
+                      f"—— {e.get('why')}" for e in exits]
         lines.append(f"Plan {r.get('plan_id')} 收在 {r.get('plan_state')}")
         return "\n".join(lines)
 
@@ -1489,10 +1533,179 @@ class IngressRouter:
             return self.handle_execute(msg, ticket, approved,
                                        reason=" ".join(cmd.args[1:]))
 
+        # 待办没了，但这个案子可能停在一道**跑起来之后才出现的**闸上（T135）：
+        # `handle_execute` 跑完就把待办摘了，而付款那一步还在 BLOCKED 上等第二次
+        # 决定。查表而不是看 id 长什么样，口径同上面那一档。
+        gate = self._held_gate_of(target)
+        if gate is not None:
+            if not self.is_approver(msg.sender):
+                log.warning("越权：%s 不在 MAOS_APPROVERS 名单内，试图 %s %s 的人工闸",
+                            msg.sender, cmd.verb, target)
+                return f"无审批权限：{msg.sender} 不在 MAOS_APPROVERS 名单内"
+            return self.handle_gate_decision(msg, gate, cmd.verb == "approve",
+                                             reason=" ".join(cmd.args[1:]))
+
         if self.approval_bridge is None:
             return (f"没有待办 {target}。本进程也没接长驻运行时，"
                     "任务级 /approve 无处可落")
         return self.approval_bridge.handle_message(msg.sender, msg.text)
+
+    def handle_gate_decision(self, msg: InboundMessage, gate: dict, approved: bool,
+                             reason: str = "") -> str:
+        """房间里那**第二次**人工决定：跑起来之后才出现的闸，由人当场签或不签（T135）。
+
+        ## 为什么非有这一条不可
+
+        群里那次 `/approve` 签的是「这一单要不要办」。付款跑起来、网关回了一个终态
+        失败码之后，控制面落下的那道闸问的是另一件事：「钱没退出去，这一步还算不算
+        完成」。两件事发生在不同的时刻、答案也可能相反，用一次签字把两个都签了，
+        第二个答案就是编的 —— 而 Plan 会因此收在 DONE，「所有 Agent 都回复完成」
+        而钱还在账上。这条命令把第二次决定交还给人。
+
+        ## 为什么要把运行时重新装配一遍
+
+        `handle_execute` 那次调用返回之后，跑它的那套 cp/bus/gate 就没了（房间这边
+        没有长驻运行时）。而人的决定要真的把 Plan 推下去：驳回要让付款那一步落
+        FAILED、Plan 跟着收在 FAILED；放行要让下游的通知任务接着跑完。`build()` 是
+        幂等的（`init_schema()` 全是 IF NOT EXISTS），**且库是同一个** —— 重新装配
+        出来的这套读到的是同一份事实，不是第二份。
+
+        `build({})` 的模型缺省就是 `ScriptedModelClient`（`flows/common.py`），
+        这一句不会去打任何真模型 —— 房间里按一次 `/reject` 不该花钱，更不该在
+        没有 key 的机器上因此失败。
+
+        ## 操作者写的是**房间里按键的那个人**
+
+        不是 `custom_case.APPROVER` 那个 CLI 代跑用的写死名字。这一跳是 HITL trace
+        上唯一一条「人在现场做的决定」，署名署错了，这条链就只剩形式。
+        """
+        from maos.flows.common import build, run_until_settled
+
+        case_id, plan_id, task_id = gate["case_id"], gate["plan_id"], gate["task_id"]
+        note = reason or ("仍然放行：已确认钱通过别的渠道到账" if approved
+                          else "钱没退出去，这一步不算完成")
+        # 串行化同 `handle_execute`：重新装配的这套会再碰一次进程级的网关注册表。
+        with self._lock:
+            _s, bus, cp, _m, _w, reviewer = build({}, store=self.store)
+            try:
+                cp.human_decision(task_id, approved, operator=msg.sender, note=note)
+            except Exception as exc:                    # noqa: BLE001
+                # 多半是 `assert_transition` —— 这个任务已经被人决定过了。房间里
+                # 两个人同时看见那条提示、同时按键是常事，第二个人该收到一句人话，
+                # 不是一个栈。**不许**因此把第一次那个已经生效的决定说成失败。
+                log.warning("案子 %s 的人工闸决定没落下：%s", case_id, exc)
+                return (f"{case_id} 的「{gate['title']}」这一步没能落下这次决定"
+                        f"（{_outcome_cmds.humanize(exc)}）—— 多半是已经有人决定过了。"
+                        f"看一眼现在停在哪：/pending")
+            run_until_settled(bus, reviewer, cp, plan_id)
+        self._record(("gate_decision", case_id, {"task_id": task_id,
+                                                 "approved": approved}, msg.sender))
+
+        # 补偿**在这里**开，不在 `handle_execute` 里：补偿是「看过事实之后的决定」，
+        # 而那个决定刚刚才做出来。判据一个字节没动，仍只认 `payment_observation`
+        # 的最后一行（铁律 8）—— 人驳回的是「这一步算不算完成」，不是「钱退没退」。
+        r = self._observed_for_compensation(case_id, plan_id)
+        tail = self._compensate_if_stuck(r, msg)
+        rr = _load_run_requests()
+        plan = self.store.get_plan(plan_id) or {}
+        lines = [f"{'已放行' if approved else '已驳回'} {case_id} 的"
+                 f"「{gate['title']}」这一步（操作人 {msg.sender}）",
+                 f"  {note}",
+                 f"业务状态：{rr.STATUS_CN.get(r.get('biz_status'), r.get('biz_status'))}"]
+        # 对外口径仍然**只经** `public_status_line()`（T129 收的口，跨轨契约 §C）——
+        # 这里一个新字面值都不拼。`_compensate_if_stuck` 已经把补偿之后的值写回
+        # `r` 了，所以这一行念的是补偿**之后**的事实，与卡片那条口径逐字同源。
+        public_line = public_status_line(r.get("public_status"), case_id=case_id)
+        if public_line:
+            lines.append(public_line)
+        lines.append(f"Plan {plan_id} 收在 {plan.get('state')}")
+        return "\n".join(lines) + tail
+
+    def _held_gate_of(self, case_id: str) -> dict | None:
+        """这个案子有没有停在一道**跑起来之后才出现的**闸上；没有返回 None。
+
+        判据只此一份，取自 `custom_case.await_kind()` —— 在这里另写一遍，两条路
+        迟早对「这个闸该不该由我代签」给出不同答案，且两边都不报错。
+
+        只按 BLOCKED 捞是不够的：`effect_risk=H` 那一类闸规划期就知道会来，群里那次
+        `/approve` 签得到，处置流程已经代跑过了。把它也捞出来问人，就是同一件事
+        问两遍 —— 而第二遍问的时候任务早就是 DONE 了，人按下去只会收到一句报错。
+        """
+        row = self._case_row(case_id)
+        if row is None or not row.get("plan_id"):
+            return None
+        plan_id = str(row["plan_id"])
+        try:
+            tasks = self.store.list_tasks(plan_id)
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("查 plan %s 的任务失败（%s）—— 当作没有等人的闸", plan_id, exc)
+            return None
+        from maos.flows.custom_case import await_kind
+
+        for task in tasks:
+            if task["state"] != TaskState.BLOCKED:
+                continue
+            kind = await_kind(self.store, plan_id, task["task_id"])
+            if kind in HOLD_AWAITS:
+                return {"case_id": case_id, "plan_id": plan_id,
+                        "task_id": task["task_id"], "title": task["title"],
+                        "await": kind, "why": _why_blocked(self.store, plan_id,
+                                                           task["task_id"])}
+        return None
+
+    def _held_gates_all(self) -> list[dict]:
+        """库里所有停在那一类闸上的案子。**扫库不扫内存**。
+
+        `handle_execute` 一跑完就把待办摘了，进程重启之后内存里更是什么都没有，
+        而闸还在库里停着。只认内存的话 `/pending` 会说「没有等人的闸」，那一单
+        就永远等不到第二次决定 —— 与改造前 Plan 静默收在 DONE 一样难查，只是换了
+        个地方静默。
+        """
+        try:
+            rows = _refund_objects.query(
+                self.store, "SELECT case_id FROM refund_case ORDER BY case_id", ())
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("扫退款案子失败（%s）—— 当作没有等人的闸", exc)
+            return []
+        out: list[dict] = []
+        for row in rows:
+            gate = self._held_gate_of(str(row["case_id"]))
+            if gate is not None:
+                out.append(gate)
+        return out
+
+    def _observed_for_compensation(self, case_id: str, plan_id: str) -> dict:
+        """补偿判据要的那几件事实，形状同 `custom_case._observe()` 的对应字段。
+
+        **重读库，不缓存第一次那份**：两次决定之间隔着人的时间，中间完全可能有人
+        打过 `/compensate`、或网关那边又回了一条观察。拿旧快照下判断，判的是一个
+        可能已经不成立的事实 —— 权威在 `payment_observation` 那几行上，不在进程内
+        存着的那个 dict 里（铁律 8）。
+        """
+        row = self._case_row(case_id) or {}
+        tenant_id = str(row.get("tenant_id") or "")
+        try:
+            obs = _refund_objects.query(
+                self.store,
+                "SELECT * FROM payment_observation WHERE tenant_id=? AND case_id=?"
+                " ORDER BY observed_at", (tenant_id, case_id))
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("查案子 %s 的到账观察失败（%s）—— 当作没有观察", case_id, exc)
+            obs = []
+        try:
+            tasks = [{"task_id": t["task_id"]} for t in self.store.list_tasks(plan_id)]
+        except Exception:                               # noqa: BLE001
+            tasks = []
+        return {
+            "case_id": case_id, "tenant_id": tenant_id, "plan_id": plan_id,
+            "biz_status": row.get("biz_status"),
+            "payment_observations": [dict(o) for o in obs],
+            # 口径逐字同 `custom_case._observe()`：数的是**观察行**，不是任务状态。
+            "settled_observations": sum(
+                1 for o in obs
+                if str(o.get("observed_state") or "") == _projection.OBSERVED_SETTLED),
+            "tasks": tasks,
+        }
 
     def handle_pending(self, msg: InboundMessage) -> str:
         if msg.channel not in ALLOW_APPROVAL:
@@ -1512,6 +1725,16 @@ class IngressRouter:
                     # 审批人自己发 /approve，收口卡改不了这一点（红线 R4）。
                     waiting.append(f"    建议：{head}")
             blocks.append("待放行（/approve <case_id>）：\n" + "\n".join(waiting))
+
+        # 停在「跑起来之后才出现的闸」上的案子（T135）。**扫库不扫内存**：
+        # `handle_execute` 跑完待办就摘了，重启之后内存里更是什么都没有，而闸还在
+        # 库里停着 —— 只认内存的话 `/pending` 会说「没有等人的闸」，那一单就永远
+        # 等不到第二次决定，与改造前 Plan 静默收在 DONE 一样难查。
+        gates = self._held_gates_all()
+        if gates:
+            blocks.append("等你再决定一次的闸（/approve 或 /reject <case_id>）：\n" +
+                          "\n".join(f"  · {g['case_id']}  {g['title']}  —— {g['why']}"
+                                     for g in gates))
 
         if self.approval_queue is not None:
             rows: list[dict] = []
@@ -1723,6 +1946,86 @@ def _accepted_extra(team: Any, extra: dict) -> dict:
         if node is None:
             break
     return {}
+
+
+def _takes_kw(fn: Any, name: str) -> bool:
+    """``fn`` 收不收得下关键字 ``name``；只有 ``**kw`` 的转发壳算收得下。
+
+    与 `_accepted_extra` 同一条理由（不认的关键字会当场 TypeError，落进调用方的
+    except，症状是房间里一片安静），但**不能**复用 `_keyword_params`：
+    `_default_runner(payload, **kw)` 在它那里返回的是 ``{"payload"}``——非空，
+    于是不算「问不出来」，而它恰恰是什么都收得下的那种壳。这里按 ``**kw`` 判。
+
+    探不到就不传是安全的降级：`hold_awaits` 带默认值，不传只是这一跑照旧代签，
+    与 T135 之前逐字节相同 —— 注入替身的那几条测试因此一条都不受影响。
+    """
+    if fn is None:
+        return False
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(prm.kind is prm.VAR_KEYWORD for prm in params.values()):
+        return True
+    return name in params
+
+
+def _is_held(exit_row: dict) -> bool:
+    """这一条 `human_exits` 是「扣住了、没人做决定」，还是「有人做过决定」。
+
+    按前缀判而不是逐个枚举：`held_for_drift`（T116）与 `held_for_human`（T135）
+    是同一类事 —— 机器**没有**代做那个决定。日后再多一类扣法，漏加枚举的症状是
+    卡片上把它说成「已放行」，那是替人宣布了一件他没做过的事。
+    """
+    return str(exit_row.get("decision") or "").startswith("held_")
+
+
+def _why_blocked(store, plan_id: str, task_id: str) -> str:      # noqa: ANN001
+    """这个任务**这一次**因为什么停下来 —— 直接借 `custom_case._blocked_reason()`。
+
+    它要的是一个有 `.store` 的东西，而这里只有 store 本身；包一个最小的壳而不是
+    另写一份取 detail 的逻辑 —— 那就是第二份判据了（同 `await_kind` 那段的理由）。
+    """
+    from maos.flows.custom_case import _blocked_reason
+
+    return _blocked_reason(SimpleNamespace(store=store), plan_id, task_id)
+
+
+def _held_gates(result: dict) -> list[dict]:
+    """这一跑里**没有代签**的那几道闸。没有就是空表。"""
+    return [e for e in (result.get("human_exits") or [])
+            if str(e.get("decision") or "") == "held_for_human"]
+
+
+def _gate_prompt(held: list[dict], case_id: str, result: dict) -> str:
+    """停在人工闸上时接在卡片末尾的那一段：要决定什么、怎么决定。
+
+    ## 措辞分两档，不能只写「网关回执 X」
+
+    `AWAIT_HUMAN_DECISION` 的闸不止网关失败一种 —— 控制面第三出口还有
+    `plan_defect`，另有 replan 上限那条分支。撞上别的原因时「网关回执 X」那句话
+    就是编的，而人会照着这句编出来的理由做决定。所以：有 `failed` 观察才说网关
+    那半句，没有就只念控制面自己给的那一行理由。
+
+    钱到底退没退出去仍然只认观察（铁律 8）：这里念的 `gateway_code` 取自
+    `payment_observation` 的最后一行，一个字都不是这里判出来的。
+    """
+    obs = result.get("payment_observations") or []
+    last = obs[-1] if obs and isinstance(obs[-1], dict) else {}
+    failed = (not result.get("settled_observations")
+              and str(last.get("observed_state") or "") == "failed")
+    lines = []
+    for gate in held:
+        why = (f"网关回执 {last.get('gateway_code') or '未知码'}，钱没退出去"
+               if failed else str(gate.get("why") or "机器已经没有别的招了"))
+        lines.append(f"\n⚠️ 「{gate.get('title')}」这一步停在人工闸上：{why}")
+    lines.append(
+        "   这一步要你**再决定一次** —— 群里刚才那次放行签的是「这一单要不要办」，"
+        "签不到这里：\n"
+        f"     /reject  {case_id} <理由>   不签这一步（随后会开人工补偿工单）\n"
+        f"     /approve {case_id} <理由>   仍然放行（少见；只有你确认钱已通过"
+        "别的渠道到账才用）")
+    return "\n".join(lines)
 
 
 def _keyword_params(fn: Any) -> set[str] | None:

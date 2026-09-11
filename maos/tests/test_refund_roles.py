@@ -249,3 +249,99 @@ def test_clear_cache_picks_up_a_changed_directory_file(tmp_path, monkeypatch):
     assert roles.all_roles() == (
         roles.ROLE_AFTER_SALES_SUPERVISOR, roles.ROLE_FINANCE_REVIEWER,
         roles.ROLE_PAYMENT_OPS, roles.ROLE_REGION_MANAGER)
+
+
+# ======================================================================
+# 6. 缺省岗的两套写法等价（T130）
+# ======================================================================
+#
+# T123 把升档表收到目录这一套名字上之后，「缺省审批岗」仍在两套写法里各有一份：
+# `roles.DEFAULT_APPROVER_SEAT`（目录那套）与 `kb.plan_advice.DEFAULT_APPROVER_ROLE`
+# （`verdict_role` 别名那套）。两者今天结果一致，**但从前没有任何机器判据** ——
+# 改了其中一处，两套写法静默分叉，症状是房间里念出来的审批人和 Planner 建议的
+# 审批人不是同一个人，而屏幕上一切正常。
+#
+# 判据住在**退款域侧**（本文件）而不是 `kb` 侧，方向才对：域 import 内核是允许的，
+# 反过来会把退款域耦进领域无关的检索内核（铁律 9、跨轨契约 §E）。
+# 合并成一个字面值**不是**出路：那会改掉 `policy_directives()` 的返回值，
+# 而 R4 那一组的 `_expected` 正按它比对（见 `plan_advice` 模块抬头）。
+
+
+def test_the_two_spellings_of_the_default_approver_seat_agree():
+    """🔴 缺省审批岗的两套写法指同一个岗，两个方向都要转得过去。
+
+    三处动任一个，这条当场红 —— 那不是误报，是在问「另一半你改了吗」：
+
+      · `kb.plan_advice.DEFAULT_APPROVER_ROLE`（别名那套的字面量）
+      · `roles.DEFAULT_APPROVER_SEAT`（目录那套的常量）
+      · `scenarios/refund/roles.json` 里那条 `verdict_role` 映射
+    """
+    # 退款域的测试 import 内核是允许的方向（域 -> 内核）。反过来不行。
+    from maos.kb import plan_advice
+
+    assert roles.canonical_role(plan_advice.DEFAULT_APPROVER_ROLE) == \
+        roles.DEFAULT_APPROVER_SEAT
+    # 反向：目录那套翻回房间那套，要落回 kb 写的那个字面量。只钉单向的话，
+    # 有人改 `verdict_role_of()` 的出口，房间里念的字就变了而这条仍绿。
+    assert roles.verdict_role_of(roles.DEFAULT_APPROVER_SEAT) == \
+        plan_advice.DEFAULT_APPROVER_ROLE
+    # 缺省岗必须是目录里真有的岗，且必须拍得了板 —— 降级到一个批不动的人身上，
+    # 房间里那句「请 X 拍板」就点不到能拍板的人。
+    assert roles.DEFAULT_APPROVER_SEAT in roles.all_roles()
+    assert roles.is_approver_seat(roles.DEFAULT_APPROVER_SEAT) is True
+
+
+def test_the_two_spellings_of_the_default_ticket_role_agree():
+    """同一条病的另一半：工单缺省承接岗也在两处各写了一份。
+
+    `plan_advice._FALLBACK_TICKET_ROLE` 的注释写着「与 `roles.DEFAULT_TICKET_ROLE`
+    同值」，靠人记着。它是目录读不出来时的兜底，所以两处**同值**（不像审批岗那样
+    分属两套写法），分叉的症状更隐蔽：目录在时一切正常，只有目录读不出来那一刻
+    才会派给另一个岗，而那正是没人盯着的时刻。
+    """
+    from maos.kb import plan_advice
+
+    assert plan_advice._FALLBACK_TICKET_ROLE == roles.DEFAULT_TICKET_ROLE
+
+
+def test_canonical_role_folds_case_and_whitespace():
+    """🔴 外部来的角色名大小写不一致，也要归到同一个岗。
+
+    今天撞不上：语料全小写。接真 Matrix 房间的显示名（`Supervisor`）就会撞 ——
+    折之前 `_approver` 把它当未知角色，风险高档时静默不升档，只留一条 WARNING。
+    """
+    for raw in ("Supervisor", "SUPERVISOR", " supervisor ", "  SuPerVisor\t"):
+        assert roles.canonical_role(raw) == roles.ROLE_AFTER_SALES_SUPERVISOR, raw
+    # 目录自己那套写法同样折。
+    assert roles.canonical_role("After_Sales_Supervisor") == roles.ROLE_AFTER_SALES_SUPERVISOR
+    assert roles.canonical_role("REGION_MANAGER") == roles.ROLE_REGION_MANAGER
+
+
+def test_canonical_role_returns_the_cleaned_form_for_unknown_names():
+    """认不出的仍**原样返回、不抛**，但返回的是清洗过的那份。
+
+    `strip()` 从一开始就是这样，`lower()` 跟上同一套口径 —— 归一化函数不该对
+    「认得出」和「认不出」给两种返回法，否则 `"CFO"` 与 `"cfo"` 会给出两个 key，
+    下游拿它当 dict 键就静默分叉成两条记录。
+
+    原文不会丢，只是不由本函数保管：`verdict._approver` 出口的 `_spoken(canon, role)`
+    用原始 `role` 兜底，`_spec()` 的报错信息也打原始 `role`。
+    """
+    assert roles.canonical_role("CFO") == "cfo"
+    assert roles.canonical_role("  Whatever  ") == "whatever"
+    # 「不抛」这条语义不变：归一化不是校验，判权限的那一步再去拒。
+    assert roles.canonical_role("随便什么") == "随便什么"
+    assert roles.canonical_role("") == ""
+    assert roles.canonical_role("   ") == ""
+
+
+def test_can_approve_accepts_an_externally_cased_role_name():
+    """折大小写买到的东西：名单内的主管，用房间显示名那种写法也判得对。
+
+    折之前这条是 `False` —— `accounts_of("Supervisor")` 抛 `UnknownRole`，
+    `can_approve` fail-closed 拒掉一个本该放行的人，且没有症状。
+    """
+    assert roles.can_approve(IN_LIST_SUPERVISOR, "Supervisor",
+                             approvers=APPROVERS) is True
+    # fail-closed 那条不受影响：拼错的角色名照旧拒。
+    assert roles.can_approve(IN_LIST_PAYOPS, "Paymnet_Ops", approvers=APPROVERS) is False

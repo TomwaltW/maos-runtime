@@ -27,7 +27,9 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
 
 import pytest
 
@@ -566,3 +568,68 @@ def test_the_advice_block_carries_every_citation_into_the_prompt():
     # 空建议不许往 prompt 里加任何东西。
     empty = ManagerAgent._user_message("处理经销退款", docs, PlanAdvice())
     assert empty == ManagerAgent._user_message("处理经销退款", docs)
+
+
+# ======================================================================
+# 退款域不许上本模块的 import 图（T130）
+# ======================================================================
+_PLAN_ADVICE_PY = pathlib.Path(plan_advice.__file__)
+
+
+def _module_level_imports(path: pathlib.Path) -> set[str]:
+    """一个文件在**模块级**import 了哪些模块（全限定名）。
+
+    函数体与类体里的 import 不算：那是调用到才拖进来的，不上模块的 import 图。
+    判据走 AST 不走文本子串 —— 本模块的 docstring 里到处写着
+    「不 import 退款域」这类自我说明，按子串扫会把说明本身判成违例
+    （口径同 `test_claim_isolation.py`，那个坑在 `test_refund_flow.py:461` 记着）。
+    """
+    names: set[str] = set()
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue                        # 局部 import：调用到才拖，下面不追
+            if isinstance(child, ast.Import):
+                names.update(alias.name for alias in child.names)
+            elif isinstance(child, ast.ImportFrom):
+                if child.level:                 # 相对 import：留在包内，与本判据无关
+                    continue
+                module = child.module or ""
+                names.add(module)
+                names.update(f"{module}.{alias.name}" for alias in child.names)
+            else:
+                walk(child)                     # 顶层的 if / try / with 块照样是模块级
+
+    walk(ast.parse(_PLAN_ADVICE_PY.read_text(encoding="utf-8"), filename=str(path)))
+    return names
+
+
+def test_the_refund_domain_is_not_on_this_module_s_import_graph():
+    """🔴 `import maos.kb.plan_advice` 不许顺带拖进整个退款域。
+
+    本模块要问退款域两件事（缺省承接岗、审批人认不认得出），问法是**函数体内的
+    局部 import + 目录读不到时的字面量回落**，见 `_ticket_role` / `_warn_unknown_role`。
+    把那两个 import 提到模块级，规划内核就长在了退款域身上，换个业务域得先改内核
+    （铁律 9、跨轨契约 §E）。
+
+    判据只管本文件。`maos/kb/` 下 `promotion.py` 是模块级 import 退款域的，
+    `experiment.py` 则是一串局部 import —— 那两个文件不在本轨白名单，
+    「kb 整片是否都该守这条」记在 BACKLOG，不在这里顺手扩大判据面。
+    """
+    bad = sorted(n for n in _module_level_imports(_PLAN_ADVICE_PY)
+                 if n.startswith("maos.domain"))
+    assert not bad, f"退款域上了 plan_advice 的模块 import 图：{bad}"
+
+
+def test_the_domain_import_is_local_not_absent():
+    """上一条测的是 import 的**位置**，不是有无 —— 这一条钉住「确实还在问目录」。
+
+    少了这条，把 `_ticket_role` / `_warn_unknown_role` 整个删掉也能让上一条绿：
+    退款域确实不在 import 图上了，代价是缺省岗不再由目录说了算、审批人写错也不再告警。
+    """
+    source = _PLAN_ADVICE_PY.read_text(encoding="utf-8")
+    local = [n for n in _module_level_imports(_PLAN_ADVICE_PY) if n.startswith("maos.domain")]
+    assert not local
+    assert "from maos.domain.refund import roles" in source, (
+        "本模块一处退款域 import 都没有了？那上一条判据在测一件不存在的事")

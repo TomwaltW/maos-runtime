@@ -569,3 +569,89 @@ def test_decide_on_a_real_preflight_round() -> None:
     assert any(b.startswith("证据：") for b in verdict.blockers)
     for word in FORBIDDEN_WORDS:
         assert word not in _blob(verdict)
+
+
+# --------------------------------------------------------------------------
+# `_approver` 的全矩阵（T130）
+# --------------------------------------------------------------------------
+#: 八种写法 x 两个风险档 -> (房间里念出来的审批人, 自保持时追加的那条拦路条)。
+#:
+#: T130 收「缺省审批岗」两套写法与 `canonical_role` 折大小写时，取向是**收口不改词**。
+#: 这张表就是那句话的判据：十六格逐格钉住，改动让房间里念出来的字变了，这里当场红。
+#: 八种写法 = 目录四个正式名 + 圆桌两个别名（`region_manager` 两套同名）
+#: + 空（政策没写审批人）+ 目录认不出的一个。
+APPROVER_MATRIX: dict[tuple[str, str], tuple[str, str]] = {
+    ("after_sales_supervisor", "low"): ("supervisor", ""),
+    ("after_sales_supervisor", "high"): ("finance_manager", ""),
+    ("finance_reviewer", "low"): ("finance_manager", ""),
+    ("finance_reviewer", "high"): ("finance_manager", "风险：已是最高审批档，建议二人复核"),
+    # 接单岗不是审批岗：降到缺省审批岗，高档再从那里往上升。
+    ("payment_ops", "low"): ("supervisor", ""),
+    ("payment_ops", "high"): ("finance_manager", ""),
+    ("region_manager", "low"): ("region_manager", ""),
+    ("region_manager", "high"): (
+        "region_manager", "风险：政策指名的审批人，不因风险升档改派，建议二人复核"),
+    ("supervisor", "low"): ("supervisor", ""),
+    ("supervisor", "high"): ("finance_manager", ""),
+    ("finance_manager", "low"): ("finance_manager", ""),
+    ("finance_manager", "high"): ("finance_manager", "风险：已是最高审批档，建议二人复核"),
+    # 政策没写审批人：原样留空，**不替它猜一个** —— 猜出来的审批人和没有审批人
+    # 在下游长得一模一样，而后者至少看得出是配置缺了。
+    ("", "low"): ("", ""),
+    ("", "high"): ("", ""),
+    # 目录认不出：原样留着不升档，让人看见自己写的原文（`_spoken` 的 fallback）。
+    ("cfo", "low"): ("cfo", ""),
+    ("cfo", "high"): ("cfo", ""),
+}
+
+_RISK: dict[str, dict] = {
+    "low": {"level": "low", "score": 10, "reasons": []},
+    "high": {"level": "high", "score": 100, "reasons": ["重复退款"]},
+}
+
+#: high 档必然带的那条。矩阵只比对它之外多出来的拦路条。
+_RISK_BLOCKER = "风险：重复退款"
+
+
+def test_approver_matrix_is_unchanged(caplog: pytest.LogCaptureFixture) -> None:
+    """🔴 十六格逐格钉住 —— 「收口不改词」这句话的判据。
+
+    `caplog` 只为把 `_approver` 那两条 WARNING 收走：矩阵比的是房间里念出来的字，
+    不是日志。
+    """
+    with caplog.at_level(logging.WARNING, logger="maos.roundtable"):
+        for (role, risk_name), (want_role, want_dual) in APPROVER_MATRIX.items():
+            verdict = decide(_five(policy={"approver_role": role},
+                                   risk=_RISK[risk_name]))
+            assert verdict.approver_role == want_role, (role, risk_name, verdict.headline)
+            extra = [b for b in verdict.blockers if b != _RISK_BLOCKER]
+            assert extra == ([want_dual] if want_dual else []), (
+                role, risk_name, verdict.blockers)
+
+
+def test_the_demotion_target_is_the_directory_default_approver_seat() -> None:
+    """降级落在 `roles.DEFAULT_APPROVER_SEAT` 上，不是某个写死的字面量。
+
+    与 `test_payment_ops_as_approver_is_demoted_to_the_default_seat` 的区别：
+    那条钉的是**念出来的字**（`"supervisor"`，不许变），这条钉的是**降到哪个岗**
+    ——改了目录常量而忘了 `verdict.py`，那条仍绿、这条红。
+    """
+    verdict = decide(_five(policy={"approver_role": roles.ROLE_PAYMENT_OPS}))
+
+    assert verdict.approver_role == roles.verdict_role_of(roles.DEFAULT_APPROVER_SEAT)
+
+
+def test_an_externally_cased_approver_role_is_recognised() -> None:
+    """🔴 真房间显示名那种写法（`Supervisor`）也要归得回目录。
+
+    折大小写之前这一格返回的是原样的 `"Supervisor"`：目录认不出 -> 不在升档表里
+    -> 风险高档**静默不升档**，只留一条 WARNING，而屏幕上那句「请 Supervisor 复核」
+    看着一切正常。语料全小写所以从前撞不上，接真 Matrix 房间就会撞。
+    """
+    escalated = decide(_five(policy={"approver_role": "Supervisor"},
+                             risk=_RISK["high"]))
+    assert escalated.approver_role == "finance_manager"
+
+    # 低档同样归得回去，且念出来的仍是房间那套小写写法。
+    plain = decide(_five(policy={"approver_role": " SUPERVISOR "}, risk=_RISK["low"]))
+    assert plain.approver_role == "supervisor"

@@ -70,6 +70,18 @@ ROLE_REGION_MANAGER = "region_manager"
 #: 补偿开出来的工单要人到支付渠道后台按幂等键对账，那是支付运维的活，不是审批岗的。
 DEFAULT_TICKET_ROLE = ROLE_PAYMENT_OPS
 
+#: 没有任何政策规则指名审批人、或指名的那个岗拍不了板时，这一单落在哪个岗上。
+#: 口径同 `DEFAULT_TICKET_ROLE`：常量只钉「缺省是哪个岗」，谁在这个岗上由目录说了算。
+#: 消费方是 `maos/roundtable/verdict.py::_approver` 的降级分支。
+#:
+#: **刻意不与 `maos.kb.plan_advice.DEFAULT_APPROVER_ROLE` 同名**：那边写的是
+#: `verdict_role` 别名那套（`"supervisor"`），本常量是目录那套
+#: （`after_sales_supervisor`）—— 同名而不同值是个陷阱，两个名字各自读得出自己是哪套。
+#: 「两者指同一个岗」这件事从前只靠人记着，现在由
+#: `test_refund_roles.py::test_the_two_spellings_of_the_default_approver_seat_agree`
+#: 钉着：动其中任一处（含目录里那条 `verdict_role` 映射），那条当场红。
+DEFAULT_APPROVER_SEAT = ROLE_AFTER_SALES_SUPERVISOR
+
 
 class UnknownRole(KeyError):
     """目录里没有这个角色。
@@ -143,8 +155,25 @@ def canonical_role(name: str) -> str:
     3. 认不出的 —— **原样返回，不抛**。这里是归一化不是校验，把「认不出」升级成
        异常会让 `can_approve(acct, "随便什么")` 从「判 False」变成「炸」，
        而权限判定该给的是拒绝，不是异常。真要报错的是 `_spec()`。
+
+    ## 大小写与空白：认不出时返回的是**清洗过的**那份，不是原始输入（T130）
+
+    `strip()` 从一开始就是这样 —— `" supervisor "` 认不出时返回的也是 strip 过的。
+    `lower()` 跟上同一套口径，不给认不出的那一支单开第二种返回法：归一化函数的契约是
+    「同一个岗的不同写法给同一个输出」，这条对认不出的名字同样成立，否则 `"CFO"` 与
+    `"cfo"` 会给出两个 key，下游拿它当 dict 键就静默分叉成两条记录。
+
+    折大小写要治的是**外部来的角色名**：语料全小写所以今天撞不上，接真 Matrix 房间的
+    显示名（`Supervisor`）就会撞 —— 症状是 `_approver` 把它当未知角色，风险高档时不升档。
+
+    **原文不会丢**，只是不由本函数保管：`verdict._approver` 出口的
+    `_spoken(canon, role)` 用原始 `role` 兜底，`_spec()` 的报错信息也打原始 `role`，
+    人照样看得见自己写错的是哪几个字。
+
+    前提：`scenarios/refund/roles.json` 的角色名与 `verdict_role` **按小写书写**
+    （现状如此）。目录里写大写名字会在这里查不到 —— 那属于目录写坏了。
     """
-    key = str(name or "").strip()
+    key = str(name or "").strip().lower()
     if not key:
         return ""
     roles = _load()

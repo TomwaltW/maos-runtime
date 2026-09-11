@@ -51,6 +51,14 @@ store —— 好测，而且对照实验 R8 的「有建议 / 无建议」两段
 （认不出就记一行告警），不把 `supervisor` 归一成 `after_sales_supervisor`：那会改掉
 `policy_directives` 的返回值，而 R4 那一组的 `_expected` 正按它比对。收敛成一套是
 整合期的事（T117 已在 DECISIONS 留了映射表）。
+
+**两套写法指同一个岗这件事有机器判据了**（T130）：
+`maos/tests/test_refund_roles.py::test_the_two_spellings_of_the_default_approver_seat_agree`
+钉住 `canonical_role(DEFAULT_APPROVER_ROLE) == roles.DEFAULT_APPROVER_SEAT`。
+判据住在**退款域侧**而不是这里，方向才对（域 import 内核，不反过来）——
+本模块要是为了断言去 import 退款域，就把领域耦进内核了（铁律 9）。
+改本模块的 `DEFAULT_APPROVER_ROLE`、改 `roles.DEFAULT_APPROVER_SEAT`、
+改目录里那条 `verdict_role` 映射，三者动任一个，那条当场红。
 """
 
 from __future__ import annotations
@@ -82,6 +90,11 @@ PLAN_ADVISED_EVENT = "PlanAdvised"
 #: 没有任何政策规则指定审批人时的兜底角色。
 #: 原先住在 `maos/flows/contrast.py`，随 `policy_directives` 一起搬过来；
 #: 那边留一个同名的再导出，取值一个字节没变（R4A 的 `_expected` 按它比对）。
+#:
+#: 写的是 `verdict_role` 别名那一套。目录那套的同一个岗是
+#: `maos.domain.refund.roles.DEFAULT_APPROVER_SEAT`（`after_sales_supervisor`），
+#: 等价关系见模块抬头「角色名用 … 那一套」一节 —— **改这一行会让那条判据当场红**，
+#: 那不是误报，是在问「另一半你改了吗」。
 DEFAULT_APPROVER_ROLE = "supervisor"
 
 #: `exception_branches[].trigger` 的值域（契约 §7 逐字）。

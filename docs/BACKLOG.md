@@ -2530,3 +2530,15 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | `maos/tests/test_compensation_close.py:580` 的 docstring 仍提到已删的 `KIND_PENDING` | 只是历史叙述（「T117 时它们停在…」），读起来会以为那个常量还在 | 该文件不在 T129 白名单上。下次动它的轨顺手把那半句改成「停在一个待落库的过渡结局」 |
 | 2026-09-11 | p10 | `docs/demo-script.md` 与 `docs/defense-brief.md` 里都写「结果面的**四条**命令」，T129 之后是五条（多了 `/compensate`） | 材料与代码对不上一个数。不影响运行，但台上被问「房间里能做哪些动作」会漏掉补开这条救命路径 | 材料面归 **9/20–9/21** 那一轮（与「房间真人审批 9/18 采集」同批）。改的时候连 `docs/ingress-setup.md` 一起 grep 一遍 |
 | 2026-09-11 | p10 | `/compensate` 补开的工单，承接岗落在**打命令那个人**的岗上（走 `compensate._opening_role` 的缺省），演示里就是 `after_sales_supervisor` | 与自动开单行为一致，不是 bug；但补开的场景里「支付运维」几乎总是真正该接的人，多一步 `/assign` | 若真跑日觉得那一步多余，可给 `/compensate` 加一个可选的第二参数（岗位）透传成 `assignee_role`。今天刻意不加：派单要求的是「有救」，多一个参数就多一处要测的鉴权面 |
+## task-t130（角色名收口之后的范围外发现，2026-09-11）
+
+> 上面 `## 整合期 p10-c` 小节里的两条由本轨收掉了：「两份缺省审批岗各写各的」（现有
+> `test_refund_roles.py::test_the_two_spellings_of_the_default_approver_seat_agree` 钉着）
+> 与「`canonical_role()` 只 `strip` 不折大小写」（已折，矩阵测试钉着）。那两行按契约不归本轨改，记在这里。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | `docs/expected-metrics.json` 的 `pytest_passed_nopg` 欠本轨 +10（3746 -> 3756，worktree 口径 3743 -> 3753） | `test_expected_metrics` 一条红。派单与契约都要求各轨不动这个文件，所以这是**有意欠着**的账 | 整合期合完本波六轨，按合并树的实跑末行一次刷到位 |
+| 2026-09-11 | p10 | 跨轨契约 §E 写「`maos/kb/**` 是领域无关内核，不许 import 退款域」，实测 `maos/kb/promotion.py:54` 是**模块级** `from maos.domain.refund import guard, objects, outcome`，`experiment.py` 有 7 处函数内局部 import | 契约那句话今天只对 `plan_advice.py` 成立（本轨给它立了 AST 判据）。`import maos.kb.promotion` 会实打实拖进整个退款域 —— 换个业务域就得改这个文件 | 要么承认 `promotion.py` 是按域写的知识层、把契约那句话收窄成「`plan_advice.py` + 检索内核」，要么给它也做局部 import 化。前者是文档活，后者要动 `promotion.py`（不在任何轨的白名单）。`docs/domain-portability.md` 末尾本来就说「`flows/` 与 `kb/` 本就是按域写的，不在内核零改动的主张范围内」，与契约 §E 口径不一 —— 两处措辞一起对齐 |
+| 2026-09-11 | p10 | `scenarios/refund/roles.json` 的角色名与 `verdict_role` **必须全小写**（`canonical_role()` 折大小写之后，目录里写大写名字会查不到自己），但这条约束没有机器校验 | 今天全小写，撞不上。将来有人往目录里加一个 `Night_Lead`，`role_of` / `accounts_of` 会静默查不到，症状是「这个岗查不到人」而不报错 | `_load()` 里加一条 `name == name.lower()` 的校验（连带 `verdict_role`），或在 `test_refund_roles.py` 加一条扫目录的断言。一行的活，下次动 `roles.py` 的轨顺手做 |
+| 2026-09-11 | p10 | `verdict._approver` 对「政策没写审批人」（空串）的处置是**原样留空**，房间里那句话渲染成「请 ⟨两个空格⟩ 拍板」 | 十六格矩阵里的 `("", low)` / `("", high)` 两格。不是本轨引入的（改前改后逐格相同），但那行文案在真房间里会被人看见 | 按 `plan_advice` 那边的口径，空审批人应当是「没人知道该谁批」而不是「不需要审批」（`guardrails` 第三条红线就拦这个）。要么降级到 `roles.DEFAULT_APPROVER_SEAT`、要么让 headline 换一句话。改的是房间里念出来的字，会动 `PLAIN_STDOUT_MD5`，得单开一轨并当场重刷指纹 |

@@ -26,7 +26,7 @@
 | `claim.observe` | `1.0.0` | 软件交付域 | `claim_payment` | escalate | `payer.query` | `maos/skills/builtin/claim/observe.py:58` |
 | `claim.pay` | `1.0.0` | 软件交付域 | `claim_payment` | escalate | `payer.submit` | `maos/skills/builtin/claim/pay.py:35` |
 | `claim.settle` | `1.0.0` | 软件交付域 | `claim_settlement` | escalate | （空） | `maos/skills/builtin/claim/settle.py:62` |
-| `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:62` |
+| `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:119` |
 | `finance.settle` | `1.0.0` | 制造售后退款域 | `refund_finance` | escalate | （空） | `maos/skills/builtin/refund/finance.py:55` |
 | `investigation.cancel` | `1.0.0` | 软件交付域 | `investigation_cancel` | escalate | `clearing.cancel` | `maos/skills/builtin/investigation/cancel.py:43` |
 | `investigation.classify` | `1.0.0` | 软件交付域 | `investigation_classify` | escalate | （空） | `maos/skills/builtin/investigation/classify.py:67` |
@@ -265,7 +265,7 @@
 
 ### code.repo-patch @ 1.0.0
 
-实现：`CodeRepoPatchSkill` @ `maos/skills/builtin/code_repo_patch.py:62`
+实现：`CodeRepoPatchSkill` @ `maos/skills/builtin/code_repo_patch.py:119`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

@@ -35,6 +35,7 @@ from maos.model.client import (
     ScriptedModelClient,
     select_model_client,
 )
+from maos.tests import conftest
 
 # 一眼能认出来的哨兵。真出现在输出里，grep 得到。
 CANARY = "sk-LEAK-CANARY-0123456789"
@@ -138,7 +139,23 @@ ENV_TRIPLE = (ENV_BASE_URL, ENV_API_KEY, ENV_MODEL)
 _CONSEQUENCE_WORDS = ("不成立", "成本", "脚本回放")
 
 
+def _no_force(monkeypatch):
+    """摘掉 conftest 替全仓设的 ``MAOS_FORCE_SCRIPTED``（T125）。
+
+    下面三条判的是「**缺 key** 时那句降级 WARNING 的级别与措辞」，而强制开关会让
+    ``select_model_client()`` 在走到那句话之前就返回 ScriptedModelClient ——
+    告警一条都不落，三条当场红，而红的原因与它们要守的东西毫无关系。
+    **摘的是那个开关，不是语义**：三条断言原样还在，降级路径也原样还在，
+    只是要先把「本来就不打网络」这条更早的短路挪开，才看得见降级本身。
+
+    这是本仓唯一需要摘它的地方 —— 别的用例一律跑在强制模式下，那正是
+    ``conftest.py::_force_scripted_model`` 要买的东西。
+    """
+    monkeypatch.delenv(conftest.FORCE_SCRIPTED_ENV, raising=False)
+
+
 def _all_missing(monkeypatch):
+    _no_force(monkeypatch)
     for name in ENV_TRIPLE:
         monkeypatch.delenv(name, raising=False)
 
@@ -185,6 +202,7 @@ def test_degradation_warning_never_echoes_any_value(monkeypatch, caplog, absent)
     格式化参数是最容易的手滑，且手滑之后 base_url 与 key 会一起进日志、进证据。
     所以三个变量各设一个一眼能认的哨兵，逐个缺一个跑一遍，断言哨兵不在文本里。
     """
+    _no_force(monkeypatch)                      # 同上：强制开关会让告警一条都不落
     sentinels = {name: f"{CANARY}-{name}" for name in ENV_TRIPLE}
     for name, value in sentinels.items():
         monkeypatch.setenv(name, value)

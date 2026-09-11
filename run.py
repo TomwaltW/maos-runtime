@@ -8,19 +8,58 @@
 缺省证据束恒为 8 束是跨轨冻结口径（`scripts/demo_preflight.sh` 与复赛材料都写死了 8）。
 对照是**另开一条路**，不是第 8、9、10 个场景。所以本文件先把 `--contrast` 摘掉，
 其余参数原样透传给 `maos.main`，`python run.py` 不带参数时行为一个字节不变。
+
+第二个开关 `--live-model`（T125，契约 §G）同样只能挂在这里，理由同上：`main.py`
+冻结，而这件事必须在**进 `main()` 之前**做完 —— 场景模块在 `run()` 里就调
+`select_model_client()`，那时再设已经晚了。
+
+**缺省翻面了，这是本文件最该被读到的一句**：不带 `--live-model` 时本文件先
+`os.environ.setdefault("MAOS_FORCE_SCRIPTED", "1")`，于是 `python3 run.py` 在
+**配了 key 的机器上也走脚本回放**。改缺省不是为了省钱，是因为原先那条口径
+（「人记得加 `env -u MAOS_LLM_API_KEY ... ` 前缀」）在演示机上按天失效：
+`~/.bash_profile` 里 export 了 `MAOS_LLM_*`，漏加一次前缀，这一跑的成本读数、
+延迟、以及证据束里的一切就都不是确定性的了，而**屏幕上没有任何提示**
+（`docs/BACKLOG.md` 的 2263 / 2290 记着这笔账）。要真模型请显式说出来。
+
+`setdefault` 不是 `environ[...] = "1"`：人在外面显式 `MAOS_FORCE_SCRIPTED=0` 时
+本文件不该把它按回去 —— 那是第二个「说了不算」的开关。
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 from maos.main import main as scenarios_main
 
 CONTRAST_FLAG = "--contrast"
+LIVE_MODEL_FLAG = "--live-model"
+
+#: 与 `maos/model/client.py::ENV_FORCE_SCRIPTED` 同一个名字，硬编码而不 import ——
+#: 本文件是「薄入口」，为一个字符串再拉一层 import 与那个定位相悖。代价是要人工
+#: 同步，`test_code_repo_patch_selfrepair.py` 有一条断言钉着两边逐字相等。
+#:
+#: **写入时机与 import 顺序无关**，别照着「早于 import」去理解：`forced_scripted()`
+#: 是在 `select_model_client()` 被调用那一刻现读 `os.environ` 的，而那发生在
+#: 各 `flows/scenario_*.py` 的 `run()` 里 —— 比这里晚得多。真正要守的时机只有
+#: 一条：早于 `scenarios_main(args)`。
+FORCE_SCRIPTED_ENV = "MAOS_FORCE_SCRIPTED"
+
+
+def _apply_model_mode(args: list[str]) -> list[str]:
+    """摘掉 `--live-model`，并按它决定要不要替人钉死 Scripted。返回剩下的参数。
+
+    两条路（场景与 `--contrast`）都要经过这里，所以它排在分岔**之前**。
+    """
+    if LIVE_MODEL_FLAG in args:
+        args = [a for a in args if a != LIVE_MODEL_FLAG]
+    else:
+        os.environ.setdefault(FORCE_SCRIPTED_ENV, "1")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
+    args = _apply_model_mode(list(sys.argv[1:] if argv is None else argv))
     if CONTRAST_FLAG not in args:
         return scenarios_main(args)
 

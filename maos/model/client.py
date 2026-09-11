@@ -7,6 +7,14 @@ tier 到具体模型的映射是治理决策，属于网关的职责，不属于
 ``MAOS_LLM_BASE_URL`` / ``MAOS_LLM_API_KEY`` / ``MAOS_LLM_MODEL`` /
 ``MAOS_LLM_TIMEOUT``（默认 120s）。三个必填项缺任何一个都降级回 ScriptedModelClient，
 **不发起任何网络请求** —— 无 key 的机器上跑测试与场景必须是确定性的。
+
+``MAOS_FORCE_SCRIPTED=1`` 压在这三个之上（T125，契约 §G）：设了就一律 Scripted，
+不看 key 在不在。它买的是「口径从**人记得**变成**机器缺省**」——
+在 ``~/.bash_profile`` 里 export 了 key 的演示机上，原先要靠每条命令自己加
+``env -u MAOS_LLM_API_KEY ...`` 前缀才能保证确定性，漏一次就是一整串恒红
+（``docs/BACKLOG.md`` 的 2263 / 2290）。现在 ``run.py`` / ``demo_preflight.sh`` /
+``make_evidence.py`` 的子进程 / ``maos/tests/conftest.py`` 都替人设好，
+``--live-model`` 是唯一的显式开关。
 """
 
 from __future__ import annotations
@@ -21,12 +29,25 @@ import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from maos.config import get_config_source
+
 log = logging.getLogger("maos.model")
 
 ENV_BASE_URL = "MAOS_LLM_BASE_URL"
 ENV_API_KEY = "MAOS_LLM_API_KEY"
 ENV_MODEL = "MAOS_LLM_MODEL"
 ENV_TIMEOUT = "MAOS_LLM_TIMEOUT"
+
+#: 强制脚本回放（契约 §G）。读取点走配置面，登记在 `maos/config/__init__.py` 的
+#: 表格里、**不进** `GOVERNED_KEYS` —— 口径照抄 `MAOS_KB_ADVICE`（T119 的
+#: DECISIONS 那一行）：`test_config_source.py::test_governed_keys_are_exactly_
+#: the_four_this_track_owns` 钉着「就是这四个」，而那个文件不在本轨白名单里。
+ENV_FORCE_SCRIPTED = "MAOS_FORCE_SCRIPTED"
+
+#: 认的那几个「关」值，与 `kb._KB_OFF_VALUES` / `plan_advice._ADVICE_OFF_VALUES`
+#: 同一份口径。**缺省是关**（与那两个相反）：这个开关一旦默认开，真模型就永远
+#: 打不通了，而「以为在跑真模型、其实在跑假模型」正是本文件最怕的那种失效。
+_FORCE_OFF_VALUES = ("", "0", "false", "no", "off")
 
 DEFAULT_TIMEOUT = 120.0
 
@@ -326,6 +347,16 @@ def _timeout_from_env() -> float:
     return value
 
 
+def forced_scripted() -> bool:
+    """``MAOS_FORCE_SCRIPTED`` 有没有把这一跑钉死在脚本回放上。
+
+    读取点走配置面（``MAOS_CONFIG_SOURCE=nacos`` 时同一句改从 Nacos 取），
+    口径照抄 ``kb.kb_enabled``；不同的是**缺省为关**，理由见 ``_FORCE_OFF_VALUES``。
+    """
+    return (get_config_source().get(ENV_FORCE_SCRIPTED, "").strip().lower()
+            not in _FORCE_OFF_VALUES)
+
+
 def select_model_client(script: dict[str, str] | None = None, *,
                         force_scripted: bool = False) -> ModelClient:
     """选择模型客户端 —— 上层唯一的构造入口，签名与语义冻结（A-12）。
@@ -333,12 +364,29 @@ def select_model_client(script: dict[str, str] | None = None, *,
     force_scripted=True 恒返 ScriptedModelClient(script)，一行网络都不走 ——
     场景 5 与全部测试必须显式传它，否则在配了 key 的机器上会开始打真网络。
 
+    ``MAOS_FORCE_SCRIPTED=1``（T125）与那个参数等价，只是从环境来：它压在
+    ``MAOS_LLM_*`` 之上，设了就一律 Scripted。**参数与环境变量两条路都留着**，
+    不是冗余 —— 参数说的是「这个调用点自己知道必须确定性」（场景 5），
+    环境变量说的是「这一整跑都要确定性」（证据束、测试、preflight）。
+    前者跟着代码走，后者跟着命令走，缺哪条都会让另一类调用漏网。
+
     未强制时按环境变量决定：``MAOS_LLM_BASE_URL`` / ``MAOS_LLM_API_KEY`` /
     ``MAOS_LLM_MODEL`` 三个都非空才构造 GatewayModelClient；缺任何一个都降级回
     ScriptedModelClient 并只记录**缺失的变量名**（铁律 6：值绝不进日志）。
     ``MAOS_LLM_TIMEOUT`` 可选，默认 120s。
     """
     if force_scripted:
+        return ScriptedModelClient(script)
+
+    if forced_scripted():
+        # 「有 key 却不打真模型」这件事必须说出来，否则它与「没配 key 所以降级」
+        # 在日志里长得一模一样 —— 而两者对读数的含义完全不同：前者是**刻意**的
+        # 确定性口径，后者是配置漏了。铁律 6：这里只点变量名，一个值都不带。
+        if all((os.environ.get(name) or "").strip()
+               for name in (ENV_BASE_URL, ENV_API_KEY, ENV_MODEL)):
+            log.info("%s 已设，本次强制走 ScriptedModelClient —— 环境里的 "
+                     "%s 一概不读，不发起任何网络请求（要真模型请用 --live-model）",
+                     ENV_FORCE_SCRIPTED, "/".join((ENV_BASE_URL, ENV_API_KEY, ENV_MODEL)))
         return ScriptedModelClient(script)
 
     env = {

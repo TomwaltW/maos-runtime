@@ -1,0 +1,272 @@
+# generated at 2026-09-11T16:36:51.360952+00:00 from 4a53a5ce5af5ca06bf98803cfc8c9865bd9bb899
+{
+  "roundtable": {
+    "ran": true,
+    "store_param": true,
+    "seats": [
+      {
+        "agent_id": "refund-intake",
+        "title": "申请受理岗",
+        "spoken_by_model": false,
+        "fallback_reason": "no_model",
+        "speech": "订单号：ORD-2026-AG-0413\n商品：SKU-AG-125B\n订单实付：1280.00\n申报金额：1280.00（与订单实付一致；申请表没填金额时就按实付计）\n诉求类型：质量问题（quality_defect）\n申请日期：2026-09-04T03:30:00+00:00\n随案证据：4 份"
+      },
+      {
+        "agent_id": "refund-policy",
+        "title": "规则审核岗",
+        "spoken_by_model": false,
+        "fallback_reason": "no_model",
+        "speech": "裁定：批准\n决定性规则：无单条规则决定，按基线裁定\n命中规则：4 条（AS-001@v2、AS-002@v2、AS-003@v2、AS-004@v2）\n下单锁定的政策版本：v2\n距付款：15 天\n放行需要的审批角色：region_manager\n判定理由：命中 4 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定"
+      },
+      {
+        "agent_id": "refund-evidence",
+        "title": "证据核验岗",
+        "spoken_by_model": false,
+        "fallback_reason": "no_model",
+        "speech": "证据核验结论：complete\n逐份核验：4 份材料，其中通过 4 份\n规则要求的证据类型：image，最少份数 1\n缺口：无\n交叉核对：3 项，未通过 0 项（无）"
+      },
+      {
+        "agent_id": "refund-risk",
+        "title": "风险反欺诈岗",
+        "spoken_by_model": false,
+        "fallback_reason": "no_model",
+        "speech": "风险档位：low（评分 0）\n命中信号：底账无客户标识，频率与多单信号未评估\n同一订单是否已有退款记录：否\n同账号关联订单：1 单，近 30 天退款申请 0 次"
+      },
+      {
+        "agent_id": "refund-finance",
+        "title": "财务执行岗",
+        "spoken_by_model": false,
+        "fallback_reason": "no_model",
+        "speech": "核算预演金额：1280.00\n计算过程：订单实付 1280.00，申报 1280.00，退款比例 1，扣费 0.00\n依据：AS-001@v2、AS-002@v2、AS-003@v2、AS-004@v2（政策 v2）\n以上是核算预演，未落账，放行后按同一段代码正式核算\n放行请审批人（region_manager）发 /approve RC-2026-0904-001"
+      }
+    ],
+    "verdict": {
+      "recommend": "approve",
+      "approver_role": "region_manager",
+      "blockers": [],
+      "headline": "建议批复 · 核准预演 1280.00 · 请 region_manager 拍板",
+      "amount_preview": "1280.00"
+    },
+    "skills": [
+      {
+        "skill": "refund.evidence_check",
+        "role": "refund_evidence",
+        "status": "ok",
+        "error": null,
+        "invocation_id": "23b020dc91f54739a9d3ce815e327ab9"
+      },
+      {
+        "skill": "refund.risk_screen",
+        "role": "refund_risk",
+        "status": "ok",
+        "error": null,
+        "invocation_id": "2d4bdfe61b3a4c8b853ef1e8796e693f"
+      }
+    ],
+    "error": null,
+    "transcript": [
+      {
+        "agent_id": "refund-intake",
+        "title": "申请受理岗",
+        "text": "订单号：ORD-2026-AG-0413\n商品：SKU-AG-125B\n订单实付：1280.00\n申报金额：1280.00（与订单实付一致；申请表没填金额时就按实付计）\n诉求类型：质量问题（quality_defect）\n申请日期：2026-09-04T03:30:00+00:00\n随案证据：4 份"
+      },
+      {
+        "agent_id": "refund-policy",
+        "title": "规则审核岗",
+        "text": "裁定：批准\n决定性规则：无单条规则决定，按基线裁定\n命中规则：4 条（AS-001@v2、AS-002@v2、AS-003@v2、AS-004@v2）\n下单锁定的政策版本：v2\n距付款：15 天\n放行需要的审批角色：region_manager\n判定理由：命中 4 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定"
+      },
+      {
+        "agent_id": "refund-evidence",
+        "title": "证据核验岗",
+        "text": "证据核验结论：complete\n逐份核验：4 份材料，其中通过 4 份\n规则要求的证据类型：image，最少份数 1\n缺口：无\n交叉核对：3 项，未通过 0 项（无）"
+      },
+      {
+        "agent_id": "refund-risk",
+        "title": "风险反欺诈岗",
+        "text": "风险档位：low（评分 0）\n命中信号：底账无客户标识，频率与多单信号未评估\n同一订单是否已有退款记录：否\n同账号关联订单：1 单，近 30 天退款申请 0 次"
+      },
+      {
+        "agent_id": "refund-finance",
+        "title": "财务执行岗",
+        "text": "核算预演金额：1280.00\n计算过程：订单实付 1280.00，申报 1280.00，退款比例 1，扣费 0.00\n依据：AS-001@v2、AS-002@v2、AS-003@v2、AS-004@v2（政策 v2）\n以上是核算预演，未落账，放行后按同一段代码正式核算\n放行请审批人（region_manager）发 /approve RC-2026-0904-001"
+      }
+    ]
+  },
+  "plan_approval": {
+    "mode": "approve",
+    "operator": "沈思锴（after_sales_supervisor）",
+    "preview": {
+      "plan_id": "plan_d6c914b5e34e",
+      "trace_id": "trace_0ce0ee9a0ccf",
+      "goal": "处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额",
+      "state": "PENDING",
+      "round": 0,
+      "reject_limit": 2,
+      "exhausted": false,
+      "runnable": 6,
+      "awaiting": true,
+      "tasks": [
+        {
+          "task_id": "task-rc-2026-0904-001-intake",
+          "title": "受理多源退款诉求并聚合证据",
+          "role": "refund_intake",
+          "state": "PENDING",
+          "risk_level": "L",
+          "effect_risk": "L",
+          "depends_on": [],
+          "acceptance": [
+            "多源诉求去重后建出 refund_case",
+            "证据引用落库"
+          ],
+          "frozen": false
+        },
+        {
+          "task_id": "task-rc-2026-0904-001-policy",
+          "title": "按下单锁定的政策版本裁定退款资格",
+          "role": "refund_policy",
+          "state": "PENDING",
+          "risk_level": "L",
+          "effect_risk": "L",
+          "depends_on": [
+            "task-rc-2026-0904-001-intake"
+          ],
+          "acceptance": [
+            "按订单快照锁定的政策版本判定",
+            "给出命中的规则编号与版本"
+          ],
+          "frozen": false
+        },
+        {
+          "task_id": "task-rc-2026-0904-001-dealer-writeoff",
+          "title": "渠道商核销",
+          "role": "refund_channel",
+          "state": "PENDING",
+          "risk_level": "M",
+          "effect_risk": "L",
+          "depends_on": [
+            "task-rc-2026-0904-001-policy"
+          ],
+          "acceptance": [
+            "核销事项按 AS-004@v2 登记",
+            "保留规则出处"
+          ],
+          "frozen": false
+        },
+        {
+          "task_id": "task-rc-2026-0904-001-finance",
+          "title": "核算退款金额并写财务分录",
+          "role": "refund_finance",
+          "state": "PENDING",
+          "risk_level": "M",
+          "effect_risk": "H",
+          "depends_on": [
+            "task-rc-2026-0904-001-policy",
+            "task-rc-2026-0904-001-dealer-writeoff"
+          ],
+          "acceptance": [
+            "产出 finance_entry 且与库表一致",
+            "金额按锁定政策版本核算"
+          ],
+          "frozen": false
+        },
+        {
+          "task_id": "task-rc-2026-0904-001-payment",
+          "title": "发起退款并观察网关终态",
+          "role": "refund_payment",
+          "state": "PENDING",
+          "risk_level": "M",
+          "effect_risk": "L",
+          "depends_on": [
+            "task-rc-2026-0904-001-finance"
+          ],
+          "acceptance": [
+            "发起后不得写 settled",
+            "终态必须由 query 观察得到"
+          ],
+          "frozen": false
+        },
+        {
+          "task_id": "task-rc-2026-0904-001-notify",
+          "title": "通知客户裁定结果",
+          "role": "refund_intake",
+          "state": "PENDING",
+          "risk_level": "L",
+          "effect_risk": "L",
+          "depends_on": [
+            "task-rc-2026-0904-001-payment"
+          ],
+          "acceptance": [
+            "通知记录落库",
+            "ack 缺失不阻塞"
+          ],
+          "frozen": false
+        }
+      ],
+      "topology": {
+        "layers": [
+          [
+            "task-rc-2026-0904-001-intake"
+          ],
+          [
+            "task-rc-2026-0904-001-policy"
+          ],
+          [
+            "task-rc-2026-0904-001-dealer-writeoff"
+          ],
+          [
+            "task-rc-2026-0904-001-finance"
+          ],
+          [
+            "task-rc-2026-0904-001-payment"
+          ],
+          [
+            "task-rc-2026-0904-001-notify"
+          ]
+        ],
+        "blocks": {
+          "task-rc-2026-0904-001-intake": [
+            "task-rc-2026-0904-001-policy"
+          ],
+          "task-rc-2026-0904-001-policy": [
+            "task-rc-2026-0904-001-dealer-writeoff",
+            "task-rc-2026-0904-001-finance"
+          ],
+          "task-rc-2026-0904-001-dealer-writeoff": [
+            "task-rc-2026-0904-001-finance"
+          ],
+          "task-rc-2026-0904-001-finance": [
+            "task-rc-2026-0904-001-payment"
+          ],
+          "task-rc-2026-0904-001-payment": [
+            "task-rc-2026-0904-001-notify"
+          ],
+          "task-rc-2026-0904-001-notify": []
+        },
+        "cycle": [],
+        "dangling": [],
+        "frozen": [],
+        "unreachable": []
+      }
+    },
+    "rounds": [
+      {
+        "decision": "approve",
+        "operator": "沈思锴（after_sales_supervisor）",
+        "accepted": true
+      }
+    ],
+    "started": true,
+    "plan_state": "RUNNING"
+  },
+  "compensation": {
+    "ticket_id": "MT-RC-2026-0904-001",
+    "assignee_role": "payment_ops",
+    "assignee": "@payops:maos.local",
+    "resolved_by": "@payops:maos.local",
+    "resolution_kind": "not_settled",
+    "observation_id": "gw_52d24a5e742d488c@2026-09-11T16:36:51.284862+00:00",
+    "observed_state": "failed",
+    "compensation_records": 2,
+    "last_observed_state": "failed"
+  }
+}

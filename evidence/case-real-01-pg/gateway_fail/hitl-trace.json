@@ -1,0 +1,114 @@
+# generated at 2026-09-11T16:36:51.332178+00:00 from 4a53a5ce5af5ca06bf98803cfc8c9865bd9bb899
+{
+  "trace": [
+    {
+      "seq": 16,
+      "at": "2026-09-11T16:36:51.114980+00:00",
+      "kind": "plan_approval",
+      "event_type": "PlanApproved",
+      "task_id": "",
+      "transition": "",
+      "operator": "沈思锴（after_sales_supervisor）",
+      "actor": "human",
+      "note": ""
+    },
+    {
+      "seq": 38,
+      "at": "2026-09-11T16:36:51.178582+00:00",
+      "kind": "blocked",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "transition": "AWAITING_REVIEW->BLOCKED [gate_needs_human]",
+      "operator": null,
+      "actor": "gate",
+      "note": "gate_needs_human"
+    },
+    {
+      "seq": 39,
+      "at": "2026-09-11T16:36:51.183364+00:00",
+      "kind": "task_approval",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-finance",
+      "transition": "BLOCKED->DONE [human_approve]",
+      "operator": "沈思锴（region_manager）",
+      "actor": "human",
+      "note": "按 region_manager 权限放行"
+    },
+    {
+      "seq": 49,
+      "at": "2026-09-11T16:36:51.209331+00:00",
+      "kind": "rework",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-payment",
+      "transition": "AWAITING_REVIEW->REWORK [gate_rework]",
+      "operator": null,
+      "actor": "gate",
+      "note": "gate_rework"
+    },
+    {
+      "seq": 58,
+      "at": "2026-09-11T16:36:51.230402+00:00",
+      "kind": "blocked",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-payment",
+      "transition": "AWAITING_REVIEW->BLOCKED [gate_needs_human]",
+      "operator": null,
+      "actor": "gate",
+      "note": "gate_needs_human"
+    },
+    {
+      "seq": 59,
+      "at": "2026-09-11T16:36:51.236419+00:00",
+      "kind": "task_approval",
+      "event_type": "StateTransition",
+      "task_id": "task-rc-2026-0904-001-payment",
+      "transition": "BLOCKED->FAILED [human_reject]",
+      "operator": "沈思锴（region_manager）",
+      "actor": "human",
+      "note": "主管驳回"
+    },
+    {
+      "seq": 62,
+      "at": "2026-09-11T16:36:51.267041+00:00",
+      "kind": "compensation",
+      "event_type": "CompensationExecuted",
+      "task_id": "task-rc-2026-0904-001-payment",
+      "transition": "",
+      "operator": "沈思锴（after_sales_supervisor）",
+      "actor": "human",
+      "note": "网关明确失败（ACQ.SELLER_BALANCE_NOT_ENOUGH），机器已按可重试码（40005）返工重发过一次仍失败，转人工线下退款"
+    },
+    {
+      "seq": 64,
+      "at": "2026-09-11T16:36:51.269483+00:00",
+      "kind": "compensation",
+      "event_type": "CompensationAssigned",
+      "task_id": "task-rc-2026-0904-001-payment",
+      "transition": "",
+      "operator": "@boss:maos.local",
+      "actor": "human",
+      "note": "@boss:maos.local 把工单派给 payment_ops"
+    },
+    {
+      "seq": 67,
+      "at": "2026-09-11T16:36:51.289522+00:00",
+      "kind": "compensation",
+      "event_type": "CompensationResolved",
+      "task_id": "task-rc-2026-0904-001-payment",
+      "transition": "",
+      "operator": "@payops:maos.local",
+      "actor": "human",
+      "note": "@payops:maos.local 提交线下凭证关单：not_settled"
+    }
+  ],
+  "count": 9,
+  "human_actions": 6,
+  "operators": [
+    "@boss:maos.local",
+    "@payops:maos.local",
+    "沈思锴（after_sales_supervisor）",
+    "沈思锴（region_manager）"
+  ],
+  "unattributed_human_actions": [],
+  "note": "每一条人做的动作都带操作者与时间；机器判的返工与转人工出口如实记 operator=null / actor=gate —— 把机器的动作记在人头上，「这一单人介入过几次」就永远算不准。unattributed_human_actions 非空即证据不合格（verify.py 第 10 项在核它）。"
+}

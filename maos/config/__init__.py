@@ -18,6 +18,7 @@
 | `MAOS_APPROVERS` | `hiclaw/matrix_bus.py::RoomApprovalBridge._effective_approvers` | 是 |
 | `MAOS_KB_ENABLED` | `maos/kb/__init__.py::kb_enabled` | 否（T35） |
 | `MAOS_KB_WEIGHTS` | `maos/kb/retriever.py::load_weights` | 否（T35） |
+| `MAOS_KB_ADVICE` | `maos/kb/plan_advice.py::advice_enabled` | 否（T119，同 kb 那两个） |
 
 **「读取点接上了」与「进 `GOVERNED_KEYS`」是两件事**，kb 那两个旋钮现在正好卡在
 中间，所以这里要写清楚：`NacosConfigSource._resolve` 读快照时**不看**

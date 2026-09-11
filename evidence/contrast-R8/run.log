@@ -1,0 +1,21 @@
+# generated at 2026-09-11T02:31:37.987475+00:00 from 128398d715d027cbe0a52b45ee93063c9b184cf8
+场景 R8：Planner 建议有无对照实验，无 key 确定性复现
+
+[1/3] 准备段：一条完整的经销 case 撞网关 40005，收口后按晋升规则聚成失败提示
+  Plan FAILED，网关观察 ['failed', 'failed', 'failed']，业务状态 gateway_accepted
+  晋升：('failure_hint', 'failed') doc_id=auto-failure_hint-case-r8-seed
+  失败聚合：ch-dealer × 40005 × AS-001@v1 第 1 次，额外步骤 ['网关 40005：降低请求并发量']
+
+[2/3] without_advice：MAOS_KB_ADVICE=0，命中照旧、建议不生成
+  5 个任务，KbRetrieved 1 条，PlanAdvised 0 条
+  审批人 supervisor，重试预算 2，实际重规划 2 次，网关观察 ['failed', 'failed', 'failed']
+  转人工：replan_limit_exceeded（此刻已重规划 2 次）
+  Plan FAILED，业务状态 gateway_accepted
+
+[3/3] with_advice：MAOS_KB_ADVICE=1，同一份计划脚本
+  6 个任务，KbRetrieved 1 条，PlanAdvised 1 条
+  审批人 region_manager，重试预算 1，实际重规划 1 次，网关观察 ['failed', 'failed']
+  转人工：replan_limit_exceeded（此刻已重规划 1 次）
+  Plan FAILED，业务状态 gateway_accepted
+
+差异：多出来的任务=['refund_channel.refund_channel']，审批人 supervisor -> region_manager，重试预算 2 -> 1（实际重规划 2 -> 1 次）

@@ -897,14 +897,14 @@ class ControlPlane:
                               last_error="返工次数耗尽")
                 self._fail_plan(task["plan_id"])
             elif self._replanner is not None and self._should_replan(task, findings):
-                if self._replan_used(task["plan_id"]) >= self._max_replan():
+                if self._replan_used(task["plan_id"]) >= self._max_replan(task["plan_id"]):
                     # 上限到了就停，转人工 —— **绝不自旋**。无限重试是评委点名的反模式，
                     # 而「再规划一次说不定就好了」正是自旋最常见的伪装。
                     # 迁移走既有的 AWAITING_REVIEW->BLOCKED("gate_needs_human")：
                     # 此刻任务还在 AWAITING_REVIEW，先返工再转人工是走不通的
                     # （PENDING->BLOCKED 不在迁移表里），顺序不能倒。
                     log.warning("[%s] 重规划已达上限 %d，转人工处置",
-                                task["plan_id"], self._max_replan())
+                                task["plan_id"], self._max_replan(task["plan_id"]))
                     self._escalate_to_human(
                         task, event_id=env.event_id, findings=findings, detail=detail,
                         reason="replan_limit_exceeded",
@@ -1017,21 +1017,43 @@ class ControlPlane:
             return True
         return False
 
-    def _max_replan(self) -> int:
-        """MAOS_MAX_REPLAN，默认 2。非法值回退默认并告警，不让配置笔误变成自旋。
+    def _max_replan(self, plan_id: str | None = None) -> int:
+        """这个 plan 还许重规划几次 = `min(MAOS_MAX_REPLAN, 建议的 retry_budget)`。
 
+        env 那一半：默认 2，非法值回退默认并告警，不让配置笔误变成自旋。
         走 `maos.config` 的配置面而不是直接读 `os.environ`（T28）：缺省源就是
         `os.environ.get`，取值逐字节不变。
+
+        建议那一半（T119）：`plan_id` 给了就读它最近一条 `PlanAdvised` 的
+        `retry_budget`，取**更小**的那个。只许更紧不许更松 —— 知识层可以说
+        「这个组合已经栽过 N 次，别再自旋了」，不能说「再多试几次说不定就好了」。
+        护栏 4（`guardrails.assert_advice_within_bounds`）在建议进事件之前就拦住
+        放宽的那一侧，这里的 `min` 是第二道：事件是可以被别处写进去的，
+        控制面不拿 event_log 里读来的一个数当上限用。
+
+        `plan_id=None` 时逐字节等于 T119 之前的行为（`test_config_source.py::
+        test_max_replan_matches_legacy_byte_for_byte` 按无参调用钉着这条）。
         """
         raw = get_config_source().get(ENV_MAX_REPLAN, "").strip()
         if not raw:
-            return DEFAULT_MAX_REPLAN
+            env_budget = DEFAULT_MAX_REPLAN
+        else:
+            try:
+                env_budget = max(int(raw), 0)
+            except ValueError:
+                log.warning("%s=%r 不是整数，回退默认 %d",
+                            ENV_MAX_REPLAN, raw, DEFAULT_MAX_REPLAN)
+                env_budget = DEFAULT_MAX_REPLAN
+        if not plan_id:
+            return env_budget
+
+        from maos.kb.plan_advice import latest_advice
+        advised = latest_advice(self.store, plan_id) or {}
         try:
-            value = int(raw)
-        except ValueError:
-            log.warning("%s=%r 不是整数，回退默认 %d", ENV_MAX_REPLAN, raw, DEFAULT_MAX_REPLAN)
-            return DEFAULT_MAX_REPLAN
-        return max(value, 0)
+            budget = int(advised["retry_budget"])
+        except (KeyError, TypeError, ValueError):
+            return env_budget
+        return max(0, min(env_budget, budget))
 
     def _replan_used(self, plan_id: str) -> int:
         """已发生过几次重规划 = event_log 里 RUNNING->PENDING 的 PlanTransition 条数。"""

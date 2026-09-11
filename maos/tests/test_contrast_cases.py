@@ -412,3 +412,84 @@ def _as004_params(payload: dict) -> dict:
     row = next(r for r in payload["policy_rule"]
                if r["rule_no"] == "AS-004" and r["version"] == 1)
     return json.loads(row["body"])
+
+
+# ---------------------------------------------------------------------------
+# 组 R8 · Planner 建议有无对照（T119）
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def r8_diff():
+    """跑一次 R8，三条断言共用。
+
+    `scope="module"`：R8 要跑三段真实 Plan（准备 + 两段对照），每条断言各跑一遍
+    会把这个文件的耗时翻三倍，而三条断言看的是同一份产出。
+    """
+    from maos.flows.contrast import _print_r8
+
+    return _print_r8()
+
+
+def test_r8_advice_adds_the_task_that_policy_requires(r8_diff):
+    """建议**只加不删**：多出来的正是 `AS-004` 要求的那一步核销，且说得出出处。
+
+    判据不写死任务名 —— 从建议自己报的 `required_tasks_delta` 里取，两份期望值
+    一定会漂，漂了之后测试绿而结论错。
+    """
+    without = set(r8_diff["without_advice"]["task_keys"])
+    with_advice = set(r8_diff["with_advice"]["task_keys"])
+
+    assert without < with_advice, "建议只许加任务，不许删 —— 无建议那一段必须是子集"
+    assert r8_diff["delta_tasks"], "两段 DAG 没有差异，这一组测的还是空气"
+    assert r8_diff["required_tasks_delta"], "多出来的任务在建议里找不到对应条目"
+    for task in r8_diff["required_tasks_delta"]:
+        assert task["doc_id"], f"{task['title']} 说不出出处"
+        assert task["reason"], f"{task['title']} 说不出为什么"
+        assert task["doc_id"] in r8_diff["citations"]
+
+
+def test_r8_advice_picks_the_approver_the_channel_policy_names(r8_diff):
+    """审批人：无建议落缺省（错套自营政策），有建议按 `AS-004` 换成区域经理。
+
+    两个角色名都不是这里写死的：缺省取自 `plan_advice.DEFAULT_APPROVER_ROLE`，
+    区域经理取自语料里 `AS-004` 的 `approver_role`。
+    """
+    from maos.kb import plan_advice
+
+    want = _as004_params(fixtures.load_case(fixtures.CASE_FILES["R4"][1]))["approver_role"]
+    assert r8_diff["without_advice"]["approver_role"] == plan_advice.DEFAULT_APPROVER_ROLE
+    assert r8_diff["with_advice"]["approver_role"] == want
+    # 人工授权永远在：两段都有审批人，建议做的是**指定**由谁批，不是省掉批这件事。
+    assert r8_diff["without_advice"]["approver_role"]
+    assert r8_diff["with_advice"]["approver_role"]
+
+
+def test_r8_advice_only_tightens_the_retry_budget(r8_diff):
+    """重试预算只许更紧，且两段都收在「转人工」而不是自旋。
+
+    这一条钉的是评委点名的那条反模式：无建议那一段把 env 给的额度用满才停，
+    有建议那一段读到「本租户在这个组合上栽过」，一次就停。**两段都停**——
+    差的是停得早晚，不是停不停。
+    """
+    without, with_advice = r8_diff["without_advice"], r8_diff["with_advice"]
+    assert with_advice["retry_budget"] < without["retry_budget"], "建议没有收紧预算"
+    assert with_advice["replan_used"] < without["replan_used"], "少发的那几次没体现出来"
+    for seg in (without, with_advice):
+        assert [e["reason"] for e in seg["human_exits"]] == ["replan_limit_exceeded"], \
+            "重试到顶必须转人工，不许自旋到返工额度耗尽"
+    assert with_advice["human_exits"][0]["replan_used"] == with_advice["replan_used"]
+    # 建议的预算是从**真实栽过的那一跤**读来的，不是代码里写死的一个 1。
+    assert r8_diff["seed_segment"]["failure_hints"], "准备段没聚出失败提示"
+    assert any(c.startswith("failure_hint_index:") for c in r8_diff["citations"])
+
+
+def test_r8_is_one_switch_and_nothing_else(r8_diff):
+    """唯一的变量就是那个开关：两段的检索**一模一样**，只有建议生成与否不同。
+
+    KbRetrieved 条数相等而 PlanAdvised 一有一无 —— 这是「有无建议」这条线干净的
+    唯一证据。检索条数若也变了，两段的差异就不再只有一个变量。
+    """
+    without, with_advice = r8_diff["without_advice"], r8_diff["with_advice"]
+    assert without["kb_retrieved_events"] == with_advice["kb_retrieved_events"] == 1
+    assert without["plan_advised_events"] == 0, "关掉建议还落事件，开关是假的"
+    assert with_advice["plan_advised_events"] == 1
+    assert without["advice"] is None and with_advice["advice"] is not None

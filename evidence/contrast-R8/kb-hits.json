@@ -1,0 +1,135 @@
+# generated at 2026-09-11T02:31:38.005276+00:00 from 128398d715d027cbe0a52b45ee93063c9b184cf8
+{
+  "segments": {
+    "without_advice": {
+      "case_id": "case-r8-noadv",
+      "hits": [
+        {
+          "doc_id": "kb-policy-tnt-mfg-a-AS-004-v1",
+          "score": 0.505568,
+          "kind": "policy",
+          "title": "经销渠道差异（增渠道商核销，区域经理审批）"
+        },
+        {
+          "doc_id": "auto-failure_hint-case-r8-seed",
+          "score": 0.469733,
+          "kind": "failure_hint",
+          "title": "quality_defect：未收口（到账=unsettled，人工纠错=none）"
+        },
+        {
+          "doc_id": "kb-ecp-mfga-40005",
+          "score": 0.287992,
+          "kind": "error_code_playbook",
+          "title": "支付错误码 40005：调用频次超限（retriable=True + outcome=failed）"
+        },
+        {
+          "doc_id": "kb-pv-mfga-ch-dealer-sku-brg-6205",
+          "score": 0.24275,
+          "kind": "policy",
+          "title": "渠道与产品差异：经销 x 轴承"
+        },
+        {
+          "doc_id": "kb-tp-mfga-dealer-writeoff",
+          "score": 0.207864,
+          "kind": "task_pattern",
+          "title": "经销渠道：政策命中 AS-004，多一步渠道商核销"
+        }
+      ],
+      "advice": null
+    },
+    "with_advice": {
+      "case_id": "case-r8-adv",
+      "hits": [
+        {
+          "doc_id": "kb-policy-tnt-mfg-a-AS-004-v1",
+          "score": 0.505568,
+          "kind": "policy",
+          "title": "经销渠道差异（增渠道商核销，区域经理审批）"
+        },
+        {
+          "doc_id": "auto-failure_hint-case-r8-seed",
+          "score": 0.469733,
+          "kind": "failure_hint",
+          "title": "quality_defect：未收口（到账=unsettled，人工纠错=none）"
+        },
+        {
+          "doc_id": "kb-ecp-mfga-40005",
+          "score": 0.287992,
+          "kind": "error_code_playbook",
+          "title": "支付错误码 40005：调用频次超限（retriable=True + outcome=failed）"
+        },
+        {
+          "doc_id": "kb-pv-mfga-ch-dealer-sku-brg-6205",
+          "score": 0.24275,
+          "kind": "policy",
+          "title": "渠道与产品差异：经销 x 轴承"
+        },
+        {
+          "doc_id": "kb-tp-mfga-dealer-writeoff",
+          "score": 0.207864,
+          "kind": "task_pattern",
+          "title": "经销渠道：政策命中 AS-004，多一步渠道商核销"
+        }
+      ],
+      "advice": {
+        "tenant_id": "tnt-mfg-a",
+        "case_id": "case-r8-adv",
+        "plan_id": "plan_f75b4134ad4c",
+        "required_tasks": [
+          {
+            "role": "refund_channel",
+            "title": "渠道商核销",
+            "reason": "政策规则 AS-004@v1 要求这一步",
+            "doc_id": "kb-policy-tnt-mfg-a-AS-004-v1"
+          },
+          {
+            "role": "refund_intake",
+            "title": "受理多源退款诉求并聚合证据",
+            "reason": "任务拆分模式 经销渠道：政策命中 AS-004，多一步渠道商核销 里有这一步",
+            "doc_id": "kb-tp-mfga-dealer-writeoff"
+          },
+          {
+            "role": "refund_policy",
+            "title": "按下单锁定的政策版本裁定退款资格",
+            "reason": "任务拆分模式 经销渠道：政策命中 AS-004，多一步渠道商核销 里有这一步",
+            "doc_id": "kb-tp-mfga-dealer-writeoff"
+          },
+          {
+            "role": "refund_finance",
+            "title": "核算退款金额并写财务分录",
+            "reason": "任务拆分模式 经销渠道：政策命中 AS-004，多一步渠道商核销 里有这一步",
+            "doc_id": "kb-tp-mfga-dealer-writeoff"
+          },
+          {
+            "role": "refund_intake",
+            "title": "通知客户裁定结果",
+            "reason": "任务拆分模式 经销渠道：政策命中 AS-004，多一步渠道商核销 里有这一步",
+            "doc_id": "kb-tp-mfga-dealer-writeoff"
+          },
+          {
+            "role": "payment_ops",
+            "title": "网关 40005：降低请求并发量",
+            "reason": "本租户在这个组合上已栽过 1 次",
+            "doc_id": "failure_hint_index:ch-dealer:40005:AS-001@v1"
+          }
+        ],
+        "approver_role": "region_manager",
+        "exception_branches": [
+          {
+            "trigger": "gateway_code",
+            "action": "这个组合已栽过 1 次，先转人工核实，不要再按原请求号重发（40005）",
+            "doc_id": "failure_hint_index:ch-dealer:40005:AS-001@v1"
+          }
+        ],
+        "retry_budget": 1,
+        "citations": [
+          "kb-policy-tnt-mfg-a-AS-004-v1",
+          "kb-ecp-mfga-40005",
+          "kb-tp-mfga-dealer-writeoff",
+          "failure_hint_index:ch-dealer:40005:AS-001@v1"
+        ]
+      }
+    }
+  },
+  "note": "两段的命中逐条相同（同一个库、同一份查询），差别只在 advice 有没有生成 —— 这正是 MAOS_KB_ADVICE 那一个变量。"
+}

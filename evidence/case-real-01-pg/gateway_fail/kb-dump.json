@@ -1,9 +1,9 @@
-# generated at 2026-09-11T16:36:51.330185+00:00 from 4a53a5ce5af5ca06bf98803cfc8c9865bd9bb899
+# generated at 2026-09-11T16:43:18.177447+00:00 from f7283a2bca356f1c1107ed257c193759550fcf55
 {
   "entries": [
     {
-      "id": "kn_ab518c5fe062",
-      "plan_id": "plan_d6c914b5e34e",
+      "id": "kn_7ed3ac1a699b",
+      "plan_id": "plan_c5935d883081",
       "kind": "case",
       "title": "处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额 —— FAILED",
       "body": "目标：处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额\n结局：Plan FAILED，共 6 个任务、累计 6 次尝试。\n任务终态：受理多源退款诉求并聚合证据=DONE；按下单锁定的政策版本裁定退款资格=DONE；渠道商核销=DONE；核算退款金额并写财务分录=DONE；发起退款并观察网关终态=FAILED；通知客户裁定结果=PENDING\n本轮累计 findings 1 条。",
@@ -16,11 +16,11 @@
         "refund_payment",
         "refund_policy"
       ],
-      "created_at": "2026-09-11T16:36:51.312147+00:00"
+      "created_at": "2026-09-11T16:43:18.159665+00:00"
     },
     {
-      "id": "kn_5f9dba4e2c0b",
-      "plan_id": "plan_d6c914b5e34e",
+      "id": "kn_756a0564afb5",
+      "plan_id": "plan_c5935d883081",
       "kind": "rule",
       "title": "gateway 闸是本轮最常被卡的一道（1 次）",
       "body": "目标「处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额」执行中，gateway 闸累计判出 1 条 finding，是本轮占比最高的一道。典型问题：\n  · 网关回执 ACQ.SELLER_BALANCE_NOT_ENOUGH（卖家余额不足）：retriable=False / outcome=failed —— 终态失败，原样重发没有意义，需转人工或改单。官方处置：商户账户充值后重新发起\n下次规划同类任务时，把这条写进 acceptance 可以省掉一轮返工。",
@@ -29,11 +29,11 @@
         "gate",
         "gateway"
       ],
-      "created_at": "2026-09-11T16:36:51.313019+00:00"
+      "created_at": "2026-09-11T16:43:18.160542+00:00"
     },
     {
-      "id": "kn_32c30efdd2a6",
-      "plan_id": "plan_d6c914b5e34e",
+      "id": "kn_e41657503d40",
+      "plan_id": "plan_c5935d883081",
       "kind": "rule",
       "title": "治理动作留痕：重规划 0 次、补偿 1 次",
       "body": "目标「处理 tnt-mfg-a 在 ch-dealer 渠道的退款诉求（quality_defect）：需按下单当时锁定的政策版本裁定资格并核定金额」触发过 0 次重规划、1 次补偿回滚。\n  · 补偿 task-rc-2026-0904-001-payment：ok=None error=None",
@@ -42,7 +42,7 @@
         "governance",
         "compensation"
       ],
-      "created_at": "2026-09-11T16:36:51.313860+00:00"
+      "created_at": "2026-09-11T16:43:18.161321+00:00"
     }
   ],
   "count": 3,

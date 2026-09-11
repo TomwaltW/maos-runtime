@@ -53,11 +53,10 @@ from html import escape as _esc
 from urllib.parse import urlsplit
 
 from maos.core.store import SqliteStore
-from maos.domain.refund import objects as _objects, outcome as _OUT
 from maos.ingress.chat import ChatResponder
 from maos.ingress.contracts import CHANNEL_MATRIX, Attachment, InboundMessage, OutboundMessage
-from maos.ingress.router import DEFAULT_LEDGER, IngressRouter, render_roster
-from maos.skills.builtin.refund import compensate as _CP
+from maos.ingress.router import (DEFAULT_LEDGER, IngressRouter, ensure_room_schema,
+                                 render_roster)
 from hiclaw.matrix_bus import (MatrixBusConfig, describe_exc, html_block,
                                open_channel, with_actions)
 
@@ -597,17 +596,13 @@ def wire(channel, *, room_id: str, ledger_path=DEFAULT_LEDGER,   # noqa: ANN001
     # 评委只看得到截图。`init_schema()` 全是 `CREATE TABLE IF NOT EXISTS`，
     # 对已经存在的文件库是幂等的 —— 重启一次房间不会清掉上一轮的账。
     store = SqliteStore(os.environ.get("MAOS_INGRESS_DB") or ":memory:")
-    store.init_schema()
-    # 退款域的表与两处加列（T122）。`init_schema()` 只建内核那四张表；退款域十一张
-    # 表从前由 `run_payload` 那个用完即弃的库顺手建了，现在处置跑在**这个**库上
-    # （`handle_execute` 传 `store=`），而四条结果面命令可能在任何时刻进来 ——
-    # 早于第一次 `/approve` 的那一句 `/assign` 会撞 `no such table`。
-    #
-    # 三句的**顺序不许换**：`ensure_ticket_schema` 只 `ALTER TABLE ... ADD COLUMN`，
-    # 表还不在时它自己会抛 `no such table: compensation_record`。三句都幂等，连跑无副作用。
-    _objects.ensure_schema(store)
-    _CP.ensure_ticket_schema(store)
-    _OUT.ensure_outcome_schema(store)
+    # 内核四张表 + 退款域的表与两处加列（T122），四句收在 `ensure_room_schema()` 里
+    # （T129 抽的，T136 把本入口也接过去）。**两个房间入口共用这一份**：
+    # `scripts/run_ingress.py::_store()` 走的是同一个函数，从前这里自己写四句，
+    # 于是同样是「起房间」，两个入口的库形状可以不一样 —— 今天靠 Skill 层懒建表
+    # 撑住不崩，但读代码的人会在「`/assign` 在这个入口能用吗」这一问上卡住。
+    # 四句的顺序、幂等性、以及「为什么房间这个库必须先有退款域的表」都写在那边。
+    ensure_room_schema(store)
     router = IngressRouter({adapter.name: adapter}, store=store,
                            ledger_path=ledger_path, chat=chat, team=team)
     # router 的构造里已经对 `team` 调过一次 `attach_store`，这里是第二道：

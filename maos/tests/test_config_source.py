@@ -464,14 +464,15 @@ def test_push_diffs_only_governed_keys_and_emits_changes():
         src.close()
 
 
-def test_governed_keys_are_the_eight_whose_changes_must_land_in_the_audit():
-    """T28 立的四个 + T131 补的四个。**按清单写死，不按数目。**
+def test_governed_keys_are_the_ten_whose_changes_must_land_in_the_audit():
+    """T28 立的四个 + T131 补的四个 + T136 补的两个。**按清单写死，不按数目。**
 
-    上一版这条叫 `test_governed_keys_are_exactly_the_four_this_track_owns`，
+    上上版这条叫 `test_governed_keys_are_exactly_the_four_this_track_owns`，
     钉的是「就是这四个」。它把三轮（T35 / T119 / T125）补审计的人挡在了门外 ——
     那三轨的白名单里都没有本文件，加一行就得改这条断言，而那是越界。于是
     `MAOS_FORCE_SCRIPTED` 这类旋钮一直是「能治理，变更不落审计」。
-    改名不是为了让它松一点：清单仍写死，只是不再用「四个」这种把数目当契约的说法。
+    改名不是为了让它松一点：清单仍写死，只是不再用「四个」这种把数目当契约的说法
+    （所以 T136 补两个时改的只是元组，判据的形状一个字没动）。
 
     第二段比第一段值钱：**字面量与各自的读取点同源**。清单里的串一旦手抖打错，
     症状是那个旋钮悄悄不再落审计 —— 与「从来没进过清单」在 event_log 里长得
@@ -480,16 +481,23 @@ def test_governed_keys_are_the_eight_whose_changes_must_land_in_the_audit():
     assert GOVERNED_KEYS == (
         ENV_MAX_REPLAN, FINANCE_THRESHOLD_ENV, "MAOS_SANDBOX_TIMEOUT", ENV_APPROVERS,
         "MAOS_KB_ENABLED", "MAOS_KB_WEIGHTS", "MAOS_KB_ADVICE", "MAOS_FORCE_SCRIPTED",
+        "MAOS_SANDBOX_REQUIRE_CONTAINER", "MAOS_MAX_PLAN_REJECT",
     )
 
     from maos.kb import KB_ENABLED_ENV, KB_WEIGHTS_ENV
     from maos.kb.plan_advice import KB_ADVICE_ENV
     from maos.model.client import ENV_FORCE_SCRIPTED
+    from maos.runtime.plan_approval import ENV_MAX_PLAN_REJECT
+    from maos.tools.sandbox import ENV_REQUIRE_CONTAINER
     # `MAOS_SANDBOX_TIMEOUT` 不在这一段里：`maos/tools/sandbox.py:116` 读的是
     # **字面量**，全仓没有对应常量，而 sandbox.py 是禁动面（契约 §A）—— 不许为了
     # 让这条断言整齐就去给它加一个。上面那个元组已经逐字钉住它。
+    # `MAOS_SANDBOX_REQUIRE_CONTAINER` 是同一个文件里的**另一处**，那一处有常量
+    # （`ENV_REQUIRE_CONTAINER`），所以它进得来 —— 同文件两个旋钮待遇不同，
+    # 分界线是「读取点那边有没有常量」，不是文件。
     for const in (ENV_MAX_REPLAN, FINANCE_THRESHOLD_ENV, ENV_APPROVERS,
-                  KB_ENABLED_ENV, KB_WEIGHTS_ENV, KB_ADVICE_ENV, ENV_FORCE_SCRIPTED):
+                  KB_ENABLED_ENV, KB_WEIGHTS_ENV, KB_ADVICE_ENV, ENV_FORCE_SCRIPTED,
+                  ENV_REQUIRE_CONTAINER, ENV_MAX_PLAN_REJECT):
         assert const in GOVERNED_KEYS, f"{const} 的读取点还在，清单里的串却漂了"
 
 
@@ -531,22 +539,64 @@ def test_a_push_now_audits_the_four_knobs_t131_added():
     assert forced["detail"]["at"], "审计行必须带时间"
 
 
-def test_the_two_knobs_t131_did_not_take_are_still_unaudited():
-    """`MAOS_SANDBOX_REQUIRE_CONTAINER` / `MAOS_MAX_PLAN_REJECT` 仍**不在**清单里。
+def test_the_two_knobs_t131_left_behind_are_audited_since_t136():
+    """`MAOS_SANDBOX_REQUIRE_CONTAINER` / `MAOS_MAX_PLAN_REJECT` 现在**在**清单里。
 
-    这两个是 T131 重核 `maos/config/__init__.py` 那张「完整」表格时发现的：它们
-    也走配置面，表里却从来没有过。没一并补进清单是守派单范围（那一轨点名的是
-    四个），账记在 `docs/BACKLOG.md` 的 `## task-t131`。
+    上一版这条叫 `test_the_two_knobs_t131_did_not_take_are_still_unaudited`，断的是
+    `not in` —— 它不是「钉住现状别改」，而是 `docs/BACKLOG.md` 那笔账的提醒装置：
+    补进清单的那一刻它会红。T136 补了，于是它按设计红了一次，翻成正向判据，
+    账在 `## task-t136` 里划掉（BACKLOG 的行按契约只在末尾追加，不回头改中间那两行，
+    否则 `merge=union` 会在整合期留下同一行的两个版本）。
 
-    这条不是「钉住现状别改」，正相反 —— 它是那笔账的提醒装置：哪天有人把它们
-    补进清单，这条会红，而红的那一刻正好该去把 BACKLOG 那行划掉。
+    翻向而不是删掉：`not in` 那一版真正钉住的是「这两个旋钮与清单的关系是有人想过的」，
+    这件事补齐之后仍然成立，只是方向反了。删掉等于把它变回一个没人看着的格子。
     """
     from maos.runtime.plan_approval import ENV_MAX_PLAN_REJECT
     from maos.tools.sandbox import ENV_REQUIRE_CONTAINER
     for const in (ENV_REQUIRE_CONTAINER, ENV_MAX_PLAN_REJECT):
-        assert const not in GOVERNED_KEYS, (
-            f"{const} 进清单了 —— 去把 docs/BACKLOG.md 的 ## task-t131 那行划掉，"
-            f"并把 maos/config/__init__.py 的表格改成「是」")
+        assert const in GOVERNED_KEYS, (
+            f"{const} 掉出清单了 —— 它在 T136 之前是「能治理，变更不落审计」，"
+            f"退回去的症状是改它不留痕，而前者是安全旋钮")
+
+
+def test_a_push_now_audits_the_two_knobs_t136_added():
+    """推送到达 -> T136 补的两个旋钮各落一条 `ConfigChanged`。**本轨的判据。**
+
+    形状照抄上面那条 T131 的：走 `NacosConfigSource._apply`（全仓唯一读
+    `GOVERNED_KEYS` 的地方），不走读取路 —— 读取路的 `_notice` 对每个读过的 key
+    一视同仁，本来就与清单无关，拿它来验等于什么都没验。
+
+    `MAOS_SANDBOX_REQUIRE_CONTAINER` 那条单独再断一次值：它从 1 变 0 意味着沙箱
+    当场退回本机直跑（`tools/sandbox.py::require_container` 的 fail-closed 档关掉），
+    而在 T136 之前 `event_log` 里一个字都没有。
+    """
+    from maos.config.nacos_source import NacosConfigSource
+    store = _store()
+    src = NacosConfigSource(connect=False)
+    set_config_source(src)
+    detach = attach_config_audit(store, plan_id="plan_t136")
+    try:
+        src._apply("MAOS_SANDBOX_REQUIRE_CONTAINER=1\nMAOS_MAX_PLAN_REJECT=2\n",
+                   first=True)
+        assert store.list_event_log("plan_t136") == [], "首次拉取不是一次配置变更"
+
+        src._apply("MAOS_SANDBOX_REQUIRE_CONTAINER=0\nMAOS_MAX_PLAN_REJECT=5\n",
+                   first=False)
+    finally:
+        detach()
+        src.close()
+
+    rows = [r for r in store.list_event_log("plan_t136")
+            if r["event_type"] == CONFIG_CHANGED_EVENT]
+    assert [r["detail"]["key"] for r in rows] == [
+        "MAOS_SANDBOX_REQUIRE_CONTAINER", "MAOS_MAX_PLAN_REJECT",
+    ], "两个旋钮没有各落一条审计 —— 这正是 T136 之前的现况"
+
+    required = next(r for r in rows
+                    if r["detail"]["key"] == "MAOS_SANDBOX_REQUIRE_CONTAINER")
+    assert (required["detail"]["old"], required["detail"]["new"]) == ("1", "0")
+    assert required["detail"]["origin"] == ORIGIN_NACOS
+    assert required["detail"]["at"], "审计行必须带时间"
 
 
 # ---------------------------------------------------------------------------

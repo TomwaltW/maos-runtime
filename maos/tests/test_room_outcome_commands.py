@@ -1013,13 +1013,26 @@ def _tables(store) -> set[str]:
 
 def test_both_room_entrypoints_build_the_same_schema(tmp_path, monkeypatch):
     """🔴 `scripts/run_ingress.py::_store()` 与 `hiclaw/room_ingress.py::wire()`
-    建出同一副表。
+    建出同一副表，**且两处都是经 `router.ensure_room_schema()` 建的**。
 
     从前 `_store()` 只有 `init_schema()`，`wire()` 还多三句退款域的 ensure ——
     同样是「起房间」，两个入口的库形状不一样。今天靠 Skill 层懒建表撑住不崩，
     但读代码的人会在「`/assign` 在这个入口能用吗」这一问上卡住。
+
+    ## 为什么加第二段（T136）
+
+    T129 抽出 `ensure_room_schema()` 时只改了 `run_ingress.py`（`hiclaw/**` 在那一轨的
+    白名单外），`wire()` 仍是自己写的四句，于是这条测试的断言比它自己的注释弱一档：
+    表集合相等**抓不到**「两处各写各的、碰巧建出同一副表」。那正是当时的真实状态，
+    也是下一次分叉的起点 —— 有人往 `ensure_room_schema()` 里加第五句 ensure，
+    只有走它的那个入口会有新表，而给两边都手补一句的人会让这条断言重新变绿。
+
+    所以第二段直接断源码里出现那个调用：判据从「结果碰巧相同」升成「同一份口径」。
+    表集合那条**不删**：它盯的是运行时的真实结果，源码断言盯的是写法，
+    两者各抓一半（只断源码时，`ensure_room_schema` 自己建漏了表不会红）。
     """
     import importlib.util
+    import inspect
 
     from hiclaw import room_ingress
 
@@ -1043,6 +1056,16 @@ def test_both_room_entrypoints_build_the_same_schema(tmp_path, monkeypatch):
 
     assert _tables(run_ingress._store()) == _tables(wired), (
         "两个房间入口的建表口径又分叉了 —— 两处都该走 router.ensure_room_schema()")
+
+    for fn in (room_ingress.wire, run_ingress._store):
+        src = inspect.getsource(fn)
+        assert "ensure_room_schema(" in src, (
+            f"{fn.__module__}.{fn.__qualname__} 不再走 router.ensure_room_schema() ——"
+            " 上面那条表集合相等只能抓到「一边建了另一边没建」，抓不到「两处各写"
+            " 各的、今天碰巧一样」。建表口径归一个函数，不归两处各自的手抄")
+        assert "ensure_schema(store)" not in src.replace("ensure_room_schema(store)", ""), (
+            f"{fn.__module__}.{fn.__qualname__} 里又出现了单独一句域 ensure ——"
+            " 要加表就加进 router.ensure_room_schema()，那里有顺序约束的说明")
 
 
 def test_ensure_room_schema_is_idempotent():

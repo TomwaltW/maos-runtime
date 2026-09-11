@@ -2604,3 +2604,19 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | **核算那道闸（`effect_risk=H`）的操作者仍是 CLI 写死的「沈思锴（supervisor）」**，不是房间里按 `/approve` 的那个人。付款闸这一跳 T135 已经改成真实操作者（`@boss:maos.local`），两跳因此署了两个不同来源的名字 | HITL trace 上一半真一半假。核算那一跳的语义确实是「由处置流程代跑」（卡片上也这么写），所以不算说谎；但事后问「谁批的这一单」，库里给的是一个 CLI 常量 | `custom_case.APPROVER` 那个常量是 CLI 代跑用的，要透传得给 `run_payload` 的闸循环也加一个 operator 入参（`approval_operator` 现在只管计划级停靠）。本轨没做：派单要的是「签不到的闸不代签」，代签的那一道署名是另一件事，且改它会动 `reject_roles` 之外的那条路 |
 | 2026-09-11 | p10 | **房间那次驳回不落 `approval_record`**：`handle_gate_decision` 走的是 `cp.human_decision()`，留痕落在 `event_log` 的迁移事件上；而 `custom_case` 里 `reject_roles` 那条路会另落一条 `C.record_approval(decision="rejected")` 并 `stamp_approval_revision` 挂成 business_ref。两条路的留痕位置因此不一样 | HITL 证据束**不受影响**（`make_case_bundle.collect_hitl` 读的是 `event_log`，这一跳带操作者完整在册）。缺的是退款域那张审批表上的一行 —— 而 `custom_case` 那条路的注释明写它的用处：「『谁在什么时候驳回了这笔』在库里查不到，而客户投诉时要对的第一件事就是它」。房间里那次驳回是**真人**做的，更该落 | 在 `handle_gate_decision` 里照 `custom_case` 那两句补上即可（`_common.record_approval` + `case_pack.stamp_approval_revision`，都是既有函数，不改它们）。本轨没做是铁律 4：派单要的是「签不到的闸不代签」，补审批表是另一件事，且要先定清楚「驳回付款闸」与「驳回整个案子」在那张表上怎么区分 —— `_reject_case` 那条 submitted/approved 守卫正是为这个分界设的 |
 | 2026-09-11 | p10 | `docs/expected-metrics.json` 的 `collected` 仍是 3898，本轨新增 20 条测试后实跑 3918 | `test_expected_metrics::test_collected_count_matches_source_of_truth` 红。**预期内**（派单 §6.1、契约 §0 都点名） | 整合期统一刷。契约 §A 把那个文件列进「谁都不许动」。本轨在 worktree 里实测 `3835 passed, 82 skipped, 1 failed`，主仓会是 `3838 / 79` |
+## task-t136（收尾四小件，2026-09-11）
+
+> `## task-t131` 的两笔账**本轨已处理**，按契约 §A 不回头改中间那两行（`merge=union` 会留下同一行的两个版本），
+> 在这里划掉：`docs/BACKLOG.md` 的 `## task-t131` 第 1 行与 `## 整合期 p10-d` 第 4 行（两条记的是同一件事）
+> —— `MAOS_SANDBOX_REQUIRE_CONTAINER` 与 `MAOS_MAX_PLAN_REJECT` 已进 `GOVERNED_KEYS`，
+> 实际代价与 T131 估的一致（两行改动 + 一条断言）。那条提醒装置测试已翻成正向判据。
+>
+> `## 整合期 p10-d` 第 3 行（两个房间入口的建表口径）也由本轨收掉：`hiclaw/room_ingress.py::wire()`
+> 现在走 `ensure_room_schema(store)`，断言收紧成「两个入口的源码里都必须出现那个调用」。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | `maos/kb/plan_advice.py` 的两个兜底角色名字面量（`DEFAULT_APPROVER_ROLE = "supervisor"` / `_FALLBACK_TICKET_ROLE = "payment_ops"`）**去不掉**。本轨把审批岗那一处接上了「先问 `roles.DEFAULT_APPROVER_SEAT`、问不到才兜底」，但目录读不出来时总得给一个岗 | 领域无关内核里仍有两个退款域的角色名。今天它们只在「目录读不出来」这条路上生效，取值由域说了算 —— 所以这是**层次上的不干净**，不是行为上的 bug | 真正清零要把它们变成 `advise()` / `_ticket_role()` 的**必传参数**，那要改签名并改所有调用方（`experiment.py` / `manager.py` / `channel_agent.py`）。等**第二个业务域**真的用 `advise()` 那天做 —— 那时参数才有第二个实参，签名的代价才换得到东西。在那之前，`test_no_third_refund_role_literal_creeps_into_this_module` 钉住「不许长出第三个」 |
+| 2026-09-11 | p10 | `GOVERNED_KEYS` 补齐到十个之后，「清单 = 走配置面的旋钮全集」这件事**没有机器判据**：`maos/config/__init__.py` 那张读取点表格仍靠人跑一遍 `grep -rn "get_config_source()"` 去核（这已经是第三次靠人核了：T131 一次、本轨一次） | 下一个人接一个新旋钮却不进清单时，现况会**静默**退回「能治理，变更不落审计」，且那张自称完整的表格会再次过期 —— 前两轮各花了一整轨去发现这件事 | 可做的形状：一条 AST 判据，扫全仓 `get_config_source().get(<第一个实参>)`，把解析得出的 key 与 `GOVERNED_KEYS` 比对，不在清单里的**逐个列出来**（不是断言为空 —— 契约上「接读取点」与「进清单」仍是两件事，可以有意不进）。它把「有没有人想过」从注释升成一次必答题。代价约三十行，归下次动 `test_config_source.py` 的轨 |
+| 2026-09-11 | p10 | `GOVERNED_KEYS` 的数目从八变十，让 `## task-t131` 记的那五处过期口径**又老了一档**：`deploy/nacos.md:142`（「只有那四个 key 会被 diff 出变更」）、`deploy/nacos-live.md:236`、`docs/agent-teams-gap-analysis.md:110`（「治理键只有 4 个全局旋钮 `source.py:96-101`」，行号也已漂到 `:108-140` 附近）、`maos/model/client.py:42`（「**不进** `GOVERNED_KEYS`」） | 只是文字，无行为影响。但 `deploy/nacos*.md` 两处是**真连 Nacos 时照着做的操作手册**，说「只有四个会落审计」会让人以为改别的旋钮不留痕 | 四处都在本轨白名单外，一个字没动（第五处 `maos/kb/plan_advice.py` 在白名单里，本轨修了）。归各自持有轨或整合期，改法是把数目改成十并删掉那句「不进」 |
+| 2026-09-11 | p10 | 空审批人那条病在**申请表批量路径**上没有判据：`scripts/room_team_smoke.py` 的演示语料每一单都写了 `approver_role`，所以第 3 件改前改后 `PLAIN_STDOUT_MD5` 逐字节相同 | 这不是问题本身，是**判据的盲区**：房间里那句「请 X 拍板」今天只被一个不会撞到空审批人的语料覆盖着。换一条没写审批人的政策规则（真房间的真政策就可能这样）当场就撞上，而没有任何束级判据会红 | 两条路：① 给演示语料加一单「政策没写审批人」的案子（会动 `PLAIN_STDOUT_MD5`，且 `scenarios/custom/refund-requests-team.csv` 一直是禁动面）；② 在 `test_room_team_recheck.py` 里加一条只跑单单元的断言。本轨走的是第三条 —— 在 `test_roundtable_verdict.py` 里钉两条针对性测试，够用但不覆盖批量路径。真跑日前若要演「政策缺字段」这一幕再说 |

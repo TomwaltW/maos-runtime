@@ -338,6 +338,62 @@ def test_payment_ops_as_approver_is_demoted_to_the_default_seat(
     assert escalated.approver_role == "finance_manager"
 
 
+def test_an_empty_approver_role_is_demoted_to_the_default_seat(
+        caplog: pytest.LogCaptureFixture) -> None:
+    """🔴 政策没写审批人（空串）= 没人知道该谁批，**不是**「不需要审批」。
+
+    改这条之前 `_approver` 原样留空，于是 headline 渲染成
+
+        建议批复 · 核准预演 6800.00 · 请  拍板
+
+    「请」和「拍板」之间两个空格 —— 一句话没了主语，而它是给 boss 的收口卡，
+    真房间里有人照着它去点人。空审批人该走的口径在 `maos/kb/guardrails.py`
+    第三条红线里写着：那条拦的正是「把空审批人当成不用审批」。
+
+    落点选的是 `roles.DEFAULT_APPROVER_SEAT`，与上面 `payment_ops` 那条
+    （「写了个不该拍板的岗」）同一个 —— 两种配置错一个落点，读代码的人只需记一处。
+    目录里压根没有的角色名仍**不降级**（下面 `cfo` 那条），三支分得开。
+
+    ## 为什么这条不动 `test_room_team_recheck.PLAIN_STDOUT_MD5`
+
+    演示语料（`scenarios/custom/refund-requests-team.csv` + 那几条 AS 规则）每一单的
+    政策规则都写了 `approver_role`，撞不到空这一格；不带参数的 smoke 输出里
+    approve/escalate 两类 headline 也基本不出现（只有一条 reject）。改前改后实跑
+    指纹同为 `1c84e3bc1e61abdc1d00302f5f8df72b`、同为 15024 字节，diff 空 ——
+    所以那个常量一个字没改。**这不代表那行字不会被人看见**：换一条没写审批人的
+    政策规则（真房间里的真政策就可能这样）当场就撞上，而演示语料撞不到恰恰意味着
+    没有任何现有判据会红。这条就是补那个缺口的。
+    """
+    with caplog.at_level(logging.WARNING, logger="maos.roundtable"):
+        verdict = decide(_five(policy={"approver_role": ""}))
+
+    assert verdict.approver_role == "supervisor"
+    assert verdict.headline == "建议批复 · 核准预演 6800.00 · 请 supervisor 拍板"
+    assert "请  " not in verdict.headline, "又渲染成「请  拍板」了（两个空格）"
+    assert any("未指定审批人" in r.getMessage() for r in caplog.records), caplog.text
+
+    # 高风险时从缺省岗继续往上升，口径同 payment_ops 那条：降级不该把这一单
+    # 卡在常规档，也不该让「没写审批人」变成一条比写错还宽松的路。
+    escalated_empty = decide(_five(policy={"approver_role": ""},
+                                   risk={"level": "high", "score": 100,
+                                         "reasons": ["重复退款"]}))
+    assert escalated_empty.approver_role == "finance_manager"
+    assert escalated_empty.headline == "建议升级审批 · 风险 high · 请 finance_manager 复核"
+
+
+def test_a_whitespace_only_approver_role_is_demoted_too() -> None:
+    """几个空格的审批人与空串同一支。
+
+    单独一条而不是并进上一条：空串一眼看得出，而 `"   "` 在政策规则的 JSON 里
+    与正常值长得一样，症状也一样（`请    拍板`）。`_approver` 的空判据靠
+    `str(... or "")` 之后的 `if not role`，只有 `.strip()` 那一步在才抓得到它。
+    """
+    verdict = decide(_five(policy={"approver_role": "   "}))
+
+    assert verdict.approver_role == "supervisor"
+    assert "请  " not in verdict.headline
+
+
 def test_escalation_at_top_tier_keeps_the_role_and_says_so() -> None:
     """已经是最高档就保持 —— 升到一个不存在的角色，房间里那句「请 X 拍板」点不到人。"""
     verdict = decide(_five(policy={"approver_role": "finance_manager"},
@@ -595,10 +651,18 @@ APPROVER_MATRIX: dict[tuple[str, str], tuple[str, str]] = {
     ("supervisor", "high"): ("finance_manager", ""),
     ("finance_manager", "low"): ("finance_manager", ""),
     ("finance_manager", "high"): ("finance_manager", "风险：已是最高审批档，建议二人复核"),
-    # 政策没写审批人：原样留空，**不替它猜一个** —— 猜出来的审批人和没有审批人
-    # 在下游长得一模一样，而后者至少看得出是配置缺了。
-    ("", "low"): ("", ""),
-    ("", "high"): ("", ""),
+    # 政策没写审批人（T136 改）：降到缺省审批岗，高档再从那里往上升 ——
+    # 与上面 `payment_ops` 那两格同一个落点，两种配置错一处落地。
+    #
+    # 改前这两格是 `("", "")`，注释写的是「原样留空，不替它猜一个 —— 猜出来的
+    # 审批人和没有审批人在下游长得一模一样，而后者至少看得出是配置缺了」。
+    # 那句话对了一半：留空在**日志里**确实看得出，但收口卡是给人看的，房间里
+    # 渲染出来是「请  拍板」（两个空格），boss 照着它点不到人，也看不出这是配置缺了。
+    # 空审批人的正确读法是「没人知道该谁批」而不是「不需要审批」
+    # （`maos/kb/guardrails.py` 第三条红线拦的就是后者），所以要给一个岗 + 一条 WARNING：
+    # 看得见的那一半留在日志里，房间里那句话则始终点得到人。
+    ("", "low"): ("supervisor", ""),
+    ("", "high"): ("finance_manager", ""),
     # 目录认不出：原样留着不升档，让人看见自己写的原文（`_spoken` 的 fallback）。
     ("cfo", "low"): ("cfo", ""),
     ("cfo", "high"): ("cfo", ""),

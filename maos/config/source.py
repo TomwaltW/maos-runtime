@@ -86,12 +86,13 @@ ORIGIN_NACOS = "nacos"
 ORIGIN_ENV = "env"
 ORIGIN_DEFAULT = "default"
 
-#: 变更要落审计的八个旋钮。**这是一份清单，不是一道闸** ——
+#: 变更要落审计的十个旋钮。**这是一份清单，不是一道闸** ——
 #: `get()` 不校验 key 在不在里面，别的调用方照样能用本模块读自己的 key。
 #: 它的用处只有一个：Nacos 侧推来一份新文档时，按这份清单逐个 diff 出变更、
 #: 为每一项落一条 `ConfigChanged`（`nacos_source.py::_apply`，全仓唯一读取点）。
 #:
-#: **前四个是 T28 立的，后四个是 T131 补的。** 后四个此前的现况不是「没接上」，
+#: **前四个是 T28 立的，中间四个是 T131 补的，末两个是 T136 补的。**
+#: 补进来之前它们的现况不是「没接上」，
 #: 而是「**能治理，但变更不落审计**」：`_resolve` 读 Nacos 快照时**不看**本清单、
 #: 对任何 key 一视同仁，所以它们在 Nacos 上改了就是能改到、不用重启；缺的只是
 #: 推送到达那一刻没人按清单为它们 diff 出变更。于是有人把 `MAOS_FORCE_SCRIPTED`
@@ -103,17 +104,23 @@ ORIGIN_DEFAULT = "default"
 #: 文件从来不在加旋钮那一轨的白名单里 —— 加一行就得改它，那是越界。
 #: T35（kb 两个）/ T119（advice）/ T125（force_scripted）各自撞的都是它，
 #: 三条决策原文在 `docs/DECISIONS.md`。T131 单开一轨，一次补齐。
+#: T136 补末两个时撞的是同一堵墙的另一半 —— 那条断言改成按清单写死之后不再钉数目，
+#: 但它仍然逐项钉着名单，加两行照样要改它。所以「补清单」这件事至今仍只能由
+#: 持有 `maos/tests/test_config_source.py` 的那一轨做，这是本模块的一条现实约束，
+#: 不是历史遗留：断言松开反而会让「某个旋钮悄悄掉出清单」变成没人会红的事。
 #:
 #: **加进来只动审计面，不动取值**：读取路（`ConfigSource._notice`）本来就对每个
 #: 读过的 key 一视同仁地比对上次观察值，与本清单无关；缺省的 `EnvConfigSource`
 #: 压根走不到 `_apply`。所以 `run.py`、全量测试、证据束的事件数一条都不会变
-#: （T131 实测：`make_evidence` + `verify` 仍 10/10 PASS）。
+#: （T131 与 T136 各实测一次：`make_evidence` + `verify` 仍 10/10 PASS）。
 #:
-#: **本清单不是「走了配置面的旋钮」的全集**：`MAOS_SANDBOX_REQUIRE_CONTAINER`
-#: （`tools/sandbox.py::require_container`）与 `MAOS_MAX_PLAN_REJECT`
-#: （`runtime/plan_approval.py::_max_reject`）也走这条路而仍不在此列，现况与上面
-#: 那四个补齐之前一样。T131 只补了被点名的四个，那两个记在 `docs/BACKLOG.md` 的
-#: `## task-t131`。读取点的完整表格在 `maos/config/__init__.py` 的模块 docstring 里。
+#: **本清单现在就是「走了配置面的旋钮」的全集**（T136 补齐末两个之后）。判据不靠
+#: 人记着：`maos/config/__init__.py` 的读取点表格以
+#: `grep -rn "get_config_source()" --include=*.py` 的实跑结果为准，那张表的
+#: 「进 `GOVERNED_KEYS`」列现在十行全是「是」。全集不是本清单的**契约** ——
+#: 它仍然只是一份「推送到达时为谁落审计」的名单，下一个加旋钮的人照样可以选择
+#: 只接读取点不进清单（那会退回「能治理，变更不落审计」的老格），只是从今天起
+#: 那是一个要写进 DECISIONS 的选择，而不是一个没人注意的默认。
 GOVERNED_KEYS: tuple[str, ...] = (
     # T28 立的四个：安全 / 成本 / 审批三类。
     "MAOS_MAX_REPLAN",
@@ -125,9 +132,16 @@ GOVERNED_KEYS: tuple[str, ...] = (
     "MAOS_KB_WEIGHTS",
     "MAOS_KB_ADVICE",
     "MAOS_FORCE_SCRIPTED",
+    # T136 补齐的两个：T131 重核读取点表格时发现的，那一轨守范围没动。
+    # 前者是**安全旋钮**（要不要强制容器隔离）—— 改它不留审计，比 kb 那三个更该管：
+    # 有人在 Nacos 上把强制容器隔离从 1 改成 0，沙箱当场退回本机直跑，而 `event_log`
+    # 里一个字都没有。后者是审批面的重试预算（`plan_approval::_max_reject`），
+    # 与已在清单里的 `MAOS_MAX_REPLAN` 是同一类成本闸。
+    "MAOS_SANDBOX_REQUIRE_CONTAINER",
+    "MAOS_MAX_PLAN_REJECT",
 )
 
-#: 值一旦命中就只落掩码的 key 形态（铁律 6）。这八个旋钮**都不是密钥**，
+#: 值一旦命中就只落掩码的 key 形态（铁律 6）。这十个旋钮**都不是密钥**，
 #: 这条是护栏不是功能：哪天有人把本模块用来读一个带 TOKEN 的 key，
 #: 审计行里不会当场把它印出来。
 _SECRETISH = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|DSN|CREDENTIAL)", re.I)

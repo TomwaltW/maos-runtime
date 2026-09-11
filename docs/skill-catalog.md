@@ -40,7 +40,7 @@
 | `payment.execute` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.refund` | `maos/skills/builtin/refund/payment_execute.py:34` |
 | `payment.observe` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/payment_observe.py:52` |
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:363` |
-| `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:67` |
+| `refund.compensate` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | （空） | `maos/skills/builtin/refund/compensate.py:68` |
 | `refund.compensation_close` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/compensation_close.py:85` |
 | `refund.evidence_check` | `1.0.0` | 制造售后退款域 | `refund_evidence` | escalate | （空） | `maos/skills/builtin/refund/evidence_check.py:109` |
 | `refund.intake` | `1.0.0` | 制造售后退款域 | `refund_intake` | escalate | （空） | `maos/skills/builtin/refund/intake.py:130` |
@@ -503,7 +503,7 @@
 
 ### refund.compensate @ 1.0.0
 
-实现：`RefundCompensateSkill` @ `maos/skills/builtin/refund/compensate.py:67`
+实现：`RefundCompensateSkill` @ `maos/skills/builtin/refund/compensate.py:68`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

@@ -52,6 +52,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from maos.domain import _schema_util
 from maos.domain.refund import objects
 
 #: 片段文件。目标形状只有这一份，本模块解析它，不在代码里另抄一张列清单。
@@ -111,28 +112,6 @@ class CasePackError(ValueError):
 
 
 # ------------------------------------------------------------------ schema 片段
-def _add_column_if_missing(conn: Any, table: str, col: str, decl: str) -> None:
-    """跨轨契约 §B.2 的私有助手 —— SQLite 的 `ADD COLUMN` 没有 `IF NOT EXISTS`。
-
-    三轨各自复制一份到自己的模块里（契约原话：重复六行，**整合期由主会话去重**，
-    各轨不要为此建共享文件）。
-
-    探针多了一层回落：`PRAGMA table_info` 是 SQLite 方言，T115 把后端换到 PG 之后
-    这条在 `DomainConn` 上不保证有。探不动就退回 `objects._has_column()`
-    （一条 `SELECT <col> FROM <table> LIMIT 1`，后端无关）。**回落不是兜底成
-    「当作没有」** —— 那会让每次都去 ALTER 一次、每次都撞 duplicate column name。
-    """
-    try:
-        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        present = col in cols
-    except Exception:                                  # noqa: BLE001 —— 换后端时 PRAGMA 可能不在
-        present = None
-    if present is None:
-        return                                         # 交给调用方的 SELECT 探针
-    if not present:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-
-
 #: 从片段里抠出 `(表, 列, 声明)`。片段是本轨写的、行数固定，所以一条正则够用 ——
 #: 这里不是通用 SQL 解析器，认不出的行会被 `ensure_t116_schema` 当场报出来，
 #: 不静默跳过（静默跳过的症状是「那一列永远没加上」，且不报错）。
@@ -166,30 +145,18 @@ def fragment_columns(script: str | None = None) -> tuple[tuple[str, str, str], .
 def ensure_t116_schema(store: Any) -> tuple[str, ...]:
     """把 `schema_p10_t116.sql` 的六列加到库上。幂等，可连跑。返回**本次真加了**的列。
 
-    走 `objects._conn` / `lock_of` 取连接是刻意的：退款域所有 SQL 都从
-    `objects.py` 那层薄壳过（那份 docstring 的原话），迁移期也不例外 —— 另开一条
-    连接就是第二条写入路径，而两条路径共用一张表的症状是偶发的事务错配
-    （`lock_of` 的 docstring 讲的就是这件事）。
+    连接走 `_schema_util.open_conn()` 而不是另开一条：那底下就是
+    `objects._conn` / `lock_of` 交出来的同一条连接、同一把锁（`DomainConn.open()`）。
+    退款域所有 SQL 都从 `objects.py` 那层薄壳过（那份 docstring 的原话），迁移期也不
+    例外 —— 另开一条连接就是第二条写入路径，而两条路径共用一张表的症状是偶发的
+    事务错配（`lock_of` 的 docstring 讲的就是这件事）。
+
+    「探一遍、加一遍、核一遍」那三步收在 `maos/domain/_schema_util.py` 里，T117 的
+    `compensate.ensure_ticket_schema()` 用的是同一个（T133 去重；在那以前两处各有
+    一份**行为不一样**的 PRAGMA 助手，见那个模块的 docstring）。
     """
-    wanted = fragment_columns()
-    # 先探一遍**再**加：`_add_column_if_missing` 按契约返回 None，所以「这次到底加了
-    # 哪几列」只能在调它之前问。这个返回值不是装饰 —— 迁移记账、测试与
-    # `scripts/run_case.py` 的输出都按它判「本次是不是真的动了库」。
-    # 探针用 `objects._has_column`（一条 SELECT）而不是 PRAGMA：后端无关，
-    # 而且它连生成列都探得到（见那个函数的 docstring 第二条）。
-    missing = [(t, c, d) for t, c, d in wanted if not objects._has_column(store, t, c)]
-
-    conn = objects._conn(store)
-    with objects.lock_of(store):
-        for table, col, decl in wanted:
-            _add_column_if_missing(conn, table, col, decl)
-        conn.commit()
-
-    # PRAGMA 探不动时（换后端）上一段整体是 no-op，这里用后端无关的路径补一遍。
-    for table, col, decl in missing:
-        if not objects._has_column(store, table, col):
-            objects.execute(store, f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-    return tuple(f"{t}.{c}" for t, c, _d in missing)
+    return _schema_util.apply_columns(
+        _schema_util.open_conn(store), fragment_columns())
 
 
 def next_version(store: Any, table: str, *, tenant_id: str, case_id: str,

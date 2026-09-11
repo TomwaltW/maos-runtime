@@ -303,6 +303,54 @@ def test_the_payment_gate_rejection_is_what_fails_the_plan(gateway_fail):
     assert _read(gateway_fail / "outcome.json")["plan_state"] == "FAILED"
 
 
+def test_gateway_fail_carries_a_real_rework_from_the_gate(gateway_fail):
+    """返工那一环（T124）：闸判返工 -> requeue，`hitl-trace` 里必须看得见。
+
+    这一束从前一条 `REWORK` 都没有 —— 注入的是终态失败码，机器只发起一次，
+    评委第一条要的「返工 / HITL Trace」只能指去别的场景束。现在第一段注的是
+    `40005`（retriable + failed），闸判 blocker、`custom_case` 不接 replanner，
+    于是落在 `AWAITING_REVIEW -> REWORK [gate_rework]` 上。
+
+    `actor` 必须是 `gate`：这是**机器**自己决定再试一次，不是人按的按钮。
+    记成人的动作，这份 Trace 就把两种主体混成了一种。
+    """
+    hitl = _read(gateway_fail / "hitl-trace.json")
+    reworks = [r for r in hitl["trace"] if r.get("kind") == "rework"]
+    assert len(reworks) >= 1, (
+        "gateway_fail 束里一条 rework 都没有 —— 注入的码换回终态失败码了？"
+        "只有 retriable=True + outcome=failed 那一格才长得出 REWORK")
+    for row in reworks:
+        assert row["actor"] == "gate", f"返工的发起者必须是闸，实际 {row['actor']}"
+        assert "REWORK" in (row["transition"] or "")
+
+
+def test_gateway_fail_leaves_no_dangling_business_ref(gateway_fail):
+    """同渠道重试之后不许留悬空引用（T124）。
+
+    这一束正好踩在那条缺陷上：返工重发用的是同一个幂等键，网关原样返回同一笔，
+    `request_id` 不变而版本 1->2。摘旧引用的判据只比 `object_id` 的话，v1 会留下来
+    指着一个已经是 v2 的对象 —— 而症状是静默的，只有这里和 `verify.py` 数得出来。
+    """
+    objs = _read(gateway_fail / "business-objects.json")
+    assert objs["dangling"] == 0, (
+        f"gateway_fail 束里有 {objs['dangling']} 条悬空引用 —— "
+        f"payment_execute 摘旧引用的 DELETE 判据退回只比 object_id 了？")
+    assert objs["resolved"] == len(objs["objects"]), "每一条引用都得指得到当前那一份"
+
+
+def test_gateway_fail_really_sent_the_payment_twice(gateway_fail):
+    """返工不是只在状态机上转了一圈：`payment.execute` 必须真的又发起了一次。
+
+    只看 `REWORK` 那一跳的话，一个「返工了但没重发」的实现也能骗过守卫 ——
+    而那正是这条证据要排除的。
+    """
+    rows = _read(gateway_fail / "skills.json")["contract_skills"]
+    execute = next(r for r in rows if r["skill"] == "payment.execute")
+    assert execute["invocations"] >= 2, (
+        f"payment.execute 只被调了 {execute['invocations']} 次 —— "
+        f"返工之后没有重新发起，这条 Trace 演的就不是返工")
+
+
 def test_gateway_fail_is_the_path_that_completes_the_ten_object_types(happy, gateway_fail):
     """十类业务对象：顺利路径缺人工补偿，失败路径把它补上 —— 合起来才是 10/10。"""
     ok = _read(happy / "INDEX.json")

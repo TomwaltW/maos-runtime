@@ -77,19 +77,37 @@ from scripts.make_evidence import (  # noqa: E402
 DEFAULT_CASE = os.path.join(ROOT, "scenarios", "refund", "cases", "case_real_01.json")
 DEFAULT_OUT = os.path.join(ROOT, "evidence", "case-real-01")
 
-#: `gateway_fail` 注入的网关码：**卖家余额不足**（`retriable=False` / `outcome=failed`）。
+#: `gateway_fail` 注入的网关码，**两段**：先 `40005`（`retriable=True` /
+#: `outcome=failed`，业务系统繁忙），机器按可重试重发一次；第二次网关改口
+#: **卖家余额不足**（`retriable=False` / `outcome=failed`），终态，转人工。
 #:
-#: 选它而不是可重试的 `40005`，是被一个**现存缺陷**逼的，不是剧情偏好：
-#: 同一渠道重试时 `refund_request` 是**一行**、版本原地 1->2->3
-#: （`payment_execute.py:143` 的 `next_version` + `INSERT OR REPLACE`），而每次重试
-#: 都按当时的版本挂一条 `business_ref`；那里的 DELETE 只摘 `object_id` 不同的旧引用，
-#: 于是 v1/v2 两条引用指向一个已经变成 v3 的对象 —— `resolve_business_ref` 按
-#: `AND version=?` 收窄，当场悬空，`verify.py` 第 2 项判负。已记 docs/BACKLOG.md。
-#: 换成终态失败码之后只发起一次，引用不悬空；代价是这条路径没有 `REWORK`
-#: （返工的证据在 `evidence/scenario-2/`），换来的是 remedy 原文「商户账户充值后
-#: 重新发起」这条更贴人工补偿的剧情。取值出处
-#: `maos/tools/gateway_codes.py::SELLER_BALANCE_NOT_ENOUGH`。
-GATEWAY_FAIL_CODE = "ACQ.SELLER_BALANCE_NOT_ENOUGH"
+#: 这条路径从前只有第二段。第一段被一个**现存缺陷**逼退过：同渠道重试时
+#: `refund_request` 是**一行**、版本原地 1->2->3（`payment_execute.py` 的
+#: `next_version` + `INSERT OR REPLACE`），而每次重试都按当时的版本挂一条
+#: `business_ref`；那里的 DELETE 当时只摘 `object_id` 不同的旧引用，于是 v1/v2
+#: 两条引用指向一个已经变成 v3 的对象，`resolve_business_ref` 按 `AND version=?`
+#: 收窄当场悬空，`verify.py` 第 2 项判负。**T124 把 DELETE 的判据改成
+#: `(object_id<>? OR object_version<>?)` 之后这条路通了**，可重试码随之改回来。
+#:
+#: 为什么非要第一段：评委第一条要「返工 / HITL Trace」，而单案例束里 `REWORK`
+#: 原先一条都没有。`40005` 是唯一能长出它的那一格 —— 实跑定的码，不是推的：
+#:   · `40005`（retriable + failed）-> 闸判 `GW_REPLAN_CHANNEL`（blocker），
+#:     而 `custom_case` 基线不接 replanner，于是落到
+#:     `AWAITING_REVIEW -> REWORK [gate_rework]` -> `REWORK -> PENDING [requeue]`。
+#:   · `ACQ.SYSTEM_ERROR`（retriable + unknown）-> 闸判 `GW_QUERY_FIRST`，
+#:     严重度是 **info 不挡闸**（`gate.py::GATEWAY_SEVERITY`），实跑直接 `gate_pass`、
+#:     `payment.observe` 轮询两次就问出 settled —— 一条 `REWORK` 都长不出来。
+#: 取值出处 `maos/tools/gateway_codes.py::RATE_LIMITED` 与 `SELLER_BALANCE_NOT_ENOUGH`。
+GATEWAY_FAIL_CODE = "40005"
+
+#: 第一段重发几次之后改口。取 1：演到「机器自己试过一次」就够，多试只是自旋 ——
+#: 而「绝不自旋」正是这条路径想证的另一半（`control_plane._should_replan` 的注释）。
+GATEWAY_FAIL_TIMES = 1
+
+#: 改口之后的终态码。它决定了后面整段人工剧情：remedy 原文「商户账户充值后重新发起」
+#: -> 闸判 `GW_HUMAN_TERMINAL` -> 转人工 -> 人在付款闸上拒签 -> 补偿工单。
+#: `MANUAL_EVIDENCE` 与 `RESOLUTION_KIND` 都是按它写的，换码要一起换。
+GATEWAY_FAIL_THEN_CODE = "ACQ.SELLER_BALANCE_NOT_ENOUGH"
 
 #: 补偿工单的承接岗与线下凭证。凭证摘要的**第一个词**是凭证引用（渠道流水号 /
 #: 外部工单号）—— 它是这份人工凭证作为外部事实的出处，没有出处的凭证只是一句断言。
@@ -149,8 +167,14 @@ PATHS: dict[str, dict] = {
         "required_events": ("PlanApproved", "SnapshotDrift"),
     },
     "gateway_fail": {
-        "title": "网关退款失败：人在付款闸上拒签 -> 开补偿工单 -> 派单 -> 线下凭证回填观察",
+        "title": "网关退款失败：机器返工重发一次 -> 网关改口终态失败 -> 人在付款闸上拒签"
+                 " -> 开补偿工单 -> 派单 -> 线下凭证回填观察",
         "approve": True, "fail_with": GATEWAY_FAIL_CODE, "drift": False,
+        # 「失败 N 次后改判」的注入。写在路径配置上而不是案例 JSON 里：它是这条
+        # **路径**要演的时序，不是这一单本身的属性（换个案子照样要演）。
+        # 两个键原样进 `payload["gateway"]`，见 `_gateway_retry_injection`。
+        "gateway_retry": {"fail_times": GATEWAY_FAIL_TIMES,
+                          "then_fail_with": GATEWAY_FAIL_THEN_CODE},
         "plan_approval": "approve", "compensate": True,
         # 核算照批，**付款那一步不放行**：钱没退出去，人不能签「这一步完成了」。
         # 这不是演出效果 —— 签了的话 Plan 收在 DONE，而一个 DONE 的计划配一个
@@ -260,6 +284,45 @@ def _file_backed_store(db_path: str):
         common.SqliteStore = original                          # type: ignore[assignment]
 
 
+@contextlib.contextmanager
+def _gateway_retry_injection():
+    """让 `payload["gateway"]` 上的 `fail_times` / `then_fail_with` 真的生效。
+
+    手法与 `_file_backed_store` 同一套，理由也一样：`flows/**` 是别轨的面
+    （`custom_case._gateway_of` 现在只认 `settle_after` 与 `fail_with`），
+    一个字节都不动，注入选项由本脚本在装配处包一层。
+
+    本函数**只转发、不自己造网关**：错误码仍由 `_gateway_of` 按 `fail_with` 注进
+    `script`，这里照着它给的那份 script 补上「失败几次、之后改判成什么」。哪天
+    `_gateway_of` 原生认这两个键，整个函数连同 `run_path` 里那一层 `with` 一起删掉，
+    路径配置一个字都不用改。
+    """
+    from maos.flows import custom_case
+    from maos.tools.gateway import MockGateway
+
+    original = custom_case._gateway_of
+
+    def wrapped(payload: dict, *, fail_with: str | None) -> MockGateway:
+        gw = original(payload, fail_with=fail_with)
+        cfg = payload.get("gateway") if isinstance(payload.get("gateway"), dict) else {}
+        times = cfg.get("fail_times")
+        if times is None or not gw.script:
+            return gw                     # 没配注入（或没注入码）：原样用它造的那个
+        then = cfg.get("then_fail_with")
+        # 按 script 里的每个 out_trade_no 各配一份 —— `_gateway_of` 只往里放一单，
+        # 但照着它的形状写，多一单时不用回来改这里。
+        return MockGateway(
+            settle_after=gw.settle_after, script=gw.script,
+            fail_times={trade_no: int(times) for trade_no in gw.script},
+            after_fail=({trade_no: str(then) for trade_no in gw.script} if then else None))
+
+    custom_case._gateway_of = wrapped                          # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        custom_case._gateway_of = original                     # type: ignore[assignment]
+
+
 def _compensate(store, row: dict, *, trace_id: str) -> dict:
     """网关明确失败之后的域内补偿收口 + T117 的工单闭环。
 
@@ -291,7 +354,8 @@ def _compensate(store, row: dict, *, trace_id: str) -> dict:
 
     res = SkillInvoker(COMPENSATION_IDENTITY, store).invoke("refund.compensate", {
         "tenant_id": tenant_id, "case_id": case_id, "operator": OPERATOR,
-        "reason": f"网关明确失败（{GATEWAY_FAIL_CODE}），机器返工修不好，转人工线下退款",
+        "reason": f"网关明确失败（{GATEWAY_FAIL_THEN_CODE}），机器已按可重试码"
+                  f"（{GATEWAY_FAIL_CODE}）返工重发过一次仍失败，转人工线下退款",
         "assignee_role": TICKET_ROLE,
     }, extras=extras)
     if res.status != "ok" or not isinstance(res.output, dict):
@@ -343,7 +407,16 @@ def run_path(path: str, payload: dict, db_path: str, *, live: bool) -> tuple[dic
     # 无关的 DAG，这条案例当场跑不下去。见本文件抬头「--live-model 与 verify 的口径」。
     seat_model = select_model_client(None) if live else None
 
-    with _file_backed_store(db_path) as seen, _captured() as buf:
+    # 「失败 N 次后改判」的注入两个键原样进 `payload["gateway"]` —— 与 T120 用的
+    # `settle_after` 同一条路。不改入参里那份案例 JSON：注入是这条**路径**的时序，
+    # 不是这一单的属性，写进案例文件会让另外三条路径也背上它。
+    retry = cfg.get("gateway_retry")
+    if retry:
+        gw_cfg = dict(payload.get("gateway") or {})
+        gw_cfg.update(retry)
+        payload = {**payload, "gateway": gw_cfg}
+
+    with _file_backed_store(db_path) as seen, _gateway_retry_injection(), _captured() as buf:
         started = time.perf_counter()
         row = custom_case.run_payload(
             payload, approve=cfg["approve"], fail_with=cfg["fail_with"],

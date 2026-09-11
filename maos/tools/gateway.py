@@ -209,7 +209,12 @@ class _Entry:
     request_id: str
     request: RefundRequest
     code: GatewayCode
-    """这一笔最终会落到哪个码（成功是 SUCCESS）。"""
+    """这一笔当下落在哪个码（成功是 SUCCESS）。
+
+    绝大多数时候它建好就不再变。唯一会变的是 ``fail_times`` 注入用完那一次 ——
+    见 ``MockGateway._supersede_due``：上一笔是「网关在入口就拒了、业务确定没执行」，
+    重发把**同一笔请求**的下落改了，不是新开一笔。
+    """
 
     polls: int = 0
     settled: bool = False
@@ -224,10 +229,22 @@ class MockGateway:
 
     错误注入按 ``out_trade_no`` 走 ``script``，让 R-2 的场景可以用特定订单号
     稳定触发特定错误码，不依赖随机数（确定性回放是 D 轨定下的口径）。
+
+    ``script`` 一个人只能演「永远失败」。``fail_times`` 补上第二种时序：**前 N 次
+    落注入的码，第 N+1 次改判**（改判成什么由 ``after_fail`` 说，缺省是成功码）。
+    没有它就演不出「机器返工重发一次」这件事 —— 同一个幂等键重发时账本原样返回
+    上一次的观察，重试多少趟都是同一个失败，Trace 上只剩「试到次数耗尽」。
+
+    改判**只在一格里安全**，构造时就把这条焊死（见 ``_validate_retry_injection``）：
+    注入的码必须 ``retriable=True + outcome=failed``，即网关在入口就拒了、
+    **业务确定没执行**。``outcome=unknown`` 的两格重发可能造出第二笔退款，
+    那是本模块防的第一号事故，不许用注入选项绕过去（铁律 8）。
     """
 
     def __init__(self, *, settle_after: int = DEFAULT_SETTLE_AFTER,
-                 script: dict[str, str] | None = None) -> None:
+                 script: dict[str, str] | None = None,
+                 fail_times: dict[str, int] | None = None,
+                 after_fail: dict[str, str] | None = None) -> None:
         if settle_after < 1:
             raise ValueError("settle_after 至少为 1 —— 退款不允许一步到终态")
         self.settle_after = settle_after
@@ -235,8 +252,44 @@ class MockGateway:
         self.script = dict(script or {})
         for trade_no, code in self.script.items():
             lookup(code)                      # 未知码在这里就抛，见 gateway_codes.lookup
+        #: out_trade_no -> 前几次 refund 落 ``script`` 的码。不配就是「永远失败」。
+        self.fail_times = {str(k): int(v) for k, v in (fail_times or {}).items()}
+        #: out_trade_no -> 次数用完之后改判成哪个码。不配就是成功码。
+        self.after_fail = {str(k): str(v) for k, v in (after_fail or {}).items()}
+        self._validate_retry_injection()
         self._ledger: dict[str, _Entry] = {}  # idempotency_key -> 账本
         self._by_request: dict[str, str] = {}  # request_id -> idempotency_key
+        self._attempts: dict[str, int] = {}   # out_trade_no -> 受理过几次 refund 尝试
+
+    def _validate_retry_injection(self) -> None:
+        """把「失败 N 次后改判」的注入在构造时校验干净，不留到调用时才炸。
+
+        第三条是铁律 8 的落点，也是本选项唯一危险的地方：同一个 ``out_request_no``
+        上改判重发，只有在「网关入口拒了、业务确定没执行」那一格才安全。别的格子
+        重发可能造出第二笔退款 —— 与其在注入点写句注释提醒，不如在这里直接拒掉。
+        """
+        for trade_no in self.after_fail:
+            if trade_no not in self.fail_times:
+                raise ValueError(
+                    f"after_fail 配了 {trade_no!r} 却没配 fail_times —— "
+                    f"没有「失败几次」就无从谈起「之后改判成什么」")
+        for trade_no, times in self.fail_times.items():
+            if times < 0:
+                raise ValueError(
+                    f"fail_times[{trade_no!r}]={times}：不许为负。"
+                    f"0 表示第一次就落改判后的码（等于没注入失败）")
+            if trade_no not in self.script:
+                raise ValueError(
+                    f"fail_times 配了 {trade_no!r}，但 script 里没有它的码 —— "
+                    f"没有注入的码就无所谓「失败 N 次」")
+            entry = lookup(self.script[trade_no])
+            if not (entry.retriable and entry.outcome == OUTCOME_FAILED):
+                raise ValueError(
+                    f"{entry.code} 是 retriable={entry.retriable} / "
+                    f"outcome={entry.outcome}，不许配 fail_times：在同一个 "
+                    f"out_request_no 上改判重发，只在「网关入口拒了、业务确定没执行」"
+                    f"那一格才安全（铁律 8）")
+            lookup(self.after_fail.get(trade_no, SUCCESS.code))   # 改判的码也得在表里
 
     # 这里曾有一个不带内存地址的 __repr__，理由是「这个对象会进 invoke_tool 的
     # params_digest」。T76 之后**活对象不再进 params**（两个 ToolPort 只收
@@ -266,13 +319,57 @@ class MockGateway:
                                 DISCORDANT_REPEAT_REQUEST,
                                 poll_count=existing.polls,
                                 detail={"duplicate_of": existing.request_id})
+            if self._supersede_due(existing, request.out_trade_no):
+                # 注入的失败次数用完了。上一笔落的是「网关在入口就拒了、业务确定
+                # 没执行」的码 —— 这个 out_request_no 上没有任何真实退款发生过，
+                # 所以这次重发不是「再读一遍旧观察」，而是**同一笔请求这一次被受理**。
+                # 仍然不新建第二笔：request_id 不变，改的只是这一笔的下落。
+                existing.code = self._next_code(request.out_trade_no)
+                existing.polls, existing.settled = 0, False
+                log.info("幂等键 %s 注入的失败次数已用完，本次改判为 %s",
+                         key, existing.code.code)
+                return self._accept(existing)
             # 参数一致：原样返回当前观察，不推进状态、不新建。
             return self._observe(existing, advance=False)
 
-        code = lookup(self.script.get(request.out_trade_no, SUCCESS.code))
-        entry = _Entry(request_id=f"gw_{uuid.uuid4().hex[:16]}", request=request, code=code)
+        entry = _Entry(request_id=f"gw_{uuid.uuid4().hex[:16]}", request=request,
+                       code=self._next_code(request.out_trade_no))
         self._ledger[key] = entry
         self._by_request[entry.request_id] = key
+        return self._accept(entry)
+
+    def _next_code(self, trade_no: str) -> GatewayCode:
+        """这一次 refund 尝试落哪个码，顺手把尝试数记上。
+
+        没配 ``fail_times`` 时恒为 ``script`` 里那个码 —— 既有行为一个字节不变。
+        """
+        attempt = self._attempts.get(trade_no, 0)
+        self._attempts[trade_no] = attempt + 1
+        injected = self.script.get(trade_no)
+        if injected is None:
+            return SUCCESS
+        budget = self.fail_times.get(trade_no)
+        if budget is None or attempt < budget:
+            return lookup(injected)
+        return lookup(self.after_fail.get(trade_no, SUCCESS.code))
+
+    def _supersede_due(self, entry: _Entry, trade_no: str) -> bool:
+        """这一笔该不该改判。没配注入的网关恒 False，幂等那一段一个字节不变。
+
+        第二条判据让改判**只发生一次**：改判之后 ``entry.code`` 要么是成功码
+        （``outcome=success``）、要么是终态失败码（``retriable=False``），两者都
+        落不进这一条，于是第三次、第四次重发照常走幂等返回，不会反复翻烧饼。
+        """
+        budget = self.fail_times.get(trade_no)
+        if budget is None:
+            return False
+        if entry.code.outcome != OUTCOME_FAILED or not entry.code.retriable:
+            return False
+        return self._attempts.get(trade_no, 0) >= budget
+
+    def _accept(self, entry: _Entry) -> GatewayReceipt:
+        """按这一笔当下的码出一份受理回执。**这里绝不返回 settled。**"""
+        code, key = entry.code, entry.request.idempotency_key
 
         # 终态失败的码（如 TRADE_NOT_EXIST）网关当场就能判，不用等轮询。
         # 但**成功不能当场判** —— 那是异步的，必须 query。

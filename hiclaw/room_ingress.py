@@ -16,6 +16,10 @@
     怎么放行（`maos/ingress/sheet.py`）。只读，不动钱。
   · 拖一张照片 / PDF —— 收下当证据，等一句 ``/refund`` 认领。
   · ``/refund`` / ``/approve`` / ``/reject`` / ``/pending`` / ``/help`` —— 与飞书群同一套。
+  · 钱没退出去那一单的后半程（T122）：``/assign`` 派单、``/resolve`` 交线下凭证关单、
+    ``/confirm`` 记客户确认、``/complain`` 记投诉。**处置与这四条命令跑在同一个库上**
+    （`IngressRouter.store`），所以工单与到账观察查得到 —— 在这之前处置跑在一个
+    用完即弃的 `:memory:` 里，``/assign`` 一定报「没有人工工单」。
   · 装上圆桌之后（缺省就装，``--no-team`` 关）：预检 / 申请表 / 放行三处各让五个岗位
     依次说一句，``/team`` 报一遍谁是谁。圆桌是**旁路** —— 它没装、没账号、没模型
     都只是少几句发言，命令面与申请表一个字不受影响。
@@ -31,7 +35,9 @@
 
   · 不接长驻运行时：任务级 ``/approve <task_id>`` 在本进程无处可落（router 会说明）。
     那是 `room_demo` / `ap_room` 的地盘，各起各的进程，别在一个房间里两个 bot 抢答。
-  · 不落库：幂等表在 `:memory:`，待办与暂存证据随进程消失（口径同 `run_ingress`）。
+  · 待办与暂存证据不落库：它们在进程内存里，随进程消失（口径同 `run_ingress`）。
+    **库本身落不落，看 `MAOS_INGRESS_DB`**：不设就是 `:memory:`（演完即散），
+    指到一个文件时，这一轮跑过的案子、工单、观察、四判据跑完还在，第二天回查得到。
 """
 
 from __future__ import annotations
@@ -47,9 +53,11 @@ from html import escape as _esc
 from urllib.parse import urlsplit
 
 from maos.core.store import SqliteStore
+from maos.domain.refund import objects as _objects, outcome as _OUT
 from maos.ingress.chat import ChatResponder
 from maos.ingress.contracts import CHANNEL_MATRIX, Attachment, InboundMessage, OutboundMessage
 from maos.ingress.router import DEFAULT_LEDGER, IngressRouter, render_roster
+from maos.skills.builtin.refund import compensate as _CP
 from hiclaw.matrix_bus import (MatrixBusConfig, describe_exc, html_block,
                                open_channel, with_actions)
 
@@ -590,6 +598,16 @@ def wire(channel, *, room_id: str, ledger_path=DEFAULT_LEDGER,   # noqa: ANN001
     # 对已经存在的文件库是幂等的 —— 重启一次房间不会清掉上一轮的账。
     store = SqliteStore(os.environ.get("MAOS_INGRESS_DB") or ":memory:")
     store.init_schema()
+    # 退款域的表与两处加列（T122）。`init_schema()` 只建内核那四张表；退款域十一张
+    # 表从前由 `run_payload` 那个用完即弃的库顺手建了，现在处置跑在**这个**库上
+    # （`handle_execute` 传 `store=`），而四条结果面命令可能在任何时刻进来 ——
+    # 早于第一次 `/approve` 的那一句 `/assign` 会撞 `no such table`。
+    #
+    # 三句的**顺序不许换**：`ensure_ticket_schema` 只 `ALTER TABLE ... ADD COLUMN`，
+    # 表还不在时它自己会抛 `no such table: compensation_record`。三句都幂等，连跑无副作用。
+    _objects.ensure_schema(store)
+    _CP.ensure_ticket_schema(store)
+    _OUT.ensure_outcome_schema(store)
     router = IngressRouter({adapter.name: adapter}, store=store,
                            ledger_path=ledger_path, chat=chat, team=team)
     # router 的构造里已经对 `team` 调过一次 `attach_store`，这里是第二道：

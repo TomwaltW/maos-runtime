@@ -85,6 +85,7 @@ from typing import Any, Callable
 
 from maos.domain.refund import annotation, objects as _refund_objects
 from maos.ingress import classify as _classify
+from maos.ingress import outcome_commands as _outcome_cmds
 from maos.ingress import sheet as _sheet
 from maos.ingress.attachments import (
     AttachmentBuffer, AttachmentStore, AttachmentTooLarge, AttachmentTypeRejected,
@@ -114,10 +115,16 @@ CMD_TEAM = "team"
 #: 这里只负责把消息**转过去**，不重新实现判定。
 CMD_APPROVAL = ("approve", "reject")
 
+#: 结果面的四条命令（`/assign` `/resolve` `/confirm` `/complain`）。**一个字都不在
+#: 这里重新定义**：词表与处理函数都在 `maos/ingress/outcome_commands.py`，本文件只
+#: 负责把消息转过去（口径同 `CMD_APPROVAL` 之于 `RoomApprovalBridge`）。
+CMD_OUTCOME = _outcome_cmds.COMMANDS
+
 #: 本 router 认领的全部命令词。与 `_dispatch` 那串 if **必须同源**：少列一个词，
 #: 那条命令带着图进来时会多触发一轮证据复检（`_is_command`，跨轨契约 §4）。
 #: `test_ingress_evidence_recheck.py::test_known_verbs_covers_dispatch` 钉着两处一致。
-KNOWN_VERBS = frozenset({CMD_REFUND, CMD_HELP, CMD_PENDING, CMD_TEAM, *CMD_APPROVAL})
+KNOWN_VERBS = frozenset({CMD_REFUND, CMD_HELP, CMD_PENDING, CMD_TEAM, *CMD_APPROVAL,
+                         *CMD_OUTCOME})
 
 #: 待办的有效期（秒）。过期的待办**不许放行**：预检结论是按当时的政策与日期算的，
 #: 隔一天再批，窗口天数已经变了，而放行时不会重算 —— 那就是拿旧结论退新钱。
@@ -141,7 +148,14 @@ USAGE = """MAOS 退款助手 · 可用命令
   /reject  <case_id> [原因]  撤掉待办
   /pending                   列出待办与等人审批的任务
   /team                      圆桌有哪几岗、各岗挂着什么 skill（只读，不调模型）
-  /help                      本说明"""
+  /help                      本说明
+
+钱没退出去之后（放行回帖里会给出工单号）：
+  /assign  <工单号> <岗位>            把补偿工单派给一个岗，例：/assign MT-RC-… payment_ops
+  /resolve <工单号> <流水号> <摘要>   提交线下凭证关单（第一个词当凭证引用）
+                                      关单人必须是这张单的承接人
+  /confirm  <案号>                    记下客户确认收到退款
+  /complain <案号> <内容>             记一条客户投诉（投诉一开，这单业务就没算成）"""
 
 
 class CommandError(ValueError):
@@ -245,9 +259,19 @@ class Command:
 class IngressRouter:
     """一条入站消息的全部处置。**同步**执行，耗时由调用方决定要不要丢后台。
 
-    ``store`` 只用来做幂等（`claim_idempotency`）。它与 ``/refund`` 跑出来的那次
-    处置**不是同一个库** —— `custom_case.run_payload()` 每次自建一套 `:memory:`
-    运行时并一跑到底。这一点的后果写在 `handle_refund` 里。
+    ``store`` 是**这个房间的库**，处置就跑在它上面（T122）：`handle_execute` 把
+    ``store=self.store`` 透给 `custom_case.run_payload()`，于是 plan / task /
+    退款域那十一张表全部落在这里，而不是从前那套「`run_payload` 自建一个
+    `:memory:`、跑完即灭」。
+
+    这不是收纳整齐的问题，是四条结果面命令成立的前提：``/assign`` 要查
+    `compensation_record` 里的工单，``/resolve`` 要往 `payment_observation` 回填
+    一条观察，``/confirm`` ``/complain`` 要改 `case_outcome` —— 处置在别的库里跑完
+    就消失的话，这四条命令一条都查不到东西，而症状是「房间里打了命令没反应」。
+    `MAOS_INGRESS_DB` 指到文件时（`hiclaw/room_ingress.py::wire`），连跨进程回查
+    都成立：演示完第二天还能把那一单的证据链翻出来。
+
+    幂等（`claim_idempotency`）仍走同一个库，与从前一样。
     """
 
     def __init__(self, adapters: dict[str, ChannelAdapter], *, store: Any,
@@ -1036,6 +1060,8 @@ class IngressRouter:
             return self.handle_team(msg)
         if cmd.verb == CMD_HELP:
             return USAGE
+        if cmd.verb in CMD_OUTCOME:
+            return self.handle_outcome(msg, cmd)
         return ""                                       # 不是我们的命令词，不接管
 
     # -- 幂等 ---------------------------------------------------------------
@@ -1170,6 +1196,25 @@ class IngressRouter:
             return (f"待办 {ticket.case_id} 已过期（超过 {self.ticket_ttl // 3600} 小时）。"
                     "预检结论是按当时的政策与日期算的，请重新 /refund")
 
+        # 同一个案子在同一个库里**只跑一次**（T122）。从前 `run_payload` 每次自建一个
+        # `:memory:`，重跑是无害的；现在处置跑在这个长命的库上，重跑有两层后果：
+        #
+        #   · 技术上必炸：`task_id` 由 case_id 推出而不是 `new_id`
+        #     （`flows/contrast.py::plan_tasks`，为的是「连跑两次输出逐条一致」），
+        #     第二遍在 `insert_task` 撞 UNIQUE。
+        #   · 业务上更糟：就算不炸，重跑会给同一个案子产出**第二套**付款请求与观察，
+        #     于是「这一单的钱到底怎么样了」有了两份答案，而铁律 8 说这件事的权威
+        #     只能有一处。
+        #
+        # 所以这里拦在跑之前，并把已经跑出来的结论报回去 —— 人打第二次 `/approve`
+        # 多半是没看到第一次的回帖，他要的就是这句话。
+        ran = self._case_row(ticket.case_id)
+        if ran is not None:
+            return (f"{ticket.case_id} 已经在本房间跑过一次（plan {ran['plan_id']}，"
+                    f"当前业务状态 {ran['biz_status']}），不重跑。\n"
+                    f"要看这一单现在怎么样了：/pending；"
+                    f"钱没退出去的话按上一条回帖里的 /assign、/resolve 往下走")
+
         # `is not None` 而不是 `or`：注入的处置器完全可能是个 falsy 的可调用对象
         # （测试里那个继承 list 的记录器就是），`or` 会静默把它换成真跑的那个。
         run = self._runner if self._runner is not None else _default_runner
@@ -1177,12 +1222,84 @@ class IngressRouter:
         # 注册表。两单并发跑，后一条的 reset 会把前一条的网关摘掉，症状是前一条
         # 在发起付款时报「网关未注册」—— 而它自己的输入毫无问题。
         with self._lock:
-            result = run(ticket.payload, approve=True, verbose=False)
+            # `store=self.store`（T122）：处置跑在 **router 自己的库**上，不再是
+            # `run_payload` 每次自建又随手丢掉的那个 `:memory:`。这一句是四条结果面
+            # 命令（`/assign` `/resolve` `/confirm` `/complain`）成立的前提 ——
+            # 工单、退款申请、到账观察从此查得到；`MAOS_INGRESS_DB` 指到文件时，
+            # 连跨进程回查都成立。
+            result = run(ticket.payload, approve=True, verbose=False, store=self.store)
         # 锁**释放之后**才登记。钩子里的圆桌会再碰一次 router（取底账、报待办），
         # 在锁内触发就是自己等自己 —— 而症状是房间彻底不动，没有任何报错。
         self._record(("execute", ticket.payload, result, msg.sender))
         head = f"已放行 {ticket.case_id}（操作人 {msg.sender}）\n"
-        return head + self._render(result, title=ticket.summary)
+        return head + self._render(result, title=ticket.summary) + \
+            self._compensate_if_stuck(result, msg)
+
+    def _compensate_if_stuck(self, r: dict, msg: InboundMessage) -> str:
+        """网关明确失败、钱没退出去 -> 开一张人工补偿工单，并说出下一步（T122）。
+
+        ## 为什么这一步在编排层，而不在 `run_payload` 里
+
+        `run_payload` 只做「按计划跑一遍并如实记下观察到的事实」，补偿是**看过事实
+        之后的决定**，一直由调用方下：`scripts/make_case_bundle.py` 的 gateway_fail
+        路径就是跑完之后显式调一次 `refund.compensate`。房间是这条链路的第二个调用方，
+        这一句是它那一份。挪进 `run_payload` 会让每条 CLI 路径都跟着自动补偿，
+        而那几条正在演的是「人决定要不要补」。
+
+        ## 判据只认观察，不认任务状态（铁律 8）
+
+        「钱到底退没退出去」的权威是 `payment_observation`，不是付款任务收在哪个态 ——
+        任务 DONE 而钱没到账，正是评委那句「所有 Agent 都回复完成不代表业务成功」
+        指的病。所以这里只看最后一条观察是不是 `failed`，且一条 settled 都没有。
+        `unknown` / `unobserved` **一律不补偿**：下落不明不等于失败，对一笔可能已经
+        退出去的钱再退一次，比不补偿贵得多。
+
+        开单失败不许把一次**已经生效**的放行升级成崩溃：记日志，并在回帖里说明
+        「工单没开出来」——房间里的人据此去查，总好过以为已经有单在等人接。
+        """
+        obs = r.get("payment_observations") or []
+        if r.get("settled_observations") or not obs:
+            return ""
+        last = obs[-1] if isinstance(obs[-1], dict) else {}
+        if str(last.get("observed_state") or "") != "failed":
+            return ""
+
+        case_id, tenant_id = str(r.get("case_id") or ""), str(r.get("tenant_id") or "")
+        plan_id = str(r.get("plan_id") or "")
+        code = str(last.get("gateway_code") or "未知码")
+        # 付款那一步的 task_id：审计行要挂在**它**上面，挂到别的任务上，
+        # 「补偿是因为哪一步走不通」在 trace 里就断了。
+        payment = next((str(t.get("task_id")) for t in (r.get("tasks") or [])
+                        if str(t.get("task_id", "")).endswith("-payment")), "")
+        try:
+            trace_id = str((self.store.get_plan(plan_id) or {}).get("trace_id") or "")
+        except Exception:                               # noqa: BLE001
+            trace_id = ""
+
+        from maos.skills.invoker import SkillInvoker
+        res = SkillInvoker(_outcome_cmds.COMPENSATION_DESK_IDENTITY, self.store).invoke(
+            _outcome_cmds.SKILL_COMPENSATE,
+            {"tenant_id": tenant_id, "case_id": case_id, "operator": msg.sender,
+             # 措辞与 `make_case_bundle.py` 那一句**逐字相同**：同一件事在证据束里
+             # 和在房间里该说同一句话，两处各写一句的症状是对不上账。
+             "reason": f"网关明确失败（{code}），机器返工修不好，转人工线下退款"},
+            extras={"plan_id": plan_id, "task_id": payment, "trace_id": trace_id})
+        if res.status != "ok" or not isinstance(res.output, dict):
+            log.warning("案子 %s 网关失败但补偿工单没开出来：%s", case_id, res.error)
+            return f"\n⚠️ 这一单钱没退出去，但补偿工单没开出来（{res.error}）—— 请人工介入"
+
+        out = res.output
+        opened = out.get("ticket") if isinstance(out.get("ticket"), dict) else {}
+        ticket_id = _outcome_cmds.CP.ticket_id_of(case_id)
+        role = str(opened.get("assignee_role") or "")
+        # 承接岗按开单口径落在**放行人所在的岗**上（`compensate._opening_role`：
+        # 他此刻最清楚上下文），所以下面那句 `/assign` 不是走过场 —— 它是把这张单
+        # 从「谁批的谁先背着」交到真正干活的支付运维手上。
+        seat = (f" · 当前承接岗 {_outcome_cmds.roles.title_of(role)}（{role}）"
+                f"· 接单人 {opened.get('assignee') or '未指名'}" if role else "")
+        return (f"\n钱没退出去（{code}），已开人工补偿工单：{ticket_id}{seat}\n"
+                f"  改派：/assign {ticket_id} payment_ops\n"
+                f"  关单：/resolve {ticket_id} <渠道流水号> <线下凭证摘要>")
 
     def _render(self, r: dict, *, title: str) -> str:
         """把 `_observe()` 的观测结果排成一张群里能一眼读完的卡。"""
@@ -1197,6 +1314,17 @@ class IngressRouter:
                 f"核准金额：{r.get('amount_approved')}"
                 f"（政策 v{r.get('policy_version_used')}，依据 {r.get('rule_refs')}）")
         lines.append(f"业务状态：{rr.STATUS_CN.get(r.get('biz_status'), r.get('biz_status'))}")
+
+        # 对客户口径（跨轨契约 §D）—— 上面那行 `STATUS_CN` 是**内部七态**，给房间里
+        # 干活的人看；这一行是同一个案子对外能说的话，五个字面值唯一来源
+        # `domain/refund/projection.py` 的 `PUBLIC_*`，`custom_case._observe()` 已经
+        # 算好放在 `public_status` 里。这里**不另拼一句**：拼第二处的症状是两张嘴对
+        # 同一个案子说得不一样，而其中一句迟早会在没有观察行的时候说出「退款已到账」
+        # （铁律 8）。空串就不打这一行 —— 「没有对外口径」与「口径是空」是两回事，
+        # 硬打一行空的等于替这个案子编了一句对外的话。
+        public = str(r.get("public_status") or "")
+        if public:
+            lines.append(f"对客户口径：{public}")
 
         # 铁律 8：钱到没到账只认观察。没有 settled 观察就明说没有，不含糊。
         settled = r.get("settled_observations") or 0
@@ -1285,6 +1413,75 @@ class IngressRouter:
                     for t in rows))
 
         return "\n\n".join(blocks) if blocks else "当前没有待办，也没有等人审批的任务"
+
+    # -- 结果面四条命令 -----------------------------------------------------
+    def _case_row(self, case_id: str) -> dict | None:
+        """按案号在 **router 自己的库**里找那一行 `refund_case`；没有返回 None。
+
+        「没有」有两种：这个案子从没在本房间跑过，或者这个库还没建过退款域的表
+        （一次 `/approve` 都没放行过）。两种在这里合成同一个 None，因为它们对
+        发命令的人是同一句话 —— 「先把这一单跑起来」。分开报的唯一后果是房间里
+        多一句「no such table: refund_case」，而他对此无能为力。
+        """
+        if not case_id:
+            return None
+        try:
+            rows = _refund_objects.query(
+                self.store,
+                "SELECT tenant_id, plan_id, biz_status FROM refund_case WHERE case_id=?",
+                (case_id,))
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("查案子 %s 失败（%s）—— 当作没在本房间跑过", case_id, exc)
+            return None
+        return rows[0] if rows else None
+
+    def handle_outcome(self, msg: InboundMessage, cmd: Command) -> str:
+        """`/assign` `/resolve` `/confirm` `/complain` -> `maos/ingress/outcome_commands.py`。
+
+        本方法只做三件事，判定一件都不重新实现（口径同 `handle_approval` 之于
+        `RoomApprovalBridge`）：
+
+        1. **渠道闸永远在最前面**，与 `/approve` 同一道 —— 派单、关单、替客户录
+           确认与投诉，都是在改这一单的结论，与放行同级的权限面。
+        2. **先查你是谁，再谈你想干什么**（`outcome_commands` 模块抬头的第 2 条）：
+           名单检查排在查案子**之前**。反过来的话，名单外的人打错一个单号会先收到
+           「这个案子没在本房间跑过」—— 那是一句免费的探测应答，等于替他确认了
+           「换个案号再试就行」，而越权这件事连痕都没留下。
+        3. 查 `tenant_id`：命令里只有案号/工单号，而退款域每一张表的主键都带租户。
+           在 `self.store` 上查，查得到就说明这一单真的在本房间跑过 —— 这同时也是
+           「命令与处置共用一个库」那件事的验证点（`handle_execute` 传 `store=`）。
+
+        `plan_id` 顺手一起取：`record_case_outcome` 拿到它才落得下
+        `CaseOutcomeComputed` 事件，缺了它四判据算得出来但在 trace 里查不到是谁算的。
+        """
+        if msg.channel not in ALLOW_APPROVAL:
+            log.warning("外部渠道 %s 的 %s 试图发结果面命令 /%s，已拒",
+                        msg.channel, msg.sender, cmd.verb)
+            return "该渠道不受理结果面命令（补偿工单与客户回执只在企业内部渠道处理）"
+
+        approvers = self._approvers()
+        case_id = _outcome_cmds.case_id_of(cmd.verb, cmd.args)
+        row: dict | None = None
+        if case_id and _outcome_cmds.in_approver_list(msg.sender, approvers):
+            row = self._case_row(case_id)
+            if row is None:
+                return (f"这个案子没在本房间跑过：{case_id}。"
+                        f"先 /refund 起单、再 /approve 放行 —— 工单与到账观察"
+                        f"都是那一跑落下来的，没跑过就无处可派、无处可关")
+
+        res = _outcome_cmds.dispatch(
+            msg.text, store=self.store,
+            tenant_id=str((row or {}).get("tenant_id") or ""),
+            sender=msg.sender, approvers=approvers,
+            identity=_outcome_cmds.TICKET_DESK_IDENTITY,
+            extras={"plan_id": str((row or {}).get("plan_id") or "")})
+        # `ignored` 不发帖：那是「这压根不是本模块的命令」，而 `_dispatch` 已经按
+        # 命令词把它转进来了，走到这里说明两张词表分叉了 —— 静默是对的，但要留痕。
+        if res.kind == _outcome_cmds.KIND_IGNORED:
+            log.warning("/%s 进了 handle_outcome 却被 outcome_commands 判为 ignored "
+                        "—— KNOWN_VERBS 与 COMMANDS 分叉了", cmd.verb)
+            return ""
+        return res.text
 
     def _open_plans(self) -> list[str]:
         """长驻运行时里还没收口的 plan。取不到就返回空 —— 不猜。"""

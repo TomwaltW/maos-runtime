@@ -79,7 +79,8 @@ def _wrap_matrix(inner: EventBus) -> EventBus:
 
 
 def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | None = None,
-          model_factory: Callable[[str, str], ModelClient] | None = None):
+          model_factory: Callable[[str, str], ModelClient] | None = None,
+          store: object | None = None):
     """装配一套完整运行时，返回冻结的六元组（C-4）。
 
     script：喂给缺省 ScriptedModelClient 的「关键字 -> 应答」表。
@@ -89,6 +90,14 @@ def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | 
         （``runtime/worker.py``）。**缺省 None 时行为逐字节不变**：22 个 Agent 仍共用
         第 4 位返回的那一个缺省 ``model``。加参数照 C-3 走 keyword-only + 带默认值，
         返回值仍是六元组、位序与类型不动（C-4）—— 多一个入参不许换成七元组或 dataclass。
+    store：**给了就用这个库，没给照旧自建一个 `:memory:`**（T122）。加它是为了让房间
+        入口跑出来的案子落在 router 那个库里 —— 在这之前，`/refund` 跑完的
+        `compensation_record` / `refund_request` / `payment_observation` 随着进程内
+        那个 `:memory:` 一起消失，于是房间里紧接着打一句 `/assign` 必定查不到工单
+        （`compensate.require_ticket` 抛 LookupError）。**不建第二条构造路径**：
+        传进来的库照样走下面同一套 `init_schema()` 与装配，唯一的差别是它活得比这次
+        调用长。`init_schema()` 全是 `CREATE TABLE IF NOT EXISTS`，对已经建过表的库
+        是幂等的。缺省 None 时行为逐字节不变。
 
     总线由 `core/eventbus.py::create_event_bus` 按 `MAOS_EVENTBUS_BACKEND` 造。
     **不设这个环境变量时它返回的就是 `InMemoryEventBus`**，所以「裸 clone 不用任何
@@ -98,7 +107,7 @@ def build(script: dict[str, str], *, matrix: bool = False, model: ModelClient | 
     是被证过的，而**生产路径从没走过那个开关**：可替换性停在测试里，演示链路仍然
     写死内存版。差别不在默认行为（逐字节相同），在于这句话到底能不能说。
     """
-    store = SqliteStore()
+    store = SqliteStore() if store is None else store
     store.init_schema()
     bus = create_event_bus()
     if matrix:

@@ -40,6 +40,17 @@
 ``INDEX.json`` 的 ``git_sha`` 与各证据文件自己的首行，那是证据的出处，
 不是渲染器的出处 —— 后者放在渲染器自己的注释里就够了。
 
+**扫的是两种形状。** ``evidence/scenario-*/`` 是平的，一层下去就是 ``trace.json``；
+``evidence/case-*/<路径>/`` 多一层 —— 同一条真实案例的四条路径（``happy`` / ``drift`` /
+``gateway_fail`` / ``reject``）与真模型那一跑（``<路径>-live``）各算一束。后者由
+``scripts/make_case_bundle.py`` 产，**不是** ``make_evidence.py`` 产的，所以一个只跑过
+``make_evidence.py`` 的干净 checkout 里它整个不存在 —— **缺席照旧只渲染八束、正常退出**，
+那不是错误。两族**各有各的对比表**，不并成一张：八场比的是「覆盖得全」，
+单案例比的是「同一条真事走五遍」，能比的列根本不是同一批。而真模型那一束的成本读数
+与脚本束不是一个口径，并进同一张表会让「多花了多少」长得像同一把尺子量出来的差。
+``evidence/domains/`` 那 12 束**故意不收**（它是同一套代码换业务域的同构证明，
+不是主线案例；理由记在 docs/DECISIONS.md 的 task-t127 一节）。
+
 页面形态刻意**不是**火焰图。整场执行只有几十毫秒（Scripted 模式），按时间比例画
 甘特图会退化成一条线，一眼看不出任何东西。所以结构上按 plan → task → event/artifact
 的父子关系画树，时间上画**状态迁移的顺序**：顺序是信息，时长不是。
@@ -84,6 +95,10 @@ HTML_HEADER_PREFIX = "<!-- generated at "
 HTML_HEADER_RE = re.compile(r"^<!-- generated at (?P<at>\S+) from (?P<sha>\S+) -->$")
 
 TITLE = "MAOS 证据束 · 全链路视图"
+
+#: 单案例束的根目录 glob。一个 ``evidence/case-*/`` 目录是**一组**，组里每个含
+#: ``trace.json`` 的子目录是一束。与 ``scenario-*`` 那个 glob 并列，各扫各的。
+CASE_GLOB = "case-*"
 
 
 class RenderError(RuntimeError):
@@ -229,6 +244,97 @@ def load_bundles(evidence_root: str) -> list[dict]:
             f"{evidence_root} 下一束 scenario-*/trace.json 都没有 —— "
             f"先跑 python3 scripts/make_evidence.py")
     return bundles
+
+
+def case_path_key(name: str):
+    """单案例子束的确定序：按路径名排，真模型那一跑紧跟在同名脚本束后面。
+
+    ``happy`` 与 ``happy-live`` 相邻是刻意的：同一条案例、同一条路径，一个脚本回放
+    一个真模型，并排着才看得出「换成真模型，结论没变、成本口径变了」。
+    排序必须确定，理由同 ``scenario_key``。
+    """
+    return (name[:-5], 1) if name.endswith("-live") else (name, 0)
+
+
+def load_case_groups(evidence_root: str) -> list[dict]:
+    """扫出 ``<root>/case-*/<路径>/trace.json`` —— 单案例束比场景束多一层。
+
+    **一束都没有不是错误**：这一族由 ``scripts/make_case_bundle.py`` 产，一个只跑过
+    ``make_evidence.py`` 的干净 checkout 里它整个不存在，那时返回空列表、照旧只渲染
+    八束。这与 ``load_bundles`` 的「一束 scenario 都没有就报错」是两种东西：
+    没有 scenario 说明渲染器根本没东西可画，没有 case 只说明这一跑没产它。
+    """
+    groups: list[dict] = []
+    for root in sorted(glob.glob(os.path.join(evidence_root, CASE_GLOB))):
+        if not os.path.isdir(root):
+            continue
+        names = sorted(
+            (n for n in os.listdir(root)
+             if os.path.exists(os.path.join(root, n, "trace.json"))),
+            key=case_path_key)
+        if not names:
+            continue
+        head = None
+        head_path = os.path.join(root, "INDEX.json")
+        if os.path.exists(head_path):
+            head = {"doc": load_evidence_json(head_path),
+                    "header": _first_line(head_path)}
+        groups.append({"root": root, "dir": os.path.relpath(root, ROOT),
+                       "key": os.path.basename(root), "head": head, "_names": names})
+
+    # 只有一组时标题就叫「单案例」；多组（比如另起一束换后端重跑的）才把目录名顶上来，
+    # 否则导航里五个「单案例 · happy」指向不同的地方，谁也分不出哪个是哪个。
+    solo = len(groups) == 1
+    for group in groups:
+        group["bundles"] = [_case_bundle(group, n, solo=solo)
+                            for n in group.pop("_names")]
+    return groups
+
+
+def _case_bundle(group: dict, name: str, *, solo: bool) -> dict:
+    """单案例的一束。形状与 ``load_bundles`` 那一族兼容，另挂三样东西：
+
+    ``case``（这一束自己的 ``INDEX.json``，业务状态与 Skill 覆盖只在那里有）、
+    ``live``（是不是真模型那一跑）、``tags`` / ``blurb``（印在标题上的标记与一句话）。
+    ``trace.json`` / ``result.json`` 的结构与场景束逐键相同，所以下游的
+    ``bundle_stats`` / ``render_bundle`` 一行都不用为它改。
+    """
+    path = os.path.join(group["root"], name)
+    trace_path = os.path.join(path, "trace.json")
+    notes: list[str] = []
+    idx: dict = {}
+    idx_path = os.path.join(path, "INDEX.json")
+    if os.path.exists(idx_path):
+        idx = load_evidence_json(idx_path)
+    else:
+        notes.append("这一束没有自己的 INDEX.json，路径标题与业务状态缺失")
+    # 真模型的判据取 INDEX.json 的 model_mode（证据自己说的），目录名后缀只是兜底。
+    live = idx.get("model_mode") == "live" if idx else name.endswith("-live")
+    result = None
+    result_path = os.path.join(path, "result.json")
+    if os.path.exists(result_path):
+        result = load_evidence_json(result_path)
+    else:
+        notes.append("这一束没有 result.json，任务清单与场景指标缺失")
+    if live:
+        notes.append(
+            "真模型束（model_mode=live）：圆桌五岗走的是真模型调用，别的束是 Scripted 回放。"
+            "本束的模型调用数与 token 读数与其余各束不是一个口径，不要横着比 —— "
+            "以本束成本块里的 all_estimated / measured_calls 为准。")
+    return {
+        "name": f"{group['key']}/{name}",
+        "label": f"{'单案例' if solo else group['key']} · {name}",
+        "path": name,
+        "dir": os.path.relpath(path, ROOT),
+        "trace": load_evidence_json(trace_path),
+        "result": result,
+        "header": _first_line(trace_path),
+        "notes": notes,
+        "case": idx,
+        "live": live,
+        "tags": [("真模型", "warn")] if live else [],
+        "blurb": idx.get("title"),
+    }
 
 
 def load_index(evidence_root: str) -> dict | None:
@@ -407,6 +513,97 @@ def render_overview(bundles: list[dict], stats: list[dict]) -> str:
   </section>"""
 
 
+def render_case_overview(group: dict, bundles: list[dict],
+                         stats: list[dict]) -> str:
+    """单案例那一族的横向对比 —— 一行一条路径，真模型那一跑单列一档。
+
+    这张表和「八场横向对比」**不是一张表**。八场是八个不同的目标，能比的是覆盖面；
+    这里是同一条案例走五遍，能比的是**同一件事在不同走法下的落点**：业务状态、
+    对客户口径、Skill 覆盖 —— 这三列在八场之间根本没有可比性。并成一张表，
+    两边都会被稀释。
+    """
+    rows = []
+    for bundle, st in zip(bundles, stats):
+        idx = bundle["case"]
+        plan_states = " ".join(
+            chip(s or "?", STATE_TONE.get(s, "muted")) for s in st["plan_states"]) or "—"
+        warn_cell = (" ".join(chip(w, "warn") for w in st["warns"])
+                     if st["warns"] else chip("无", "ok"))
+        mode = (chip("真模型", "warn", title="model_mode=live，圆桌五岗走真模型调用")
+                if bundle["live"]
+                else chip("脚本回放", "muted", title="model_mode=scripted"))
+        rows.append(f"""      <tr>
+        <th scope="row"><a href="#{anchor(bundle['name'])}">{esc(bundle['path'])}</a></th>
+        <td class="goal">{esc(brief(idx.get('title'), 54))}</td>
+        <td class="nw">{mode}</td>
+        <td>{plan_states}</td>
+        <td class="mono">{esc(idx.get('biz_status'))}</td>
+        <td class="nw">{esc(idx.get('public_status') or None)}</td>
+        <td class="n">{esc(idx.get('skills_present'))}</td>
+        <td class="n">{num(st['span_count'])}</td>
+        <td class="n">{num(st['event_count'])}</td>
+        <td class="n">{_hot(st['gate_holds'])}</td>
+        <td class="n">{_hot(st['gate_reworks'])}</td>
+        <td class="n">{num(st['model_calls'])}</td>
+        <td>{warn_cell}</td>
+      </tr>""")
+
+    doc = (group.get("head") or {}).get("doc") or {}
+    ids = " ".join(f"<code>{esc(v)}</code>"
+                   for v in (doc.get("case_id"), doc.get("case_file")) if v)
+    prov = (f'<p class="prov"><i>案例</i>{ids or "—"} '
+            f'<code>{esc((group.get("head") or {}).get("header") or "顶层 INDEX.json 缺失")}</code>'
+            f'</p>')
+
+    lives = [b["path"] for b in bundles if b["live"]]
+    live_note = ""
+    if lives:
+        live_note = (
+            f'<p class="banner warn-b"><b>真模型束：{esc("、".join(lives))}</b> —— '
+            f'圆桌五岗走 <code>--live-model</code> 的真模型调用，其余各束是 Scripted 回放。'
+            f'两边的「模型调用」与 token 读数<b>不是一个口径</b>，横着相减没有意义：'
+            f'脚本束的 token 是 <code>len(user)//4</code> 估出来的调用规模，不是计费数。'
+            f'各束成本块里的 <code>all_estimated</code> / <code>measured_calls</code> '
+            f'才是那一束自己的口径。</p>')
+
+    declared = doc.get("paths") or []
+    path_note = ""
+    if declared and len(declared) != len(bundles):
+        path_note = (
+            f'<p class="note">顶层 <code>INDEX.json</code> 的 <code>paths</code> 只列了 '
+            f'{len(declared)} 条（{esc("、".join(str(p) for p in declared))}）—— '
+            f'真模型那一跑单独出到 <code>&lt;路径&gt;-live/</code>，不进这个列表'
+            f'（见 <code>scripts/make_case_bundle.py</code> 抬头）。本页按目录实扫，'
+            f'所以这里是 {len(bundles)} 行。</p>')
+
+    return f"""  <section id="{anchor(group['key'])}">
+    <h2>单案例 · 一条真实退款案例走 {len(bundles)} 遍<span class="sub">{esc(group['dir'])}</span></h2>
+    <p class="lede">同一条脱敏真实案例分别走<b>顺利到账</b>、<b>执行前发现外部改单</b>、
+      <b>网关失败转补偿</b>、<b>驳回</b>四条路径，外加一条把圆桌五岗换成真模型的对照跑。
+      八场横向对比证的是「覆盖得全」，这一块证的是「一条真事从头到尾走得通」——
+      「对客户口径」那一列只能来自观察行，MAOS 不持有权威事实。</p>
+    {prov}
+    <div class="scroll">
+    <table class="grid">
+      <thead><tr>
+        <th scope="col">路径</th><th scope="col">这条路径讲什么</th>
+        <th scope="col">模型</th><th scope="col">plan 终态</th>
+        <th scope="col">业务状态</th><th scope="col">对客户口径</th>
+        <th scope="col">Skill</th>
+        <th scope="col">span</th><th scope="col">事件</th>
+        <th scope="col">转人工</th><th scope="col">返工</th>
+        <th scope="col">模型调用</th><th scope="col">告警</th>
+      </tr></thead>
+      <tbody>
+{chr(10).join(rows)}
+      </tbody>
+    </table>
+    </div>
+    {live_note}
+    {path_note}
+  </section>"""
+
+
 def _hot(value) -> str:
     """计数为 0 印中性，非 0 印红。0 也要印出来 —— 「查过了，是 0」和「没查」不一样。"""
     if not value:
@@ -414,7 +611,11 @@ def _hot(value) -> str:
     return f'<b class="hot">{num(value)}</b>'
 
 
-def render_integrity(bundles: list[dict], recheck: list[dict]) -> str:
+def render_integrity(bundles: list[dict], recheck: list[dict], *,
+                     anchor_id: str = "integrity", heading: str = "审计链完整性",
+                     first_col: str = "场景") -> str:
+    """负面清单表。三个关键字参数只为了让单案例那一族复用同一张表而不换口径 ——
+    缺省值就是八束那一次调用的原样，所以它的产出逐字节不变。"""
     rows = []
     for bundle, chk in zip(bundles, recheck):
         doc = bundle["trace"]
@@ -436,8 +637,8 @@ def render_integrity(bundles: list[dict], recheck: list[dict]) -> str:
                if disagree else
                '<p class="banner good">本次渲染重跑了一遍 <code>check_span_tree</code>，'
                '结论与导出时记录的逐条一致。</p>')
-    return f"""  <section id="integrity">
-    <h2>审计链完整性</h2>
+    return f"""  <section id="{anchor_id}">
+    <h2>{esc(heading)}</h2>
     <p class="lede">这一块是<b>负面清单</b>：孤儿 span、挂不上树的事件、归属不上的用量、
       来源不明的产物。全是 0 才有资格谈上面那些数字。空也照印 ——
       「查过了，是 0」和「没查」在屏幕上必须分得开。
@@ -446,7 +647,7 @@ def render_integrity(bundles: list[dict], recheck: list[dict]) -> str:
     <div class="scroll">
     <table class="grid">
       <thead><tr>
-        <th scope="col">场景</th>
+        <th scope="col">{esc(first_col)}</th>
         <th scope="col">树错误（导出时记）</th><th scope="col">树错误（本页重算）</th>
         <th scope="col">游离事件</th><th scope="col">归属不上的用量</th>
         <th scope="col">来源不明产物</th><th scope="col">旁路入库产物</th>
@@ -892,8 +1093,15 @@ def render_bundle(bundle: dict) -> str:
 
     wall = (f" · 端到端墙钟 {num(result.get('wall_ms'))} ms · exit={esc(result.get('exit_code'))}"
             if result.get("wall_ms") is not None else "")
+    # 两个可选字段：场景束一个都不带，所以它那一支的产出逐字节不变。
+    # ``tags`` 是标题上的标记（真模型那一束靠它在标题里就能认出来），
+    # ``blurb`` 是这一束的一句话（单案例的路径标题取自该束 INDEX.json）。
+    marks = "".join(chip(text, tone) for text, tone in bundle.get("tags") or ())
+    tags = f" {marks}" if marks else ""
+    blurb = (f'\n    <p class="lede">{esc(bundle["blurb"])}</p>'
+             if bundle.get("blurb") else "")
     return f"""  <section class="scenario" id="{aid}">
-    <h2>{esc(bundle['label'])}<span class="sub">{esc(bundle['dir'])}{wall}</span></h2>
+    <h2>{esc(bundle['label'])}<span class="sub">{esc(bundle['dir'])}{wall}</span>{tags}</h2>{blurb}
     {notes}
     <p class="prov"><i>出处</i><code>{esc(bundle['header'])}</code></p>
     <h4>挂不上树的东西</h4>
@@ -905,21 +1113,43 @@ def render_bundle(bundle: dict) -> str:
 # ---------------------------------------------------------------------------
 # 渲染 —— 整页
 # ---------------------------------------------------------------------------
-def render_report(bundles: list[dict], index: dict | None = None) -> str:
-    """整页 HTML 的**正文**（不含首行出处注释）。纯函数：同样的证据出同样的字节。"""
-    stats = [bundle_stats(b) for b in bundles]
-    recheck = []
-    for b in bundles:
-        errs = []
-        for trace in b["trace"].get("traces", []):
-            errs.extend(check_span_tree(trace.get("spans", [])))
-        recorded = (b["trace"].get("summary") or {}).get("tree_errors") or []
-        recheck.append({"errors": errs, "disagrees": bool(errs) != bool(recorded)})
+def _recheck(bundle: dict) -> dict:
+    """渲染时重跑一遍 ``check_span_tree``，并记下它与导出时那个数是否打架。"""
+    errs = []
+    for trace in bundle["trace"].get("traces", []):
+        errs.extend(check_span_tree(trace.get("spans", [])))
+    recorded = (bundle["trace"].get("summary") or {}).get("tree_errors") or []
+    return {"errors": errs, "disagrees": bool(errs) != bool(recorded)}
 
-    nav = " ".join(f'<a href="#{anchor(b["name"])}">{esc(b["label"])}</a>' for b in bundles)
-    total_spans = sum(s["span_count"] or 0 for s in stats)
+
+def render_report(bundles: list[dict], index: dict | None = None,
+                  case_groups: list[dict] | None = None) -> str:
+    """整页 HTML 的**正文**（不含首行出处注释）。纯函数：同样的证据出同样的字节。
+
+    ``case_groups`` 缺席（空或 None）时产出与只有八束时**逐字节相同** —— 那是
+    「只跑了 make_evidence.py 的 checkout」这条路径，也是不许回归的判据。
+    """
+    case_groups = case_groups or []
+    case_bundles = [b for g in case_groups for b in g["bundles"]]
+    stats = [bundle_stats(b) for b in bundles]
+    by_group = [[bundle_stats(b) for b in g["bundles"]] for g in case_groups]
+    case_stats = [s for group_stats in by_group for s in group_stats]
+    recheck = [_recheck(b) for b in bundles]
+
+    nav = " ".join(f'<a href="#{anchor(b["name"])}">{esc(b["label"])}</a>'
+                   for b in case_bundles + bundles)
+    all_stats = case_stats + stats
+    total_spans = sum(s["span_count"] or 0 for s in all_stats)
     idx_doc = (index or {}).get("doc") or {}
     idx_sha = idx_doc.get("git_sha")
+    # 抬头那几个合计把两族都算进去 —— 页面得先把自己数清楚。成本类读数一个都不在
+    # 这里（真模型束与脚本束的 token 不是一个口径，合计出来只会误导），
+    # span / 事件 / 转人工 / 返工 是计数，可以合。
+    bundle_figure = ("证据束" if not case_bundles else
+                     f"证据束（场景 {len(bundles)} + 单案例 {len(case_bundles)}）")
+    src_line = ("<code>evidence/scenario-*/trace.json</code>" if not case_bundles else
+                "<code>evidence/scenario-*/trace.json</code> 与 "
+                "<code>evidence/case-*/&lt;路径&gt;/trace.json</code>")
 
     body = [
         "<!doctype html>",
@@ -934,17 +1164,17 @@ def render_report(bundles: list[dict], index: dict | None = None) -> str:
         f"""<header>
   <h1>{esc(TITLE)}</h1>
   <p class="lede">这一页由 <code>scripts/render_trace.py</code> 从
-    <code>evidence/scenario-*/trace.json</code> 直接渲染，
+    {src_line} 直接渲染，
     <b>不读数据库、不连网、不引一个外部文件</b>。
     页面上每一个数字都能在 <code>evidence/</code> 里逐字找到出处；
     改了证据不重跑本脚本，<code>python3 scripts/render_trace.py --check</code> 会变红。</p>
   <p class="figures">
-    <span><b>{len(bundles)}</b><i>证据束</i></span>
-    <span><b>{num(sum(s['trace_count'] for s in stats))}</b><i>plan</i></span>
+    <span><b>{len(bundles) + len(case_bundles)}</b><i>{bundle_figure}</i></span>
+    <span><b>{num(sum(s['trace_count'] for s in all_stats))}</b><i>plan</i></span>
     <span><b>{num(total_spans)}</b><i>span</i></span>
-    <span><b>{num(sum(s['event_count'] or 0 for s in stats))}</b><i>事件</i></span>
-    <span><b>{num(sum(s['gate_holds'] for s in stats))}</b><i>转人工</i></span>
-    <span><b>{num(sum(s['gate_reworks'] for s in stats))}</b><i>返工</i></span>
+    <span><b>{num(sum(s['event_count'] or 0 for s in all_stats))}</b><i>事件</i></span>
+    <span><b>{num(sum(s['gate_holds'] for s in all_stats))}</b><i>转人工</i></span>
+    <span><b>{num(sum(s['gate_reworks'] for s in all_stats))}</b><i>返工</i></span>
   </p>
   <p class="prov"><i>证据出处</i>
     <code>{esc((index or {}).get("header") or idx_sha or "INDEX.json 缺失，出处见各束首行")}</code>
@@ -956,9 +1186,20 @@ def render_report(bundles: list[dict], index: dict | None = None) -> str:
       两个按钮只是省你几次点击。</span></p>
 </header>""",
         "<main>",
-        render_overview(bundles, stats),
-        render_integrity(bundles, recheck),
     ]
+    # 单案例排在八场之前：它是这一期最该被先看见的那份东西。八束那一段的三个
+    # 渲染调用（overview / integrity / 各束）原样不动，只是往后挪了几屏。
+    for group, sel_stats in zip(case_groups, by_group):
+        sel = group["bundles"]
+        body.append(render_case_overview(group, sel, sel_stats))
+        body.append(render_integrity(
+            sel, [_recheck(b) for b in sel],
+            anchor_id=anchor(group["key"], "integrity"),
+            heading=f"审计链完整性（{group['dir']}）", first_col="路径"))
+        for bundle in sel:
+            body.append(render_bundle(bundle))
+    body.append(render_overview(bundles, stats))
+    body.append(render_integrity(bundles, recheck))
     for bundle in bundles:
         body.append(render_bundle(bundle))
     body.append("</main>")
@@ -1232,7 +1473,8 @@ def split_header(text: str) -> tuple[str, str]:
 
 def build(evidence_root: str) -> str:
     bundles = load_bundles(evidence_root)
-    return render_report(bundles, load_index(evidence_root))
+    return render_report(bundles, load_index(evidence_root),
+                         load_case_groups(evidence_root))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1252,7 +1494,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         bundles = load_bundles(args.evidence)
-        body = render_report(bundles, load_index(args.evidence))
+        case_groups = load_case_groups(args.evidence)
+        case_bundles = [b for g in case_groups for b in g["bundles"]]
+        body = render_report(bundles, load_index(args.evidence), case_groups)
     except (RenderError, OSError, ValueError) as exc:
         print(f"[FAIL] {exc}")
         return 2
@@ -1270,7 +1514,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if old == body:
             print(f"[OK]    {rel_out} 与当前 evidence/ 逐字节一致"
-                  f"（正文 {len(body.encode('utf-8')):,} bytes，{len(bundles)} 束）")
+                  f"（正文 {len(body.encode('utf-8')):,} bytes，"
+                  f"{len(bundles) + len(case_bundles)} 束）")
             print(f"        出处 {first}")
             return 0
         print(f"[STALE] {rel_out} —— 与当前 evidence/ 不一致")
@@ -1289,12 +1534,20 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(header_comment(sha) + "\n")
         fh.write(body)
-    total = sum((b["trace"].get("summary") or {}).get("span_count") or 0 for b in bundles)
+    all_bundles = bundles + case_bundles
+    total = sum((b["trace"].get("summary") or {}).get("span_count") or 0
+                for b in all_bundles)
     print(f"[WROTE] {rel_out}  {os.path.getsize(args.out):,} bytes  "
-          f"{len(bundles)} 束 / {total} span")
+          f"{len(all_bundles)} 束 / {total} span")
+    if case_bundles:
+        print(f"        其中场景 {len(bundles)} 束、单案例 {len(case_bundles)} 束"
+              f"（真模型 {sum(1 for b in case_bundles if b['live'])} 束）")
+    else:
+        print("        未发现 evidence/case-*/ 单案例束 —— 它由 "
+              "scripts/make_case_bundle.py 产，只跑 make_evidence.py 时本来就没有")
 
     if args.otlp:
-        doc = to_otlp(bundles)
+        doc = to_otlp(all_bundles)
         with open(args.otlp, "w", encoding="utf-8") as fh:
             fh.write(f"{HEADER_PREFIX}{datetime.now(timezone.utc).isoformat()} from {sha}\n")
             fh.write(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")

@@ -16,6 +16,13 @@
    ``stray_events`` / ``unattributed_usage`` 非空时页面上必须能看见每一条。
    这两份东西恰恰是「审计链有洞」的那一类，静默吞掉比不导出更坏。
 
+## 两族证据束
+
+``evidence/scenario-*/`` 是平的，``evidence/case-*/<路径>/`` 多一层。第 9 节守的是
+后者：单案例的四条路径加一条真模型路径要进页面、要分得出是哪条路径、真模型那一束
+要标出来、**而八束那一部分一个字节都不许动**。最后那条是硬判据 ——
+这个渲染器的产物是要交到评委手里的，收新东西时把旧东西渲坏了，没有任何人会发现。
+
 ## fixture 为什么是手搭的，不用真 evidence/
 
 `evidence/*.db` 不入库，`evidence/scenario-*/` 每跑一次 `make_evidence.py` 就换一批
@@ -543,3 +550,240 @@ def test_scenario_order_is_stable():
     names = ["scenario-10", "scenario-2", "scenario-R5", "scenario-1", "scenario-7"]
     assert sorted(names, key=render_trace.scenario_key) == [
         "scenario-1", "scenario-2", "scenario-7", "scenario-10", "scenario-R5"]
+
+
+# ===========================================================================
+# 9. 单案例束（evidence/case-*/<路径>/）
+# ===========================================================================
+#: 五条路径：四条脚本回放 + 一条真模型。顺序刻意打乱，排序由 `case_path_key` 定。
+CASE_PATHS = ("reject", "happy-live", "drift", "happy", "gateway_fail")
+
+#: 每条路径的一句话与落点。取自真束 `INDEX.json` 的同名键，形状一比一。
+CASE_FACTS = {
+    "happy": ("顺利到账：计划获批 -> 主管放行核算 -> 网关退款 -> 观察到 settled",
+              "settled", "退款已到账", "8/8"),
+    "happy-live": ("顺利到账：计划获批 -> 主管放行核算 -> 网关退款 -> 观察到 settled",
+                   "settled", "退款已到账", "8/8"),
+    "drift": ("执行前发现外部改单：付款前那一步报漂移，核算停在 BLOCKED 等人",
+              "submitted", "", "5/8"),
+    "gateway_fail": ("网关退款失败：机器返工重发一次 -> 人在付款闸上拒签 -> 开补偿工单",
+                     "compensated", "已补偿（未到账）", "7/8"),
+    "reject": ("两级驳回：计划先被驳回一次，放行后主管在核算闸上驳回这一单",
+               "rejected", "已驳回", "5/8"),
+}
+
+
+def _case_index(path: str, *, live: bool | None = None) -> dict:
+    title, biz, public, skills = CASE_FACTS[path]
+    if live is None:
+        live = path.endswith("-live")
+    return {
+        "git_sha": "deadbeefcafe1234", "case_id": "RC-FIXTURE-001",
+        "tenant_id": "tnt-fixture", "path": path.removesuffix("-live"),
+        "model_mode": "live" if live else "scripted", "title": title,
+        "dir": f"evidence/case-fixture-01/{path}", "plan_id": "plan_fix",
+        "plan_state": "DONE", "biz_status": biz, "public_status": public,
+        "business_success": biz == "settled", "skills_present": skills,
+        "span_count": 7, "event_count": 3, "stray_events": 0,
+        "tree_errors": [], "wall_ms": 11363 if live else 133,
+    }
+
+
+def _make_case_bundle(root: pathlib.Path, path: str, **kw) -> None:
+    d = root / path
+    d.mkdir(parents=True)
+    _write(d / "trace.json", _trace_doc())
+    _write(d / "result.json", _result_doc())
+    _write(d / "INDEX.json", _case_index(path, **kw))
+
+
+@pytest.fixture
+def case_root(evidence_root) -> pathlib.Path:
+    """在同一个证据根下再搭一族单案例束：四条脚本路径 + 一条真模型路径。
+
+    顶层 `INDEX.json` 的 `paths` 只列四条 —— 真束就是这样：`--live-model` 那一跑
+    单独出到 `<路径>-live/`，不进这个列表（见 `scripts/make_case_bundle.py` 抬头）。
+    """
+    root = evidence_root / "case-fixture-01"
+    for path in CASE_PATHS:
+        _make_case_bundle(root, path)
+    _write(root / "INDEX.json", {
+        "git_sha": "deadbeefcafe1234", "case_id": "RC-FIXTURE-001",
+        "case_file": "scenarios/refund/cases/case_fixture_01.json",
+        "model_mode": "scripted",
+        "paths": ["drift", "gateway_fail", "happy", "reject"], "bundles": [],
+    })
+    return root
+
+
+def _section(page: str, anchor_id: str) -> str:
+    """取出某个 id 的 section 正文。比对要精确到 `id="x">` —— 只比前缀的话
+    `case-fixture-01-happy` 会命中 `case-fixture-01-happy-live`。"""
+    marker = f'id="{anchor_id}">'
+    assert marker in page, f"页面里没有 {anchor_id} 这一段"
+    return page.split(marker, 1)[1].split("</section>", 1)[0]
+
+
+def test_case_bundles_reach_the_page(evidence_root, case_root):
+    """五束都要进页面，且**看得出是哪条路径** —— 混成一锅就等于没收。"""
+    page = render_trace.build(str(evidence_root))
+    for path in CASE_PATHS:
+        sec = _section(page, f"case-fixture-01-{path}")
+        assert render_trace.esc(CASE_FACTS[path][0]) in sec, f"{path} 那一束没印路径标题"
+        assert f"单案例 · {path}" in page, f"{path} 在导航/标题上认不出来"
+    # 业务落点三列只在单案例这一族有意义，必须印出来
+    for path in CASE_PATHS:
+        _, biz, public, skills = CASE_FACTS[path]
+        assert biz in page and skills in page
+        if public:
+            assert public in page, f"{path} 的对客户口径没印出来"
+
+
+def test_live_model_bundle_is_marked_loudly(evidence_root, case_root):
+    """真模型那一束要标出来，脚本束不许被误标 —— 两边的成本读数不是一个口径。"""
+    page = render_trace.build(str(evidence_root))
+    live = _section(page, "case-fixture-01-happy-live")
+    assert "真模型" in live
+    assert "不是一个口径" in live, "本束标题下要说清它的读数与别的束不可比"
+
+    scripted = _section(page, "case-fixture-01-happy")
+    assert "真模型" not in scripted, "脚本束被误标成真模型了"
+
+    # 对比表里也要有那一档，以及一条说清口径的横幅
+    assert "脚本回放" in page
+    assert "横着相减没有意义" in page
+
+
+def test_live_flag_comes_from_index_not_from_the_directory_name(tmp_path):
+    """真模型的判据取自 `INDEX.json` 的 `model_mode`（证据自己说的），
+    目录名后缀只是兜底。反过来靠目录名认，改个名就静默失标。"""
+    root = tmp_path / "evidence"
+    (root / "scenario-1").mkdir(parents=True)
+    _write(root / "scenario-1" / "trace.json", _trace_doc())
+    _write(root / "scenario-1" / "result.json", _result_doc())
+    case = root / "case-fixture-01"
+    _make_case_bundle(case, "happy", live=True)          # 目录名没有 -live
+    _make_case_bundle(case, "happy-live", live=False)    # 目录名有，但 INDEX 说 scripted
+
+    page = render_trace.build(str(root))
+    assert "真模型" in _section(page, "case-fixture-01-happy")
+    assert "真模型" not in _section(page, "case-fixture-01-happy-live")
+
+
+def test_case_path_order_is_stable():
+    """排序确定，且真模型那一跑紧跟同名脚本束 —— 并排才看得出「换真模型，结论没变」。
+
+    不确定的顺序会让 `--check` 在没人动过证据的情况下随机变红（同 `scenario_key`）。
+    """
+    names = ["reject", "happy-live", "happy", "drift", "gateway_fail"]
+    assert sorted(names, key=render_trace.case_path_key) == [
+        "drift", "gateway_fail", "happy", "happy-live", "reject"]
+
+
+def test_missing_case_root_is_not_an_error(evidence_root, tmp_path):
+    """`case-*` 整个不存在时照旧只渲染场景束、正常退出。
+
+    这一族由 `scripts/make_case_bundle.py` 产，不是 `make_evidence.py` 产的 ——
+    一个只跑过 `make_evidence.py` 的干净 checkout 里它本来就没有。
+    在那里报错等于把「没跑那一步」误报成「证据坏了」。
+    """
+    out = tmp_path / "r.html"
+    proc = _run("--evidence", str(evidence_root), "--out", str(out))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "未发现 evidence/case-*/ 单案例束" in proc.stdout
+    assert not render_trace.load_case_groups(str(evidence_root))
+    assert "scenario-1" in out.read_text(encoding="utf-8")
+
+
+def test_case_bundles_do_not_touch_the_scenario_part(evidence_root, case_root):
+    """**不许回归的那一条**：收进单案例之后，从「八场横向对比」往下到页脚，
+    必须与没有单案例时逐字节相同。
+
+    判据写成「尾巴相等」而不是「挨个 section 比」，是因为前者连页脚、`</main>`、
+    section 之间的换行都一起钉住了：只要八束那一段有任何一个字节被顺手改过，
+    这条就红。抬头（束数、导航、数据源那一行）会变，那是刻意的 ——
+    页面得先把自己数清楚，所以单独断言它确实两族都提到了。
+    """
+    bundles = render_trace.load_bundles(str(evidence_root))
+    index = render_trace.load_index(str(evidence_root))
+    groups = render_trace.load_case_groups(str(evidence_root))
+    assert len(groups) == 1 and len(groups[0]["bundles"]) == len(CASE_PATHS)
+
+    without = render_trace.render_report(bundles, index)
+    with_case = render_trace.render_report(bundles, index, groups)
+
+    anchor = '  <section id="overview">'
+    tail = without[without.index(anchor):]
+    assert with_case.endswith(tail), (
+        "八束那一段（含两张汇总表、8 个 section、页脚）在收进单案例之后变了字节")
+    assert len(with_case) > len(without), "单案例那一族根本没进页面"
+
+    # 抬头是允许变的那一处，但必须两族都数进去
+    head = with_case[:with_case.index(anchor)]
+    assert f"场景 {len(bundles)} + 单案例 {len(CASE_PATHS)}" in head
+    assert "case-*" in head, "抬头要说清页面还从哪一族取数"
+
+
+def test_check_turns_red_when_a_case_bundle_changes(evidence_root, case_root, tmp_path):
+    """`--check` 对新收的这一族同样有牙 —— 只渲不比等于没收进守卫。"""
+    out = tmp_path / "report.html"
+    assert _run("--evidence", str(evidence_root), "--out", str(out)).returncode == 0
+    assert _run("--evidence", str(evidence_root), "--out", str(out),
+                "--check").returncode == 0, "起点必须是绿的，否则这条测试是空转"
+
+    path = case_root / "gateway_fail" / "result.json"
+    doc = json.loads(path.read_text(encoding="utf-8").split("\n", 1)[1])
+    doc["plans"][0]["metrics"]["rework_count"] = 42
+    _write(path, doc)
+
+    proc = _run("--evidence", str(evidence_root), "--out", str(out), "--check")
+    assert proc.returncode == 1, "单案例束变了而 HTML 没重生成，--check 必须红：\n" + proc.stdout
+    assert "[STALE]" in proc.stdout
+
+
+def test_case_page_has_no_external_link(evidence_root, case_root):
+    """零外链这条对新收的那一族同样成立。"""
+    hits = EXTERNAL_LINK.findall(render_trace.build(str(evidence_root)))
+    assert not hits, f"收进单案例之后页面里出现了 {len(hits)} 处外链"
+
+
+def test_domains_bundles_are_not_collected(evidence_root, case_root):
+    """`evidence/domains/` 那一族**故意不收**（docs/DECISIONS.md task-t127）。
+
+    它是「同一套代码换个业务域」的同构证明，与主线案例不是一回事，混进来会让
+    这一页失焦。这条是那个决定的机器判据：哪天有人把 glob 放宽，它会红。
+    """
+    before = render_trace.build(str(evidence_root))
+
+    dom = evidence_root / "domains" / "scenario-1"
+    dom.mkdir(parents=True)
+    _write(dom / "trace.json", _trace_doc())
+    _write(dom / "result.json", _result_doc())
+
+    # 判据是「多了这一族，页面一个字节都不动」——不认字符串：`bundle["dir"]` 里
+    # 印的是相对仓库根的路径，而 pytest 的 tmpdir 名字里就带着本测试的名字。
+    assert render_trace.build(str(evidence_root)) == before
+    assert [g["key"] for g in render_trace.load_case_groups(str(evidence_root))] == \
+        ["case-fixture-01"]
+    assert [b["name"] for b in render_trace.load_bundles(str(evidence_root))] == \
+        ["scenario-1"], "`scenario-*` 只扫证据根那一层，不许递归进别的目录"
+
+
+def test_real_case_bundles_are_in_the_report():
+    """真 evidence/ 上的判据：`evidence/case-real-01/` 每一束都要进页面。
+
+    fixture 证的是机制，这一条证的是**交出去的那份**。它跳过的唯一情形是
+    单案例束不存在（只跑过 `make_evidence.py` 的 checkout）。
+    """
+    root = ROOT / "evidence" / "case-real-01"
+    if not root.is_dir():
+        pytest.skip("evidence/case-real-01/ 不存在（它由 make_case_bundle.py 产）")
+    paths = sorted(p.name for p in root.iterdir() if (p / "trace.json").exists())
+    assert len(paths) >= 4, f"单案例束只剩 {paths} —— 少于四条路径"
+
+    page = render_trace.build(str(ROOT / "evidence"))
+    for name in paths:
+        _section(page, f"case-real-01-{name}")
+    for name in [p for p in paths if p.endswith("-live")]:
+        assert "真模型" in _section(page, f"case-real-01-{name}"), \
+            f"{name} 是真模型那一跑，页面上没标出来"

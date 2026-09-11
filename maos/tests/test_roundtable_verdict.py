@@ -21,10 +21,12 @@
 from __future__ import annotations
 
 import copy
+import logging
 from pathlib import Path
 
 import pytest
 
+from maos.domain.refund import roles
 from maos.flows import custom_case
 from maos.ingress.router import _load_run_requests, preflight
 from maos.model.client import ScriptedModelClient
@@ -247,9 +249,93 @@ def test_finance_error_is_not_listed_twice() -> None:
 # 升档
 # --------------------------------------------------------------------------
 def test_escalation_upgrades_supervisor_to_finance_manager() -> None:
+    """升档表的键值现在是**目录名**（T123），房间里念出来的仍是 `finance_manager`。
+
+    这条断言因此写成两截：表里按目录名升档，出口按 `verdict_role` 念。
+    从前是一截（`ESCALATION["supervisor"]`），那正是「两套名字各有一份内部表」
+    的样子 —— 而目录里明明有的 `region_manager` 在那张表里查不到。
+    """
     verdict = decide(_five(risk={"level": "high", "score": 100, "reasons": ["重复退款"]}))
 
-    assert verdict.approver_role == ESCALATION["supervisor"] == "finance_manager"
+    assert ESCALATION[roles.ROLE_AFTER_SALES_SUPERVISOR] == roles.ROLE_FINANCE_REVIEWER
+    assert verdict.approver_role == "finance_manager"
+    assert roles.verdict_role_of(roles.ROLE_FINANCE_REVIEWER) == verdict.approver_role
+
+
+def test_escalation_table_is_written_in_directory_names() -> None:
+    """🔴 升档表两侧一律是角色目录的名字，**不许**混进房间那套。
+
+    混着写的症状不是报错，是查表查空：`_approver` 走「认不出就不升档」那一支，
+    只 log 一行，而房间里一切正常 —— T117 的 `region_manager` 就是这么漏掉的。
+    """
+    catalog = set(roles.all_roles())
+    for key, value in ESCALATION.items():
+        assert key in catalog, f"升档表的键 {key!r} 不是角色目录的名字"
+        assert value in catalog, f"升档表的值 {value!r} 不是角色目录的名字"
+        assert roles.is_approver_seat(value), f"升档到 {value!r} —— 那个岗拍不了板"
+
+
+def test_both_spellings_of_approver_role_land_on_the_same_seat() -> None:
+    """目录名与房间名两种写法进来，念出去的是同一个名字（T123 收成一套）。
+
+    政策规则的 `params.approver_role` 写的是房间那套，角色目录写的是职责全名那套；
+    两种都可能出现在 `refund-policy` 的出参里。认一种的症状是另一种静默走
+    「认不出」分支 —— 不升档、不降级，且屏幕上看不出来。
+    """
+    high = {"level": "high", "score": 100, "reasons": ["重复退款"]}
+    spoken = decide(_five(policy={"approver_role": "supervisor"}, risk=high))
+    catalog = decide(_five(policy={"approver_role": roles.ROLE_AFTER_SALES_SUPERVISOR},
+                           risk=high))
+
+    assert spoken.approver_role == catalog.approver_role == "finance_manager"
+    assert spoken.blockers == catalog.blockers
+
+    # 非 escalate 的那一支同样两种写法同解。
+    calm_spoken = decide(_five(policy={"approver_role": "region_manager"}))
+    calm_catalog = decide(_five(policy={"approver_role": roles.ROLE_REGION_MANAGER}))
+    assert calm_spoken.approver_role == calm_catalog.approver_role == "region_manager"
+
+
+def test_region_manager_keeps_the_seat_at_high_risk_but_gains_a_second_pair_of_eyes() -> None:
+    """🔴 AS-004 指名的区域经理，风险高档**不换人**，改加一道复核。
+
+    换人是错的：经销渠道的退款按区域授权，`AS-004` 那条规则指名的就是他 ——
+    升档到财务复核等于把规则说的审批人换掉，而规则没说可以换。
+    要加的是 `AS-004@v2` 的 `dual_approval: true` 那道复核。
+
+    这一条从前**一句提示都没有**：`region_manager` 不在升档表里，`_approver`
+    只 log 一行「不在升档表里」，房间里那句「请区域经理拍板」照发。
+    """
+    verdict = decide(_five(policy={"approver_role": "region_manager"},
+                           risk={"level": "high", "score": 100, "reasons": ["重复退款"]}))
+
+    assert verdict.recommend == "escalate"
+    assert verdict.approver_role == "region_manager", "政策指名的审批人不许被升档换掉"
+    assert "风险：政策指名的审批人，不因风险升档改派，建议二人复核" in verdict.blockers
+    # 措辞得对得上事实：他不是最高档，上面还有财务复核，只是这条规则不该换人。
+    assert "风险：已是最高审批档，建议二人复核" not in verdict.blockers
+    assert verdict.headline == "建议升级审批 · 风险 high · 请 region_manager 复核"
+
+
+def test_payment_ops_as_approver_is_demoted_to_the_default_seat(
+        caplog: pytest.LogCaptureFixture) -> None:
+    """🔴 支付运维被写成审批人 = 配置错。降到缺省审批岗并留一条 WARNING。
+
+    静默照用的后果是房间里请一个批不动的人拍板：支付运维的活是去渠道后台
+    按幂等键对账，不是放行一笔钱（目录里他的 `verdict_role` 就是空的）。
+    降级而不是原样留着，是因为这一单不该停在「点不到能拍板的人」上；
+    留 WARNING 而不是静默，是因为配置错该被看见。
+    """
+    with caplog.at_level(logging.WARNING, logger="maos.roundtable"):
+        verdict = decide(_five(policy={"approver_role": roles.ROLE_PAYMENT_OPS}))
+
+    assert verdict.approver_role == "supervisor"
+    assert any("不是审批岗" in r.getMessage() for r in caplog.records), caplog.text
+
+    # 高风险时从缺省岗继续往上升 —— 降级不该把这一单卡在常规档。
+    escalated = decide(_five(policy={"approver_role": roles.ROLE_PAYMENT_OPS},
+                             risk={"level": "high", "score": 100, "reasons": ["重复退款"]}))
+    assert escalated.approver_role == "finance_manager"
 
 
 def test_escalation_at_top_tier_keeps_the_role_and_says_so() -> None:

@@ -530,14 +530,41 @@ def facts_finance_result(result: dict) -> tuple[str, dict]:
     只有真的观察到 `settled` 才允许出现「到账」二字；观察到了但不是 settled，
     说「已受理，未确认到账」；一条观察都没有，说「未走到付款」。措辞之外没有别的
     机制拦得住这件事 —— 下游读到的就是这段文本。
+
+    **两句状态，不是一句**（T123）。「业务状态」念的是内部七态，主管要的就是那个 ——
+    `gateway_accepted` 和 `processing` 的区别，在房间里是「催不催网关」的区别。
+    「对客户口径」念的是三态投影，评委要的是那个。从前房间里只有前一句，于是
+    `notify.py` 发给客户的那张卡和财务岗在群里念的那句是**两套措辞**，而它们说的是
+    同一单 —— 这正是 `projection.py` 抬头警告的事。
+
+    三态**不在这里算**：`result["public_status"]` 是 `custom_case._observe()` 投好的
+    （那边有库，查得到 `refund_request` 行与 `payment_observation` 的最后一条），
+    本函数只是把它留住。圆桌自己拿 `biz_status` 推三态就是铁律 8 里那个 bug ——
+    「已到账」的判据是观察行，而观察行不在这个入参里。
     """
+    from maos.domain.refund import projection
+
     keys = ("amount_approved", "policy_version_used", "rule_refs", "biz_status",
-            "settled_observations", "payment_observations", "human_exits", "plan_state")
+            "settled_observations", "payment_observations", "human_exits", "plan_state",
+            "public_status")
     data = {k: result.get(k) for k in keys}
     settled = int(data["settled_observations"] or 0)
     observations = list(data["payment_observations"] or [])
     exits = list(data["human_exits"] or [])
     biz_status = str(data["biz_status"] or "")
+
+    # 投影产出的五句之外一个字都不认。**不是洁癖**：这一行是「对客户口径」那句话的
+    # 最后一道闸，而上游传一个自造措辞过来的症状是房间里多出第六句对外说法，
+    # 且它长得和那五句一样像真的。认不出就当作「此刻没有可对外说的」，并留 WARNING。
+    public = str(data["public_status"] or "").strip()
+    if public and public not in projection.PUBLIC_STATUSES:
+        log.warning("对外口径 %r 不在契约 §D 的五个字面值里，本轮不对外说", public)
+        public = ""
+    # 空串是 `projection.public_status()` 的正常产出（`submitted`、以及 `approved`
+    # 但还没落 `refund_request` 行的那两档），不是出错 —— 照实说「还没到」，
+    # 不回落到七态那句去凑一个对外说法。
+    public_line = (f"对客户口径：{public}" if public
+                   else "对客户口径：尚未到可对外说的三态")
 
     if settled > 0:
         payment_line = (f"付款观察：{len(observations)} 条，其中确认结算 {settled} 条 —— "
@@ -553,6 +580,7 @@ def facts_finance_result(result: dict) -> tuple[str, dict]:
         f"政策版本：v{data['policy_version_used']}",
         f"依据：{_refs_text(data['rule_refs'])}",
         f"业务状态：{status_cn_of(biz_status)}（{biz_status or '未知'}）",
+        public_line,
         payment_line,
         f"Plan 内任务级审批点：{len(exits)} 个"
         f"（{'、'.join(str(e.get('title') or '') for e in exits) or '无'}）",

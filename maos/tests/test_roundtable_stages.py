@@ -11,12 +11,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from maos.domain.refund import projection
 from maos.flows import custom_case
 from maos.ingress.router import _load_run_requests, preflight
 from maos.roundtable import stages
@@ -228,7 +230,7 @@ def test_finance_result_says_settled_only_with_settled_observation() -> None:
     assert "到账" in facts
     assert set(data) == {"amount_approved", "policy_version_used", "rule_refs", "biz_status",
                          "settled_observations", "payment_observations", "human_exits",
-                         "plan_state"}
+                         "plan_state", "public_status"}
 
 
 def test_finance_result_says_no_payment_when_there_is_no_observation() -> None:
@@ -240,6 +242,127 @@ def test_finance_result_says_no_payment_when_there_is_no_observation() -> None:
     facts, _data = stages.facts_finance_result(result)
     assert "未走到付款" in facts
     assert "到账" not in facts
+
+
+# --------------------------------------------------------------------------
+# 财务执行岗（放行后）：三态对外投影（T123）
+# --------------------------------------------------------------------------
+def test_finance_result_speaks_the_public_status_next_to_the_internal_one() -> None:
+    """🔴 事实卡上**两句状态**：内部七态给主管看，三态投影给客户看。
+
+    从前只有前一句，于是财务岗在群里念的和 `notify.py` 发给客户的是两套措辞，
+    说的却是同一单 —— 那正是评委第二条要区分的那三档。
+    """
+    from maos.tests.test_ingress_router import RESULT_SETTLED
+
+    result = {**RESULT_SETTLED, "public_status": projection.PUBLIC_SETTLED}
+    facts, data = stages.facts_finance_result(result)
+
+    assert data["public_status"] == projection.PUBLIC_SETTLED
+    assert "业务状态：" in facts, "内部七态那句得留着 —— 主管要的是它"
+    assert f"对客户口径：{projection.PUBLIC_SETTLED}" in facts
+
+    # 念出去的那个字面值只能是契约 §D 的五个之一，不许自造第六句。
+    spoken = [ln.split("：", 1)[1] for ln in facts.splitlines()
+              if ln.startswith("对客户口径：")]
+    assert spoken == [projection.PUBLIC_SETTLED]
+    assert spoken[0] in projection.PUBLIC_STATUSES
+
+
+def test_public_status_covers_every_literal_in_the_contract() -> None:
+    """五个字面值逐一走一遍，都要原样念出来。
+
+    逐个走而不是只测一个：这一句是「对外口径」的唯一出口，漏掉哪一档的症状
+    是房间里那一档没有对外说法，而其余四档看起来都对。
+    """
+    from maos.tests.test_ingress_router import RESULT_SETTLED
+
+    for literal in projection.PUBLIC_STATUSES:
+        facts, _ = stages.facts_finance_result({**RESULT_SETTLED, "public_status": literal})
+        assert f"对客户口径：{literal}" in facts
+
+
+def test_finance_result_says_so_when_there_is_nothing_to_tell_the_customer() -> None:
+    """🔴 三态投不出来（`submitted`、或 `approved` 还没落请求行）时照实说「还没到」。
+
+    不回落到七态那句去凑一个对外说法 —— 那等于把内部进度当成对客户的交代。
+    也不打空行：房间里一个空行读起来是「这一岗没话说」，而这一岗是有话说的。
+    """
+    from maos.tests.test_ingress_router import RESULT_SETTLED
+
+    result = {**RESULT_SETTLED, "biz_status": "submitted", "settled_observations": 0,
+              "payment_observations": [], "public_status": projection.NO_PUBLIC_STATUS}
+    facts, data = stages.facts_finance_result(result)
+
+    assert data["public_status"] == ""
+    assert "对客户口径：尚未到可对外说的三态" in facts
+    assert "" not in facts.splitlines(), "事实卡里不该多出空行"
+
+
+def test_public_status_is_absent_when_upstream_did_not_project_one() -> None:
+    """上游连这个键都没有（老的 result 形状）时，与空串同解 —— 不炸、不猜。"""
+    from maos.tests.test_ingress_router import RESULT_UNCONFIRMED
+
+    facts, data = stages.facts_finance_result(RESULT_UNCONFIRMED)
+
+    assert data["public_status"] is None
+    assert "对客户口径：尚未到可对外说的三态" in facts
+
+
+def test_a_made_up_public_status_is_refused_not_repeated(
+        caplog: pytest.LogCaptureFixture) -> None:
+    """🔴 不是那五句的一律不念，并留 WARNING。
+
+    这一行是「对客户口径」的最后一道闸。上游传一个自造措辞过来的症状是房间里
+    多出第六句对外说法，而它长得和那五句一样像真的。
+    """
+    from maos.tests.test_ingress_router import RESULT_SETTLED
+
+    with caplog.at_level(logging.WARNING, logger="maos.roundtable"):
+        facts, data = stages.facts_finance_result(
+            {**RESULT_SETTLED, "public_status": "钱已经打过去了"})
+
+    assert data["public_status"] == "钱已经打过去了", "data 留原样，可追溯"
+    assert "钱已经打过去了" not in facts
+    assert "对客户口径：尚未到可对外说的三态" in facts
+    assert any("不在契约" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_settled_wording_and_public_status_point_the_same_way() -> None:
+    """🔴 「已观察到账」与「对客户口径：退款已到账」同向，且都以观察行为准（铁律 8）。
+
+    圆桌自己**不从 `biz_status` 推三态**：`public_status` 是 `custom_case._observe()`
+    看着 `payment_observation` 投出来的，本函数只是把它留住。所以没有 settled 观察
+    的那一单，两句话都不许出现「到账」——下面后半段钉的就是这个。
+    """
+    from maos.tests.test_ingress_router import RESULT_SETTLED, RESULT_UNCONFIRMED
+
+    settled, _ = stages.facts_finance_result(
+        {**RESULT_SETTLED, "public_status": projection.PUBLIC_SETTLED})
+    assert "已观察到账" in settled
+    assert f"对客户口径：{projection.PUBLIC_SETTLED}" in settled
+
+    # 没有 settled 观察：付款那句说「未确认到账」，对外那句一个「到账」都没有。
+    # 判据同 `:208` 那条 —— 去掉「未确认到账」之后整张卡不含「到账」。
+    unconfirmed, _ = stages.facts_finance_result(
+        {**RESULT_UNCONFIRMED, "public_status": projection.PUBLIC_FILED})
+    assert "未确认到账" in unconfirmed
+    assert "到账" not in unconfirmed.replace("未确认到账", "")
+    assert f"对客户口径：{projection.PUBLIC_FILED}" in unconfirmed
+
+
+def test_preview_stages_do_not_claim_a_public_status(approved: tuple[dict, dict]) -> None:
+    """放行**前**的两张卡一个字都不提对外口径 —— 那时候还没有观察，投不出三态。
+
+    预演阶段硬说一个对外口径就是编：`facts_finance_preview` 手上只有核算预演，
+    `payment_observation` 表还是空的。
+    """
+    payload, checked = approved
+    preview, _ = stages.facts_finance_preview(payload, checked)
+
+    assert "对客户口径" not in preview
+    for literal in projection.PUBLIC_STATUSES:
+        assert literal not in preview
 
 
 # --------------------------------------------------------------------------

@@ -2563,3 +2563,18 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-11 | p10 | `evidence/case-real-01-pg/` 没有顶层 `INDEX.json`（`make_case_bundle.py` 只在 `--all-paths` 跑完才写它），脚本自己会 `[WARN]` 点名 | `verify.py` 第 9 项少一个 provenance 锚（不影响 10/10，锚数从 11 变不到 12）；`report.html` 里这一组的抬头印「顶层 INDEX.json 缺失」而不是案号 | 与上一条同轨：`--all-paths` 在 PG 上能跑通那天，顶层 INDEX.json 自然就有了。在那之前不要为它单开一条「只写 INDEX 不跑路径」的旁路——那份汇总的内容正是四条路径的产出 |
 | 2026-09-11 | p10 | T129 的 `test_two_room_entries_build_the_same_schema` 断言的是**两个入口的表集合相等**，而注释写的是「两处都该走 `router.ensure_room_schema()`」。实际只有 `scripts/run_ingress.py` 改成了走它，`hiclaw/room_ingress.py::wire()` 仍是自己写的四句（`init_schema` + 三句 ensure） | 断言比注释弱一档：哪天有人往 `ensure_room_schema()` 里加第四句 ensure，两处会再次分叉，而表集合相等这条断言**抓不到**（新表两边都建了才叫分叉，只有一边建才红——正是这条断言要防的，所以它今天有效；失效的场景是有人给 `wire()` 也补上同一张表却不走共用函数） | `hiclaw/**` 在 T129 白名单外，所以这一轮没并。下一次动 `hiclaw/room_ingress.py` 的轨把那四句换成 `ensure_room_schema(store)`，断言同时收紧成「`wire()` 的源码里出现 `ensure_room_schema`」 |
 | 2026-09-11 | p10 | `maos/config/source.py::GOVERNED_KEYS` 补到八个之后，仍有两个走配置面的旋钮不在清单里：`MAOS_SANDBOX_REQUIRE_CONTAINER`（安全旋钮，要不要强制容器隔离）与 `MAOS_MAX_PLAN_REJECT` | 这两个在 Nacos 上改了**能改到、但变更不落审计**（现况与 T131 补齐前的那四个一样）。前者是安全面，比 kb 那三个更值得审计 | T131 的 `## task-t131` 已记同一笔账，这里并记一次是为了整合期的人一眼看到「本轮补了四个、还差两个」。补齐仍是「两行改动 + 一条断言」 |
+
+## task-t133（两份加列助手去重 + PG 上四条路径，2026-09-11）
+
+| 日期 | Phase | 现象 | 影响 | 怎么做 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | **`maos/domain/_dbport.py` 的 DDL 翻译器不认 `ALTER TABLE <表> DROP COLUMN <列>`**，发过去当场 `UnsupportedDdlError`（它认的是 CREATE TABLE / CREATE INDEX / ALTER TABLE ADD COLUMN / DROP TABLE / CREATE EXTENSION） | 不挡任何生产路径 —— 本域从来不删列。挡的是**测试**：想在真 PG 上先把 T117 那六列 DROP 掉再验「加得回来」就做不到，于是那条回归守卫只能退成「跑得过 + 六列齐」，另起一条用自建表守「列确实不在时真加得上」（`test_schema_util_t133.py` 那两条） | 派单 §5.4 明写「只修挡住四条路径的那些，别把 `_dbport` 改成一个通用 SQL 翻译器」——`DROP COLUMN` 不挡四条路径，所以本轨一个字没动。哪天真有迁移要删列，连翻译带测试一起补；在那之前不值得为一条测试扩翻译器 |
+| 2026-09-11 | p10 | `scripts/pg_case_snapshot.py::VOLATILE_KEYS` 含片段 `"basis"`，于是 `case_outcome.arrival_basis` 被归进「每跑一次都现生成、字节相同反而是异常」那一栏。但在**钱没到账**的路径上它恒为空字符串 —— `drift` 与 `reject` 两条因此各报一条 `suspicious_identical`（字段就是 `outcome.case_outcome.arrival_basis`，两束都是 `''`） | 纯误报，`verdict` 仍是 `isomorphic`、`不符 0`。但「可疑相同 1」这行字会让读证据的人以为有东西没对上，而它恰恰出现在**最该干净**的那两条对照路径上 | 收窄那条分类：`arrival_basis` 只在真到账时才现生成，空值不该进 `differ_by_design`。`scripts/pg_case_snapshot.py` 在本轨白名单外（派单 §4），一个字没动。改法建议是给 `VOLATILE_KEYS` 那栏加一句「两边都空则不计可疑」，而不是把 `basis` 从清单里摘掉（真到账时它确实该每跑一次都不同） |
+| 2026-09-11 | p10 | `docs/expected-metrics.json` 的 `collected` 与 `pytest_passed_nopg` 落后：本轨新增 9 条测试（4 条 PG 门控），worktree 实跑 `3820 passed, 86 skipped, 1 failed`（无库；基线 `3816 passed, 82 skipped`，收集数 3898 -> 3907） | `test_expected_metrics::test_collected_count_matches_source_of_truth` 红。**预期内**，见本轨 DECISIONS 末条 | 整合期按合并树的实跑末行一次刷到位。**本轨新增的 4 条 PG 门控 `-k pg` 一条都选不中**（名字里是 `postgres`，不含 `pg` 这个子串），所以 `-k pg` 实跑仍是 `93 passed`、与基线一模一样——这正是契约 §0 那条警告的第二个例证。门控条数看全量两档差值：无库 86 skipped、有库 15 skipped，**71**（基线 67，+4） |
+
+### 上一轮记在整合期 p10-d 名下、本轨已办结的两条
+
+| 日期 | Phase | 原记录 | 结论 |
+|---|---|---|---|
+| 2026-09-11 | p10 | 「`compensate.py::_add_column_if_missing` 用 `PRAGMA` 且没有回落……去重那一轨顺手把 `--all-paths --domain-backend postgres` 跑绿当验收」 | **已办**。两份私有助手都删了，两处走 `_schema_util.apply_columns()` → `_dbport.add_column_if_missing()`。`--all-paths --domain-backend postgres` exit 0，四条路径各一个 `[OK]`，业务状态与 SQLite 束逐字一致 |
+| 2026-09-11 | p10 | 「`evidence/case-real-01-pg/` 没有顶层 `INDEX.json`……`--all-paths` 在 PG 上能跑通那天，顶层 INDEX.json 自然就有了」 | **已办**，且原话应验：没有开任何旁路，四条路径跑通之后 `[OK] evidence/case-real-01-pg/INDEX.json 汇总 4 束` 自己就出来了。`verify.py` 的 provenance 锚从 11 涨到 **16**（四条 PG 路径各一个 + 顶层一个） |

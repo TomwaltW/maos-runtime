@@ -44,6 +44,7 @@ import json
 import re
 from pathlib import Path
 
+from maos.domain import _schema_util
 from maos.domain.refund import case_pack, guard, objects, roles
 from maos.skills.contract import Skill, SkillContext, SkillContract
 from maos.skills.registry import register_skill
@@ -344,29 +345,26 @@ def ticket_columns() -> tuple[tuple[str, str, str], ...]:
                  for m in _ADD_COLUMN.finditer(script))
 
 
-def _add_column_if_missing(conn, table: str, col: str, decl: str) -> None:
-    """加列助手，逐字取自 p10 跨轨契约 §B.2（SQLite 的 ADD COLUMN 没有 IF NOT EXISTS）。
-
-    T116 / T120 各有一份一模一样的，**整合期由主会话去重** —— 契约明写各轨不要
-    为这六行另建共享文件，那样三轨会在同一个新文件上撞车。
-    """
-    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-    if col not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-
-
 def ensure_ticket_schema(store) -> None:
     """保证工单的生命周期列在库上。幂等，可连跑；在首次使用时调用（契约 §B.1）。
 
     刻意**不**去改 `objects.ensure_schema` / `schema.sql` 主文件：同期 T116 与 T120
     也在往退款域加列，三轨同改一处主文件必冲突。代价是每轨自带一次探针，
     那是并行的成本，不是设计意图。
+
+    「探一遍、加一遍、核一遍」那三步收在 `maos/domain/_schema_util.py` 里，T116 的
+    `case_pack.ensure_t116_schema()` 用的是同一个（T133 去重）。
+
+    **这条路径原先在 PG 上是抛的**：私有助手拿 `PRAGMA table_info` 当探针，
+    而 `PRAGMA` 是 SQLite 方言 —— `make_case_bundle.py --all-paths
+    --domain-backend postgres` 于是只有 happy 跑得出来，凡走到补偿的路径当场
+    `SyntaxError: syntax error at or near "PRAGMA"`。**收口时不要退成
+    「探不动就 return」**：这条路径上没有调用方的 SELECT 探针补位（T116 那条有），
+    退成 return 的实测后果是不抛了、六列一列都没加，症状要等到下游写
+    `compensation_record` 时才以 `UndefinedColumn` 冒出来。详见
+    `_schema_util` 的模块 docstring 末段。
     """
-    conn = objects._conn(store)
-    with objects.lock_of(store):
-        for table, col, decl in ticket_columns():
-            _add_column_if_missing(conn, table, col, decl)
-        conn.commit()
+    _schema_util.apply_columns(_schema_util.open_conn(store), ticket_columns())
 
 
 def ticket_id_of(case_id: str) -> str:

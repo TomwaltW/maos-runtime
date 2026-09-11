@@ -4,9 +4,12 @@
 > 「证据」栏。没实现的地方写「未实现」，不写「设计上支持」。凡是「部分实现」，
 > 明确写出缺的是哪一半。
 >
-> - 基线 commit：`d386387`（`goai-restructure`）
+> - 基线 commit：**主体产于 `d386387`**（`goai-restructure`，2026-09-01）；
+>   2026-09-11（T121）在 `4756832` 上刷过的只有两处：抬头这一段，和下面新增的
+>   「评委三段建议 → 证据路径」那一节。**A 段以下每一题的数字都还是 `d386387` 当天的实测值**，
+>   是史料不是现行值 —— 台上要报现行值就当场跑命令，别念这份文件里的旧数。
 > - 执行环境：macOS Darwin 25.5.0，系统 `python3`（3.11），无 `MAOS_PG_DSN`、无任何 API key
-> - 执行时间：2026-09-01
+> - 执行时间：2026-09-01（A 段以下）／2026-09-11（抬头与「三段建议」一节）
 > - 本文件由「另开一路独立复核」的会话产出；同一份质询单另有一份产物已备份在
 >   `<scratchpad>/defense-brief.maos-52.md`，两份互不参照，可对比取优。
 
@@ -17,12 +20,80 @@
 MAOS 不是 AgentTeams 的壳 —— 抽掉 `hiclaw/` 之后 **1361 条测试仍绿、端到端 `run.py` 仍
 exit 0**，坏的只有 206 条房间测试。反过来说，这也意味着**基座集成做的是「事件镜像 + 人机
 介入面」，不是把编排能力托管给基座**。真正自研的是治理层：七道规则闸 + 权威事实边界 +
-可重放的证据链，`python3 scripts/verify.py` 一条命令 8/8 PASS。
+可重放的证据链，`python3 scripts/verify.py` 一条命令 **10/10 PASS**。
 
-**现场最容易翻车的一条**：`evidence/*.db` 被 `.gitignore` 排除。本次质询开始时对着仓库现状
-直接跑 `verify.py` 得到的是 **4/8 PASS、exit 1**（db 是 09:42 的旧件、json 是 13:33 的新件）。
-已于 2026-09-01 按 HEAD 全量重跑修正为 8/8；但**换机器或重开机后 db 就没了，
+**现场最容易翻车的一条**：`evidence/*.db` 被 `.gitignore` 排除。本文件成稿那天对着仓库现状
+直接跑 `verify.py` 得到的是 **4/8 PASS、exit 1**（db 是 09:42 的旧件、json 是 13:33 的新件；
+那天核验项还是 8 项，今天是 10 项 —— 那个 4/8 是史料，别拿它对今天的分母）。
+当天按 HEAD 全量重跑修正；但**换机器或重开机后 db 就没了，
 答辩当天必须先 `make_evidence.py` 再 `verify.py`**。
+
+---
+
+## 评委三段建议 → 证据路径
+
+> **这一节是给台上用的。** 三行，一段建议一行：左边是建议原话（压缩），中间是我们做了什么，
+> 右边是**当场打开哪个文件**。三行之后另有一节「可能被问穿的地方与实话」——
+> 那不是免责声明，是把弱点提前摆出来：自己先说和被评委问出来，分差很大。
+>
+> 口径基线 `4756832`；读数以当场跑出来的为准，本轮实跑 `python3 scripts/verify.py`
+> → `RESULT: 10/10 PASS`。
+
+| # | 评委建议（压缩） | 我们做了什么 | 台上打开哪个文件 |
+| :-- | :-- | :-- | :-- |
+| **一** | 多 Agent 协同要看得见：AgentTeams 事件链、关键 Skill 的真实调用、返工 / HITL trace | 一条脱敏真实案例 `RC-2026-0904-001` 跑出四条路径的证据束；圆桌五岗发言与 DAG 四岗执行落在**同一条** `event_log` 时间线上；8 个契约 Skill 逐个带 `invocation_id` 可回查 | `evidence/case-real-01/happy/event-chain.json` — 61 条事件，`by_type` 里 `RoundtableSeatSpoke` 5、`SkillInvoked` 15、`PlanAdvised` 1<br>`evidence/case-real-01/happy/skills.json` — `present 8` / `total 8`<br>`evidence/case-real-01/happy/hitl-trace.json` — 计划审批 + 闸上 BLOCKED + 放行，每条带操作者<br>`evidence/case-real-01/happy/roundtable.json` — 五岗发言全文 |
+| **二** | 以 PolarDB 为业务纵切载体：业务对象带版本、外部系统保留权威事实、区分已提出 / 处理中 / 已到账、RAG 面向 workflow 规划、结果验证 | 十类业务对象带版本挂在同一个 case 上；付款前读外部当前订单版本、漂移即停；对外三态只从 `public_status` 出；九类流程知识进 `kb_doc`，Planner 给必要任务 / 审批人 / 重试预算并带引用；`case_outcome` 四判据判业务成功 | `evidence/case-real-01/happy/business-objects.json` — `resolved 20`、`dangling 0`<br>`evidence/case-real-01/drift/` — `SnapshotDrift` 一条，案子停在 `submitted`，`public_status` 为空串<br>`evidence/case-real-01/happy/outcome.json` — `case_outcome` 四判据 + `public_status`<br>`evidence/contrast-R8/dag-diff.json` — Planner 建议有无对照<br>`python3 scripts/verify.py` → `RESULT: 10/10 PASS` |
+| **三** | 材料：把上面两段讲清楚，并且让评委自己能核 | README §8 映射表逐行指到上面这些文件；架构文档写清 PolarDB 与本地 SQLite 的切分线；PPT 加三张子页（P6b / P9b / P11b）；分镜换成单案例失败路径、≤ 8 分钟 | `README.md` 的 §8 映射表<br>`docs/architecture.md` §5 的「业务对象与知识层在 PolarDB，控制面在本地 SQLite」<br>`docs/ppt-outline.md` 的 P6b / P9b / P11b<br>`docs/demo-script.md` |
+
+### 可能被问穿的地方与实话
+
+**第一段（多 Agent 协同）**
+
+- 🔴 **`evidence/report.html` 里没有单案例束。** 渲染器只扫 `scenario-*`
+  （`scripts/render_trace.py` 那个 glob），`case-real-01/` 与 `contrast-R8/` 都进不了那张页。
+  被问「有没有一张图看这条案例」，实话是**没有**，看 `evidence/case-real-01/happy/INDEX.json`
+  与 `event-chain.json`。台上别点开 report.html 去找单案例。
+- 🔴 **`happy-live` 是真模型束，`verify.py` 按口径跳过它。** 核验器输出末尾自己列名：
+  「未核验（真模型束，重放比不了）」。它证明的是「换成真模型这条路也跑得通」，
+  **不是**「真模型的结果被核验过」。
+- 🔴 **返工那一格今天是空的。** 四条路径的 `hitl-trace.json` 里 `kind` 只有
+  `plan_approval` / `task_approval` / `blocked` / `drift`，**没有 `rework`**。返工机制本身在
+  （`REWORK` 是 `StateTransition.to_state`，场景 2 / 3 / 5 / 7 走得到），但这条单案例上
+  还没走出来 —— **T124 落地后补**，在那之前别说「返工也在这一条案例里」。
+- 🔴 **单案例的圆桌回放今天演不了。** `scripts/make_case_bundle.py` 的库建在临时目录里，
+  跑完就没了 —— 束里有 `roundtable.json`（发言全文）和 `event-chain.json`，但**没有 `maos.db`**，
+  而 `scripts/replay_roundtable.py` 要的是库。能当场演的是「圆桌顺序是从 `event_log` 零模型
+  重建的、不是截图」这件事本身：先 `python3 scripts/room_team_smoke.py --db <路径>` 落一个库，
+  再 `python3 scripts/replay_roundtable.py --db <路径> --list`（本轮实跑，三单各一段）。
+- 🔴 **房间里的真人审批还没进这个束。** `evidence/room/` 那五张截图跑的是一个 `role=coding`
+  的软件域任务，不是这条退款案例；真人在房间里审批这条退款案例，**等 9/18 真跑日采集**。
+
+**第二段（PolarDB 业务纵切 + RAG + 结果验证）**
+
+- 🔴 **顺利路径的 `business_ref_coverage` 是 9/10，不是 10/10。** 缺的是补偿记录 ——
+  钱退成了的案子本来就不该有补偿。第十类在 `evidence/case-real-01/gateway_fail/` 那一束里
+  （那束反过来缺 `notification`）。**不许为了凑「十类齐」造一条补偿记录**：造出来的那条引用
+  会指向一条本不该存在的记录，理由记在 `docs/DECISIONS.md`。
+- 🔴 **PolarDB 的口径是「本机 Docker 同构验证 + 真实例冒烟」，不是「跑在 PolarDB 上」。**
+  演示与全部证据束跑的都是本地 SQLite。业务对象层可切（`MAOS_DOMAIN_BACKEND=postgres`），
+  **控制面四张表仍写死 SQLite**。真实例上跑通了哪几条、没跑通哪几条在 `deploy/polardb-live.md`。
+  同一条线上还有一句不许说：「本仓库缺省支持中文分词检索」—— 缺省走的是 `simple`。
+- 🔴 **R8 对照的两段都是 FAILED。** 它证的是「建议改变了计划」：必要任务 5 → 6、
+  审批人 `supervisor` → `region_manager`、重试预算 2 → 1，且**只加任务、只收紧预算、
+  只指定审批人**，一条任务没删、一次审批没跳。它**不**证明「有建议就能成功」——
+  被问「那加了建议救回来了吗」，实话是没有，这一组的变量不是成败。
+- 🔴 **`drift` 那一束的 `public_status` 是空串，不是某个三态字面值。** 五个字面值的唯一产出处
+  是 `maos/domain/refund/projection.py`；案子停在 `submitted` 且没有付款观察行时它就该是空 ——
+  「问不出来就什么都不说」是设计，不是漏填。
+
+**第三段（材料）**
+
+- 🔴 **这份答辩稿 A 段以下是 `d386387` 当天的史料。** 尤其 A1 那两个测试条数，
+  它们是 `docs/agentteams-mapping.md` 里用 `metric:frozen` 钉死的读数。
+  被问「现在多少条」时当场跑 `python3 -m pytest maos/tests -q`，别念这份文件里的旧数。
+- 🔴 **README 与 PPT 里凡是会漂的数字都已经不写死了**，改成指向
+  `docs/expected-metrics.json` 或直接给命令。这是有意的：材料每过几天就对不上代码，
+  而对不上的数字比没有数字更伤人。
 
 ---
 

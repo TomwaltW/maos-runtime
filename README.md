@@ -8,13 +8,15 @@
 
 ```bash
 python3 scripts/make_evidence.py   # ① 跑 7 个场景 + RAG 对照，生成 evidence/scenario-1..7 与 -R5
-python3 scripts/verify.py          # ② 八项证据逐项重放校验 -> RESULT: 8/8 PASS
+python3 scripts/verify.py          # ② 逐项重放校验 -> RESULT 行全绿即 exit 0
 ```
 
 > **新克隆必须按 ①② 跑满两条，一条都不能省。** `*.db` 不入 git（`.gitignore` 挡着），
 > 核验器要的是库、不是快照 —— 直接跑 ② 会报 `缺数据库` 并**退出 2**。这是设计行为。
-> 全新克隆实测：clone + 这两条共约 **7 秒**，`RESULT: 8/8 PASS`，退出码 0。原委见
-> [§3](#3-一条命令核验这一节是给评委的)。
+> 全新克隆实测：clone + 这两条共约 **7 秒**，退出码 0。
+> **本文不写死核验项的分子分母** —— 它随证据束增减而变；现行期望值的唯一真源是
+> [`docs/expected-metrics.json`](docs/expected-metrics.json)，台上以当场输出为准。
+> 原委见 [§3](#3-一条命令核验这一节是给评委的)。
 
 ---
 
@@ -97,25 +99,35 @@ python3 scripts/verify.py            # ② 八项逐条重放校验
 echo "verify exit=$?"                # 全 PASS -> 0；任一 FAIL -> 非 0
 ```
 
-本机实跑（整合轮 14，T27–T30 四轨并入后当场重跑；全新克隆 + 无任何 API key 的逐步耗时见
-[`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）：
+本机实跑（2026-09-11 在 `4756832` 上重跑；全新克隆 + 无任何 API key 的逐步耗时见
+[`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）。
+**下面是一次真实输出，不是承诺值** —— 分子分母随证据束增减而变，
+现行期望在 [`docs/expected-metrics.json`](docs/expected-metrics.json)：
 
 ```text
-[PASS] hash-integrity       86/86
-[PASS] business-ref         35/35
+[PASS] hash-integrity       108/108
+[PASS] business-ref         61/61
 [PASS] authoritative-fact   3/3
 [PASS] trace-tree           29/29
-[PASS] kb-hit               7/7
+[PASS] kb-hit               13/13
 [PASS] business-outcome     10/10
-[PASS] history-case         1/1
-[PASS] cost-attribution     39/39
+[PASS] history-case         2/2
+[PASS] cost-attribution     57/57
+[PASS] provenance           12/12
+[PASS] case-outcome         6/6
 
-RESULT: 8/8 PASS
+RESULT: 10/10 PASS
 证据来源：scenario-1, scenario-2, scenario-3, scenario-4, scenario-5, scenario-6, scenario-7, scenario-R5
+未核验（真模型束，重放比不了）：case-real-01/happy-live
 ```
 
-（`authoritative-fact`、`trace-tree` 与 `business-outcome` 三项会附若干 `warn:` 行 —— 那是点名不判负的
-提示，比如「某份产物没有来源事件」。warn 不改判定，但它们是真的，没有被藏起来。）
+（`authoritative-fact`、`trace-tree` 与 `provenance` 三项会附若干 `info:` / `warn:` 行 —— 那是点名
+不判负的提示，比如「某份产物走旁路入库」「`evidence/room/` 那束的出处 sha 落后 HEAD」。
+它们不改判定，但都是真的，没有被藏起来。）
+
+（末行那句「未核验」也是真的：`evidence/case-real-01/happy-live/` 是**真模型**跑出来的束，
+重放比不了逐字节，核验器按口径跳过并**显式列名**。它证明的是「换成真模型这条路也跑得通」，
+不是「真模型的结果被核验过」。）
 
 **①② 两条缺一不可，顺序不能换。** `*.db` 不入库（`.gitignore` 挡着），
 核验器要的是库、不是快照 —— 所以新克隆的仓库直接跑 `verify.py` 会报
@@ -130,23 +142,22 @@ RESULT: 8/8 PASS
 生成时间与 git sha，每次重跑都会变；`*.db` 被 `.gitignore` 挡着不会出现在里面。
 
 **但不要用 `git checkout -- evidence/` 去「收拾干净」。** json 会被还原成入库的旧版本，
-而 `maos.db` 不入 git、不会跟着还原 —— 新库配旧快照，再跑 `verify.py` 会掉到
-`RESULT: 4/8 PASS`（`hash-integrity 6/86`、`business-ref 0/35`、`trace-tree 21/29`、
-`business-outcome 0/11`），看上去像证据被伪造，
-其实只是两边不同步。实测过的两条出路，二选一：
+而 `maos.db` 不入 git、不会跟着还原 —— 新库配旧快照，再跑 `verify.py` 会掉下来一大截
+（实测过一次：`hash-integrity` 的分子从满分掉到个位数、`business-ref` 归零），
+看上去像证据被伪造，其实只是两边不同步。实测过的两条出路，二选一：
 
 ```bash
-python3 scripts/make_evidence.py                                    # 甲：重跑，回到 8/8
+python3 scripts/make_evidence.py                                    # 甲：重跑，回到全绿
 find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连库一起清，回到出厂态
 ```
 
-甲之后 `verify.py` 回到 8/8；乙之后工作区 0 行改动、`verify.py` 退 2（等同新克隆）。
+甲之后 `verify.py` 回到全绿；乙之后工作区 0 行改动、`verify.py` 退 2（等同新克隆）。
 **只做 `git checkout` 而不删库，是唯一会得出错误结论的那条路。**
 
 **SKIP 的纪律**：上游能力没落地的项输出 `[SKIP]` 并在结尾显式列名，**不计进 PASS
-的分子**。静默跳过等于谎报 —— 一个 8/8 里藏着两个没跑的，比老实写 6/6 + 2 SKIP 更坏。
+的分子**。静默跳过等于谎报 —— 一个满分里藏着两个没跑的，比老实写「少两项 + 2 SKIP」更坏。
 
-八项各自在验什么：
+十项各自在验什么（顺序即输出顺序，清单在 `scripts/verify.py::CHECKS`）：
 
 | # | 项 | 失败意味着 |
 | :-- | :-- | :-- |
@@ -158,6 +169,12 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 | 6 | `business-outcome` | 「Agent 都完成了」被当成业务成功 |
 | 7 | `history-case` | 知识层被污染 |
 | 8 | `cost-attribution` | 模型用量归不到 Run id，成本说不清是谁花的 |
+| 9 | `provenance` | 这束证据不是当前代码跑的 —— 前八项绿得很诚实，只是绿的不是人以为的那件事 |
+| 10 | `case-outcome` | 四判据本身是假的：`arrival` 对不上观察行、`business_success` 是自己填的、`arrival_basis` 指不回去 |
+
+**前八项校验一束证据内部自洽，第 9 项校验它是哪份代码产的，第 10 项校验四判据本身是不是真的。**
+分开是有原因的：一束一年前的证据可以内部全绿，而「可重放」这句卖点一旦出处指向复现不出来的
+地方就不成立了。
 
 ---
 
@@ -180,17 +197,22 @@ find evidence -name 'maos.db' -delete && git checkout -- evidence/  # 乙：连�
 ```bash
 git clone -b goai-restructure <本仓库地址> maos && cd maos
 git rev-parse --abbrev-ref HEAD     # 必须回 goai-restructure；不是它就停下，别往下跑
-python3 -m pytest maos/tests -q     # 1069 passed
+python3 -m pytest maos/tests -q     # 全绿；现行条数见 docs/expected-metrics.json
 python3 run.py                      # 场景 1-7 端到端，exit=0
 python3 run.py --scenario 7         # 单跑退款失败路径（它已在缺省序列里）
 
-# 到这里只跑了代码；要看到评委关心的 8/8，还差证据链这两条：
+# 到这里只跑了代码；要看到评委关心的证据链，还差这两条：
 python3 scripts/make_evidence.py    # ① scenario-1..7 + scenario-R5
-python3 scripts/verify.py           # ② RESULT: 8/8 PASS，exit=0
+python3 scripts/verify.py           # ② RESULT 行全绿，exit=0
 ```
 
+> **本文不写死 `passed` 条数，也不写死核验项的分母。** 它们随每一轨的新测试、新证据束
+> 而变，写进 README 就是等着过期。唯一真源是
+> [`docs/expected-metrics.json`](docs/expected-metrics.json)（`scripts/demo_preflight.sh`
+> 也从它读，不留字面量），要现行值就跑上面的命令。
+
 全新克隆 + 无任何 API key 实测：以上全部跑完约 **28 秒**，其中「clone + 证据链两条」
-这条最短路径约 **7 秒**（第六遍冒烟读数，`860 passed` 基线；逐步耗时见
+这条最短路径约 **7 秒**（第六遍冒烟的读数，测试条数是当时的基线、如今已涨；逐步耗时见
 [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md)）；
 跑完 `git status` 会有 50 行 `evidence/` 改动，属预期 —— **别用 `git checkout` 单独还原**，
 原因与两条出路见 [§3](#3-一条命令核验这一节是给评委的)。
@@ -252,6 +274,7 @@ export MAOS_LLM_MODEL=...
 ```text
 evidence/
   INDEX.json              # 本次生成的清单：git sha、每场的 span/event 计数、树错误
+  report.html             # 可视化页 —— 只覆盖 8 个场景束，见下方红字
   scenario-1 … scenario-7/
     run.log               # 场景的完整 stdout
     result.json           # Plan/Task 终态、每个任务的 role/attempt/risk、business_outcome
@@ -262,10 +285,41 @@ evidence/
     maos.db               # 库本体，**不入 git**，由 make_evidence.py 现生成
   scenario-R5/
     dag-diff.json         # RAG 有无两版 DAG 的差异 —— 对照实验的判定面
+
+  case-real-01/           # 一条脱敏真实案例的纵切，四条路径各一束（本仓库的主证据）
+    INDEX.json            # 四束的总账：每束的 plan_state / biz_status / public_status /
+                          #   skills_present / business_ref_coverage / span & event 计数
+    happy/                # 顺利到账：计划获批 -> 主管放行核算 -> 网关退款 -> 观察到 settled
+      event-chain.json    # 按 event_log.seq 升序的 61 条事件 —— 圆桌与 DAG 同一条时间线
+      roundtable.json     # 五岗发言全文，逐岗标注是不是模型说的
+      skills.json         # 8 个契约 Skill 逐个 present / invocation_id / 版本
+      hitl-trace.json     # 人做的每一个动作带操作者；机器判的如实记 actor=gate
+      outcome.json        # case_outcome 四判据 + biz_status + public_status + 观察行
+      business-objects.json / kb-hits.json / kb-dump.json / trace.json / result.json /
+      model-usage.json / run.log
+    drift/                # 付款前读到外部改单 -> 报漂移 -> 核算停 BLOCKED 等人
+    gateway_fail/         # 网关失败 -> 人在付款闸拒签 -> 开补偿工单 -> 线下凭证回填观察
+    reject/               # 两级驳回：计划先被驳回一次，放行后主管在核算闸上驳回这一单
+    happy-live/           # 同 happy，但圆桌五岗走真模型；verify 按口径跳过（重放比不了）
+
+  contrast-R8/            # Planner 建议有无对照（R5 是「检索有无」，R8 是「建议有无」）
+    dag-diff.json         # 两段计划的差异 —— 必要任务、审批人、重试预算三项
+
+  domains/ · room/ · capability-matrix.json    # 换域证据 / 真房间实拍与逐字副本 / 能力矩阵
 ```
 
 每个文件首行都是 `# generated at <ISO8601> from <git sha>`，由生成脚本写入，
 不许手写。工作区不干净时 sha 带 `-dirty` 后缀。
+
+🔴 **`evidence/report.html` 只覆盖 8 个场景束。** 渲染器（`scripts/render_trace.py`）扫的是
+`scenario-*`，所以 `case-real-01/` 与 `contrast-R8/` **进不了那张可视化页**。
+要看单案例，直接读 `evidence/case-real-01/INDEX.json` 与各路径下的 `event-chain.json` ——
+别在 report.html 里找它，找不到不是坏了。
+
+🔴 **`case-real-01/` 各束里没有 `maos.db`。** 产它的 `scripts/make_case_bundle.py` 把库建在
+临时目录、跑完即销毁，落盘的是那 13 个 json / log。所以 `scripts/replay_roundtable.py`
+（零模型、只读 `event_log` 重建五岗顺序）**指不到这几束** —— 要现场看回放，先
+`python3 scripts/room_team_smoke.py --db <路径>` 落一个库再回放。
 
 ---
 
@@ -292,21 +346,35 @@ evidence/
 
 ## 8. 与提案 / 比赛要求的映射
 
+> **这张表指的是单案例纵切，不是场景束。** 十三条各自的证据现在都落在同一条案例
+> `RC-2026-0904-001` 上 —— 一条脱敏真实退款诉求跑出的四条路径。要打开哪个文件，
+> 右列写死了；**不写会漂的数字**，分子分母以当场跑出来的为准。
+
 | 评委要求 | 落点 | 可核验证据 |
 | :-- | :-- | :-- |
-| 用一条脱敏真实退款需求完成可执行纵向切片 | 场景 6 / 7 | `evidence/scenario-6,7/` |
-| AgentTeams 事件链 | `MatrixEventBus` 镜像 + `event_log` | [`docs/agentteams-mapping.md`](docs/agentteams-mapping.md)、`trace.json` |
-| 关键 Skill 的真实调用 | 退款域 7 个 skill 全部真调 | `event_log` 里的 `SkillInvoked` |
-| 返工 / HITL Trace | Gate 返工 + `BLOCKED` 审批 + replan | `evidence/scenario-2,3,5,7/trace.json` |
-| Evidence Bundle | `make_evidence.py` + `verify.py` | 8/8 PASS |
-| 业务对象关联到同一案例 | `business_ref`（只存引用不存副本） | verify 第 2 项 |
-| 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | settled guard + 业务状态机三段 | verify 第 3 项 + 越权拒绝单测 |
-| RAG 面向 workflow 规划 | 两阶段检索：结构化预过滤 + 混合召回 | `kb-hits.json` |
+| 用一条脱敏真实退款需求完成可执行纵向切片 | 案例 `RC-2026-0904-001`，四条路径各一束 | `evidence/case-real-01/`（`happy` / `drift` / `gateway_fail` / `reject`，另有真模型束 `happy-live`）；四束总账在 `evidence/case-real-01/INDEX.json` |
+| AgentTeams 事件链 | 圆桌五岗 + DAG 四岗落在**同一条** `event_log` 上 | `evidence/case-real-01/happy/event-chain.json`（61 条事件按 `seq` 升序；`by_type` 里 `RoundtableSeatSpoke` 5、`SkillInvoked` 15、`PlanAdvised` 1、`RefundBizStatusChanged` 4）＋ 零模型回放器 `scripts/replay_roundtable.py` |
+| 关键 Skill 的真实调用 | 跨轨契约钉死的 **8 个**退款 Skill | `evidence/case-real-01/happy/skills.json`（`present 8` / `total 8`，逐个带 `invocation_id` / `input_digest` / `output_hash` / 版本；失败路径另有 `refund.compensate` 与 `refund.compensation_close`） |
+| 返工 / HITL Trace | 计划审批 + 任务闸 `BLOCKED` + 放行 / 驳回 | `evidence/case-real-01/happy/hitl-trace.json`（人做的每个动作带操作者，机器判的如实记 `actor=gate`；`reject` 束里有两级驳回）。🔴 **返工那一格今天是空的** —— 四束里都没有 `kind=rework`，机制在但这条案例上还没走出来，**T124 落地后补** |
+| Evidence Bundle | `scripts/make_evidence.py` + `scripts/verify.py` | 本轮实跑 `RESULT: 10/10 PASS`；**现行期望值的唯一真源是** [`docs/expected-metrics.json`](docs/expected-metrics.json) |
+| 业务对象关联到同一案例 | `business_ref`（只存引用不存副本） | `evidence/case-real-01/happy/business-objects.json`（`resolved 20`、`dangling 0`，十类对象各带 `object_version`）。`business_ref_coverage` 在顺利路径上是 **9/10** —— 缺的是补偿记录，钱退成了的案子本就不该有；第十类在 `evidence/case-real-01/gateway_fail/` 那一束 |
+| 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | settled guard + 对外三态投影 | `evidence/case-real-01/happy/outcome.json` 的 `public_status`；五个字面值的唯一产出处是 `maos/domain/refund/projection.py`（问不出终态时它就是空串）。付款前读外部当前版本、**漂移即停**那条在 `evidence/case-real-01/drift/`（`refund.snapshot_check` → `SnapshotDrift`，案子停在 `submitted`） |
+| RAG 面向 workflow 规划 | 九类流程知识进 `kb_doc`，两阶段检索 | `evidence/case-real-01/happy/kb-hits.json`（命中逐条可回查）＋ 对照实验 `evidence/contrast-R8/dag-diff.json` |
 | 先按租户/业务/地区/渠道/商品/政策/版本过滤，再组合规则编号、错误码、全文、语义 | `maos/kb/retriever.py` 阶段一 + 四通道融合 | 跨租户不召回单测 |
-| 减少遗漏财务复核、错误套用政策、无限重试 | 第六道闸 + 政策版本锁定 + `MAOS_MAX_REPLAN` | 场景 R5 对照实验 |
-| 历史流程不能替代当前订单事实和人工授权 | `maos/kb/guardrails.py` 三条断言 | 护栏单测 |
-| 以退款到账 / 客户确认 / 人工纠错验证 DAG | `result.json` 的 `business_outcome` | verify 第 6 项 |
-| 只有证据完整且外部结果明确的案例进默认知识层 | 晋升规则 `promote_history_case` | verify 第 7 项 |
+| 减少遗漏财务复核、错误套用政策、无限重试 | 第六道闸 + 政策版本锁定 + Planner 建议 | `evidence/contrast-R8/dag-diff.json` 的三项差异：必要任务 **5 → 6**（补上「渠道商核销」）、审批人 `supervisor` → `region_manager`、重试预算 **2 → 1**。建议本身由 `maos/kb/plan_advice.py` 生成，每条带 `doc_id` 引用 |
+| 历史流程不能替代当前订单事实和人工授权 | `maos/kb/guardrails.py` 三条断言 | 护栏单测；R8 的结论行把边界写死了 ——「只加任务、只收紧预算、只指定审批人，一条任务没删、一次审批没跳」 |
+| 以退款到账 / 客户确认 / 人工纠错验证 DAG | `case_outcome` 四判据 | `evidence/case-real-01/happy/outcome.json` 的 `case_outcome`（`arrival` / `customer_confirmation` / `manual_correction` / `complaint` / `evidence_complete` / `business_success`）＋ `scripts/verify.py` 的第 10 项 `case-outcome`（回查观察行，不认自称） |
+| 只有证据完整且外部结果明确的案例进默认知识层 | 晋升规则 `promote_history_case` | `evidence/case-real-01/happy/event-chain.json` 里的 `CasePromoted` 事件；没成的那些不进正例、聚成 `failure_hint` 与 `failure_hint_index`（渠道 × 返回码 × 规则号），实例在 `evidence/scenario-7/` 的库里 |
+
+**第十四条不在这十三行里，但评委第二段点了名：以 PolarDB 为业务纵切的载体。**
+落点是 `maos/domain/_dbport.py`（`MAOS_DOMAIN_BACKEND=postgres` + `MAOS_PG_DSN` 切后端，
+DDL 只写一份、PG 侧现翻），怎么迁的三步在 [`deploy/polardb.md`](deploy/polardb.md)，
+真实例上跑通了哪几条在 [`deploy/polardb-live.md`](deploy/polardb-live.md)。
+口径**只到这里**：本机 Docker `pgvector/pgvector:pg16` 同构验证 + 阿里云 PolarDB
+真实例冒烟（2026-08-30，高权限账号五步 5/5、控制台建的普通账号 2/5）。
+**可切的是业务对象与知识层；`plan` / `task` / `artifact` / `event_log` 四张控制面表仍写死本地
+SQLite** —— 两个面的接线程度不一样，切分线与理由见
+[`docs/architecture.md`](docs/architecture.md) §5。
 
 十三条之外，技术要求对**推荐工具链**另有一条判据 ——「不按使用数量评分……重点在于
 说明清楚设计理念、接口契约、必要性、可观测性、权限边界、端到端评估证据和迁移路径」。
@@ -348,7 +416,7 @@ evidence/
 | [`docs/ppt-outline.md`](docs/ppt-outline.md) | 方案 PPT 逐页大纲 + 讲稿禁语（每条卖点标注可核验证据） | 人写 |
 | [`docs/open-questions.md`](docs/open-questions.md) | 待确认清单：仓库答不了、必须由人类查官方通知的问题（单一真源） | 人写 |
 | [`docs/clone-smoke-report.md`](docs/clone-smoke-report.md) | 裸 clone 冒烟逐遍实录，**含没跑通的那几遍**与逐步耗时 | 人写 |
-| [`deploy/README.md`](deploy/README.md) | 容器内从零跑到 `RESULT: 8/8 PASS`，三条命令 | 人写 |
+| [`deploy/README.md`](deploy/README.md) | 容器内从零跑到 `RESULT` 全绿，三条命令 | 人写 |
 | [`deploy/polardb.md`](deploy/polardb.md) | **怎么做**：迁到 PolarDB PG 的三步（建库 → 装 pgvector → 换连接串）、怎么配、怎么降级 | 人写 |
 | [`deploy/polardb-live.md`](deploy/polardb-live.md) | **实际跑通了哪几条**：真实 PolarDB 实例上的逐条记录，**含没跑通的** | 人写 |
 | [`deploy/rocketmq.md`](deploy/rocketmq.md) | **怎么做**：内存 EventBus 换 RocketMQ 的接法与降级 | 人写 |
@@ -408,7 +476,7 @@ bash scripts/make_release.sh        # 产出 dist/maos-runtime-<sha7>.zip
 ```
 
 它只打版本库里的东西（走 `git clone --depth 1`，未跟踪文件一个都进不来），
-**打完当场解压跑一遍** pytest + ①② 到 `8/8 PASS`，再做一遍密钥自查 ——
+**打完当场解压跑一遍** pytest + ①② 到 `RESULT` 全绿，再做一遍密钥自查 ——
 任一不过就非 0 退出，不产出跑不起来的交付物。`dist/` 被 `.gitignore` 挡着，
 包不入版本库，**提交前现打一次**单独上传。
 

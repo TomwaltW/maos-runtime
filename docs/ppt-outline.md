@@ -34,7 +34,7 @@
 **讲稿**
 MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"多个 Agent 干完了一件事"
 这句话可以被验证，而不是只能被相信。所以这页最下面这条命令，评委可以自己跑，
-七项证据逐项重放，全绿才是零。
+十项证据逐项重放，全绿才是零。
 
 **可核验证据**
 `README.md:1-18`（标题、副标题与那条 `verify.py` 命令逐字对应本页文案）
@@ -59,7 +59,7 @@ MAOS 是一个多 Agent 协作运行时。它解决的问题只有一个：让"�
 
 | 评委诊断 | 落在 | 证据 |
 | :-- | :-- | :-- |
-| 没有可执行制品和运行证据 | **P11** | `python3 scripts/verify.py` → 8/8 PASS |
+| 没有可执行制品和运行证据 | **P11** | `python3 scripts/verify.py` → 10/10 PASS |
 | 现实业务锚点不足 | **P3 + P10** | 退款域纵切（场景 6 / 7），不是软件域自证 demo |
 | 「所有 Agent 都回复完成」≠ 业务成功 | **P10** | 场景 7：`biz_status=compensated`，`settled` 观察 **0 条** |
 
@@ -229,6 +229,59 @@ HITL 是房间里的斜杠命令，第五项是可观测。第五项要单说：
 
 ---
 
+## P6b · 单案例事件链时间线（圆桌与 DAG 在同一条线上）
+
+**一句话主张**
+五岗圆桌先议、四岗 DAG 再执行 —— 它们不是两套日志，是 `event_log` 上**一条**按 `seq` 升序的时间线。
+
+**画面要素**
+一条自上而下的时间轴，左侧标 `seq`，右侧标事件名；圆桌段与 DAG 段用两种底色分开，
+**但轴本身中间不断开**（断开就把这一页要证的事讲反了）。轴上钉七个锚点，读数取自实测：
+
+| seq | 事件 | 这一格在说什么 |
+| :-- | :-- | :-- |
+| 1–2 | `ToolInvoked` → `SkillInvoked refund.snapshot_check` | 议事之前先读外部当前订单版本 |
+| 3–10 | `RoundtableRound` → 5 × `RoundtableSeatSpoke` | 受理 / 规则 / 证据 / 风险 / 财务五岗依次发言，中间夹着 `refund.evidence_check` 与 `refund.risk_screen` 两条真调用 |
+| 13–15 | `KbRetrieved` → `SkillInvoked kb.retrieve` → `PlanAdvised` | 检索九类流程知识，Planner 据此给必要任务与审批人 |
+| 16–17 | `PlanApproved` → `PlanTransition PENDING→RUNNING` | 计划审批是人做的，事件里带操作者 |
+| 20–55 | 15 × `SkillInvoked` 夹在 25 × `StateTransition` 里 | DAG 四岗执行，每次调用带 `invocation_id` |
+| 42–49 | 4 × `RefundBizStatusChanged` | `submitted` → `approved` → `gateway_accepted` → `processing` → `settled`，每一跳的 `reason` 里带网关回执 |
+| 59–61 | `CaseOutcomeComputed` → `CasePromoted` → `SkillInvoked kb.sink` | 四判据算完才谈晋升 |
+
+右下角小字：**61 条事件，一条命令重产**。
+
+**讲稿**
+评委问 AgentTeams 事件链，我们给的不是截图，是一张表里的 61 行。圆桌五岗说完话，
+计划才送审批；审批过了 DAG 才开跑 —— 这两段共用同一个 `seq` 序列，所以「谁先谁后」
+不是我们讲出来的，是库里排好的。中间这四次业务状态变更，每一次都指得到是哪个网关回执。
+
+**数据从哪来**
+- `evidence/case-real-01/happy/event-chain.json` —— `events` 按 `event_log.seq` 升序，
+  `by_type` 给各类计数（`RoundtableSeatSpoke` 5、`SkillInvoked` 15、`RefundBizStatusChanged` 4、
+  `PlanAdvised` 1、`CasePromoted` 1）
+- 同束的 `roundtable.json` —— 五岗发言全文，讲解时的备份画面
+- `scripts/replay_roundtable.py` —— 零模型、只读 `event_log` 重建五岗顺序的回放器
+
+**对应评委要求编号**
+**2**（AgentTeams 事件链）、**3**（关键 Skill 的真实调用）
+
+**不许说的话**
+- 🔴 不许说「这条时间线能在 `evidence/report.html` 里看到」。渲染器只扫 `scenario-*`
+  （`scripts/render_trace.py` 里那个 glob），单案例束与 R8 都进不去。要看这条线，
+  打开 `evidence/case-real-01/happy/event-chain.json`。
+- 🔴 不许在这一页现场回放**这条案例**的圆桌。`scripts/make_case_bundle.py` 的库建在临时目录、
+  跑完即销毁，**束里没有 `maos.db`**，而 `scripts/replay_roundtable.py` 要的是库。
+  真要现场演回放，先 `python3 scripts/room_team_smoke.py --db <路径>` 落一个库再回放 ——
+  那演的是圆桌机制本身，不是这一单。
+- 🔴 不许把 `RoundtableSeatSpoke` 说成「五个 Agent 各自调了模型」。这一束是 Scripted 跑的，
+  `roundtable.json` 里每一岗的 `spoken_by_model` 都是 `false`、`fallback_reason` 是 `no_model`,
+  发言内容是**确定性事实卡**。真模型那一版在 `evidence/case-real-01/happy-live/`，
+  且 `scripts/verify.py` 按口径跳过它（输出末尾自己列名）。
+- 🔴 返工那一格**今天是空的**：四条路径的 `hitl-trace.json` 里没有 `kind=rework`。
+  机制在（`REWORK` 是 `StateTransition.to_state`），这条单案例上还没走出来 —— **T124 落地后补**。
+
+---
+
 ## P7 · Skill / ToolPort 九要素契约
 
 **一句话主张**
@@ -364,6 +417,64 @@ FAIL 输出片段。
 
 ---
 
+## P9b · PolarDB 上的十对象与版本
+
+**一句话主张**
+同一个 case 挂十类业务对象，每一条都带版本、都能顺着 `business_ref` 从 DAG 指回去；
+这套表可以整体搬到 PolarDB —— **控制面不搬**。
+
+**画面要素**
+中间一张十行表（对象类型 × 条数 × 版本 × 由哪个任务挂上），左边一列 DAG 四个任务，
+箭头从任务指向对象、箭头上标 `business_ref`。右下角一块小图画**两个库的切分线**：
+业务对象 + `kb_doc` → PolarDB；`plan` / `task` / `artifact` / `event_log` → 本地 SQLite。
+
+| 对象类型 | 顺利路径条数 | 版本 | 挂它的任务 |
+| :-- | --: | :-- | :-- |
+| `refund_case` | 1 | v0 | intake |
+| `order_snapshot` | 1 | v1 | intake |
+| `product_snapshot` | 1 | v1 | intake |
+| `customer_evidence` | 4 | v1 | intake |
+| `policy_rule` | 8 | v2 | policy / finance |
+| `approval_record` | 1 | v1 | finance |
+| `finance_entry` | 1 | v1 | finance |
+| `refund_request` | 1 | v1 | payment |
+| `payment_observation` | 1 | v0 | payment |
+| `notification` | 1 | v1 | notify |
+| **合计** | **20 条** | `resolved 20` / `dangling 0` | |
+
+**讲稿**
+十类对象、20 条引用，一条都不悬空。政策规则挂的是 v2 —— 那是下单那天锁定的版本，
+不是今天最新的版本，「错误套用政策」这件事在这里就被版本挡住了。失败路径上
+`approval_record` 会出现 v1 和 v2 两条：财务闸放行一次、付款闸拒签一次，两次审批各自留痕。
+这套表跑在 SQLite 上，也跑得了 PolarDB —— 同一份 DDL，PG 侧现翻，不手抄第二份。
+
+**数据从哪来**
+- `evidence/case-real-01/happy/business-objects.json` —— 20 条 `object_type` / `object_id` /
+  `object_version` / `resolved`，末尾 `resolved 20`、`dangling 0`
+- `evidence/case-real-01/gateway_fail/business-objects.json` —— 21 条，`approval_record`
+  两个版本、多一条 `compensation_record`
+- `deploy/polardb.md`（三步怎么迁）与 `deploy/polardb-live.md`（真实例上跑通了哪几条，含没跑通的）
+- `maos/domain/_dbport.py`（`MAOS_DOMAIN_BACKEND` 双后端，DDL 只写一份）
+- `docs/architecture.md` §5 的切分线那一段
+
+**对应评委要求编号**
+**6**（业务对象关联到同一案例）、**7**（外部系统保留权威事实，区分三态）
+
+**不许说的话**
+- 🔴 不许说「全部控制面上 PolarDB」。可切的是**业务对象 + 知识层**；
+  `plan` / `task` / `artifact` / `event_log` 四张控制面表仍写死本地 SQLite
+  （`maos/flows/common.py` 的 `build()`）。
+- 🔴 不许说「跑在 PolarDB 上」。全部证据束跑的都是本地 SQLite；PolarDB 的口径是
+  **本机 Docker 同构验证 + 真实例冒烟**（2026-08-30，高权限账号五步 5/5、
+  控制台建的普通账号 2/5），逐条实录在 `deploy/polardb-live.md`。
+- 🔴 不许说「十类齐」。顺利路径的 `business_ref_coverage` 是 **9/10** —— 缺的是补偿记录，
+  因为钱退成了的案子本来就不该有补偿；第十类在 `evidence/case-real-01/gateway_fail/` 那一束
+  （那束反过来缺 `notification`）。为凑数造一条补偿记录，会让这条引用指向一条本不该存在的
+  记录，理由记在 `docs/DECISIONS.md`。
+- 🔴 不许说「缺省支持中文分词检索」（`docs/submission-checklist.md §A-4`）—— 缺省走 `simple`。
+
+---
+
 ## P10 · 失败路径纵切（场景 7）
 
 **一句话主张**
@@ -416,20 +527,27 @@ FAIL 输出片段。
 ## P11 · 一条命令核验
 
 **一句话主张**
-检索不准顶多说效果一般；无法核验就是零分 —— 所以七项证据每一项都能被外人独立跑一遍。
+检索不准顶多说效果一般；无法核验就是零分 —— 所以十项证据每一项都能被外人独立跑一遍。
 
 **画面要素**
-整屏终端输出，七行 PASS + 一行 RESULT，等宽大字号。左侧配一张七行小表：
-每项失败**意味着什么**（`README.md:149-158` 那张表）。
+整屏终端输出，十行 PASS + 一行 RESULT，等宽大字号。左侧配一张十行小表：
+每项失败**意味着什么**（`README.md` §3 那张表）。
 
 **讲稿**
 这一节是给评委的。两条命令：一条生成全部证据束（七个场景 + RAG 对照），一条逐项重放校验。
-七项分别验证据没被篡改、业务锚点不悬空、权威边界没被绕过、事件链完整、
-RAG 命中是真的、Agent 完成没被当成业务成功、知识层没被污染。全绿退出 0。
+十项分别验证据没被篡改、业务锚点不悬空、权威边界没被绕过、事件链完整、
+RAG 命中是真的、Agent 完成没被当成业务成功、知识层没被污染、成本归得到人头、
+这束证据是不是当前代码跑的、四判据本身是不是真的。全绿退出 0。
 
 **可核验证据**
-- `scripts/verify.py::CHECKS`（**八项**函数清单，顺序即输出顺序）
-- `README.md` §3（一条命令核验：两条命令、**八行**实跑输出、八项各验什么）
+- `scripts/verify.py::CHECKS`（函数清单，顺序即输出顺序）
+- `README.md` §3（一条命令核验：两条命令、当场实跑输出、十项各验什么）
+- 现行读数不写死在本文件里，**台上以当场输出为准**；离线对数看 `docs/expected-metrics.json`
+  的 `verify_result_line`。
+
+🔴 **下面这块是史料，不是现行读数。** 它是**八项时代**（基线 `dd3edff`）的输出，
+今天跑出来是**十项**（多了 `provenance` 与 `case-outcome` 两行），分母也不是 8。
+留着它是为了说明「读数变过几轮、每轮都有出处」，**照抄上台就是念过期数字**。
 
 编排侧在 `dd3edff` 上实跑到的八行（2026-08-31 主机与容器各跑一次，两次一致；
 读数变过四轮，**只认这一份**：`business-ref 23/23`+`kb-hit 1/1` 是 X 轮读数、
@@ -455,9 +573,10 @@ RESULT: 8/8 PASS
 
 **不许说的话**
 - 不许说「七个场景都跑成功了」（`docs/submission-checklist.md §A-4`）。
+- 🔴 不许念本页那块 `dd3edff` 的八行当现行读数 —— 它是史料，今天是十项。
 - 不许把 `warn:` 行藏起来。`authoritative-fact` / `trace-tree` / `business-outcome`
   三项会附若干 `warn:`，它们不改判定但是真的（`README.md` §3 那段括注）。台上被问到要能直接答。
-- 不许说「新克隆的仓库直接跑 `verify.py` 就有 8/8」—— `*.db` 不入库，
+- 不许说「新克隆的仓库直接跑 `verify.py` 就有满分」—— `*.db` 不入库，
   直接跑会报缺数据库并退出 2，**这是设计行为**（`README.md` §3「①② 两条缺一不可」那段）。
 
 （整合轮 6 合入 D-1 + D-2 后实测：`warn:` 共 **12 行 / 3 类** —— `trace-tree` 下 6 行、
@@ -468,6 +587,62 @@ B 类「执行路径不可审计」与 C 类「事件不在任何一棵树内」
 `case-s7-0002`（D-1 带来，第二笔撞终态失败码后走第三出口转人工、被主管驳回）。
 🔴 **这一类的行数按「场景 7 里未 settled 的退款 case 数」走** —— 每加一笔演示就 +1，
 不是回归。写死一个数当判据，下一轮加演示时它自己会变成假警报源。）
+
+---
+
+## P11b · 四判据与晋升漏斗
+
+**一句话主张**
+所有 Agent 都回复完成 ≠ 业务成功。成没成看四判据；只有成了且证据完整的案子才进默认知识层，
+没成的聚成「渠道 × 返回码 × 规则号」的失败提示。
+
+**画面要素**
+左半页一张四判据对照卡（三条路径并排，读数取自实测），右半页一个三级漏斗。
+
+| 判据（`case_outcome`） | happy | gateway_fail | drift |
+| :-- | :-- | :-- | :-- |
+| `arrival` | `settled` | `unsettled` | `unknown` |
+| `customer_confirmation` | `none` | `none` | `none` |
+| `manual_correction` | `none` | `compensated` | `none` |
+| `complaint` | `none` | `none` | `none` |
+| `evidence_complete` | `true` | `false` | `false` |
+| **`business_success`** | **`true`** | **`false`** | **`false`** |
+
+漏斗三级：**跑完的案子** → **业务成功且证据完整**（`CasePromoted` → `history_case`）
+→ **没成的那些**（`failure_hint` + `failure_hint_index`，只作提示、不作规划正例）。
+
+**讲稿**
+这一页是第三条反馈的正面回答。四个判据里，到账只认支付观察行 —— `arrival_basis` 指回
+具体哪一条回执，指不回去的到账不叫判据、叫说法。四个值算出 `business_success`，公式钉在
+核验器里，报告自己填一个 `true` 进去会被第 10 项当场抓出来。成了的进默认知识层，
+没成的不进 —— 但也不丢，聚成「这个渠道撞这个返回码、在这条规则下要多做哪几步」，
+下一单规划时直接吃到。
+
+**数据从哪来**
+- `evidence/case-real-01/happy/outcome.json`、`evidence/case-real-01/gateway_fail/outcome.json`、
+  `evidence/case-real-01/drift/outcome.json` —— `case_outcome` 六个字段 + `arrival_basis`
+- `evidence/case-real-01/happy/event-chain.json` —— `CaseOutcomeComputed` 与 `CasePromoted` 各 1 条
+- `evidence/scenario-7/` 的库 —— `kb_doc` 里两条 `failure_hint`
+  （`auto-failure_hint-case-s7-0001` / `auto-failure_hint-case-s7-0002`）；
+  `failure_hint_index` 两行，列是 `tenant_id` / `channel_id` / `gateway_code` / `rule_no` /
+  `extra_steps` / `count`
+- `python3 scripts/verify.py` 的第 10 项 `case-outcome`
+- 那条「都完成了却没成功」的招牌路径：`scripts/run_case.py` 的 `--stall`
+
+**对应评委要求编号**
+**12**（以到账 / 客户确认 / 人工纠错验证 DAG）、
+**13**（只有证据完整且外部结果明确的案例进默认知识层）
+
+**不许说的话**
+- 🔴 不许说「`failure_hint` 会被当成规划正例」。它只用于提示「哪类渠道 × 返回码 × 政策组合
+  需要额外步骤」，正例集合里没有它。
+- 🔴 不许在干净 clone 上现场打开 `failure_hint` —— 它在 `evidence/scenario-7/` 的 `maos.db` 里，
+  而 `*.db` 不入 git。台上要演就先跑 `python3 scripts/make_evidence.py`。
+- 🔴 不许把 `drift` 那束的 `arrival=unknown` 说成「失败」。它是**问不出来**：案子停在
+  `submitted`，一条付款观察行都没有，`public_status` 因此是空串 ——「问不出终态就什么都不写」
+  是设计，不是漏填。
+- 🔴 不许说「客户确认过了」。三条路径的 `customer_confirmation` 全是 `none`；
+  那一格要有值得走房间里的 `/confirm`，**等 9/18 真跑日**。
 
 ---
 
@@ -553,7 +728,7 @@ python3 -m pytest maos/tests -q     # 1069 passed
 python3 run.py                      # 场景 1-7 端到端，exit=0
 
 python3 scripts/make_evidence.py    # ① 产 evidence/scenario-1..7/ 与 -R5/（缺省一并产 R5）
-python3 scripts/verify.py           # ② 八项逐条重放校验 → RESULT: 8/8 PASS
+python3 scripts/verify.py           # ② 十项逐条重放校验（读数以当场输出为准）
 ```
 
 🔴 **是 ①② 两条，不是三条。** `python3 -m maos.kb.experiment` 曾经要单独敲才产
@@ -599,7 +774,7 @@ python3 scripts/verify.py           # ② 八项逐条重放校验 → RESULT: 8
 | 2 | AgentTeams 事件链 | **P6** | — | `docs/agentteams-mapping.md:16-24` 五项映射（每项带行号） |
 | 3 | 关键 Skill 的真实调用 | **P7** | P3 | `docs/skill-catalog.md:15-29`（13 skill，含退款域 7 个） |
 | 4 | 返工 / HITL Trace | **P5** | P10 | `maos/runtime/gate.py:254-260` + 场景 7 的 `BLOCKED → FAILED` 轨迹 |
-| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py:859-866` → 8/8 PASS |
+| 5 | Evidence Bundle | **P11** | P14 | `scripts/verify.py::CHECKS` → 当场跑出的 `RESULT` 行 |
 | 6 | 业务对象关联到同一案例 | **P11** | P3 | verify 第 2 项 `business-ref 35/35` |
 | 7 | 外部系统保留权威事实，区分已提出 / 处理中 / 已到账 | **P9** | P10 | `maos/domain/refund/guard.py:33` + `:307-315` |
 | 8 | RAG 面向 workflow 规划 | **P8a** | P8b | `maos/kb/retriever.py:151-163` + `evidence/scenario-R5/dag-diff.json` |

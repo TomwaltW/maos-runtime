@@ -2404,3 +2404,11 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-10 | p10 | `hiclaw/room_ingress.py::wire()` 与 `IngressRouter.__init__` 各调一次 `attach_store` | 同一个 store 调两次是幂等的，只是读代码的人会问「为什么两遍」（两处都有注释说明） | 整合期若确认 `wire()` 之外没有别的建圆桌路径，去掉 `wire()` 里那一处 |
 | 2026-09-10 | p10 | 圆桌的 `model_usage` 行 `trace_id` 恒为空串，于是 `trace.json` 的 `summary.model_calls` 会把圆桌与 DAG 的调用加在一起，而 `attributed_model_calls` 只数 DAG 的 | 「本次演示烧了多少 token」这个数现在含圆桌；看板上要分开报时得自己按 `call_site = maos/roundtable/speaker.py::Speaker.complete` 过滤 | T114 把圆桌事件并进证据束时，顺手在成本那一段按 call_site 拆一行「其中圆桌」 |
 | 2026-09-10 | p10 | `speaker.Speaker.complete` 只在**成功**的模型调用上记账；`complete()` 抛异常那次不落 `model_call_failure`（`record_model_failure` 存在但本轨没接） | 圆桌的失败调用在成本表里看不见，「网关抖了几次」这个问题在圆桌这一侧答不了 | 接 `record_model_failure` 是几行的事，但它要一个新的判据（失败行的 call_site 同样要登记），留给整合期或专门一轨 |
+
+## 整合期 p10-b（Wave B 三轨合并，2026-09-11）
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | 「整合期 p10-a」那三处 roundtable / router 接线仍未做（`outcome_commands` 进 router、财务岗卡片接投影、`verdict.py` 角色名对齐），本轮 push 只合三轨 | 房间里 `/assign /resolve /confirm /complain` 仍无人应答；财务岗仍按老文案说状态 | 复赛前单开一轨（白名单 `maos/ingress/router.py` + `maos/roundtable/**`），先定「命令对着哪个库」：T113 的 `MAOS_INGRESS_DB` 让 router 的 store 落文件，但 `/refund` 的处置仍在 `custom_case` 自建的 `:memory:` 里 |
+| 2026-09-11 | p10 | T114 的 `gateway_fail` 路径没有 `REWORK`：可重试码让付款跑三趟时 `payment_execute.py:143/163` 同渠道重试会留 2 条悬空 `business_ref`（verify 第 2 项判负），只好换终态失败码绕开 | 单案例束里「返工」这一环只能指去 `evidence/scenario-2/` | skill 面单独一轨：重试时先作废上一条引用再挂新的 |
+| 2026-09-11 | p10 | `source ~/.maos.env && python3 scripts/make_evidence.py` 仍 exit 2：空补丁集已放行，现在停在模型产出质量（`corrupt patch` / 回归 4 过 1 挂） | 带 key 的 shell 下 `test_cost_metrics` 那一条仍红；Scripted 口径不受影响 | 复赛口径保持「证据束一律 Scripted 产，真模型束单独标」；要治只能在 coding 岗提示词 + `git apply --check` 重试那一轨 |

@@ -2535,3 +2535,12 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-10 | p10 | T113：财务岗的三步核算预演（`refund.intake` / `policy.match` / `finance.settle`）要不要进真库 | **不进**，仍走 `stages._memory_store()` 那个用完即弃的 `:memory:` 库（派单 §3.2 的口径，未改） | 那三条是预演不是执行。混进真库之后，它们的 `SkillInvoked` 与 DAG 里真跑那三条长得一模一样，「这一单核算过没有」再也答不了；而放行前后本来就该分得清 |
 | 2026-09-10 | p10 | T113：`RoundtableVerdict.seats` 该落什么。`Verdict.seats` 是五岗 `data` 的原样副本 | 只落**座位名**（`sorted(verdict.seats)`），不落 data | 那份 data 里有金额、缺口原话、客户历史，事件表不是它们该待的地方 —— 与 facts / speech 只落 sha256 前 16 位同一条口径。座位名的形状还与 `RoundtableRound.seats` 一致，两条事件读起来是同一种东西 |
 | 2026-09-10 | p10 | T113：`verdict_of` 只拿得到 `checked`，而 `router.preflight()` 的返回里**没有 tenant_id**，契约 §B 又要求每条事件 detail 都带它 | 圆桌在 `_round` 里把这一轮的租户按 plan_id 记进 `self._tenant_of_plan`，合议时回查；取不到就落空串，**不猜、不编默认租户** | 按 plan_id 存而不是存「上一次的租户」：router 的工作线程与 Matrix 回调线程都会调 `handle`，两个线程同时过两单时后者会把前者覆盖掉，而症状是事件落在了别人的租户上、两边都不报错 |
+
+## 整合期 p10-b（Wave B 三轨合并，2026-09-11）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-11 | p10 | T113（基线 7af9022）、T114 / T119（基线 137c960）三轨回执全收，`integrate/p10-b` 从 137c960 起按 T114 → T119 → T113 合并 | 三次合并零冲突；T119 点名的 `scenario_6.py` `kb_context` 加 `case_id` 那一行整合期接上（Manager 只取七维字段做检索、`advise_and_log` 读它写 `PlanAdvised`，无副作用） | 契约 §B 要求 detail 带 `case_id`，裸跑场景 6 那份 `PlanAdvised` 之前是空串 |
+| 2026-09-11 | p10 | BACKLOG「整合期 p10-a」留的三处 roundtable / router 接线（`outcome_commands` 进 router、财务岗卡片接三态投影、`verdict.py` 角色名对齐）本轮仍未接 | 不接，保留 BACKLOG | 人要的是「合并进主干然后 push」；第一处卡在「命令对着哪个库」的设计口子（房间 `/refund` 在 `custom_case` 自建的 `:memory:` 里跑完），后两处会改圆桌发言文案、连带 `PLAIN_STDOUT_MD5` 一类指纹测试 —— 都不该夹在一次 push 里做 |
+| 2026-09-11 | p10 | T114 回执问要不要顺手改 `call_sites.py`（圆桌 usage 登记）与 `payment_execute.py`（同渠道重试留悬空 `business_ref`） | 前者随 T113 合入自动解决（`roundtable.speaker` 已登记）；后者不改，BACKLOG 已有 | 后者是 skill 面改动，需要单独一轨带测试 |
+| 2026-09-11 | p10 | 真源只有 `pytest_passed_nopg` 要刷（3541 -> 3636）；`pytest_skipped_nopg` 79、`pg_gated_tests` 64、`evidence_bundles` 8、`verify_result_line` 10/10 不变 | 只刷一个键 | 三轨没加门禁测试（`-k pg` 仍 90 passed）；`case-real-01/*` 与 `contrast-R8/` 都是 aux 束，不计入 `make_evidence` 的 [OK] 行 |

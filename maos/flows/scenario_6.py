@@ -311,7 +311,7 @@ def run(*, matrix: bool = False) -> int:
 
     mgr = ManagerAgent(model, store=store)
     kb_context = {"tenant_id": TENANT_ID, "biz_type": C.BIZ_TYPE,
-                  "channel_id": CHANNEL_ID, "sku": SKU,
+                  "channel_id": CHANNEL_ID, "sku": SKU, "case_id": CASE_ID,
                   "plan_id": plan_id, "trace_id": trace_id}
     cp.create_plan(goal=GOAL, trace_id=trace_id, plan_id=plan_id,
                    tasks=mgr.plan(GOAL, context=kb_context))

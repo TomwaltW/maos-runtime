@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+
+from maos.ingress import router as _router_mod
 import json
 from pathlib import Path
 from urllib.parse import quote
@@ -410,10 +412,10 @@ def test_rehearsal_keeps_chronological_order_of_the_whole_round(
     body = _rehearse(capture, monkeypatch, tmp_path, live_run_page)
 
     milestones = ["/refund ORD-2026-0007", "【申请受理岗", "【财务执行岗",
-                  "/approve RC-ORD-2026-0007", "已放行 · 案子 RC-ORD-2026-0007",
+                  "/approve RC-ORD-2026-0007", "已放行 RC-ORD-2026-0007（操作人 ",
                   "/assign MT-RC-ORD-2026-0007", "/resolve MT-RC-ORD-2026-0007",
                   "/confirm RC-ORD-2026-0007", "/complain RC-ORD-2026-0007",
-                  "/reject RC-ORD-2026-0008", "已驳回 · 案子 RC-ORD-2026-0008"]
+                  "/reject RC-ORD-2026-0008", "已驳回 RC-ORD-2026-0008 的「"]
     positions = [body.index(text) for text in milestones]
     assert positions == sorted(positions), "采下来的顺序与房间里发生的顺序不一致"
 
@@ -431,6 +433,12 @@ def test_rehearsal_covers_all_four_kinds_the_placeholders_need(
         assert first_line in body, f"{kind} 没采下来"
 
 
+#: 「对客户口径」那一行的前缀与四判据行的前缀，**从生产代码取**，不手抄
+#: （整合期 p10-f）：手抄的话文案一改，判据跟着一起失准而不会红。
+PUBLIC_PREFIX = _router_mod.PUBLIC_STATUS_PREFIX
+VERDICT_PREFIX = "四判据："
+
+
 def test_rehearsal_carries_the_public_status_line_verbatim(
         monkeypatch, tmp_path, live_run_page):
     """「对客户口径」那一行必须逐字落盘。
@@ -440,13 +448,50 @@ def test_rehearsal_carries_the_public_status_line_verbatim(
     `maos/ingress/router.py` 调到），`make_case_bundle.py` 走的是预检段，
     所以五束 `roundtable.json` 里一个字都没有。真跑日这一次采不到它，
     材料里那句话就只能继续写「证据等真跑日采集」。
+
+    **它只有两处出处**（整合期 p10-f 纠正）：`/approve` 的回帖卡与 `/reject` 的
+    回帖卡，两处都在 `maos/ingress/router.py`（`PUBLIC_STATUS_PREFIX`，:236/:239）。
+    四条结果面命令（`/assign` `/resolve` `/confirm` `/complain`）的回执里**没有**
+    这一行 —— `outcome_commands.py` 的四条文案模板逐字看得见。此前这条测试断言
+    `/resolve` 回执上也有，靠的是夹具自己编的一行，断的是它刚构造的输入。
     """
     capture = importlib.import_module("scripts.capture_room_transcript")
     body = _rehearse(capture, monkeypatch, tmp_path, live_run_page)
 
     assert "对客户口径：已提出退款" in body        # /approve 回帖卡上
-    assert "对客户口径：已补偿（未到账）" in body   # /resolve 回执上
     assert "对客户口径：已驳回" in body            # /reject 回帖卡上
+    assert body.count(PUBLIC_PREFIX) == 2, (
+        "「对客户口径」只该出现在 /approve 与 /reject 两张回帖卡上；"
+        f"采下来有 {body.count(PUBLIC_PREFIX)} 处 —— 多出来的那处多半又是夹具编的")
+
+
+def test_the_fixture_outcome_replies_match_the_real_templates(live_run_page):
+    """🔴 夹具里四条结果面回执的形状，必须对得上 `outcome_commands.py` 的真模板。
+
+    整合期 p10-f 补。这个夹具存在的全部理由是「房间侧改了文案，离线演练要能红」，
+    而它此前是**手写**的：`/resolve` 那条编了一行「对客户口径」，`/assign` 写的是
+    「已改派」（真模板是「已派单」），`/confirm` `/complain` 的第二行写成
+    「结果面：business_success=…」（真模板是「四判据：… 业务是否成功=…」）。
+    于是上面那条测试断的是夹具作者的想象，房间侧改三波文案它一次都没红。
+
+    这里只钉**模板里的字面前缀**，不钉具体案号与取值：判据要挡的是「夹具与代码
+    分家」，不是行文。
+    """
+    bodies = [ev["content"]["body"] for ev in live_run_page["chunk"]
+              if ev.get("content", {}).get("body")]
+    joined = "\n".join(bodies)
+
+    for literal in ("已派单 ", "要做的事：", "已关单 ", "回填观察：",
+                    "已记下 ", VERDICT_PREFIX):
+        assert literal in joined, (
+            f"夹具里没有 {literal!r} —— 它是 outcome_commands.py 的文案模板里的字面量，"
+            "夹具与真回执已经分家了")
+
+    resolve = [b for b in bodies if b.startswith("已关单 ")]
+    assert resolve, "夹具里没有 /resolve 回执"
+    assert PUBLIC_PREFIX not in resolve[0], (
+        "/resolve 回执里不该有「对客户口径」那一行 —— outcome_commands.py 的模板里没有它")
+    assert VERDICT_PREFIX in resolve[0], "/resolve 回执尾行应当是四判据行"
 
 
 def test_rehearsal_keeps_five_seats_distinguishable(
@@ -477,8 +522,11 @@ def test_rehearsal_keeps_multiline_cards_intact_inside_the_fence(
     capture = importlib.import_module("scripts.capture_room_transcript")
     body = _rehearse(capture, monkeypatch, tmp_path, live_run_page)
 
-    # /approve 回帖卡的首行与末行都在，中间那几行自然也在
-    assert "已放行 · 案子 RC-ORD-2026-0007" in body
+    # /approve 回帖卡的首行与末行都在，中间那几行自然也在。
+    # 首行的形状是 router.py 的两处模板拼出来的（整合期 p10-f 按真 router 的原文改）：
+    # `已放行 <案号>（操作人 …）` 换行 `<摘要> · 案子 <案号>`。
+    assert "已放行 RC-ORD-2026-0007（操作人 " in body
+    assert " · 案子 RC-ORD-2026-0007" in body
     assert "关单：/resolve MT-RC-ORD-2026-0007 <渠道流水号> <线下凭证摘要>" in body
     # 收口卡的框线字符原样保留
     assert "┌─ 收口 · approve" in body and "└ 下一步：" in body

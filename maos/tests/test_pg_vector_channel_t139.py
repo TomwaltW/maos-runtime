@@ -113,6 +113,28 @@ def _plan(port: PgStorePort, sql: str, params: tuple) -> str:
     return "\n".join(str(v) for row in rows for v in row.values())
 
 
+def _capture_sql(port: PgStorePort, call) -> list[tuple[str, tuple]]:
+    """截下 `call()` 这一跑里经 `_search_query` 发出去的 (sql, params)。
+
+    判据要绑到**生产路径**上：手抄一条 SQL 去 EXPLAIN，证明的是「这张表上存在一条
+    走得了索引的写法」，不是「生产代码发的就是那条」。两者的差别在回退时才显形 ——
+    把 `vector_search` 改回单层退化形状，手抄那条照样绿。
+    """
+    sent: list[tuple[str, tuple]] = []
+    original = type(port)._search_query
+
+    def spy(self, sql, params, *, table, field):        # noqa: ANN001
+        sent.append((sql, params))
+        return original(self, sql, params, table=table, field=field)
+
+    type(port)._search_query = spy
+    try:
+        call()
+    finally:
+        type(port)._search_query = original
+    return sent
+
+
 def _literal(vec: list[float]) -> str:
     return "[" + ",".join(repr(float(x)) for x in vec) + "]"
 
@@ -161,13 +183,17 @@ def test_vector_search_plan_uses_hnsw_index(pg: PgStorePort) -> None:
         "退化形状居然也走了索引 —— 那这条对照就不成立了，本条要重写：\n" + slow)
     assert "Seq Scan" in slow, f"退化形状没走顺序扫描，对照不成立：\n{slow}"
 
-    # 走索引的是 `vector_search` 真发的那条，不是测试另写的一条。
-    assert "idx_kb_doc_embedding_hnsw" in _plan(
-        pg,
-        f"SELECT id, score FROM ("
-        f" SELECT id, 1 - ({accel} <=> %s::vector) AS score FROM kb_doc"
-        f" WHERE {accel} IS NOT NULL ORDER BY {accel} <=> %s::vector LIMIT %s"
-        f") AS hits ORDER BY score DESC, id ASC", (lit, lit, 5))
+    # 🔴 走索引的必须是 `vector_search` **真发出去**的那条，不是测试另写的一条。
+    #    上面 `fast` 那条是手抄的，它只能证明「这张表上存在一条走得了 HNSW 的写法」，
+    #    证明不了生产代码发的就是它 —— 把 `vector_search` 改回退化形状，上面四条断言
+    #    一条都不会红（整合期 p10-f 实测过）。所以这里截下真 SQL 再 EXPLAIN 它。
+    sent = _capture_sql(pg, lambda: pg.vector_search("kb_doc", "embedding", vec, 5))
+    assert sent, "一条 SQL 都没发出去 —— vector_search 没走到检索那一步"
+    real_plan = _plan(pg, sent[0][0], sent[0][1])
+    assert "idx_kb_doc_embedding_hnsw" in real_plan, (
+        "vector_search 真发的那条没走 HNSW。它发的是：\n" + sent[0][0]
+        + "\n计划：\n" + real_plan)
+    assert "Index Scan" in real_plan, "真 SQL 的计划里没有索引扫描：\n" + real_plan
 
     hits = pg.vector_search("kb_doc", "embedding", vec, 5)
     assert [doc_id for doc_id, _ in hits] == [
@@ -354,7 +380,11 @@ def test_fts_target_is_the_shadow_table_and_falls_back_when_missing(pg: PgStoreP
     pg.execute("DROP TABLE IF EXISTS kb_doc_fts", ())
     pg._fts_target_cache.clear()
     assert pg._fts_target("kb_doc") == "kb_doc", "影子表没了该回落查原表"
-    assert pg.fts_search("kb_doc", "body", kb.fts_text("lesson"), 5) == [] or True
+    # 回落到原表之后，英文那一路照样该查得到（`lesson` 在 d-l1 的 body 里）——
+    # 原来这一行写成 `== [] or True`，右侧的 `or True` 让它对任何返回值都成立，
+    # 一条约束都不产生（整合期 p10-f 清掉）。
+    assert pg.fts_search("kb_doc", "body", kb.fts_text("lesson"), 5), \
+        "回落查原表之后英文也召不回了 —— 回落的那条路本身坏了"
     assert pg.fts_search("kb_doc", "body", kb.fts_text("acq"), 5) == [], \
         "回落之后错误码就该查不到了 —— 查得到说明回落的根本不是原表"
 

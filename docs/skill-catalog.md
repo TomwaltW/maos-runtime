@@ -36,7 +36,7 @@
 | `issue.aggregate` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/issue_aggregate.py:66` |
 | `kb.retrieve` | `1.1.0` | 软件交付域 | `manager`、`coding` | escalate | （空） | `maos/skills/builtin/kb_retrieve.py:88` |
 | `kb.sink` | `1.0.0` | 软件交付域 | `manager` | escalate | （空） | `maos/skills/builtin/kb_sink.py:29` |
-| `notify.customer` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤2 次） | （空） | `maos/skills/builtin/refund/notify.py:36` |
+| `notify.customer` | `1.0.0` | 制造售后退款域 | `refund_intake` | retry（≤2 次） | （空） | `maos/skills/builtin/refund/notify.py:39` |
 | `payment.execute` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.refund` | `maos/skills/builtin/refund/payment_execute.py:34` |
 | `payment.observe` | `1.0.0` | 制造售后退款域 | `refund_payment` | escalate | `gateway.query` | `maos/skills/builtin/refund/payment_observe.py:52` |
 | `policy.match` | `1.0.0` | 制造售后退款域 | `refund_policy` | escalate | （空） | `maos/skills/builtin/refund/policy.py:363` |
@@ -435,7 +435,7 @@
 
 ### notify.customer @ 1.0.0
 
-实现：`NotifyCustomerSkill` @ `maos/skills/builtin/refund/notify.py:36`
+实现：`NotifyCustomerSkill` @ `maos/skills/builtin/refund/notify.py:39`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

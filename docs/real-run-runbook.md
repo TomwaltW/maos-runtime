@@ -38,11 +38,15 @@
 
 ### 这台机器上已知的两条
 
-1. **出口 IP 大概率取不到**（2026-09-12 实测）：`dig example.com` 正常出 IP，
-   而 `dig myip.opendns.com @resolver1.opendns.com` 回 `NOERROR / ANSWER: 0` ——
-   这条查询在本机被接管了，**不是网络不通**。连带后果：
-   `polardb_smoke.py` 连不上时报的那行「本机出口 IP: …」**同样是哑的**，别等它。
-   → 去控制台白名单页面看它显示的**当前来访 IP**，照那个填。
+1. **出口 IP 取得到，但 `dig` 必须带 `-4`**（2026-09-12 整合期 p10-f 查实，
+   推翻了当天早些时候「查询被接管」那个结论）：不带 `-4` 时 `dig` 可能走 IPv6 去问
+   `resolver1.opendns.com`，那一路到不了真的 OpenDNS resolver，回
+   `NOERROR / ANSWER: 0`；`dig -4 +short myip.opendns.com @resolver1.opendns.com`
+   稳定返回真实出口 IP（实测连跑三次一致，偶发一次超时，故 preflight 备了第二台
+   `@208.67.222.222`）。`real_run_preflight.py` 的第 4 条已经带上 `-4`。
+   → **`scripts/polardb_smoke.py::_egress_ip()` 还没带**（它是 8/30 的验收工具，
+   本波无人独占它，记在 `docs/BACKLOG.md ## 整合期 p10-f`）：所以连不上时它报的那行
+   「本机出口 IP: …」仍然是哑的，别等它 —— 照 preflight 第 4 条打出来的那个 IP 填。
 2. **工作区必须干净**才开跑：证据首行是 `# generated at <ISO8601> from <git sha>`，
    脏树会写成 `<sha>-dirty` —— 那个 sha 在 git 历史里根本不存在，
    答辩时说不出「这份证据出自哪个提交」。
@@ -71,14 +75,15 @@
 | 2 | `export MAOS_PG_DSN='postgresql://<高权限账号>:<口令>@<host>:<port>/<db>'` | 无输出 | **只 export，不写进任何文件**（铁律 6）。写完复跑一次 preflight，第 3 条应从「未配置」变「已配置，形态合法，指向非本机实例」 |
 | 3 | `python3 scripts/polardb_smoke.py` | 六步全绿、`结论：6/6 步通过`、`exit 0`；版本串形如 `PostgreSQL 16.14 (PolarDB …)`、pgvector `0.8.x` | 见下方「A 段退路」第 1、2 条。**第 1 步失败只报驱动异常类名**（防 host 泄漏），分层诊断会自动跑，看它报 DNS / TCP 哪一层 |
 | 4 | `python3 scripts/make_case_bundle.py --all-paths --domain-backend postgres` | 四条路径（`happy` / `reject` / `drift` / `gateway_fail`）各一个 `[OK]`，顶层 `evidence/case-real-01-pg/INDEX.json` 汇总 **4 束** | 建表失败多半还是权限（回 A.0）。四条路径在本机 PG 上**已全通**（T133，基线事实），所以这里失败大概率是实例侧不是代码侧 |
-| 5 | `python3 -m pytest maos/tests -q`（**带着 `MAOS_PG_DSN`**） | **`3949 passed, 15 skipped`**（约 176 s）<br>🔴 基线 `c0d8303` 实测值，整合期复核；且这是**在 worktree 里**测的，见下方注 | 无 DSN 那一档是 `3871 passed, 93 skipped`；差值 78 条就是 PG 门控。**别用 `-k pg` 去数门控条数**，实测选不全 |
+| 5 | `python3 -m pytest maos/tests -q`（**带着 `MAOS_PG_DSN`**） | **`4046 passed, 13 skipped`**（约 160 s）<br>🔴 `integrate/p10-f` 合并树上**在主仓**实测（2026-09-12 整合期，本机 docker PG），worktree 那一档见下方注 | 无 DSN 那一档是 `3958 passed, 101 skipped`；差值 88 条就是 PG 门控。**别用 `-k pg` 去数门控条数**，实测只选得中 77 条。有库仍 skip 的 13 条里有一条是 PG 门控测试（`test_pg_store_live.py:206` 中文分词要 zhparser），所以按 skip 理由数是 89 条、按两档差值是 88 条，**真源认差值** |
 
 > 🔴 **主仓比 worktree 多 3 条 passed、少 3 条 skipped，两边都对。**
 > `maos/tests/test_rtv_sop_doc.py` 有 3 条依赖 `review/rtv-contracts.md`，那个文件走
 > `.git/info/exclude` —— 主仓有、worktree 没有，于是 3 条从 passed 挪到 skipped。
-> **真跑日是在主仓跑的**，所以那天看到的会是 `3952 / 12`（有库）与 `3874 / 90`（无库）。
+> **真跑日是在主仓跑的**，所以那天看到的会是 `4046 / 13`（有库）与 `3958 / 101`（无库）；
+> 同一棵树在 worktree 里是 `4043 / 16` 与 `3955 / 104`。
 > 收集数两边都一样，`docs/expected-metrics.json` 的守卫比的是 `collected == passed + skipped`
-> 这个和，两档都过。**看到 3952 不是回归。**
+> 这个和，两档都过。**看到 4046 不是回归。**
 
 ### A.2 截图三张（每张要框住什么）
 
@@ -127,13 +132,19 @@
    没在跑的话让它 `launchctl kickstart` 一下，**不要 `kill` / `unload` / 改 plist**。
 3. **Synapse 有默认限流**，实测打穿过（一轮 approve 4 条 429）。
    房间里别连着刷命令，一条一条来。
+4. **采集脚本要的三个变量在 `~/.maos-matrix/room.env` 里，不在 `~/.maos.env` 里**
+   （整合期 p10-f 补）：`capture_room_transcript.py` 的 `_required_env()` 要
+   `MATRIX_HOMESERVER` / `MATRIX_TOKEN` / `MATRIX_ROOM_ID`，而 `~/.maos.env` 只有
+   `MAOS_LLM_*` 与 `SSL_CERT_FILE`。`start_room.sh` 里那句 `set -a; . room.env`
+   **只作用于它自己那个进程**，变量进不了你的 shell —— 所以 B.1 第 2 步两个都要
+   `source`，漏掉第二个的话第 3 步直接 `capture failed: 缺 Matrix 环境变量`。
 
 ### B.1 六步
 
 | # | 命令 | 期望输出 | 不对时怎么办 |
 |---|---|---|---|
 | 1 | `bash ~/.maos-matrix/start_room.sh` | 启动行报「圆桌发声：5 岗 …」；补件页监听 `127.0.0.1:8787`（开关 `MAOS_UPLOAD_URL` 就在这个脚本里，不配 = 不起补件页、不挂按钮） | 终端有消息而房间里没有 = 撞上 B.0 第 1 条 |
-| 2 | `source ~/.maos.env` | 无输出 | 这一步同时带来 `MAOS_LLM_*` 三件套与 `SSL_CERT_FILE`。**本文只写变量名不写值。** 不设 `SSL_CERT_FILE` 的症状是任何 https 都 `CERTIFICATE_VERIFY_FAILED`（本机 Python 缺根证书）。跑一次 `python3 scripts/real_run_preflight.py`，第 5、6 条应该都绿 |
+| 2 | `source ~/.maos.env && source ~/.maos-matrix/room.env` | 无输出 | 这一步同时带来 `MAOS_LLM_*` 三件套与 `SSL_CERT_FILE`。**本文只写变量名不写值。** 不设 `SSL_CERT_FILE` 的症状是任何 https 都 `CERTIFICATE_VERIFY_FAILED`（本机 Python 缺根证书）。跑一次 `python3 scripts/real_run_preflight.py`，第 5、6 条应该都绿 |
 | 3 | `python3 scripts/capture_room_transcript.py mark --boundary-out work/p10-boundary.json` | `boundary recorded: $…`，exit `0` | **必须在房间里跑那一轮之前做**。边界文件放 `work/`（不进版本库） |
 | 4 | 房间里走一单（见 B.2） | —— | —— |
 | 5 | `python3 scripts/capture_room_transcript.py append --boundary-file work/p10-boundary.json --transcript evidence/room/transcript.md --title '## 2026-09-19 真跑日 · 退款圆桌五岗 + 真人 /approve 与 /reject'` | `appended <N> room messages to evidence/room/transcript.md`，exit `0` | 🔴 **`--title` 一定要给**，日期按实际那天填。不给会落成中性标题；而这个脚本 2026-09-01 之前硬编码的是 `## P8 退款核心链（--case refund-s7b）`，那是一句**错的出处**（T141 已改掉）。<br>exit `2` + 「已采集」= 同一个边界跑了两次，那是幂等拦截，**不是失败**，transcript 没被改。<br>exit `2` + 「边界之后尚无房间消息」= 那一轮没发出去，回 B.0 第 1 条 |
@@ -168,13 +179,19 @@ transcript 里每条消息是这个形状，**多行卡片整张落盘**：
 #### 9. `m.notice` — @maos-bot:maos.local — 2026-09-18T08:01:35+00:00
 
 `````
-已放行 · 案子 RC-ORD-2026-0007
+已放行 RC-ORD-2026-0007（操作人 @boss:maos.local）
+ORD-2026-0007（质量问题） · 案子 RC-ORD-2026-0007
 裁定：批准 —— …
-核准金额：9600.00（政策 v1，依据 AS-001@v1、…）
+核准金额：9600.00（政策 v1，依据 ["AS-001@v1", …]）
 业务状态：已提交网关·未确认
 对客户口径：已提出退款
 到账观察：0 条 —— 已提交网关但**未确认到账**，最后一次观察是 gateway_accepted
 `````
+
+> 首行与第二行是**两处**模板拼出来的（`router.py` 的 `已放行 <案号>（操作人 …）`
+> 加 `_render()` 的 `<摘要> · 案子 <案号>`）。整合期 p10-f 之前这里写成一行
+> `已放行 · 案子 RC-…`，那个形状房间里不会产出 —— 照它去对采集结果会以为采漏了。
+> 闸上驳回是另一张：`已驳回 <案号> 的「<闸标题>」这一步（操作人 …）`，没有「到账观察」那行。
 ```````
 
 - **五岗**：一岗一条 `m.notice`。五个岗位账号没配齐时走代言形态，正文带名牌

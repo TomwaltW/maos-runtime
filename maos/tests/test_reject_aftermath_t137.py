@@ -431,16 +431,115 @@ def test_the_plan_level_operator_is_a_different_knob():
 # ==========================================================================
 # 5. 补偿收口那一段措辞 —— 换一种关单结论也不许碰到账口径
 # ==========================================================================
-def test_the_compensation_tail_is_empty_before_any_ticket_exists():
-    """工单没开就返回空串 —— `MT-<case_id>` 算得出来，正因为算得出来才更要先确认它开过。
+def test_the_compensation_tail_is_empty_when_the_case_was_rejected():
+    """整体驳回的案子不是补偿收口那一档，这一段返回空串。
 
-    给客户一个不存在的工单号，比少说一句话坏得多。
+    改名自 `..._before_any_ticket_exists`（整合期 p10-f）：原名说的是「工单没开」，
+    而这条用例走的是 `approve=False`，案子落 `rejected`，`_compensation_tail`
+    第一句 `biz_status != "compensated"` 就返回了 —— 它声称要钉的那个工单兜底分支
+    一行都没覆盖到。真钉那一格的是下面那条。
     """
     store = _store()
     custom_case.run_payload(_payload(), approve=False, verbose=False, store=store)
     case = guard.get_case(store, TENANT, CASE)
 
     assert NOTIFY._compensation_tail(store, TENANT, CASE, case) == ""
+
+
+def test_the_compensation_tail_is_empty_when_the_ticket_row_is_missing(tmp_path):
+    """🔴 工单查不到就返回空串，不编一个算得出来的单号。
+
+    `MT-<case_id>` 是纯函数算出来的，正因为算得出来才更要先确认它真的开过 ——
+    给客户一个不存在的工单号，客户拿它去追问只会被告知查无此单。
+
+    这一格此前没有任何判据（整合期 p10-f 补）：把 `if ticket is None: return ""`
+    两行整个删掉，本文件与 `test_room_outcome_commands.py` 全部照绿。
+    """
+    store = _store()
+    r = _router(store, tmp_path)
+    r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="m1"))
+    r.handle(_msg(f"/approve {CASE}", msg_id="m2"))
+    r.handle(_msg(f"/reject {CASE} 钱没退出去，不签这一步", msg_id="m3"))
+    case = guard.get_case(store, TENANT, CASE)
+    assert case["biz_status"] == "compensated", "前提没成立：这一跑没走到补偿"
+    assert NOTIFY._compensation_tail(store, TENANT, CASE, case), "前提没成立：这一档本该有话说"
+
+    # 只抽掉工单那一行，别的都不动 —— 这正是「算得出单号但单不存在」的形状
+    objects.execute(
+        store, "DELETE FROM compensation_record WHERE tenant_id=? AND case_id=? AND kind=?",
+        (TENANT, CASE, CP.KIND_MANUAL_TICKET))
+
+    assert CP.ticket_of(store, TENANT, CASE) is None, "前提没造出来"
+    assert NOTIFY._compensation_tail(store, TENANT, CASE, case) == "", (
+        "工单查不到还在说话 —— 正文里会出现一个不存在的工单号")
+
+
+def test_the_compensation_tail_never_announces_a_failure_it_never_observed(tmp_path):
+    """🔴 铁律 8：一条观察都没有时，不许说「原路退回未成功」。
+
+    `/compensate` 那条人工兜底路径**刻意没有**「最后一次观察是 failed」那道收窄
+    （`outcome_commands.py` 原文「这条命令没有那道收窄」），轮询到顶没问出终态的
+    也是这一档（`payment.observe` 一行观察都不写）。此前两档共用同一句措辞，
+    于是一件 MAOS 从未观察到的外部资金结果被写进了发给客户的正文。
+
+    换的那句只说**本系统做了什么**（转了线下补偿），不替外部系统宣布那笔钱的下落。
+    """
+    store = _store()
+    r = _router(store, tmp_path)
+    r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="n1"))
+    r.handle(_msg(f"/approve {CASE}", msg_id="n2"))
+    r.handle(_msg(f"/reject {CASE} 钱没退出去，不签这一步", msg_id="n3"))
+    objects.execute(store, "DELETE FROM payment_observation WHERE tenant_id=? AND case_id=?",
+                    (TENANT, CASE))
+
+    case = guard.get_case(store, TENANT, CASE)
+    tail = NOTIFY._compensation_tail(store, TENANT, CASE, case)
+
+    assert NOTIFY.COMPENSATION_SAID not in tail, (
+        f"一条观察都没有还在宣布原路失败（铁律 8）：{tail}")
+    assert NOTIFY.COMPENSATION_SAID_UNOBSERVED in tail, f"换的那句没说出来：{tail}"
+    assert f"工单 {TICKET}" in tail, f"抓手还是要给的：{tail}"
+    for word in FORBIDDEN:
+        assert word not in tail, f"这一档说了 {word}：{tail}"
+
+
+def test_the_compensation_tail_still_says_it_failed_after_an_offline_close(tmp_path):
+    """🔴 判据是「观察到过 failed」，不是「最后一条是不是 failed」。
+
+    线下关单会在同一笔请求上**补写一条观察**（`settled` / `failed`）。按最后一条判
+    的话，`/resolve settled` 之后那句本来正确的「原路退回未成功」会被翻成
+    「结果未确认」—— 原路那一笔确实失败过，这是已经观察到的事实，不因为后面补了
+    一条线下观察而变得不确定。这条钉住的就是那个翻车方向（整合期 p10-f）。
+    """
+    from maos.ingress import outcome_commands as OC
+    from maos.skills.invoker import SkillInvoker
+
+    store = _store()
+    r = _router(store, tmp_path)
+    r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="o1"))
+    r.handle(_msg(f"/approve {CASE}", msg_id="o2"))
+    r.handle(_msg(f"/reject {CASE} 钱没退出去，不签这一步", msg_id="o3"))
+    res = SkillInvoker(OC.TICKET_DESK_IDENTITY, store).invoke(
+        "refund.compensation_close", {
+            "tenant_id": TENANT, "case_id": CASE, "operator": BOSS,
+            "evidence_ref": "20260912090000777", "summary": "线下核对",
+            "resolution_kind": CP.RESOLUTION_SETTLED})
+    assert res.status == "ok", f"关单没跑成：{res.error}"
+
+    states = [row["observed_state"] for row in objects.query(
+        store,
+        "SELECT observed_state FROM payment_observation"
+        " WHERE tenant_id=? AND case_id=? ORDER BY observed_at", (TENANT, CASE))]
+    assert states[0] == "failed" and states[-1] != "failed", (
+        f"前提没造出来（要的是「先 failed、后补一条非 failed」）：{states}")
+
+    case = guard.get_case(store, TENANT, CASE)
+    tail = NOTIFY._compensation_tail(store, TENANT, CASE, case)
+
+    assert NOTIFY.COMPENSATION_SAID in tail, (
+        f"原路那一笔明明观察到过失败，却说成「结果未确认」：{tail}")
+    for word in FORBIDDEN:
+        assert word not in tail, f"这一档说了 {word}：{tail}"
 
 
 @pytest.mark.parametrize("resolution", [CP.RESOLUTION_SETTLED, CP.RESOLUTION_NOT_SETTLED])

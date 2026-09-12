@@ -17,7 +17,10 @@ PENDING 再也不跑 —— 于是「钱没退出去、补偿工单开了、也�
 
 那一句的红线是铁律 8：`payment_observation` 上没有到账观察时，正文里不许出现
 任何到账口径。「原路退回未成功，已转线下补偿」说的是**观察与安排**，
-不是一个本系统无权宣布的资金结果。
+不是一个本系统无权宣布的资金结果 —— 但它**本身也是一条观察**，所以只在最后一次
+观察确实是 `failed` 时才说得出口。一行观察都没有的那一档（`/compensate` 人工兜底、
+或轮询到顶没问出终态）换成「原路退回结果未确认，已转线下补偿」：只说本系统做了
+什么，不替外部系统宣布那笔钱的下落（整合期 p10-f 补）。
 """
 
 from __future__ import annotations
@@ -199,6 +202,14 @@ class NotifyCustomerSkill(Skill):
     #: 这两个**抓手**，客户拿它们去问，比一句编出来的结论有用得多。
     COMPENSATION_SAID = "原路退回未成功，已转线下补偿"
 
+    #: 同一档的**另一种**说法：补偿开了，但原路那一笔 MAOS 一次都没观察到终态
+    #: （`/compensate` 人工兜底那条路就是这一档，`last_observed_state=unobserved`；
+    #: 轮询到顶没问出结果的也是）。这时说「原路退回未成功」就是替外部系统宣布了
+    #: 一个本系统没观察到的资金结果 —— 正是铁律 8 那一格。所以这一档只说
+    #: **本系统做了什么**（转了线下补偿），不说原路那一笔的下落。
+    #: 整合期 p10-f 补：此前两档共用上面那句，`/compensate` 那条路上是假话。
+    COMPENSATION_SAID_UNOBSERVED = "原路退回结果未确认，已转线下补偿"
+
     @staticmethod
     def _compensation_tail(store, tenant_id: str, case_id: str, case: dict) -> str:
         """补偿收口那一档要另外交代的一句；不在那一档、或工单查不到时返回空串。
@@ -211,6 +222,18 @@ class NotifyCustomerSkill(Skill):
         工单查不到就**回落到只说投影句**，不编一个单号：`MT-<case_id>` 是算得出来的，
         正因为算得出来才更要先确认它真的开过 —— 给客户一个不存在的工单号，
         比少说一句话坏得多。
+
+        **原路那一笔的下落要现查**（整合期 p10-f 补，铁律 8）：只有**观察到过**
+        一次 `failed` 才说得出「原路退回未成功」。`/compensate` 那条人工兜底路径
+        刻意没有那道收窄（`outcome_commands.py` 原文「这条命令没有那道收窄」），
+        于是 `payment_observation` 一行都没有时也会走到这里 —— 此前两档共用同一句，
+        等于把一件 MAOS 从未观察到的外部资金结果写进了发给客户的正文。
+
+        判据是「有没有观察到过 failed」而**不是**「最后一条是不是 failed」：
+        线下关单会补写一条观察（`settled` / `failed`），按最后一条判的话，
+        `/resolve` 之后那句本来正确的「原路退回未成功」会被翻成「结果未确认」——
+        原路那一笔确实失败过，这是已经观察到的事实，不因为后面补了一条线下观察
+        而变得不确定。整合期 p10-f 用 `p10f_probe_tail` 实测过这四档才定的判据。
         """
         if str(case.get("biz_status") or "") != "compensated":
             return ""
@@ -219,9 +242,37 @@ class NotifyCustomerSkill(Skill):
         ticket = CP.ticket_of(store, tenant_id, case_id)
         if ticket is None:
             return ""
-        said = f"{NotifyCustomerSkill.COMPENSATION_SAID}：工单 {CP.ticket_id_of(case_id)}"
+        head = (NotifyCustomerSkill.COMPENSATION_SAID
+                if NotifyCustomerSkill._original_attempt_failed(store, tenant_id, case_id)
+                else NotifyCustomerSkill.COMPENSATION_SAID_UNOBSERVED)
+        said = f"{head}：工单 {CP.ticket_id_of(case_id)}"
         ref = NotifyCustomerSkill._evidence_ref(store, tenant_id, case_id)
         return f"{said}，凭证 {ref}" if ref else said
+
+    @staticmethod
+    def _original_attempt_failed(store, tenant_id: str, case_id: str) -> bool:
+        """**收口这一笔**上有没有观察到过一次 `failed`。
+
+        收窄口径与 `compensate.RefundCompensateSkill._last_observed_state` 同一套
+        （按当前那一笔 `refund_request` 的 `request_id`）：换渠道重试之后一个案子
+        会先后有两笔请求，上一笔的失败不是这一笔的下落。
+
+        用 `EXISTS` 而不是「最后一条」：线下关单会在同一笔请求上补写一条观察，
+        按最后一条判会把已经观察到的失败抹掉（见 `_compensation_tail` 的说明）。
+        """
+        current = objects.query(
+            store,
+            "SELECT request_id FROM refund_request WHERE tenant_id=? AND case_id=?"
+            " ORDER BY submitted_at DESC", (tenant_id, case_id))
+        if not current:
+            return False
+        rows = objects.query(
+            store,
+            "SELECT 1 FROM payment_observation"
+            " WHERE tenant_id=? AND case_id=? AND request_id=? AND observed_state=?"
+            " LIMIT 1",
+            (tenant_id, case_id, current[0]["request_id"], "failed"))
+        return bool(rows)
 
     @staticmethod
     def _evidence_ref(store, tenant_id: str, case_id: str) -> str:

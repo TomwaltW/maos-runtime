@@ -687,6 +687,20 @@ def _resolve_key(node, module_name: str, imported: dict[str, str]):
     return None
 
 
+def _is_source_call(node) -> bool:                              # noqa: ANN001
+    """这个节点是不是 `get_config_source()` 这一次调用本身。"""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "get_config_source")
+
+
+def _kwarg(call: ast.Call, name: str):
+    """取关键字实参 `name=` 的值节点；没有就 None。"""
+    for kw in call.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
 def _scan_config_keys() -> tuple[dict[str, list[str]], list[str]]:
     """扫出全仓 `get_config_source().get(<key>, …)` 的 key，返回 `(key -> 读取点, 认不出的)`。
 
@@ -694,25 +708,62 @@ def _scan_config_keys() -> tuple[dict[str, list[str]], list[str]]:
     `grep` 那条命令数的是「出现 `get_config_source()` 的行」，于是
     `maos/config/source.py` 里那个函数自己的定义与几行注释也会被数进去 ——
     人核三次每次都要手工把它们剔掉，而剔错一行没人会发现。
+
+    **认两种写法**（整合期 p10-f 补的第二种）：链式 `get_config_source().get(K)`，
+    以及先把单例赋给变量再取的两行写法 `src = get_config_source()` / `src.get(K)`。
+    只认链式的话，这条判据在两行写法上**严格弱于**它替掉的那条 grep —— 新旋钮
+    写成两行就从判据里整个消失，而消失与「已登记」在屏幕上长得一模一样。
+
+    还有一道兜底：**生产代码里**每一个 `get_config_source()` 调用，若既不是链式
+    `.get()` 的接收者、也不是赋给某个变量，就落进 `unresolved` 让判据当场红 ——
+    认不出的写法要响铃，不许静默放过。测试文件不参与这道兜底（见下方注释）。
     """
     found: dict[str, list[str]] = {}
     unresolved: list[str] = []
     for path in _iter_source_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imported = _imported_names(tree)
+
+        # 本文件里 `<name> = get_config_source()` 绑过的变量名
+        aliases: set[str] = set()
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and node.args
-                    and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
-                    and isinstance(node.func.value, ast.Call)
-                    and isinstance(node.func.value.func, ast.Name)
-                    and node.func.value.func.id == "get_config_source"):
+            if not (isinstance(node, ast.Assign) and _is_source_call(node.value)):
                 continue
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    aliases.add(tgt.id)
+
+        # 所有 get_config_source() 调用的行号，逐个销账；销不掉的落 unresolved。
+        # **只对生产代码响铃**：测试文件里拿着单例做 `isinstance(...)` 断言
+        # （本文件 :196 就有一处）是在核「缺省源是谁」，不是在读旋钮，
+        # 对它响铃等于要求测试为了闭嘴而换写法。判据要挡的是生产代码里
+        # 某个旋钮用没被认出的写法读走、于是从清单判据里静默消失。
+        pending = (set() if path.name.startswith("test_")
+                   else {n.lineno for n in ast.walk(tree) if _is_source_call(n)})
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute) and node.func.attr == "get"):
+                continue
+            recv = node.func.value
+            if _is_source_call(recv):
+                pending.discard(recv.lineno)
+            elif not (isinstance(recv, ast.Name) and recv.id in aliases):
+                continue
+
             where = f"{path.name}:{node.lineno}"
-            key = _resolve_key(node.args[0], _module_name_of(path), imported)
+            arg = node.args[0] if node.args else _kwarg(node, "key")
+            key = _resolve_key(arg, _module_name_of(path), imported) if arg is not None else None
             if isinstance(key, str) and key:
                 found.setdefault(key, []).append(where)
             else:
                 unresolved.append(where)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and _is_source_call(node.value):
+                pending.discard(node.value.lineno)
+        unresolved.extend(f"{path.name}:{ln}（get_config_source() 的返回值没接住）"
+                          for ln in sorted(pending))
     return found, unresolved
 
 

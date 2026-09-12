@@ -292,32 +292,47 @@ def probe_4_egress_ip() -> Probe:
     可以打印：口径同 `polardb_smoke.py::_egress_ip()` —— 它不泄漏目标 host。
     走 OpenDNS 的 `myip.opendns.com`，**不碰阿里云任何域名**。
 
-    取不到时分三档报，因为三档的下一步完全不同。第三档是本机 2026-09-12 的实况：
-    `dig example.com` 正常出 IP，而 `dig myip.opendns.com @resolver1.opendns.com`
-    返回 `NOERROR / ANSWER: 0` —— 查询走到了某个服务器，但那不是真的 OpenDNS
-    resolver。**这不是网络不通，是这条查询在本机被接管了。**
+    **必须 `-4`**（整合期 p10-f 查实）。此前这条探测在本机恒返回空答案，脚本据此
+    报「这条查询在本机被接管了」—— 那个结论是错的。真相是 `dig` 默认可能走 IPv6
+    去问 `resolver1.opendns.com`，那一路到不了真的 OpenDNS resolver（返回
+    `NOERROR / ANSWER: 0`）；强制 IPv4 之后同一条查询稳定返回真实出口 IP，
+    实测连跑三次一致。备用 resolver 走 `208.67.222.222`（OpenDNS 的 IP 字面量，
+    连域名解析这一跳都省了），因为实测第一台偶尔超时。
 
-    这一条的连带后果要一起说：`polardb_smoke.py::_diagnose_unreachable()` 那句
-    「本机出口 IP: …，去控制台把它加进白名单」用的是同一个函数，所以在这台机器上
-    **那一行也是哑的**。真跑日连不上时别指望冒烟脚本把 IP 报给你。
+    取不到时仍分档报，三档的下一步完全不同：dig 不在、超时、空答案。
+
+    **这是软项**（整合期 p10-f 由硬改软）：它产出的是**一个要抄下来的值**，
+    不是「跑不跑得起来」的前提 —— 控制台白名单页面自己会显示当前来访 IP，
+    照那个填一样能开跑。而这条查询要过公网、实测会偶发超时，标成硬项等于让
+    一次 DNS 抖动把真跑日的退出码判成「跑不起来」，`docs/real-run-runbook.md`
+    0 段写的「硬项全绿、退出码 0 或 2」也就随机达不到。
     """
-    probe = Probe(4, "本机公网出口 IP（白名单要用）", hard=True, segment=SEG_A)
+    probe = Probe(4, "本机公网出口 IP（白名单要用）", hard=False, segment=SEG_A)
     fallback = ("控制台白名单页面通常会显示当前来访 IP，照那个填；"
                 "polardb_smoke.py 连不上时报的那行出口 IP 同样取不到，别等它")
     if not shutil.which("dig"):
         return probe.fail(f"dig 不可用 —— {fallback}")
-    try:
-        out = _run(["dig", "+short", "+time=5", "+tries=1",
-                    "myip.opendns.com", "@resolver1.opendns.com"], timeout=20)
-    except subprocess.TimeoutExpired:
-        return probe.fail(f"查询超时 —— {fallback}")
-    except Exception as exc:                              # noqa: BLE001
-        return probe.fail(f"取出口 IP 失败 -> {type(exc).__name__} —— {fallback}")
-    lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
-    if not lines:
-        return probe.fail(
-            f"查询返回空答案（这条查询在本机被接管了，不是网络不通）—— {fallback}")
-    return probe.pass_(f"{lines[-1]} —— 控制台白名单里必须有这个 IP")
+    last = ""
+    for resolver in ("@resolver1.opendns.com", "@208.67.222.222"):
+        try:
+            # `-4` 不能省：不带它可能走 IPv6，那一路到不了真的 OpenDNS resolver，
+            # 返回 NOERROR / ANSWER: 0（整合期 p10-f 查实的老「被接管」之谜）。
+            out = _run(["dig", "-4", "+short", "+time=5", "+tries=1",
+                        "myip.opendns.com", resolver], timeout=20)
+        except subprocess.TimeoutExpired:
+            last = "查询超时"
+            continue
+        except Exception as exc:                          # noqa: BLE001
+            last = f"取出口 IP 失败 -> {type(exc).__name__}"
+            continue
+        lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        # dig 把「连不上」也写在 stdout 上（`;; connection timed out`），
+        # 那不是一个 IP —— 当成答案抄进白名单会把真跑日引到沟里。
+        answer = [ln for ln in lines if ln and not ln.startswith(";")]
+        if answer:
+            return probe.pass_(f"{answer[-1]} —— 控制台白名单里必须有这个 IP")
+        last = "查询返回空答案"
+    return probe.fail(f"{last or '取不到'}（两台 resolver 都试过）—— {fallback}")
 
 
 def probe_5_ssl_cert_file() -> Probe:

@@ -1,5 +1,5 @@
 {
-  "_fixture": "构造的 Matrix /messages?dir=b 响应，供 test_room_transcript_capture.py 的离线演练用。**不是真采集** —— 采集演练不许连真房间（跨轨契约 §E）。每条 body 的形状对齐 2026-09-12 的房间口径：五岗事实卡取自 scripts/room_team_smoke.py 实跑，代言名牌前缀同 _ProxyVoice._render，/approve 回帖卡同 RefundRouter._render，「对客户口径」用 projection.PUBLIC_* 字面值。",
+  "_fixture": "构造的 Matrix /messages?dir=b 响应，供 test_room_transcript_capture.py 的离线演练用。**不是真采集** —— 采集演练不许连真房间（跨轨契约 §E）。每条 body 的形状对齐 2026-09-12 的房间口径：五岗事实卡取自 scripts/room_team_smoke.py 实跑，代言名牌前缀同 _ProxyVoice._render，/approve 与 /reject 回帖卡的**首行**同 maos/ingress/router.py 的两处模板（`已放行 <案号>（操作人 …）` + `_render` 的 `<摘要> · 案子 <案号>`；闸上驳回是 `已驳回 <案号> 的「<闸标题>」这一步（操作人 …）`）—— 整合期 p10-f 用真 router 抓的原文改的，此前首行是手写的、任何模板都对不上，「对客户口径」用 projection.PUBLIC_* 字面值（**只有 /approve 与 /reject 的回帖卡有这一行**，四条结果面命令的回执里没有 —— 整合期 p10-f 纠正：此前 /resolve 那条编了一行）。四条结果面回执（/assign /resolve /confirm /complain）的形状逐字对齐 maos/ingress/outcome_commands.py 的文案模板，由 test_room_transcript_capture.py::test_the_fixture_outcome_replies_match_the_real_templates 钉住。",
   "_ordered_event_ids": [
     "$old-before-boundary",
     "$boundary-p10",
@@ -32,7 +32,7 @@
       "origin_server_ts": 1789718644000,
       "content": {
         "msgtype": "m.notice",
-        "body": "已驳回 · 案子 RC-ORD-2026-0008\n裁定：驳回 —— 材料不全，缺质检报告\n业务状态：已驳回\n对客户口径：已驳回\n到账观察：0 条（本单未走到付款）"
+        "body": "已驳回 RC-ORD-2026-0008 的「核算退款金额并写财务分录」这一步（操作人 @boss:maos.local）\n  材料不全，缺质检报告\n业务状态：已驳回\n对客户口径：已驳回\nPlan plan_7c31ab04e2f1 收在 FAILED"
       }
     },
     {
@@ -52,7 +52,7 @@
       "origin_server_ts": 1789718614000,
       "content": {
         "msgtype": "m.notice",
-        "body": "已记下 RC-ORD-2026-0007 的投诉（@boss:maos.local 代录，摘要 到账比承诺晚了两天）\n结果面重算：business_success=false —— 投诉一开就一票否决，钱到没到都不算成"
+        "body": "已记下 RC-ORD-2026-0007 的投诉（@boss:maos.local 代录，摘要 a3f1c2b0）\n四判据：arrival=settled customer_confirmation=confirmed manual_correction=compensated complaint=open；业务是否成功=False"
       }
     },
     {
@@ -72,7 +72,7 @@
       "origin_server_ts": 1789718583000,
       "content": {
         "msgtype": "m.notice",
-        "body": "已记下 RC-ORD-2026-0007 的客户确认（@boss:maos.local 代录，渠道 room）\n结果面：business_success=true（投诉 0 条，客户已确认）"
+        "body": "已记下 RC-ORD-2026-0007 的客户确认（@boss:maos.local 代录，渠道 room）\n四判据：arrival=settled customer_confirmation=confirmed manual_correction=compensated complaint=none；业务是否成功=True"
       }
     },
     {
@@ -92,7 +92,7 @@
       "origin_server_ts": 1789718554000,
       "content": {
         "msgtype": "m.notice",
-        "body": "已关单 MT-RC-ORD-2026-0007（offline_transfer）· 凭证 2026091800123\n案子 RC-ORD-2026-0007 业务状态：已补偿\n对客户口径：已补偿（未到账）\n到账观察：0 条 —— 线下补偿不是到账观察，权威状态仍归外部系统"
+        "body": "已关单 MT-RC-ORD-2026-0007（settled）· 提交人 @boss:maos.local\n回填观察：obs-rc-ord-2026-0007-0003（observed_state=settled，来源 人工线下凭证）\n四判据：arrival=settled customer_confirmation=pending manual_correction=compensated complaint=none；业务是否成功=False"
       }
     },
     {
@@ -112,7 +112,7 @@
       "origin_server_ts": 1789718523000,
       "content": {
         "msgtype": "m.notice",
-        "body": "已改派 MT-RC-ORD-2026-0007 -> 支付运维（payment_ops）· 接单人 @boss:maos.local\n关单：/resolve MT-RC-ORD-2026-0007 <渠道流水号> <线下凭证摘要>"
+        "body": "已派单 MT-RC-ORD-2026-0007 -> 支付运维（payment_ops）· 接单人 @boss:maos.local\n要做的事：线下把钱退给客户，拿到凭证后关单"
       }
     },
     {
@@ -132,7 +132,7 @@
       "origin_server_ts": 1789718495000,
       "content": {
         "msgtype": "m.notice",
-        "body": "已放行 · 案子 RC-ORD-2026-0007\n裁定：批准 —— 命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定\n核准金额：9600.00（政策 v1，依据 AS-001@v1、AS-002@v1、AS-003@v1）\n业务状态：已提交网关·未确认\n对客户口径：已提出退款\n到账观察：0 条 —— 已提交网关但**未确认到账**，最后一次观察是 gateway_accepted\nPlan 内任务级审批点 2 个（与群里这次放行不是同一层），其中 1 个**没有代跑**、正等你决定：\n  · 付款闸 payment.execute —— 等 supervisor 在房间里签\n\n钱没退出去（ACQ.SYSTEM_ERROR），已开人工补偿工单：MT-RC-ORD-2026-0007 · 当前承接岗 支付运维（payment_ops）· 接单人 未指名\n  改派：/assign MT-RC-ORD-2026-0007 payment_ops\n  关单：/resolve MT-RC-ORD-2026-0007 <渠道流水号> <线下凭证摘要>"
+        "body": "已放行 RC-ORD-2026-0007（操作人 @boss:maos.local）\nORD-2026-0007（质量问题） · 案子 RC-ORD-2026-0007\n裁定：批准 —— 命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定\n核准金额：9600.00（政策 v1，依据 AS-001@v1、AS-002@v1、AS-003@v1）\n业务状态：已提交网关·未确认\n对客户口径：已提出退款\n到账观察：0 条 —— 已提交网关但**未确认到账**，最后一次观察是 gateway_accepted\nPlan 内任务级审批点 2 个（与群里这次放行不是同一层），其中 1 个**没有代跑**、正等你决定：\n  · 付款闸 payment.execute —— 等 supervisor 在房间里签\n\n钱没退出去（ACQ.SYSTEM_ERROR），已开人工补偿工单：MT-RC-ORD-2026-0007 · 当前承接岗 支付运维（payment_ops）· 接单人 未指名\n  改派：/assign MT-RC-ORD-2026-0007 payment_ops\n  关单：/resolve MT-RC-ORD-2026-0007 <渠道流水号> <线下凭证摘要>"
       }
     },
     {

@@ -270,13 +270,15 @@ def test_room_ingress_absent_from_launchd_is_caught(preflight, monkeypatch):
     assert not probe.ok and "没登记" in probe.detail
 
 
-def test_egress_ip_empty_answer_is_distinguished_from_network_down(
+def test_egress_ip_empty_answer_still_points_at_the_console(
         preflight, monkeypatch):
-    """空答案 ≠ 网络不通，两档的下一步不一样。
+    """两台 resolver 都回空答案时，报「取不到」并给出路，不报成「网络不通」。
 
-    本机 2026-09-12 实况就是这一档：`dig example.com` 出 IP，而
-    `dig myip.opendns.com @resolver1.opendns.com` 回 `NOERROR / ANSWER: 0`。
-    报成「网络不通」会让人去查网线，而真正该做的是去控制台看来访 IP。
+    整合期 p10-f 改判：此前这一档报的是「这条查询在本机被接管了」——那个结论
+    **是错的**。真相是不带 `-4` 时 `dig` 可能走 IPv6 去问 `resolver1.opendns.com`，
+    那一路到不了真的 OpenDNS resolver。加上 `-4` 之后本机稳定拿得到出口 IP。
+    所以这一档现在只说「取不到」，把「为什么」留给那句带 `-4` 的实现注释 ——
+    编一个错的病因比不说更坏，它让人去查一件没发生的事。
     """
     monkeypatch.setattr(preflight.shutil, "which", lambda name: "/usr/bin/dig")
     monkeypatch.setattr(
@@ -285,9 +287,77 @@ def test_egress_ip_empty_answer_is_distinguished_from_network_down(
     probe = preflight.probe_4_egress_ip()
 
     assert not probe.ok
-    assert "被接管" in probe.detail
+    assert "空答案" in probe.detail and "两台 resolver" in probe.detail
     # 取不到时必须给出路，否则真跑日卡在这里没有下一步。
     assert "控制台" in probe.detail
+
+
+def test_egress_ip_query_forces_ipv4(preflight, monkeypatch):
+    """🔴 `-4` 不许被顺手删掉 —— 删了这条探测在本机就回到恒空。
+
+    整合期 p10-f 实测：`dig +short myip.opendns.com @resolver1.opendns.com` 返回空，
+    同一条加上 `-4` 稳定返回真实出口 IP（连跑三次一致）。这个差别没有任何症状 ——
+    删掉之后探测照样「跑得过」，只是永远报取不到，而真跑日要的正是那个值。
+    """
+    seen: list[list[str]] = []
+
+    def spy(cmd, **kw):
+        seen.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="203.0.113.7\n", stderr="")
+
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: "/usr/bin/dig")
+    monkeypatch.setattr(preflight, "_run", spy)
+    preflight.probe_4_egress_ip()
+
+    assert seen, "一条 dig 都没发出去"
+    assert "-4" in seen[0], f"dig 没强制 IPv4：{seen[0]}"
+
+
+def test_egress_ip_falls_back_to_the_second_resolver(preflight, monkeypatch):
+    """第一台 resolver 超时就换第二台 —— 实测三次里偶发一次超时。"""
+    calls: list[list[str]] = []
+
+    def flaky(cmd, **kw):
+        calls.append(list(cmd))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, 20)
+        return subprocess.CompletedProcess(cmd, 0, stdout="203.0.113.7\n", stderr="")
+
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: "/usr/bin/dig")
+    monkeypatch.setattr(preflight, "_run", flaky)
+    probe = preflight.probe_4_egress_ip()
+
+    assert len(calls) == 2, f"第一台超时之后没换第二台：{calls}"
+    assert probe.ok and "203.0.113.7" in probe.detail
+
+
+def test_egress_ip_never_reports_a_dig_error_line_as_an_ip(preflight, monkeypatch):
+    """dig 把「连不上」也写在 stdout 上，那不是一个 IP。
+
+    `;; connection timed out; no servers could be reached` 被当成答案抄进白名单，
+    真跑日就会对着一个不存在的 IP 排障 —— 而它「看起来有输出」。
+    """
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: "/usr/bin/dig")
+    monkeypatch.setattr(
+        preflight, "_run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0], 0, stdout=";; connection timed out; no servers could be reached\n",
+            stderr=""))
+    probe = preflight.probe_4_egress_ip()
+
+    assert not probe.ok, "把 dig 的报错行当成 IP 报了出去"
+    assert "connection timed out" not in probe.detail or "控制台" in probe.detail
+
+
+def test_egress_ip_is_a_soft_probe(preflight):
+    """🔴 它是软项，不是硬项。
+
+    整合期 p10-f 改判：它产出的是「一个要抄下来的值」，不是「跑不跑得起来」的前提，
+    而这条查询要过公网、实测会偶发超时。标成硬项的话，一次 DNS 抖动就把退出码判成
+    「真跑日跑不起来」，`docs/real-run-runbook.md` 0 段写的「退出码 0 或 2」也就
+    随机达不到 —— 那张纸的「不对时怎么办」整格失效。
+    """
+    assert preflight.probe_4_egress_ip().hard is False
 
 
 def test_egress_ip_success_prints_the_ip(preflight, monkeypatch):

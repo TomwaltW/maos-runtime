@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 
 import pytest
 
@@ -221,9 +222,34 @@ def test_live_model_usage_note_no_longer_denies_the_rows_beneath_it():
     assert "roundtable_traces" in note, "还要说清归属：trace.json 的哪一段认领了它们"
 
 
-def test_scripted_model_usage_note_still_says_the_empty_array_is_a_fact():
-    """Scripted 那句没动：空数组是事实，不是缺数据。圆桌 Scripted 时本就不记账。"""
-    doc = collect_model_usage(None, set(), live=False)
+def test_scripted_model_usage_note_no_longer_denies_the_rows_beneath_it():
+    """Scripted 那束的 note 也不许说「这张表是空的」—— 它下面就有一行。
 
-    assert doc["rows"] == [] and doc["model_mode"] == "scripted"
-    assert "空数组是事实" in doc["note"]
+    整合期 p10-f 补：本轨改掉了 `--live-model` 那句自打脸的 note，却漏了紧挨着它
+    上面的 Scripted 那句。四束已提交的 Scripted 证据全都是 `"count": 1` 配
+    「所以这张表是空的」—— 与本轨要消灭的是同一类缺陷。
+
+    原来那条测试用 `tables=set()` 把 rows 强制构造成空再断言它为空，是恒真的，
+    反而给这句假话发了绿灯。这里改成**喂一行真形状的 model_usage**，让 note
+    与 rows 当面对质。
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE model_usage (seq INTEGER PRIMARY KEY, trace_id TEXT, "
+        "plan_id TEXT, agent_role TEXT, call_site TEXT, model TEXT, "
+        "tokens_in INTEGER, tokens_out INTEGER, estimated INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO model_usage VALUES (1, 'trace_x', 'plan_x', 'manager', "
+        "'maos/agents/base.py::BaseAgent.ask', 'scripted-strong', 133, 909, 1)"
+    )
+
+    doc = collect_model_usage(conn, {"model_usage"}, live=False)
+    note = doc["note"]
+
+    assert doc["model_mode"] == "scripted"
+    assert doc["count"] == 1 and doc["rows"], "Scripted 束里本就有行，不是空的"
+    assert "这张表是空的" not in note and "空数组是事实" not in note
+    assert "estimated" in note, "要说清这一行是本地估算，不是真实计费"
+    assert "圆桌" in note, "要说清真正不记账的是圆桌，不是整张表"

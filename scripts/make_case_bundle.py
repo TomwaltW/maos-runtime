@@ -761,12 +761,20 @@ def collect_hitl(conn) -> dict:                                # noqa: ANN001
 
 
 def collect_model_usage(conn, tables: set, *, live: bool) -> dict:  # noqa: ANN001
-    """`model_usage` 表原样导出。Scripted 束恒为空数组 —— 那是真的，不是缺数据。"""
+    """`model_usage` 表原样导出。
+
+    **Scripted 束里也有行**，别照着旧说法以为它恒空：`ScriptedModelClient` 一次网络
+    都不走，但 `BaseAgent.ask` 那条路照样记一行本地估算（`estimated=1`）。
+    真正「Scripted 不记账」的只有圆桌 —— 它在 Scripted 下不走 `Speaker.complete`。
+    """
     rows = []
     if "model_usage" in tables:
         rows = [dict(r) for r in conn.execute("SELECT * FROM model_usage ORDER BY seq")]
-    note = ("Scripted 口径：全程 ScriptedModelClient，一次网络都不走，"
-            "所以这张表是空的 —— 空数组是事实，不是缺数据。")
+    note = ("Scripted 口径：全程 ScriptedModelClient，一次网络都不走 —— "
+            "**但这张表不是空的**：下面 rows 里的行是本地估算（`estimated=1`），"
+            "记的是「哪个岗位在哪个调用点问了一次模型」，不是真实 token 计费。"
+            "圆桌在 Scripted 下不走 `Speaker.complete`，所以这里没有 "
+            "`roundtable:` 前缀的行 —— 真圆桌用量只在 `--live-model` 那束里。")
     if live:
         note = ("--live-model：圆桌五岗走真模型发言，**那几次调用就在下面的 rows 里** —— "
                 "圆桌自己记账（唯一调用点 `maos/roundtable/speaker.py::Speaker.complete`，"

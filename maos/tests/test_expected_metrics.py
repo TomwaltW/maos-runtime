@@ -172,30 +172,36 @@ def test_source_of_truth_is_well_formed():
         assert data[key] > 0, SOURCE_REL + " 的 " + key + " 必须为正，实际 " + repr(data[key])
 
 
-def test_pg_gated_invariant_is_the_documented_78():
-    """有库档 = 无库档 + 78 这条算式里的那个 78。
+def test_pg_gated_invariant_is_the_documented_88():
+    """有库档 = 无库档 + 88 这条算式里的那个 88。
 
     它不是读数是**不变量**：22 条 test_pg_store_live.py + 7 条 test_pg_rank_parity.py
     + 19 条 test_refund_domain_pg.py + 16 条 test_kb_pg_prefilter.py（后两份 T115 加；
     2026-09-10 整合期由 29 刷成 64）+ 3 条 test_flow_domain_backend.py（T126 加，
     2026-09-11 整合期 p10-d 刷成 67）+ 7 条 test_kb_flow_backend.py + 4 条
-    test_schema_util_t133.py（T132 / T133 加，2026-09-12 整合期 p10-e 刷成 78，
-    本机 docker PG 实测：无库 90 skipped、有库 12 skipped）。
+    test_schema_util_t133.py（T132 / T133 加，2026-09-12 整合期 p10-e 刷成 78）
+    + 9 条 test_pg_vector_channel_t139.py + test_kb_flow_backend.py 的第 8 条
+    （T139 加，2026-09-12 整合期 p10-f 刷成 88）。
+    **T139 的 test_pg_store_live.py:206（中文分词）不进这个数**：它是双重门控
+    （有 PG + 装了 zhparser），本机 pgvector 没装 zhparser，有库那档照样 skip，
+    于是它不出现在两档的差值里。按 skip 理由数是 89 条，按差值是 88 条，以差值为准。
+    主仓实测（p10-f 整合期，本机 docker PG）：无库 3950 passed / 101 skipped、
+    有库 4038 passed / 13 skipped；非 PG 门控 12 条（RocketMQ 9 + Nacos 2 + 加密库 1）不变。
     真要变（有人给那几个文件加/删了用例），改真源的同时得回来改这条断言 ——
     多这一道手是故意的，这个数被改的时候必须有人知道。
 
-    **别拿 `pytest -k pg` 去数它**：那样只数得到 93，与真值差 **12 条** —— T126 那 3 条里
-    有一条、`test_kb_flow_backend.py` 整 7 条、`test_schema_util_t133.py` 整 4 条，名字里
-    都不含 `pg`、`-k` 一条都选不中，而它们照样是「没库 skip、有库真跑」。差距还在随新轨
-    扩大（p10-d 时只差 1 条）。门控条数只认全量两档的差值。
+    **别拿 `pytest -k pg` 去数它**：那样只数得到 77，与真值差 **12 条** —— T126 那 3 条里
+    有一条、`test_kb_flow_backend.py` 8 条里有 7 条、`test_schema_util_t133.py` 整 4 条，
+    名字里都不含 `pg`、`-k` 一条都选不中，而它们照样是「没库 skip、有库真跑」。
+    （p10-d 时只差 1 条，p10-e 起就是 12 条。）门控条数只认全量两档的差值。
     """
     data = _load_source()
-    assert data["pg_gated_tests"] == 78, (
-        "PG 门控条数变了。它是 test_pg_store_live.py(22) + test_pg_rank_parity.py(7)"
+    assert data["pg_gated_tests"] == 88, (
+        "PG 门控条数变了。它是 test_pg_store_live.py(22，第 23 条要 zhparser 不算) + test_pg_rank_parity.py(7)"
         " + test_refund_domain_pg.py(19) + test_kb_pg_prefilter.py(16)"
-        " + test_flow_domain_backend.py(3) + test_kb_flow_backend.py(7)"
-        " + test_schema_util_t133.py(4)，"
-        "改它等于动 demo_preflight.sh 里「有库档 = 无库档 + 78」那条算式的地基，"
+        " + test_flow_domain_backend.py(3) + test_kb_flow_backend.py(8)"
+        " + test_schema_util_t133.py(4) + test_pg_vector_channel_t139.py(9)，"
+        "改它等于动 demo_preflight.sh 里「有库档 = 无库档 + 88」那条算式的地基，"
         "确认过再连这条断言一起改。"
     )
 

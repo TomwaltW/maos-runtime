@@ -1,10 +1,10 @@
-# generated at 2026-09-11T16:43:18.179541+00:00 from f7283a2bca356f1c1107ed257c193759550fcf55
+# generated at 2026-09-12T10:04:48.986389+00:00 from 6aa1a4541820c0bef97a28492a90e5c9cf3476b3
 {
   "rows": [
     {
       "seq": 1,
-      "trace_id": "trace_70e32ad6fe17",
-      "plan_id": "plan_c5935d883081",
+      "trace_id": "trace_1ea146ad3f2a",
+      "plan_id": "plan_4d88f5b2c3d0",
       "task_id": null,
       "agent_role": "manager",
       "call_site": "maos/agents/base.py::BaseAgent.ask",
@@ -14,10 +14,10 @@
       "tokens_out": 909,
       "latency_ms": 0,
       "estimated": 1,
-      "created_at": "2026-09-11T16:43:17.959883+00:00"
+      "created_at": "2026-09-12T10:04:48.720001+00:00"
     }
   ],
   "count": 1,
   "model_mode": "scripted",
-  "note": "Scripted 口径：全程 ScriptedModelClient，一次网络都不走，所以这张表是空的 —— 空数组是事实，不是缺数据。"
+  "note": "Scripted 口径：全程 ScriptedModelClient，一次网络都不走 —— **但这张表不是空的**：下面 rows 里的行是本地估算（`estimated=1`），记的是「哪个岗位在哪个调用点问了一次模型」，不是真实 token 计费。圆桌在 Scripted 下不走 `Speaker.complete`，所以这里没有 `roundtable:` 前缀的行 —— 真圆桌用量只在 `--live-model` 那束里。"
 }

@@ -1,4 +1,4 @@
-# generated at 2026-09-11T16:43:17.855707+00:00 from f7283a2bca356f1c1107ed257c193759550fcf55
+# generated at 2026-09-12T10:04:48.607812+00:00 from 6aa1a4541820c0bef97a28492a90e5c9cf3476b3
 {
   "sqlite_bundle": "evidence/case-real-01/drift",
   "pg_bundle": "evidence/case-real-01-pg/drift",
@@ -93,55 +93,63 @@
       "sqlite": "",
       "pg": "",
       "both_present": true,
+      "both_empty": true,
       "differs": false
     },
     {
       "field": "outcome.case_outcome.computed_at",
-      "sqlite": "2026-09-11T16:43:15.767597+00:00",
-      "pg": "2026-09-11T16:43:17.814053+00:00",
+      "sqlite": "2026-09-12T10:04:39.743436+00:00",
+      "pg": "2026-09-12T10:04:48.562475+00:00",
       "both_present": true,
+      "both_empty": false,
       "differs": true
     },
     {
       "field": "outcome.plan_id",
-      "sqlite": "plan_a3d8cfaf63ca",
-      "pg": "plan_685ff19c5c1e",
+      "sqlite": "plan_1c8c118b404c",
+      "pg": "plan_6e48b36909b5",
       "both_present": true,
+      "both_empty": false,
       "differs": true
     },
     {
       "field": "skills.contract_skills[0].invocation_id",
-      "sqlite": "3c799770fa0d4c60b0fc8c8fcfcdd28f",
-      "pg": "fc2d37cf4d9342aeaa7885c581499c08",
+      "sqlite": "341c9addcd56419588ba57c33a6014a7",
+      "pg": "09fafc1ec3ea42a5aa206897e53ed6a3",
       "both_present": true,
+      "both_empty": false,
       "differs": true
     },
     {
       "field": "skills.contract_skills[1].invocation_id",
-      "sqlite": "23aeb61d5b53433e992125abba9037b6",
-      "pg": "ef25719acaaa453995338dba57cd1e6f",
+      "sqlite": "cdef77dcd45d4f62b35a1b816404b822",
+      "pg": "9b526f3d18db4a1bb71ee0de10785181",
       "both_present": true,
+      "both_empty": false,
       "differs": true
     },
     {
       "field": "skills.contract_skills[2].invocation_id",
-      "sqlite": "affd5cd03dc449f1a195b0d0ca2ab533",
-      "pg": "fd803e492ca049c09110c9635b1d9549",
+      "sqlite": "9b2f5cd2f7bc49af9a3cd7eff3a396f9",
+      "pg": "5b165f33538a45f7ab4715161d7bb1ec",
       "both_present": true,
+      "both_empty": false,
       "differs": true
     },
     {
       "field": "skills.contract_skills[3].invocation_id",
-      "sqlite": "4c4f6b2ecfce4ed687cb26c0220a44ec",
-      "pg": "7bb933e032484723834cd7904bf06597",
+      "sqlite": "f03768d076f54d01940bc3469eb50923",
+      "pg": "6b5f71462ba04347bbd5dfaaf322230b",
       "both_present": true,
+      "both_empty": false,
       "differs": true
     },
     {
       "field": "skills.contract_skills[4].invocation_id",
-      "sqlite": "cfdff7f13d0443898e57b6718a6b8bfa",
-      "pg": "351c8ec36823441ab7e705b36d5074ce",
+      "sqlite": "1d086ae917e440c59285689d813dcaa6",
+      "pg": "a45324724d924631bc6928139768e0c3",
       "both_present": true,
+      "both_empty": false,
       "differs": true
     },
     {
@@ -149,6 +157,7 @@
       "sqlite": null,
       "pg": null,
       "both_present": false,
+      "both_empty": false,
       "differs": false
     },
     {
@@ -156,6 +165,7 @@
       "sqlite": null,
       "pg": null,
       "both_present": false,
+      "both_empty": false,
       "differs": false
     },
     {
@@ -163,6 +173,7 @@
       "sqlite": null,
       "pg": null,
       "both_present": false,
+      "both_empty": false,
       "differs": false
     },
     {
@@ -170,6 +181,7 @@
       "sqlite": null,
       "pg": null,
       "both_present": false,
+      "both_empty": false,
       "differs": false
     },
     {
@@ -177,19 +189,12 @@
       "sqlite": null,
       "pg": null,
       "both_present": false,
+      "both_empty": false,
       "differs": false
     }
   ],
   "mismatches": [],
-  "suspicious_identical": [
-    {
-      "field": "outcome.case_outcome.arrival_basis",
-      "sqlite": "",
-      "pg": "",
-      "both_present": true,
-      "differs": false
-    }
-  ],
+  "suspicious_identical": [],
   "not_compared": [
     {
       "field": "skills.contract_skills[0].input_digest",
@@ -272,5 +277,5 @@
       "identical": true
     }
   ],
-  "note": "三栏各有各的含义。identical_fields：两束**必须**逐字节相同 —— 8 个 Skill 的名字/present/status/version/task_id、事件链各类型计数、case_outcome 四判据、biz_status、public_status、观察行的 observed_state 与 gateway_code。differ_by_design：每跑一次都现生成的（plan_id / trace_id / request_id / invocation_id / *_at），**字节相同反而是异常**，那种情况列进 suspicious_identical。not_compared：input_digest / output_hash 这类内容摘要，相同与否都不携带「后端换了没有」的信息，所以不判正也不判负（实测：8 个 skill 里 6 个的 input_digest 两束相同、2 个不同，两种都正常）。**两边的行为没有为了对齐字节而改过任何一处。**"
+  "note": "三栏各有各的含义。identical_fields：两束**必须**逐字节相同 —— 8 个 Skill 的名字/present/status/version/task_id、事件链各类型计数、case_outcome 四判据、biz_status、public_status、观察行的 observed_state 与 gateway_code。differ_by_design：每跑一次都现生成的（plan_id / trace_id / request_id / invocation_id / *_at），**字节相同反而是异常**，那种情况列进 suspicious_identical —— 但**两边都空**（`both_empty: true`）不算：那是这条路径上没生成过它，不是反常地相同（`arrival_basis` 在钱没到账的路径上恒为空串）。not_compared：input_digest / output_hash 这类内容摘要，相同与否都不携带「后端换了没有」的信息，所以不判正也不判负（实测：8 个 skill 里 6 个的 input_digest 两束相同、2 个不同，两种都正常）。**两边的行为没有为了对齐字节而改过任何一处。**"
 }

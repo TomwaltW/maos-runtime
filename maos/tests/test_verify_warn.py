@@ -22,9 +22,20 @@
    于是必须有人查「自称的那条来源事件真的在吗」，否则给任意来路不明的产物贴上标签
    就能让 warn 消失，而 trace-tree 照旧满分 —— 那是拿一条 warn 换一个新洞。
 
-跑 `make_evidence.py` 的那两条用例把产物落进 `tmp_path`（`--out`），**不碰工作区的
-`evidence/`**：否则每次 pytest 之后 `git status` 都是几十行脏，别的轨会当成自己
-搞坏的。实测整束 ~5 秒，不值得打 slow 标记。
+**基线盖两族束，不是只盖八个场景束**（T138）。`verify.py` 的 `load_cases` 把单案例束
+（`make_case_bundle.py` 产的 `case-real-01/<路径>/`）当**附加目录**并进同一个 evidence
+root 一起核，所以它的 warn 与八束的 warn 落在同一张分布表里。基线从前只跑
+`make_evidence.py`，于是单案例束那几行从来不在分母里 —— T134 把它当时那四行 warn
+（圆桌挂上时间线之前的 `stray_events`）收掉时，这条判据照旧绿，**绿得没有信息**。
+现在两族各有一个常量：`WARN_BASELINE` 是八束那一族，`WARN_BASELINE_CASE` 是单案例束
+**额外**带进来的那几行。分成两个而不是合成一张表，是因为差集本身才是判据：
+单案例束多一行、少一行，都得有一条会红在它自己名下的断言，不能淹在八束的数里。
+
+跑 `make_evidence.py` / `make_case_bundle.py` 的那几条用例把产物落进 `tmp_path`
+（`--out`），**不碰工作区的 `evidence/`**：否则每次 pytest 之后 `git status` 都是
+几十行脏，别的轨会当成自己搞坏的。实测八束 ~8 秒、单案例束四条路径 ~1 秒、两次
+`verify` 各 ~0.1 秒，整束 ~9 秒，不值得打 slow 标记，更不许标 skip 或藏在环境变量
+后面 —— 那等于换一种方式继续瞎。
 """
 
 from __future__ import annotations
@@ -83,6 +94,26 @@ WARN_BASELINE = {
     "authoritative-fact": 1,
 }
 
+#: 单案例束（`make_case_bundle.py --all-paths`）并进同一个 evidence root 之后，
+#: **在 `WARN_BASELINE` 之外多出来**的那几行。判据取的是两次 `verify` 的差集，
+#: 不是解析 warn 正文去猜哪一行归谁：正文的措辞会改，归属不会。
+#:
+#: * `history-case` 1 行 = 单案例束的库里有 `history_case`，而它们的 `source_case_id`
+#:   指向的是**外部导入的历史知识**，本库 `refund_case` 里本就没有对应行。这行 warn
+#:   是有理由的（给它补一条本库 case 才是伪造证据，铁律 3），所以它留着。
+#:   行数与那句话里的**条数**无关：条数随语料涨（实测再并一束会从 64 变 80），
+#:   而 warn 仍是整项汇总的一行 —— 钉行数不钉数字正是为此。
+#:
+#: 今天是 1 行。T134 之前这里还有单案例束那 8 条 `stray_events` 带来的行，圆桌挂上
+#: 时间线之后已归零；`docs/BACKLOG.md` 里「恒 8 条 stray」的账是过期文字，别照着它
+#: 改本常量 —— 以实跑为准。
+#:
+#: **真跑日（9/18–9/19）会产两束新的单案例束**（PolarDB 真实例 + 真模型真房间），
+#: 那正是这条判据最该咬得住的时候：新束多带一行 warn 进来，这里当场红。
+WARN_BASELINE_CASE = {
+    "history-case": 1,
+}
+
 #: 已归零、**回来就是回归**的三类（B / C 由整合轮 5 的 Y-1 / Y-2 补掉，A 由 T12 收尾轮补掉）。
 #: 按 warn 正文里的稳定字样认，不按行数认 —— 这两类的期望值恒为 0。
 RETIRED_WARN_MARKERS = {
@@ -92,19 +123,8 @@ RETIRED_WARN_MARKERS = {
 }
 
 
-@pytest.fixture(scope="module")
-def verify_report(tmp_path_factory) -> dict:
-    """整束证据现产一次，跑 `verify.py --json`，返回它的报告。
-
-    `--out` 指向 tmp：工作区的 `evidence/` 一个字节都不许被这条测试碰
-    （铁律 4：证据只能由真实命令产出，而那一份的产出时机归整合轮）。
-    """
-    out = tmp_path_factory.mktemp("t12-evidence")
-    made = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "make_evidence.py"), "--out", str(out)],
-        capture_output=True, text=True, cwd=str(ROOT))
-    assert made.returncode == 0, f"make_evidence 没跑成：{made.stderr[-2000:]}"
-
+def _verify(out: pathlib.Path) -> dict:
+    """跑 `verify.py --evidence <out> --json`，返回它的报告。"""
     ran = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "verify.py"),
          "--evidence", str(out), "--json"],
@@ -115,10 +135,62 @@ def verify_report(tmp_path_factory) -> dict:
     return json.JSONDecoder().raw_decode(ran.stdout)[0]
 
 
+@pytest.fixture(scope="module")
+def evidence_root(tmp_path_factory) -> pathlib.Path:
+    """八个场景束现产一次，落 tmp。单案例束由下面那条夹具往**同一个根**里补。
+
+    `--out` 指向 tmp：工作区的 `evidence/` 一个字节都不许被这条测试碰
+    （铁律 4：证据只能由真实命令产出，而那一份的产出时机归整合轮）。
+    """
+    out = tmp_path_factory.mktemp("t12-evidence")
+    made = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "make_evidence.py"), "--out", str(out)],
+        capture_output=True, text=True, cwd=str(ROOT))
+    assert made.returncode == 0, f"make_evidence 没跑成：{made.stderr[-2000:]}"
+    return out
+
+
+@pytest.fixture(scope="module")
+def verify_report(evidence_root) -> dict:
+    """**只有八束**时的核验报告 —— `WARN_BASELINE` 钉的就是它。"""
+    return _verify(evidence_root)
+
+
+@pytest.fixture(scope="module")
+def verify_report_with_case(evidence_root, verify_report) -> dict:
+    """单案例束并进同一个根之后再核一次 —— 分布里于是有了它那一份。
+
+    **显式依赖 `verify_report`** 而不是只依赖 `evidence_root`：两条夹具共用一个根，
+    而这条会往根里加东西。谁先跑由 pytest 的收集顺序定，写成依赖之后顺序就定死了 ——
+    反过来的话 `WARN_BASELINE` 会连单案例束的 warn 一起量进去，八束那一族的基线
+    当场失真，而失真的方向是「本该红的多出一行，被算成了基线」。
+
+    产在 `case-real-01/` 下：`verify.py` 的 `case_bundle_dirs` 按 `case-` 前缀认束，
+    目录名换一个就不进核验，而屏幕上看不出任何异样。
+    """
+    made = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "make_case_bundle.py"), "--all-paths",
+         "--out", str(evidence_root / "case-real-01")],
+        capture_output=True, text=True, cwd=str(ROOT))
+    assert made.returncode == 0, f"make_case_bundle 没跑成：{made.stderr[-2000:]}"
+    return _verify(evidence_root)
+
+
 def _warns(report: dict) -> dict[str, list[str]]:
     """按项收 warn 行。`info:` 不算 —— 「查过了，是预期」不是「值得看一眼」。"""
     return {c["key"]: [n for n in c["notes"] if n.startswith("warn:")]
             for c in report["checks"]}
+
+
+def _case_bundle_warn_delta(base: dict, with_case: dict) -> dict[str, int]:
+    """并进单案例束之后**多出来**的 warn，按项计行数。
+
+    比的是 warn 正文而不是行数：同一项下八束那行还在、单案例束那行换了措辞时，
+    只数行数看不出来（一减一加，差仍是 1）。
+    """
+    was, now = _warns(base), _warns(with_case)
+    delta = {k: [n for n in v if n not in was.get(k, [])] for k, v in now.items()}
+    return {k: len(v) for k, v in delta.items() if v}
 
 
 def test_warn_baseline_per_check(verify_report):
@@ -146,6 +218,54 @@ def test_retired_warn_classes_stay_retired(verify_report):
         assert marker not in all_notes, (
             f"{label} 又回来了：warn 里出现了 {marker!r}。这一类已在整合轮 5 归零，"
             f"再出现是回归，不是已知缺口。")
+
+
+def test_case_bundle_warns_are_in_the_distribution_too(verify_report,
+                                                       verify_report_with_case):
+    """🔴 **单案例束那一族的 warn 逐项对**（T138 补的盲区）。
+
+    判据取差集 —— 「并进单案例束之后多出来的」减去「只有八束时就有的」。两族因此
+    各红各的：八束多一行红在 `WARN_BASELINE` 上，单案例束多一行红在这里，谁也不
+    淹没谁。合成一张表的话，单案例束少掉一行、八束同时多出一行，总数不变，两条
+    判据全绿 —— 而那是两个各自独立的缺口。
+
+    这条之前，单案例束的 warn **从来不在任何分母里**：基线夹具只跑
+    `make_evidence.py`，而 `verify.py` 是把单案例束当附加目录并进同一个根一起核的。
+    于是 T134 收掉它当时那四行 warn 时，上面两条判据一条都没红。
+    """
+    actual = _case_bundle_warn_delta(verify_report, verify_report_with_case)
+    assert actual == WARN_BASELINE_CASE, (
+        f"单案例束带进来的 warn 与基线不符。\n基线：{WARN_BASELINE_CASE}\n实测：{actual}\n"
+        f"多出来的先查是不是新缺口（真跑日那两束新的单案例束尤其要查）；"
+        f"少掉的先查是不是有人为了让 warn 归零删了判据。\n"
+        f"确认是预期变化，就同步改本文件的 WARN_BASELINE_CASE 和"
+        f" docs/submission-checklist.md §A-2 那张表。")
+
+
+def test_warn_total_covers_both_families(verify_report_with_case):
+    """两族合起来的总行数 —— §A-2 那句「跑出来的 warn 是 N 行」从今天起数的是这个。
+
+    单独一条而不是并进上面的差集：差集守的是「哪一族多了哪一项」，这条守的是
+    「一共几行」。有人把一行 warn 从八束挪进单案例束（改了归属没改总数）时，
+    差集那条会红而这条绿；反过来两族各多一行、各少一项时，这条会红。
+    """
+    total = sum(len(v) for v in _warns(verify_report_with_case).values())
+    want = sum(WARN_BASELINE.values()) + sum(WARN_BASELINE_CASE.values())
+    assert total == want, f"两族合计 warn {total} 行，基线 {want} 行"
+
+
+def test_retired_warn_classes_stay_retired_in_the_case_bundle_too(
+        verify_report_with_case):
+    """B / C / A 三类在**单案例束**里同样不许回来。
+
+    上面那条同名判据只吃八束。而 T134 刚把单案例束那 8 条 `stray_events`（C 类）
+    并进树 —— 归零的那一刻起就该有人守着它，否则下一次退回去时，屏幕上照旧
+    `RESULT: 10/10 PASS`，只是多了一行没人读的 warn。
+    """
+    all_notes = "\n".join(n for v in _warns(verify_report_with_case).values() for n in v)
+    for label, marker in RETIRED_WARN_MARKERS.items():
+        assert marker not in all_notes, (
+            f"{label} 在单案例束里又回来了：warn 里出现了 {marker!r}。")
 
 
 def test_module_docstring_lists_all_ten_checks():

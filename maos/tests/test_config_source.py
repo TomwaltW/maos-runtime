@@ -17,6 +17,7 @@ Nacos 真连的那几条在没装 SDK / 没起容器的机器上自动 skip（§
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -597,6 +598,196 @@ def test_a_push_now_audits_the_two_knobs_t136_added():
     assert (required["detail"]["old"], required["detail"]["new"]) == ("1", "0")
     assert required["detail"]["origin"] == ORIGIN_NACOS
     assert required["detail"]["at"], "审计行必须带时间"
+
+
+# ---------------------------------------------------------------------------
+# 清单是不是全集 —— 一条 AST 判据（T138）
+# ---------------------------------------------------------------------------
+#: 扫描范围。`legacy-ts/`（已封存）、`evidence/`、`var/` 与 `.worktrees/` 不在内：
+#: 那些地方没有读取点，扫进来只会让这条判据随别的轨的在制品漂。
+_SCAN_PACKAGES = ("maos", "hiclaw", "scripts")
+
+#: **有意**接了配置面读取点、却**有意**不进 `GOVERNED_KEYS` 的 key。
+#:
+#: 今天是空的：十个旋钮全在清单里（T136 补齐末两个之后）。留着这张空表不是占位 ——
+#: 它是这条判据的另一半。「接读取点」与「进清单」在契约上始终是两件事，可以有意
+#: 不进（那会退回「能治理，变更不落审计」的老格）。所以判据**不**断言差集为空，
+#: 而是要求差集落在「清单」或「本表」之一里：下一个人接一个新旋钮时，必须显式
+#: 选一边，并在这里写下理由。
+#:
+#: 这把「有没有人想过这件事」从一句注释升成一次必答题。此前它靠人跑
+#: `grep -rn "get_config_source()"` 去核，已经核过三次（T131 一次、T136 一次、
+#: Wave E 整合期一次），每一次都是花一整轨才发现有旋钮漏在外面。
+#:
+#: 往这里加条目 = 往安全面加东西，要在 `docs/DECISIONS.md` 留一行说清为什么。
+INTENTIONALLY_UNGOVERNED: dict[str, str] = {}
+
+
+def _iter_source_files():
+    """全仓的 Python 源文件。"""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    for package in _SCAN_PACKAGES:
+        yield from sorted((root / package).rglob("*.py"))
+    yield from sorted(root.glob("*.py"))
+
+
+def _module_name_of(path) -> str:
+    """`<root>/maos/tools/sandbox.py` -> `maos.tools.sandbox`。"""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    rel = path.relative_to(root).with_suffix("")
+    return ".".join(rel.parts)
+
+
+def _imported_names(tree) -> dict[str, str]:
+    """本文件里 `from <模块> import <名字>` 的映射，**函数内 import 也算**。
+
+    函数内 import 不是边角：`maos/kb/plan_advice.py::env_replan_budget` 读的
+    `ENV_MAX_REPLAN` 就是在函数体里从 `maos.core.control_plane` 拿的（那是为了
+    不把控制面拖进 kb 的 import 图）。只查模块属性的话，`MAOS_MAX_REPLAN` 的
+    **第二个**读取点会整个从扫描结果里消失 —— 而消失在屏幕上等于「登记过了」。
+    """
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                names[alias.asname or alias.name] = node.module
+    return names
+
+
+def _resolve_key(node, module_name: str, imported: dict[str, str]):
+    """把 `get_config_source().get(<这里>)` 的第一个实参解析成 key 的**值**。
+
+    三种写法都认：字面量（`"MAOS_SANDBOX_TIMEOUT"`）、常量名（`ENV_MAX_REPLAN`，
+    本模块的或 import 进来的）、别的模块的常量（`kb.KB_WEIGHTS_ENV`）。后两种按
+    名字去**运行时**取值，不在 AST 里另做一遍常量折叠：折叠出来的值与进程里真正
+    读的值可能不同（`if` 分支、重新赋值），而那种分叉不会报错，只会让这条判据
+    比对一个不存在的 key。
+
+    认不出返回 `None` —— 由调用方点名，不静默跳过。
+    """
+    import importlib
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    module = importlib.import_module(module_name)
+    if isinstance(node, ast.Name):
+        value = getattr(module, node.id, None)
+        if value is None and node.id in imported:
+            value = getattr(importlib.import_module(imported[node.id]), node.id, None)
+        return value
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        owner = getattr(module, node.value.id, None)
+        if owner is None and node.value.id in imported:
+            owner = importlib.import_module(imported[node.value.id])
+        return getattr(owner, node.attr, None)
+    return None
+
+
+def _scan_config_keys() -> tuple[dict[str, list[str]], list[str]]:
+    """扫出全仓 `get_config_source().get(<key>, …)` 的 key，返回 `(key -> 读取点, 认不出的)`。
+
+    匹配的是**调用形状**而不是文本：`get_config_source()` 的返回值上调 `.get()`。
+    `grep` 那条命令数的是「出现 `get_config_source()` 的行」，于是
+    `maos/config/source.py` 里那个函数自己的定义与几行注释也会被数进去 ——
+    人核三次每次都要手工把它们剔掉，而剔错一行没人会发现。
+    """
+    found: dict[str, list[str]] = {}
+    unresolved: list[str] = []
+    for path in _iter_source_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imported = _imported_names(tree)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and node.args
+                    and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+                    and isinstance(node.func.value, ast.Call)
+                    and isinstance(node.func.value.func, ast.Name)
+                    and node.func.value.func.id == "get_config_source"):
+                continue
+            where = f"{path.name}:{node.lineno}"
+            key = _resolve_key(node.args[0], _module_name_of(path), imported)
+            if isinstance(key, str) and key:
+                found.setdefault(key, []).append(where)
+            else:
+                unresolved.append(where)
+    return found, unresolved
+
+
+def test_every_config_knob_is_either_governed_or_explicitly_waived():
+    """🔴 走配置面的每个旋钮，要么进 `GOVERNED_KEYS`，要么显式登记为不进。
+
+    这条判据替掉的是一条**人肉**流程：「清单是不是全集」此前靠人跑
+    `grep -rn "get_config_source()" --include=*.py` 去核，核过三次（T131 / T136 /
+    Wave E 整合期），三次都是在别的活里顺手发现有旋钮漏在外面的。漏掉的后果是
+    **静默**的：那个旋钮退回「能治理，变更不落审计」——— Nacos 上改得到、不用重启，
+    但推送到达时不落 `ConfigChanged`，`event_log` 里一个字都没有。
+
+    **不断言差集为空**，是因为「接读取点」与「进清单」在契约上仍是两件事，可以
+    有意不进（`maos/config/__init__.py` 抬头把那一格叫做「能治理，变更不落审计」）。
+    要的是差集**被显式登记过**：落在 `GOVERNED_KEYS` 或 `INTENTIONALLY_UNGOVERNED`
+    之一里，否则红并逐个列出来。
+    """
+    found, unresolved = _scan_config_keys()
+
+    assert not unresolved, (
+        f"这些读取点的 key 解析不出来：{unresolved}\n"
+        f"判据认三种写法：字面量、本模块常量、`<模块>.<常量>`。换了别的写法就得"
+        f"先让 `_resolve_key` 认得，否则那个旋钮会从这条判据里消失 —— "
+        f"而消失与「已登记」在屏幕上长得一模一样。")
+
+    stray = {k: v for k, v in found.items()
+             if k not in GOVERNED_KEYS and k not in INTENTIONALLY_UNGOVERNED}
+    assert not stray, (
+        "这些旋钮走了配置面，却既不在 GOVERNED_KEYS 里、也没登记为有意不进：\n"
+        + "\n".join(f"  {k}  读取点 {v}" for k, v in sorted(stray.items()))
+        + "\n二选一，不许留空："
+        "\n  · 要落审计 -> 加进 maos/config/source.py 的 GOVERNED_KEYS，"
+        "并刷 maos/config/__init__.py 那张读取点表格；"
+        "\n  · 有意不落 -> 加进本文件的 INTENTIONALLY_UNGOVERNED 并写下理由，"
+        "同时在 docs/DECISIONS.md 留一行。"
+        "\n现况是前者缺席时**静默**退回「能治理，变更不落审计」。")
+
+
+def test_the_waiver_list_has_no_stale_entries():
+    """豁免表里不许有已经进了清单的 key —— 那种条目是僵尸，读的人会以为它没落审计。
+
+    没有这一条，补齐一个旋钮的人只要忘了把它从豁免表里删掉，表里就会长期挂着一条
+    与事实相反的记录，而上面那条判据照旧绿（它只查「登记过没有」，不查登记得对不对）。
+    """
+    stale = sorted(set(INTENTIONALLY_UNGOVERNED) & set(GOVERNED_KEYS))
+    assert not stale, (
+        f"{stale} 已经在 GOVERNED_KEYS 里了，豁免表里那条记录该删："
+        f"它现在落审计，而表里写着不落")
+
+
+def test_the_readout_table_lists_every_knob_the_scan_finds():
+    """`maos/config/__init__.py` 抬头那张读取点表格与扫描结果对得上。
+
+    那张表**自称完整**（「现在走这条路的十一个读取点，分属十个旋钮」），而它已经
+    过期过两次：上一版自称「八个」，实际漏了三行。表格过期本身不会让任何测试红 ——
+    下一个照着它去数旋钮的人于是再数错一次，这已经发生过三轮。
+
+    只钉「每个扫出来的 key 都在表里出现过」与读取点条数，不钉措辞与排版：判据要
+    挡的是漏登记，不是行文。
+    """
+    import maos.config
+
+    found, _ = _scan_config_keys()
+    doc = maos.config.__doc__ or ""
+    missing = sorted(k for k in found if k not in doc)
+    assert not missing, (
+        f"这些旋钮走了配置面，却没进 maos/config/__init__.py 抬头那张表：{missing}。"
+        f"那张表自称完整，所以漏一行就是一句假话")
+
+    rows = sum(len(v) for v in found.values())
+    table = [ln for ln in doc.splitlines()
+             if ln.startswith("| `MAOS_") or ln.startswith("| `maos")]
+    assert len(table) == rows, (
+        f"表格 {len(table)} 行，实际读取点 {rows} 处（同一个 key 可能有多个读取点，"
+        f"表里也该各占一行 —— `MAOS_MAX_REPLAN` 就有两处）")
 
 
 # ---------------------------------------------------------------------------

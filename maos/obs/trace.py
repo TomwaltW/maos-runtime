@@ -1049,7 +1049,8 @@ def stray_events(db_path: str, *, claimed: Any = frozenset()) -> list[dict]:
 
     现实里确实有：``flows/scenario_5.py`` 的 ``issue.aggregate`` 跑在 create_plan
     之前，落的 SkillInvoked 行 ``plan_id`` 是空串。这类事件按 plan 查永远查不到，
-    所以在这里单独点名，而不是让它们静静消失。
+    所以在这里单独点名，而不是让它们静静消失（**该例已于 P5 D 轨并进树**，
+    此处留作判据来由，不是现存例子）。
 
     ``claimed`` 是**已经被某一族树收走的 seq 集合**（T134：圆桌树收走它那一摊）。
     判据是「被树收走的不算游离」，**不是**「plan_id 非空就不算游离」—— 后者会把

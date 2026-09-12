@@ -87,8 +87,8 @@ from typing import Any, Callable
 from maos.contracts.states import TaskState
 from maos.core.control_plane import AWAIT_HUMAN_DECISION
 from maos.domain.refund import (
-    annotation, objects as _refund_objects, outcome as _refund_outcome,
-    projection as _projection,
+    annotation, case_pack as _case_pack, objects as _refund_objects,
+    outcome as _refund_outcome, projection as _projection,
 )
 from maos.ingress import classify as _classify
 from maos.ingress import outcome_commands as _outcome_cmds
@@ -1319,6 +1319,13 @@ class IngressRouter:
         # 照 `_accepted_extra` 的取向探参数：不认这个关键字的处置器（测试里的替身）
         # 一个字都不多收，行为退化成 T135 之前的代签，那几条测试因此一条不受影响。
         hold = {"hold_awaits": HOLD_AWAITS} if _takes_kw(run, "hold_awaits") else {}
+        # 闸循环里代跑的那一跳署**房间里按键的那个人**（T137），不是 CLI 那个写死的
+        # `custom_case.APPROVER`。T135 之后付款闸这一跳已经署真人名（那次决定就发生
+        # 在房间里），核算那一跳却还署一个常量 —— 同一条 HITL trace 上两跳署了两个
+        # 不同来源的名字，而事后问「谁批的这一单」，库里给的是后者。
+        # 代跑的语义没变：卡片上「由处置流程代跑」那句照旧，变的只是署名的来源。
+        # 探参数的理由同 `hold`：不认这个关键字的替身一个字都不多收。
+        who = {"gate_operator": msg.sender} if _takes_kw(run, "gate_operator") else {}
         with self._lock:
             # `store=self.store`（T122）：处置跑在 **router 自己的库**上，不再是
             # `run_payload` 每次自建又随手丢掉的那个 `:memory:`。这一句是四条结果面
@@ -1326,7 +1333,7 @@ class IngressRouter:
             # 工单、退款申请、到账观察从此查得到；`MAOS_INGRESS_DB` 指到文件时，
             # 连跨进程回查都成立。
             result = run(ticket.payload, approve=True, verbose=False, store=self.store,
-                         **hold)
+                         **hold, **who)
         # 锁**释放之后**才登记。钩子里的圆桌会再碰一次 router（取底账、报待办），
         # 在锁内触发就是自己等自己 —— 而症状是房间彻底不动，没有任何报错。
         self._record(("execute", ticket.payload, result, msg.sender))
@@ -1578,6 +1585,13 @@ class IngressRouter:
 
         不是 `custom_case.APPROVER` 那个 CLI 代跑用的写死名字。这一跳是 HITL trace
         上唯一一条「人在现场做的决定」，署名署错了，这条链就只剩形式。
+
+        ## 这次决定同时落进退款域那张审批表（T137）
+
+        `cp.human_decision()` 只落 `event_log` 的迁移事件，而 CLI 那条路另落一条
+        `approval_record` 并挂成 business_ref。两条路的留痕位置不一样，缺的那半边
+        正是「谁在什么时候驳回了这笔」—— 见 `_record_gate_approval()`，
+        那里也写着「驳回这一跳」与「驳回整个案子」在库里怎么区分。
         """
         from maos.flows.common import build, run_until_settled
 
@@ -1597,6 +1611,10 @@ class IngressRouter:
                 return (f"{case_id} 的「{gate['title']}」这一步没能落下这次决定"
                         f"（{_outcome_cmds.humanize(exc)}）—— 多半是已经有人决定过了。"
                         f"看一眼现在停在哪：/pending")
+            # 决定落下之后再补审批表那一行（T137）：顺序不可换 —— `human_decision`
+            # 抛了就说明这次决定根本没生效，那时落一行审批记录等于记了一件没发生的事。
+            self._record_gate_approval(case_id, plan_id, task_id,
+                                       approved=approved, operator=msg.sender, note=note)
             run_until_settled(bus, reviewer, cp, plan_id)
         self._record(("gate_decision", case_id, {"task_id": task_id,
                                                  "approved": approved}, msg.sender))
@@ -1620,6 +1638,65 @@ class IngressRouter:
             lines.append(public_line)
         lines.append(f"Plan {plan_id} 收在 {plan.get('state')}")
         return "\n".join(lines) + tail
+
+    def _record_gate_approval(self, case_id: str, plan_id: str, task_id: str, *,
+                              approved: bool, operator: str, note: str) -> dict | None:
+        """把房间里这次闸决定补进退款域那张审批表（T137）。落不下只记日志，返回 None。
+
+        ## `event_log` 那一跳为什么不够
+
+        `cp.human_decision()` 落的是一条 `StateTransition`，操作者完整在册 ——
+        HITL 证据束读的就是它（`scripts/make_case_bundle.py::collect_hitl`），
+        **本方法一个字节都不改变它**。缺的是退款域那张 `approval_record`：
+        CLI 那条路（`flows/custom_case.py` 的闸循环）两个分支各落一行并把它挂成
+        business_ref，房间这条路一行都不落。于是「谁在什么时候驳回了这笔」在库里
+        查不到 —— 而客户投诉时要对的第一件事就是它（那句话是 `custom_case` 那条路
+        自己的注释）。房间里这次驳回是**真人**当场做的，比 CLI 代跑那次更该落。
+
+        ## 「驳回这一跳」与「驳回整个案子」在库里怎么区分
+
+        用的全是既有字段，一个新状态、一条新迁移、一个新列都没加（铁律 9）：
+
+        · **这一行落在哪一跳** —— `stamp_approval_revision` 挂的那条 business_ref
+          带着 `task_id`，指到付款那一步。审批表第 N 行属于哪道闸，查这条引用。
+        · **整个案子有没有被驳回** —— 看 `refund_case.biz_status` 是不是 `rejected`，
+          那是业务对象自己的字段，与审批表各记各的。
+
+        所以本方法**不碰 `biz_status`**，也就不调 `custom_case._reject_case()`：
+        房间这一跳驳的是「钱没退出去，这一步算不算完成」，不是「这一单不予退款」。
+        案子此刻停在 `gateway_accepted`（付款已经发起过了），而 `_reject_case` 那条
+        submitted/approved 守卫正是为这个分界设的 —— 它本来也不会放行。两件事各落
+        各处，合进一个字段就再也分不开了。
+
+        ## 放行那一支照样落
+
+        CLI 那条路两个分支都落（`custom_case.py` 的 `record_approval` 各一句），
+        房间只落驳回那一支的话，同一张表上「放行」与「驳回」两种决定的可查性就
+        不一样了 —— 而下一个人读这张表时无从知道「查不到放行记录」是没发生过
+        还是没记。`reason` 原样取房间那条 `note`，不另编一句。
+        """
+        # 惰性 import，口径同 `_compensate_if_stuck` 里那句 `SkillInvoker`：
+        # `maos.ingress` 不为拿两个函数把整个 skill 包挂到自己的 import 图上。
+        from maos.skills.builtin.refund import _common as _refund_common
+
+        row = self._case_row(case_id) or {}
+        tenant_id = str(row.get("tenant_id") or "")
+        if not tenant_id:
+            log.warning("案子 %s 查不到租户 —— 房间这次闸决定没能补进审批表", case_id)
+            return None
+        try:
+            approval = _refund_common.record_approval(
+                self.store, tenant_id=tenant_id, case_id=case_id, approver=operator,
+                decision="approved" if approved else "rejected", reason=note)
+            _case_pack.stamp_approval_revision(
+                self.store, approval, plan_id=plan_id, task_id=task_id)
+        except Exception as exc:                        # noqa: BLE001
+            # 留痕失败不许把一次**已经生效**的闸决定说成失败：那个决定上一句就落库了。
+            # 口径同 `_compensate_if_stuck` 的开单失败那一支。
+            log.warning("案子 %s 的闸决定没能补进审批表（%s: %s）",
+                        case_id, type(exc).__name__, exc)
+            return None
+        return approval
 
     def _held_gate_of(self, case_id: str) -> dict | None:
         """这个案子有没有停在一道**跑起来之后才出现的**闸上；没有返回 None。
@@ -1847,7 +1924,61 @@ class IngressRouter:
             log.warning("/%s 进了 handle_outcome 却被 outcome_commands 判为 ignored "
                         "—— KNOWN_VERBS 与 COMMANDS 分叉了", cmd.verb)
             return ""
-        return res.text
+        return res.text + self._tell_customer_after_resolve(res, row)
+
+    def _tell_customer_after_resolve(self, res, row: dict | None) -> str:  # noqa: ANN001
+        """关单**真的生效之后**补一次给客户的告知；不该发时返回空串（T137）。
+
+        ## 为什么客户到这一步为止一个字都没收到
+
+        `notify.customer` 在 DAG 上依赖付款那一步。付款闸被真人驳回、任务落 FAILED
+        之后，它停在 PENDING 再也不跑。于是：钱没退出去（对）、补偿工单开了（对）、
+        `/assign` `/resolve` 都走完了（对）、**客户从头到尾没被告知过任何事**（错）。
+        `/confirm` 因此回一句「一条通知都没发出去，客户无从确认」，那条命令在补偿链上
+        无路可走。这不是 T135 引入的回归 —— 改造前那条通知是在一个*本不该完成*的任务
+        （被代签的付款闸）跑完之后才发出去的，T135 只是把它暴露出来。
+
+        ## 为什么补在这里，而不是补在 `refund.compensation_close` 里面
+
+        关单那个 skill 经 `SkillInvoker` 调什么，受**调用方 identity** 的白名单管：
+        `TICKET_DESK_IDENTITY` 只授权了 `refund.compensation_close` 与 `payment.observe`
+        两个（`maos/flows/scenario_7.py` 那份逐字段相同，两处都在本轨白名单外）。
+        让那个 skill 自己造一个 identity 去发通知，绕开的正是它自己 `security_boundary`
+        写明不许绕的那道闸 —— 「缺授权时抛 PermissionDenied，**不降级成本地直写**」。
+
+        而告知客户本来就是**编排层的决定**，不是关单动作的一部分：口径逐字同
+        `_compensate_if_stuck` 那段 docstring ——「补偿是看过事实之后的决定，一直由
+        调用方下」。这一句是房间这个调用方的那一份。
+
+        ## 只在 `KIND_DONE` 且确实是 `/resolve` 时发
+
+        `KIND_USAGE` 是「这一步没生效」（参数不合法、工单已关、关单 skill 报错），
+        那时候发通知等于替一件没发生的事告知客户。`KIND_DENIED` 更不必说。
+        """
+        if (res.kind != _outcome_cmds.KIND_DONE
+                or res.command != _outcome_cmds.CMD_RESOLVE):
+            return ""
+        case_id = str(res.case_id or "")
+        tenant_id = str((row or {}).get("tenant_id") or "")
+        if not case_id or not tenant_id:
+            return ""
+        from maos.flows.custom_case import notify_customer
+
+        plan_id = str((row or {}).get("plan_id") or "")
+        # trace 三件套走 `_command_extras`，与紧邻的 `CompensationResolved` 完全同源：
+        # `task_id` 因此是**付款那一步**的 —— 这条通知与那几条命令一样，是在收拾
+        # 「钱没退出去」的尾巴，挂到别的任务上，「这一切是因为哪一步走不通」就断了。
+        extras = self._command_extras(plan_id)
+        # 措辞一个字都不在这里拼：`notify.customer` 按库里的事实产出（契约 §D），
+        # 补偿收口那一档会带上工单号与凭证引用。判据同源，两条路说同一句话。
+        err = notify_customer(self.store, tenant_id, case_id, plan_id=plan_id,
+                              trace_id=extras.get("trace_id", ""),
+                              task_id=extras.get("task_id", ""))
+        if err:
+            # 告知没发出去不许把一次**已经生效**的关单说成失败 —— 那件事上一句就落库了。
+            # 但也不许静默：房间里的人据此知道还要另行通知客户。
+            return f"\n⚠️ 这一单的客户告知没发出去（{_outcome_cmds.humanize(err)}）"
+        return "\n已按补偿收口的事实告知客户（工单号与凭证引用都在正文里）"
 
     def _open_plans(self) -> list[str]:
         """长驻运行时里还没收口的 plan。取不到就返回空 —— 不猜。"""

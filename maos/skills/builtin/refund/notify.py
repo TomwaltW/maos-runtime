@@ -6,9 +6,23 @@
 
 反过来也要守住：**不许把「发出去了」记成「客户确认了」**。`ack_at` 为空就是为空，
 不拿 `sent_at` 顶替 —— 顶替之后，「有多少客户其实没收到」这个数字就永远查不出来了。
+
+## 补偿收口那一档为什么要多说一句（T137）
+
+这个 skill 在 DAG 上挂在付款之后。付款闸被人驳回、任务落 FAILED 之后，它停在
+PENDING 再也不跑 —— 于是「钱没退出去、补偿工单开了、也派了也关了」这一整串事
+**客户一个字都不知道**。补上的那两个调用点在编排层（`flows/custom_case.py` 的
+驳回分支与 `ingress/router.py` 的 `/resolve` 之后），措辞仍然只由本模块产出：
+`_compensation_tail()` 在投影句之后补上工单号与凭证引用。
+
+那一句的红线是铁律 8：`payment_observation` 上没有到账观察时，正文里不许出现
+任何到账口径。「原路退回未成功，已转线下补偿」说的是**观察与安排**，
+不是一个本系统无权宣布的资金结果。
 """
 
 from __future__ import annotations
+
+import json
 
 from maos.domain.refund import case_pack, guard, objects, projection
 from maos.skills.contract import Skill, SkillContext, SkillContract
@@ -49,7 +63,9 @@ class NotifyCustomerSkill(Skill):
         max_retries=2,
         security_boundary=(
             "只写 notification；不改 biz_status、不调模型、不碰支付网关；"
-            "正文只含案子编号与金额结论，不带证据原文与任何凭证"
+            "正文只含案子编号、对外三态，以及补偿收口那一档的工单号与凭证引用（T137），"
+            "不带客户证据原文；"
+            "**没有到账观察就一个字不许说到账**——到账口径只由 projection.public_status 产出"
         ),
         reuse_note="任何「通知了但对端未确认」的场景都可照此写：记 needs_followup，不阻塞主流程",
         owner_roles=["refund_intake"],
@@ -67,7 +83,8 @@ class NotifyCustomerSkill(Skill):
         channel = str(payload.get("channel") or DEFAULT_CHANNEL)
         public = self._public_status(store, tenant_id, case_id, case)
         content = (str(payload.get("content") or "").strip()
-                   or self._default_content(case, public))
+                   or self._default_content(
+                       case, public, self._compensation_tail(store, tenant_id, case_id, case)))
 
         ack = payload.get("ack")
         ack_at = None
@@ -159,13 +176,74 @@ class NotifyCustomerSkill(Skill):
     }
 
     @classmethod
-    def _default_content(cls, case: dict, public: str = "") -> str:
+    def _default_content(cls, case: dict, public: str = "", tail: str = "") -> str:
         """正文按案子当前状态生成 —— 状态是什么就说什么，不预告还没发生的事。
 
         `public` 非空就用它：三态投影是整仓唯一产出对外措辞的地方（契约 §D），
         房间卡片、`/pending` 回帖将来都接同一个函数，措辞才不会在几处之间漂。
         投不出来才回落到 `_INTERNAL_SAID`（见那张表的注释）。
+
+        `tail` 是补偿收口那一档**另外**要交代的一句（`_compensation_tail`），
+        夹在投影句与落款之间。它不改写投影那五个字面值中的任何一个 ——
+        契约 §D 说的是「不许自造第六句」，不是「不许多说一句实话」。
         """
         status = case["biz_status"]
         said = public or cls._INTERNAL_SAID.get(status, status)
-        return f"您的退款申请（{case['case_id']}）{said}。如有疑问请回复本条消息。"
+        extra = f"{tail.strip()}。" if tail.strip() else ""
+        return f"您的退款申请（{case['case_id']}）{said}。{extra}如有疑问请回复本条消息。"
+
+    #: 补偿收口之后那一句交代的前半段。**只说观察与安排，一个字不宣布资金结果**
+    #: （铁律 8）：`payment_observation` 上最后一次观察是 failed，所以说得出
+    #: 「原路退回未成功」；钱有没有通过线下渠道回到客户手里，MAOS 观察不到，
+    #: 于是这句话里既没有「已到账」也没有「已退回」——它给的是工单号与凭证引用
+    #: 这两个**抓手**，客户拿它们去问，比一句编出来的结论有用得多。
+    COMPENSATION_SAID = "原路退回未成功，已转线下补偿"
+
+    @staticmethod
+    def _compensation_tail(store, tenant_id: str, case_id: str, case: dict) -> str:
+        """补偿收口那一档要另外交代的一句；不在那一档、或工单查不到时返回空串。
+
+        为什么非有这一段不可：`compensated` 那一档的投影句是「已补偿（未到账）」，
+        五个字面值里最短的那句 —— 客户读完只知道钱没到，不知道原路为什么没退成、
+        也不知道去哪追。而这条通知存在的全部理由就是把「发生了什么、接下来找谁」
+        说清楚（T137）。
+
+        工单查不到就**回落到只说投影句**，不编一个单号：`MT-<case_id>` 是算得出来的，
+        正因为算得出来才更要先确认它真的开过 —— 给客户一个不存在的工单号，
+        比少说一句话坏得多。
+        """
+        if str(case.get("biz_status") or "") != "compensated":
+            return ""
+        from . import compensate as CP
+
+        ticket = CP.ticket_of(store, tenant_id, case_id)
+        if ticket is None:
+            return ""
+        said = f"{NotifyCustomerSkill.COMPENSATION_SAID}：工单 {CP.ticket_id_of(case_id)}"
+        ref = NotifyCustomerSkill._evidence_ref(store, tenant_id, case_id)
+        return f"{said}，凭证 {ref}" if ref else said
+
+    @staticmethod
+    def _evidence_ref(store, tenant_id: str, case_id: str) -> str:
+        """最近一份人工线下凭证的外部引用（渠道流水号）；没有返回空串。
+
+        取自 `payment_observation.raw_receipt_json` 的 `detail.evidence_ref` ——
+        那是 `ManualReceiptAdapter.submit()` 落下的那个键，也是这份凭证作为
+        **外部事实**的出处。不另存一份到别的表：存第二份就有了第二个真相源，
+        而两份迟早对不上（口径同 `compensate.py` 那段「ticket_id 只在 detail_json 里」）。
+        """
+        rows = objects.query(
+            store,
+            "SELECT raw_receipt_json FROM payment_observation"
+            " WHERE tenant_id=? AND case_id=? ORDER BY observed_at DESC",
+            (tenant_id, case_id))
+        for row in rows:
+            try:
+                receipt = json.loads(row["raw_receipt_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            detail = receipt.get("detail") if isinstance(receipt, dict) else None
+            ref = str((detail or {}).get("evidence_ref") or "").strip()
+            if ref:
+                return ref
+        return ""

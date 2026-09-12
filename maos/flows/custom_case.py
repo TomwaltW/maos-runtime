@@ -79,10 +79,39 @@ SNAPSHOT_IDENTITY = AgentIdentity(
     max_self_repair=0,
 )
 
+SKILL_NOTIFY_CUSTOMER = "notify.customer"
+
+#: 案子被**整体**驳回之后，补一次告知客户的调用身份（T137）。
+#:
+#: 与 `SNAPSHOT_IDENTITY` 同一条口径：这一次告知发生在**闸循环里**，不属于任何
+#: 一个 Agent 的 ctx —— DAG 上那个 `notify.customer` 任务依赖付款、付款依赖核算，
+#: 核算刚落 FAILED，它停在 PENDING 再也不跑。造一个最小授权的 identity 走
+#: `SkillInvoker`，而不是直接 `Skill().run()`：直接调就没有白名单校验、
+#: 没有 SkillInvoked 审计行，而「客户到底被告知过没有」正是 `/confirm` 要回查的
+#: 那条事实。
+#:
+#: `role` 取 `refund_intake` —— 与 `notify.customer` 的 `owner_roles` 一致：
+#: 告知客户是收案面的职责，不是付款岗的。
+NOTIFY_IDENTITY = AgentIdentity(
+    agent_id="refund-reject-notice",
+    role="refund_intake",
+    duty="案子被整体驳回之后把结论如实告知客户",
+    allowed_skills=frozenset({SKILL_NOTIFY_CUSTOMER}),
+    allowed_tools=frozenset(),
+    write_scope=frozenset(),
+    max_risk="L",
+    model_tier=Tier.LIGHT,
+    max_self_repair=0,
+)
+
 #: >1 才能证明「一次 query 不一定够」—— 终态是问出来的，不是一步返回的。
 DEFAULT_SETTLE_AFTER = 2
 
 #: 审批是人的动作。CLI 代跑时名字写死，两次跑输出一致。
+#:
+#: **只是缺省值**（T137）：`run_payload(gate_operator=…)` 给了就用给的那个 ——
+#: 房间那条路传进来的是按 `/approve` 的那个 Matrix 账号。不给仍是这个常量，
+#: CLI 的两条命令因此逐字节不变。
 APPROVER = "沈思锴"
 
 #: 少了任何一张，`policy_view` 就读不出政策，裁定无从谈起。
@@ -267,6 +296,54 @@ def _reject_case(store, tenant_id: str, case_id: str, who: str) -> dict | None:
     return guard.update_biz_status(
         store, tenant_id, case_id, "rejected", HUMAN_ACTOR, uuid.uuid4().hex,
         reason=f"{who} 驳回本次退款申请")
+
+
+def notify_customer(store, tenant_id: str, case_id: str, *, plan_id: str,
+                    trace_id: str = "", task_id: str = "") -> str:
+    """告知客户本案此刻的结论。返回错误串，成功返回空串。
+
+    **公开的**：房间那条路（`ingress/router.py` 的 `/resolve` 之后）要做同一件事。
+    在那边另写一遍，两条路迟早对「该不该发、发什么」给出不同答案 —— 而症状是
+    同一个案子在群里和在命令行里被告知了两句不一样的话。
+
+    ## 措辞一个字都不在这里拼
+
+    全由 `notify.customer` 按库里的事实产出（`notify.py::_default_content`）。
+    这一条是契约 §D 的直接后果：对外口径只许有一个产出处，第二处迟早会在没有
+    到账观察的时候说出「已到账」（铁律 8）。
+
+    ## `task_id` 由调用方给，两条路给得不一样
+
+    挂一条归属不实的引用比不挂坏，所以这个参数不设默认的「随便找一个任务」：
+
+    · **闸循环那条**（案子被整体驳回）传**空串**。这条通知不是任何一个 DAG 任务
+      跑出来的 —— 它是编排层在计划走不下去之后补的一次告知。挂到驳回那一跳
+      （核算任务）上，trace 上就成了「核算任务发了条短信」；挂到 PENDING 的那个
+      notify 任务上更糟，它压根没跑。口径同 `check_snapshot`：规划期那次调用也传
+      空 `task_id`，由 plan 那棵树收走，不落进 `stray_events`。代价是
+      `notification` 不挂 business_ref（`notify.py` 那句 `if plan_id and task_id`
+      自己会跳过）。
+    · **房间 `/resolve` 那条**传**付款那一步**的 id。那条通知是补偿收口这一串命令
+      的一部分，口径逐字同 `ingress/router.py::_command_extras`：房间里这几条命令
+      都是在收拾「钱没退出去」的尾巴，挂到别的任务上，「这一切是因为哪一步走不通」
+      在 trace 里就断了。
+
+    ## 兜异常
+
+    告知失败不许把一次**已经生效**的驳回变成一次崩溃：人的决定已经落库了。
+    记一行并把错误交回调用方，让「这一单没通知出去」在日志里看得见。
+    """
+    try:
+        res = SkillInvoker(NOTIFY_IDENTITY, store).invoke(
+            SKILL_NOTIFY_CUSTOMER, {"tenant_id": tenant_id, "case_id": case_id},
+            extras={"plan_id": plan_id, "trace_id": trace_id, "task_id": task_id})
+    except Exception as exc:                            # noqa: BLE001 —— 见 docstring
+        log.warning("案子 %s 的客户告知没发出去（%s: %s）", case_id, type(exc).__name__, exc)
+        return f"{type(exc).__name__}: {exc}"
+    if res.status != "ok":
+        log.warning("案子 %s 的客户告知没发出去（%s）", case_id, res.error)
+        return str(res.error or "notify_failed")
+    return ""
 
 
 # ------------------------------------------------------------------- 圆桌五岗
@@ -593,6 +670,7 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
                 plan_feedback: str = "",
                 reject_roles: tuple[str, ...] = (),
                 hold_awaits: tuple[str, ...] = (),
+                gate_operator: str = "",
                 store=None) -> dict:                              # noqa: ANN001
     """跑一份自定义 case，返回**观测到的事实**（不含任何期望值）。
 
@@ -624,6 +702,17 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     命中的任务停在 BLOCKED、`human_exits` 记一条 `held_for_human`，Plan 不收 DONE ——
     与 `held_for_drift` 同一个形状，理由也同一条：代跑「停下来问人」等于问了个寂寞。
     第二次决定由调用方在别处下（房间那条路见 `ingress/router.py::handle_gate_decision`）。
+
+    `gate_operator` 是**闸循环里**那些决定的操作者（T137）。缺省空串 = 仍是
+    `APPROVER` 那个 CLI 常量，两条 CLI 命令的输出逐字节不变。房间那条路传进来的是
+    按 `/approve` 的那个 Matrix 账号 —— T135 之后付款闸那一跳已经署真人名，
+    核算这一跳却还署一个 CLI 常量，同一条 HITL trace 上两跳署了两个不同来源的名字。
+    这个入参把后一跳也接上了。`approval_operator` 管的是**计划级**那个停靠点，
+    两者不是一件事：一个在 `create_plan` 与 `start_plan` 之间，一个在 DAG 跑起来
+    之后的闸上，同一次处置里完全可能是两个人。
+
+    代跑那一跳的语义没变：不给 `gate_operator` 时它仍然是「由处置流程代跑」，
+    只是署名从写死的常量变成了「调用方给的那个，不给才回落到常量」。
 
     `store` 给了就跑在那个库上（透给 `build`），没给照旧自建一个 `:memory:`（T122）。
     房间入口由此让 `/refund` 跑出来的十一张退款域表落在 router 自己的库里，
@@ -735,7 +824,9 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
     hq = HumanApprovalQueue(store, cp)
     approvals: list[dict] = []
     human_exits: list[dict] = []
-    who = f"{APPROVER}（{directives['approver_role']}）"
+    # 闸上那个人的署名（T137）。`gate_operator` 空串时回落到 CLI 常量 —— 缺省行为
+    # 逐字节不变，`run.py` 与 `make_case_bundle` 那几束里的 `approver` 一个字不动。
+    who = f"{gate_operator or APPROVER}（{directives['approver_role']}）"
     # 漂移之后**一个都不代跑放行**。
     #
     # CLI 代的是「主管照常审批」这一半，而"订单被人改过了，这笔还退不退"不是照常
@@ -823,8 +914,22 @@ def run_payload(payload: dict, *, approve: bool = True, fail_with: str | None = 
                 # 而实际上已经不予退款了。`rejected` 不是权威终态（那只有 settled），
                 # 所以人的动作写得进去；actor 写成 human.approval 而不是某个 skill，
                 # 因为做这个决定的是人，审计链上不该挂在一个它没参与的 skill 名下。
-                _reject_case(store, tenant_id, case_id, who)
+                rejected_case = _reject_case(store, tenant_id, case_id, who)
                 hq.decide(blocked["task_id"], approved=False, operator=who, note="主管驳回")
+                if rejected_case is not None:
+                    # 案子被**整体**驳回了 —— 这一单在 MAOS 这边到此为止，而 DAG 上
+                    # 那个 `notify.customer` 任务依赖付款、付款依赖刚落 FAILED 的这一步，
+                    # 它停在 PENDING 再也不跑。不在这里补一次，客户从头到尾收不到
+                    # 任何告知：钱没退、结论也不知道（T137）。
+                    #
+                    # **判据用 `_reject_case` 的返回值，不是「这一跳被驳回了」**：
+                    # 它那条 submitted/approved 守卫正是「驳回整个案子」与「只驳回
+                    # 这一跳」的分界。付款闸上那次驳回时案子已在 `gateway_accepted`，
+                    # 守卫不放行、返回 None —— 那一档钱的下落还没定，该说什么要等
+                    # 补偿收口之后才知道，于是告知归那一侧（房间的 `/resolve` 之后）。
+                    # 在这里对两档说同一句话，等于替一笔还在处理的钱宣布了结局。
+                    notify_customer(store, tenant_id, case_id,
+                                    plan_id=plan_id, trace_id=trace_id)
         if not acted:
             break                          # 剩下的全被漂移扣住，再跑一轮也是同一批
         run_until_settled(bus, gate, cp, plan_id)

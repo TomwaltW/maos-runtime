@@ -181,9 +181,15 @@ PATHS: dict[str, dict] = {
         # 「钱没到账」的结局，正是评委那句「所有 Agent 都回复完成不代表业务成功」
         # 指的病。这条路径演的是它的反面：人拒签，Plan 如实 FAILED。
         "reject_roles": (ROLE_PAYMENT,),
+        # `CustomerNotified` **只加在这一条路径上**（契约 §D 第三条：不许顺手加进
+        # 别的清单）。上面那句「逐路径写」在这里是实的：required 是
+        # `BASE_REQUIRED_EVENTS + PATHS[path]["required_events"]`，happy 那条的
+        # 通知走 DAG 上的 notify 任务、reject 那条走编排层补发，两条都发得出，
+        # 但那不是本轨钉的事；漂移那条压根没走到通知。给它们一起加，等于拿
+        # 这一轨的判据去管三条没碰过的路。
         "required_events": ("PlanApproved", "RefundBizStatusChanged",
                             "CompensationExecuted", "CompensationAssigned",
-                            "CompensationResolved"),
+                            "CompensationResolved", "CustomerNotified"),
     },
     "reject": {
         "title": "两级驳回：计划先被驳回一次，放行后主管在核算闸上驳回这一单",
@@ -522,6 +528,29 @@ def _compensate(store, row: dict, *, trace_id: str) -> dict:
         }, extras=extras)
     if closed.status != "ok" or not isinstance(closed.output, dict):
         raise EvidenceError(f"关单没成：{closed.error}")
+
+    # 第四步：把这一串的结局**告诉客户**。三步收口做完、客户一个字都不知道，
+    # 正是 T137 在驳回那条路上补掉的那个洞 —— 这条路上它还留着（BACKLOG ## task-t135）。
+    #
+    # **措辞一个字都不在这里拼**：全由 `notify.customer` 按库里的事实产出
+    # （契约 §D「对外口径只许有一个产出处」，理由见 `custom_case.notify_customer`
+    # 的 docstring 第二段）。本脚本是那个函数的第三个调用方，前两个是
+    # `custom_case.py` 的驳回分支与 `router.py` 的 `/resolve` 之后，三条路因此
+    # 逐字说同一句话。补偿这一档的正文会带上工单号与凭证引用。
+    #
+    # `task_id` 传**付款那一步**（上面那个 `payment`），口径逐字同房间那条
+    # （`router.py::_command_extras`）：这条通知是在收拾「钱没退出去」的尾巴，
+    # 挂到别的任务上，trace 上「这一切是因为哪一步走不通」那条因果就断了。
+    # 代价那一侧是收益：`notify.py` 那句 `if plan_id and task_id` 因此挂得上
+    # business_ref，`notification` 这第十类不再恒缺。
+    from maos.flows.custom_case import notify_customer
+
+    told = notify_customer(store, tenant_id, case_id, plan_id=plan_id,
+                           trace_id=trace_id, task_id=payment)
+    if told:
+        # 与上面三步同一个姿态：没发出去就不许静默收口。一束自称「补偿闭环」的
+        # 证据里客户一条通知都没有，比束产不出来更难查。
+        raise EvidenceError(f"客户告知没发出去：{told}")
     return {"ticket_id": ticket_id, "assignee_role": assigned.data.get("assignee_role"),
             "assignee": payops, "resolved_by": payops,
             "resolution_kind": closed.output.get("resolution_kind"),
@@ -634,10 +663,13 @@ def collect_event_chain(conn, *, path: str) -> dict:           # noqa: ANN001
             "seq": e["seq"], "ts": e["created_at"], "event_type": e["event_type"],
             "plan_id": e["plan_id"], "task_id": e["task_id"],
             "from": e["from_state"], "to": e["to_state"], "reason": e["reason"],
+            # `content` 是唯一进这份摘要的**全文**字段（T144）：它就是发给客户的
+            # 那一句，而「你到底跟客户说了什么」正是评委翻补偿那一束时会问的话。
+            # 落在这里而不是只留给 `trace.json`，读的人才不用为一句话去翻全量。
             "detail": {k: detail[k] for k in
                        ("skill", "status", "case_id", "operator", "seat", "recommend",
                         "invocation_id", "ticket_id", "arrival", "business_success",
-                        "biz_status", "round", "doc_ids", "human_exit")
+                        "biz_status", "round", "doc_ids", "human_exit", "content")
                        if k in detail},
         })
     required = BASE_REQUIRED_EVENTS + tuple(PATHS[path]["required_events"])

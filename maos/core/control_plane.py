@@ -43,7 +43,8 @@ from maos.runtime.hooks import (
     HookRegistry,
     PlanVetoed,
 )
-from maos.tools.sandbox import sandbox_git_apply
+from maos.tools.port import invoke_tool
+from maos.tools.sandbox import GIT_APPLY_PORT
 
 log = logging.getLogger("maos.cp")
 
@@ -749,18 +750,11 @@ class ControlPlane:
         if disposition == REAP_RETRY_EXHAUSTED:
             # 与 on_task_result 的 failed 分支同一个口径：任务判死，plan 跟着死。
             #
-            # 🔴 **plan 已经不在 RUNNING 上就别再判一次。** 同一个 plan 里两条租约
-            # 同时耗尽额度时，第一条已经把 plan 迁到 FAILED，第二条再来一次就是
-            # `FAILED -> FAILED` —— 那不在 `PLAN_TRANSITIONS` 里，会抛
-            # `IllegalTransition` 打断整批回收。RUNNING 是通往 FAILED 的**唯一**
-            # 合法来源（`states.py:56`），所以判据就写成它，不写「不是终态」——
-            # 后者会把 PENDING 那种同样非法的来源放过去。
-            plan = self.store.get_plan(task["plan_id"])
-            if plan is not None and plan["state"] == PlanState.RUNNING:
-                self._fail_plan(task["plan_id"])
-            else:
-                log.info("[%s] plan 已是 %s，不再重复判死",
-                         task["plan_id"], None if plan is None else plan["state"])
+            # 「plan 已经判过死就别再判一次」这道护栏原先只写在这一处（于是另外 5 个
+            # 调用点全裸着）。T147 把它下沉进下面那个判死出口的定义体，连同「判据为什么
+            # 是『已是终态』而不是『不是 RUNNING』」那段道理一起搬了过去。这里**裸调用
+            # 即可，不许再在外面补一层判据** —— 两处各判一次，改一处漏一处。
+            self._fail_plan(task["plan_id"])
             return None
         return task["plan_id"] if dst == TaskState.PENDING else None
 
@@ -1330,7 +1324,16 @@ class ControlPlane:
                 f"请设 {ENV_SANDBOX_WORKDIR}。缺省取 '.'（仓库根）已废止：那会拿补丁"
                 f"对本仓库工作区跑 git apply -R，且补丁恰好打不上时看起来一切正常")
         try:
-            result = sandbox_git_apply(patch_art["content"], workdir, reverse=True)
+            # 走 invoke_tool 而不是直接调 sandbox_git_apply：直接调没有 ToolInvoked
+            # 审计行，「这次回滚真在沙箱里跑过」在证据里就查不到（sandbox.py:714 的
+            # 那句「调用一律走 invoke_tool()」原先在这里是破的）。异常仍原样抛出 ——
+            # invoke_tool 先落审计再 re-raise，下面那个 except 照常接得住。
+            result = invoke_tool(
+                GIT_APPLY_PORT,
+                {"patch_set": patch_art["content"], "workdir": workdir, "reverse": True},
+                store=self.store,
+                extras={"trace_id": task["trace_id"], "plan_id": task["plan_id"],
+                        "task_id": task["task_id"]})
         except NotImplementedError:
             # 并行开发期的预期路径：沙箱实现归 Task-B，合并前这里恒抛（C-7 分段验收）。
             # 记事件不吞事实 —— 「补偿没真跑」必须留在 event_log 里，
@@ -1370,6 +1373,37 @@ class ControlPlane:
                 self._transit_plan(plan_id, PlanState.DONE)
 
     def _fail_plan(self, plan_id: str) -> None:
+        """把计划判死（``RUNNING -> FAILED``）。**6 个调用点唯一的出口，护栏就在这一层。**
+
+        6 个调用点：``on_task_result`` 的 failed 分支（重试额度耗尽）、``_reap_one``
+        的 ``REAP_RETRY_EXHAUSTED``、评审 rework 次数耗尽、重规划返回空规格、人工驳回
+        ``human_decision``、``_advance`` 的全冻结分支。**没有任何一处该在外面自己再判
+        一次终态** —— 判据只存在这一份（T147 把它从 ``_reap_one`` 那一处下沉进来；
+        两处各判一次的结果是改一处漏一处）。
+
+        🔴 **plan 已经判过死就别再判一次。** 同一个 plan 上两条失败路径先后到达时，
+        第一条已经把 plan 迁到 FAILED，第二条再来就是 ``FAILED -> FAILED`` —— 那不在
+        ``PLAN_TRANSITIONS`` 里，``_transit_plan`` 第一句 ``assert_transition`` 当场抛
+        ``IllegalTransition``，把整条流程炸断。驳回、重试耗尽、返工耗尽三条路径各自
+        都有一次判死，任意两条落在同一个 plan 上就复现。
+
+        **判据是「已经是终态」，不是「不是 RUNNING」** —— 这个分界是本函数的全部要害：
+
+          · plan 不存在、或已是 ``DONE`` / ``FAILED`` —— 记一行 log 直接 return。重复
+            判死是幂等的无事发生，不是错。**连 ``PlanTransition`` 事件也不许多落一条**：
+            重复的迁移事件同样是证据被污染。
+          · 其余一律照旧交给 ``_transit_plan``，**让 ``PENDING -> FAILED`` 继续抛**。
+            PENDING 同样是非法来源，但它代表的是一个**真 bug**：有人忘了先
+            ``start_plan``。判据若放宽成「不是 RUNNING 就 return」，那个 bug 就变成一次
+            静默的无事发生 —— 比抛异常坏得多。重规划返回空规格那条路径（``:1112``）
+            正因此**必须**先 ``start_plan`` 把 PENDING 抬回 RUNNING 再调本函数
+            （原委见那里的注释），**这个约束不许借护栏放松**。
+        """
+        plan = self.store.get_plan(plan_id)
+        if plan is None or plan["state"] in (PlanState.DONE, PlanState.FAILED):
+            log.info("[%s] plan 已是 %s，不再重复判死",
+                     plan_id, None if plan is None else plan["state"])
+            return
         self._transit_plan(plan_id, PlanState.FAILED)
 
     # ------------------------------------------------------------------

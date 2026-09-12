@@ -38,6 +38,7 @@ import logging
 import shutil
 import subprocess
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -51,8 +52,11 @@ from maos.core.store import SqliteStore
 from maos.model.client import ModelClient, ScriptedModelClient
 from maos.runtime.gate import ReviewerGate
 from maos.runtime.worker import WorkerRuntime
+from maos.tools.port import invoke_tool
 from maos.tools.sandbox import (
+    GIT_APPLY_PORT,
     MODE_NOT_RUN,
+    PYTEST_RUN_PORT,
     prepare_sandbox_workdir,
     sandbox_git_apply,
     sandbox_pytest_run,
@@ -315,7 +319,32 @@ def sandbox_workdir():
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
+# ---------------------------------------------------------------------------
+# 两个 thunk：把 ToolPort 的 entry 接到**模块全局里此刻那个名字**上（T147）
+#
+# 这一层有意保留着「沙箱入口可被 monkeypatch 替换」这个接缝，而
+# ``ToolPort.entry`` 在 import 那一刻就绑死了原函数 —— 把 GIT_APPLY_PORT /
+# PYTEST_RUN_PORT 原样传进 ``invoke_tool``，
+# ``monkeypatch.setattr(flows_common, "sandbox_pytest_run", ...)`` 会**悄悄失效**。
+# ``test_exec_path_in_evidence.py`` 靠它验「容器路径的 summary 口径」：那条断言若改去
+# 问真 Docker，在装了 / 没装 Docker 的机器上结论相反，等于没验。
+#
+# 两头的调用姿势不一样，thunk 各对一边：
+#   · ``invoke_tool`` 用 ``entry(**params)`` 调进来 —— 所以形参名跟着 params_schema 走；
+#   · 转发时**按位置**调模块全局那个名字 —— 既有的桩是 ``lambda _wd: {...}``，
+#     形参叫什么由写桩的人定，按关键字转发会 TypeError。
+# 审计行认的是 ``port.name``，换 entry 不影响它记下的是哪个工具。
+# ---------------------------------------------------------------------------
+def _apply_entry(patch_set, workdir):
+    return sandbox_git_apply(patch_set, workdir)
+
+
+def _pytest_entry(workdir):
+    return sandbox_pytest_run(workdir)
+
+
+def verify_patch_in_sandbox(patch_set: dict, workdir: str, *,
+                            store=None, extras: dict | None = None) -> dict:
     """真跑一次回归：靶场还原 -> ``git apply`` -> ``pytest``，返回 C-7 形状的报告。
 
     **每次都先把 workdir 整个还原成靶场基线**：上一次 attempt 的补丁留在那里，
@@ -329,11 +358,20 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
     从前只逐字段搬那六个，于是**演示当天那份报告到底是不是在容器里跑的，证据里查不到**
     —— 「容器隔离」只在日志里成立。补丁没落进沙箱那一条同样要报：pytest 压根没被
     调用过，``not-run`` 说的就是这件事，它与「容器里跑挂了」不是一回事。
+
+    两次沙箱调用都走 ``invoke_tool``，各落一条 ``ToolInvoked``（T147）。``store`` 与
+    ``extras`` 是 **keyword-only 且带缺省**：``verify_patch_in_sandbox(patch, workdir)``
+    这种两个位置参数的老调用一个都不用改（``maos/tests/test_exec_path_in_evidence.py``
+    就是这么调的），不传 store 时 ``invoke_tool`` 不落行，行为与从前逐字节一致。
+    真正的调用方 ``patch_verifier`` 会把 store 和任务的三个 id 传进来 —— 审计行的
+    ``plan_id`` **必须落在真 plan 上**，否则它在 trace 里会变成一条游离事件。
     """
     shutil.rmtree(workdir, ignore_errors=True)
     prepare_sandbox_workdir(workdir)
 
-    applied = sandbox_git_apply(patch_set, workdir)
+    applied = invoke_tool(replace(GIT_APPLY_PORT, entry=_apply_entry),
+                          {"patch_set": patch_set, "workdir": workdir},
+                          store=store, extras=extras)
     if not applied.get("ok"):
         err = applied.get("error") or {}
         return make_test_report(
@@ -344,7 +382,8 @@ def verify_patch_in_sandbox(patch_set: dict, workdir: str) -> dict:
             degraded_reason="补丁没落进沙箱，pytest 未被调用",
         )
 
-    raw = sandbox_pytest_run(workdir)
+    raw = invoke_tool(replace(PYTEST_RUN_PORT, entry=_pytest_entry), {"workdir": workdir},
+                      store=store, extras=extras)
     return make_test_report(
         passed=raw.get("passed") or 0,
         failed=raw.get("failed") or 0,
@@ -383,7 +422,10 @@ def patch_verifier(store, workdir: str) -> Callable[[object, str], None]:
             if patch is None:
                 continue
 
-            report = verify_patch_in_sandbox(patch["content"], workdir)
+            report = verify_patch_in_sandbox(
+                patch["content"], workdir, store=store,
+                extras={"trace_id": task.get("trace_id") or "", "plan_id": plan_id,
+                        "task_id": task["task_id"]})
             artifact_id = new_id("art")
             store.insert_artifact({
                 "artifact_id": artifact_id, "task_id": task["task_id"],

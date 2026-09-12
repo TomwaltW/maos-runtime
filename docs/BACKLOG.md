@@ -2649,3 +2649,11 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | **`run.py` 场景 7 的补偿收口同样不通知客户**（`maos/flows/scenario_7.py` 走 `refund.compensation_close` 关单，结论 `settled`） | 同上一条，第三条路。场景 7 是八个场景束里演「流程卡住后应由谁补偿」的那一个，客户那一侧在它里面仍是空白 | `maos/flows/scenario_7.py` 在本轨白名单外，一个字没动。改法与上一条逐字相同（调一次 `custom_case.notify_customer`）。它会让场景 7 的输出多一行、`notification` 多一条 —— 也就是会动八个场景束的证据字节，所以**不该在本波做**，归复赛之后 |
 | 2026-09-12 | p10 | `docs/expected-metrics.json` 的 `collected` 仍是基线值，本轨新增 18 条测试后 worktree 实跑 `3889 passed, 93 skipped` | `test_expected_metrics::test_collected_count_matches_source_of_truth` 红。**预期内**（契约 §0 点名） | 整合期按合并树的实跑末行一次刷到位 |
 | 2026-09-12 | p10 | `notify.customer` 的正文只落 `content_digest`，**表上不存正文**。于是「客户到底被告知了哪一句」只能靠拿库里的事实**重算一遍**再比对摘要（本轨的两处测试都是这么钉的） | 今天够用（重算走的就是 `_default_content` 那一条路，措辞漂了摘要就对不上）。但证据束里查不到那句话本身 —— 评委问「给客户发的是什么」，要么跑一次重算，要么读代码 | 加一列存正文会动 `schema.sql`（冻结面）。可做的形状：`compensation_close` / `notify.customer` 落事件时把正文进 `detail`（事件表不冻结），那样束里 `grep` 一下就能看到。代价约三行，归下次动那两个 skill 的轨 |
+## task-t138（三条判据补盲，2026-09-12）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | `maos/config/__init__.py` 抬头那张读取点表格的**行数**判据认的是「以 `| \`MAOS_` 或 `| \`maos` 开头的行」，形状上依赖那张表的 Markdown 排版 | 有人把表格改成别的排版（比如首列换成读取点）时，行数那半条会红在一件与旋钮无关的事上。key 覆盖那半条不受影响 | 真要改排版时把判据的取行规则一起改。**复赛前不必动** —— 今天两者一致，且表格三轮没换过排版 |
+| 2026-09-12 | p10 | `WARN_BASELINE_CASE` 里 `history-case` 那行 warn 的正文带着一个**会涨的条数**（实测 64 条，再并一束变 80 条），而判据只钉行数 | 不是 bug（钉行数正是为了不让它随语料漂），但读 warn 正文的人会以为那个数字是被钉住的 | 无需处理，记一笔免得下一个人去「修」它。真要钉数字得先有一个稳定的分母，而历史知识是外部导入的，分母本就会涨 |
+| 2026-09-12 | p10 | 派单 §3.3 与 `docs/BACKLOG.md ## task-t131` 都把 `maos/model/client.py:42` 当成「有意不进 `GOVERNED_KEYS`」的现存例子，实际 `MAOS_FORCE_SCRIPTED` 早在 T131 就进清单了 | 只是过期文字（那笔账 `## task-t131` 已记，归 T140 改），但它让派单给出的 `INTENTIONALLY_UNGOVERNED` 应当非空的预期落了空 —— 本轨据实跑把白名单留空 | 与 `## task-t131` 记的另外四处过期口径（`deploy/nacos.md:142`、`deploy/nacos-live.md:236`、`docs/agent-teams-gap-analysis.md:110`）一起，**归 T140**。本轨白名单外一个字没动 |
+| 2026-09-12 | p10 | `docs/BACKLOG.md` 里「单案例束恒 8 条 `stray_events`」的账**已过期**（T134 把圆桌挂上时间线之后归零） | 照着它写新文字的人会钉一个不存在的数。本轨实测今天八束 + 单案例束四条路径**共 12 束，`stray_event_count` 与 `unattributed_usage_count` 全是 0** | 本轨已按实测在 `maos/obs/trace.py::stray_events` 的 docstring 里补了半句（「该例已于 P5 D 轨并进树，此处留作判据来由，不是现存例子」）。BACKLOG 那些旧行按契约 §A.3 不回头改，在这里说明 |

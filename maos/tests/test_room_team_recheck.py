@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import logging
 import subprocess
 import sys
 import types
@@ -322,6 +323,107 @@ def test_accepts_round_no_says_no_when_the_signature_cannot_be_read():
 
 
 # ------------------------------------------------------------ 4.5 判单第 ① 级
+# ------------------------------------------------ 4.6 批量路径上的空审批人（T138）
+#: 政策没写审批人时，收口卡该点到的那个岗。**不写字面量**：口径的单一出处是角色
+#: 目录，`test_roundtable_verdict.py::test_the_demotion_target_is_the_directory_default_approver_seat`
+#: 钉的就是「降级落在 `roles.DEFAULT_APPROVER_SEAT` 上」这件事。
+def _default_approver_seat() -> str:
+    from maos.domain.refund import roles
+
+    return roles.verdict_role_of(roles.DEFAULT_APPROVER_SEAT)
+
+
+def _one_row_sheet(tmp_path, order_id: str):
+    """从演示语料里抄出**一行**，落 tmp。
+
+    `scenarios/custom/refund-requests-team.csv` 是禁动面（跨轨契约 §A.2：动它
+    `PLAIN_STDOUT_MD5` 就变，而本波谁都不许刷那个值）。所以这里抄一行出来单跑，
+    不给语料加第六行 —— 抄的是同一份表头与同一行原文，走的也是同一条批量路径，
+    只是把分母缩到一单，跑完 ~0.2 秒。
+    """
+    src = TEAM_SHEET.read_text(encoding="utf-8").splitlines()
+    row = next(ln for ln in src[1:] if ln.startswith(order_id))
+    sheet = tmp_path / f"one-row-{order_id}.csv"
+    sheet.write_text(f"{src[0]}\n{row}\n", encoding="utf-8")
+    return sheet
+
+
+def _play_one(tmp_path, monkeypatch, order_id: str, *, blank_approver: bool) -> str:
+    """跑一单，返回 stdout。`blank_approver` 时把政策那一格抹空。
+
+    抹的是 `maos.ingress.router.preflight` 的返回值而不是政策规则文件：
+    要演的是「政策没写 `approver_role`」这一格，而 `preflight` 的产物正是圆桌
+    唯一读得到它的地方（`verdict._approver` 读 `seats["refund-policy"]`）。
+    改语料或改政策规则都会牵动别的判据，改这一格谁都不碰。
+
+    **monkeypatch 打在 `router` 模块上**，不是打在 `smoke` 上：`run()` 里那句
+    `from maos.ingress.router import preflight` 是函数内 import，每次调用重新取名字。
+    """
+    import maos.ingress.router as router
+
+    if blank_approver:
+        real = router.preflight
+        monkeypatch.setattr(
+            router, "preflight",
+            lambda payload: {**real(payload), "approver_role": ""})
+
+    out = io.StringIO()
+    assert smoke.run(_one_row_sheet(tmp_path, order_id), LEDGER, out=out,
+                     evidence_dir=EVIDENCE) == smoke.EXIT_OK
+    return out.getvalue()
+
+
+def test_the_bulk_path_never_invents_an_approver_when_the_policy_omits_one(
+        attachments, monkeypatch, caplog):
+    """🔴 **批量路径上**政策没写审批人时，房间那句话仍点得到人（T138 补的盲区）。
+
+    T136 把这条病修在 `verdict._approver` 里，判据钉在
+    `test_roundtable_verdict.py::test_an_empty_approver_role_is_demoted_to_the_default_seat`
+    上 —— 那条够用，但它只走**单元**那条路。批量路径（`room_team_smoke.run`）上一条
+    判据都没有，原因很具体：演示语料每一单的政策规则都写了 `approver_role`（实测五
+    单全是 `supervisor`），所以改前改后 `PLAIN_STDOUT_MD5` 逐字节相同 —— **那条病
+    在这条路径上从来没被任何判据碰到过**。真房间的真政策就可能缺这个字段
+    （脱敏真实需求 9/14 到手，格式不一定齐），而那时撞上的正是这条路径。
+
+    期望措辞逐字照 `test_an_empty_approver_role_is_demoted_to_the_default_seat`：
+    降到缺省审批岗 + 一条 WARNING，**不是**原样留空（会渲染成「请  拍板」，两个
+    空格，一句话没了主语），**也不是**猜一个别的岗。三件事各有一条断言。
+    """
+    seat = _default_approver_seat()
+    text = _play_one(attachments, monkeypatch, "ORD-2026-0004", blank_approver=False)
+    assert f"请 {seat} 拍板" in text, "对照组：语料原样跑时政策写了审批人，本就点得到人"
+
+    with caplog.at_level(logging.WARNING, logger="maos.roundtable"):
+        blank = _play_one(attachments, monkeypatch, "ORD-2026-0004",
+                          blank_approver=True)
+
+    # ① 政策缺了这一格这件事**如实说出来**，不被降级悄悄补平。
+    assert "放行需要的审批角色：未指定" in blank, (
+        "政策没写审批人时规则审核岗仍报了一个角色 —— 那是把降级的结果当成政策原文")
+    # ② 收口卡照旧点得到人，且点的就是目录的缺省审批岗。
+    assert f"请 {seat} 拍板" in blank, (
+        f"空审批人没降到缺省审批岗 {seat!r}，房间里那句话点不到人")
+    # ③ 不许渲染成「请  拍板」（两个空格）—— T136 修之前就是这个样子。
+    assert "请  " not in blank, "又渲染成「请  拍板」了（两个空格），收口卡没了主语"
+    # ④ 降级留痕：看得见的那一半在日志里。
+    assert any("未指定审批人" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_the_bulk_path_still_escalates_from_the_default_seat(attachments, monkeypatch):
+    """高风险那一单同样从缺省岗继续往上升 —— 降级不许变成一条比写错还宽松的路。
+
+    口径与 `test_an_empty_approver_role_is_demoted_to_the_default_seat` 末尾那半条
+    逐字相同（`escalated_empty.headline` 那句）。单独一条是因为两支落点不同：
+    approve 那支停在缺省岗，escalate 那支要从缺省岗再往上走一级。合成一条的话，
+    升档整个失效时只有一半断言会红，而读红的人会以为是降级坏了。
+    """
+    text = _play_one(attachments, monkeypatch, "ORD-2026-0006", blank_approver=True)
+
+    assert "建议升级审批 · 风险 high · 请 finance_manager 复核" in text, (
+        "空审批人 + 高风险该升到 finance_manager，卡在缺省岗说明升档被降级吃掉了")
+    assert "请  " not in text
+
+
 def test_order_of_keeps_the_prefix_rule_that_t97_imports():
     """🔴 判单四级的第 ① 级就是这个函数（跨轨契约 §1）—— T97 会 import 它。
 

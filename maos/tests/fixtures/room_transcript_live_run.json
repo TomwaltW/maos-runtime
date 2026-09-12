@@ -1,0 +1,253 @@
+{
+  "_fixture": "构造的 Matrix /messages?dir=b 响应，供 test_room_transcript_capture.py 的离线演练用。**不是真采集** —— 采集演练不许连真房间（跨轨契约 §E）。每条 body 的形状对齐 2026-09-12 的房间口径：五岗事实卡取自 scripts/room_team_smoke.py 实跑，代言名牌前缀同 _ProxyVoice._render，/approve 回帖卡同 RefundRouter._render，「对客户口径」用 projection.PUBLIC_* 字面值。",
+  "_ordered_event_ids": [
+    "$old-before-boundary",
+    "$boundary-p10",
+    "$cmd-refund",
+    "$seat-intake",
+    "$seat-policy",
+    "$seat-evidence",
+    "$seat-risk",
+    "$seat-finance",
+    "$verdict",
+    "$reaction",
+    "$cmd-approve",
+    "$reply-approve",
+    "$cmd-assign",
+    "$reply-assign",
+    "$cmd-resolve",
+    "$reply-resolve",
+    "$cmd-confirm",
+    "$reply-confirm",
+    "$cmd-complain",
+    "$reply-complain",
+    "$cmd-reject",
+    "$reply-reject"
+  ],
+  "chunk": [
+    {
+      "event_id": "$reply-reject",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718644000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "已驳回 · 案子 RC-ORD-2026-0008\n裁定：驳回 —— 材料不全，缺质检报告\n业务状态：已驳回\n对客户口径：已驳回\n到账观察：0 条（本单未走到付款）"
+      }
+    },
+    {
+      "event_id": "$cmd-reject",
+      "type": "m.room.message",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718640000,
+      "content": {
+        "msgtype": "m.text",
+        "body": "/reject RC-ORD-2026-0008 材料不全，缺质检报告"
+      }
+    },
+    {
+      "event_id": "$reply-complain",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718614000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "已记下 RC-ORD-2026-0007 的投诉（@boss:maos.local 代录，摘要 到账比承诺晚了两天）\n结果面重算：business_success=false —— 投诉一开就一票否决，钱到没到都不算成"
+      }
+    },
+    {
+      "event_id": "$cmd-complain",
+      "type": "m.room.message",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718610000,
+      "content": {
+        "msgtype": "m.text",
+        "body": "/complain RC-ORD-2026-0007 到账比承诺晚了两天"
+      }
+    },
+    {
+      "event_id": "$reply-confirm",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718583000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "已记下 RC-ORD-2026-0007 的客户确认（@boss:maos.local 代录，渠道 room）\n结果面：business_success=true（投诉 0 条，客户已确认）"
+      }
+    },
+    {
+      "event_id": "$cmd-confirm",
+      "type": "m.room.message",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718580000,
+      "content": {
+        "msgtype": "m.text",
+        "body": "/confirm RC-ORD-2026-0007"
+      }
+    },
+    {
+      "event_id": "$reply-resolve",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718554000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "已关单 MT-RC-ORD-2026-0007（offline_transfer）· 凭证 2026091800123\n案子 RC-ORD-2026-0007 业务状态：已补偿\n对客户口径：已补偿（未到账）\n到账观察：0 条 —— 线下补偿不是到账观察，权威状态仍归外部系统"
+      }
+    },
+    {
+      "event_id": "$cmd-resolve",
+      "type": "m.room.message",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718550000,
+      "content": {
+        "msgtype": "m.text",
+        "body": "/resolve MT-RC-ORD-2026-0007 2026091800123 线下转账回单"
+      }
+    },
+    {
+      "event_id": "$reply-assign",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718523000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "已改派 MT-RC-ORD-2026-0007 -> 支付运维（payment_ops）· 接单人 @boss:maos.local\n关单：/resolve MT-RC-ORD-2026-0007 <渠道流水号> <线下凭证摘要>"
+      }
+    },
+    {
+      "event_id": "$cmd-assign",
+      "type": "m.room.message",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718520000,
+      "content": {
+        "msgtype": "m.text",
+        "body": "/assign MT-RC-ORD-2026-0007 payment_ops"
+      }
+    },
+    {
+      "event_id": "$reply-approve",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718495000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "已放行 · 案子 RC-ORD-2026-0007\n裁定：批准 —— 命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定\n核准金额：9600.00（政策 v1，依据 AS-001@v1、AS-002@v1、AS-003@v1）\n业务状态：已提交网关·未确认\n对客户口径：已提出退款\n到账观察：0 条 —— 已提交网关但**未确认到账**，最后一次观察是 gateway_accepted\nPlan 内任务级审批点 2 个（与群里这次放行不是同一层），其中 1 个**没有代跑**、正等你决定：\n  · 付款闸 payment.execute —— 等 supervisor 在房间里签\n\n钱没退出去（ACQ.SYSTEM_ERROR），已开人工补偿工单：MT-RC-ORD-2026-0007 · 当前承接岗 支付运维（payment_ops）· 接单人 未指名\n  改派：/assign MT-RC-ORD-2026-0007 payment_ops\n  关单：/resolve MT-RC-ORD-2026-0007 <渠道流水号> <线下凭证摘要>"
+      }
+    },
+    {
+      "event_id": "$cmd-approve",
+      "type": "m.room.message",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718490000,
+      "content": {
+        "msgtype": "m.text",
+        "body": "/approve RC-ORD-2026-0007"
+      }
+    },
+    {
+      "event_id": "$reaction",
+      "type": "m.reaction",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718456000,
+      "content": {
+        "m.relates_to": {
+          "key": "👍",
+          "rel_type": "m.annotation",
+          "event_id": "$verdict"
+        }
+      }
+    },
+    {
+      "event_id": "$verdict",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718454000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "┌─ 收口 · approve （RC-ORD-2026-0007）\n│ 建议放行 · 证据齐备\n│   · 申请受理岗：订单 ORD-2026-0007，实付 9600.0，申报 9600.0，随案证据 2 份\n│   · 规则审核岗：裁定 approve，依据 无单条规则决定（命中 3 条，政策 v1）\n│   · 证据核验岗：核验结论 pass，缺口 0 项，随案材料 2 份\n│   · 风险反欺诈岗：风险 low（评分 10），命中 1 条信号\n│   · 财务执行岗：核算预演 9600.00（政策 v1），未落账\n└ 下一步：需 supervisor 放行后执行核算与付款：\n  /approve RC-ORD-2026-0007"
+      }
+    },
+    {
+      "event_id": "$seat-finance",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718450000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "【财务执行岗 · refund-finance】 核算预演金额：9600.00\n计算过程：订单实付 9600.00，申报 9600.00，退款比例 1，扣费 0.00\n依据：AS-001@v1、AS-002@v1、AS-003@v1（政策 v1）\n以上是核算预演，未落账，放行后按同一段代码正式核算\n放行请审批人（supervisor）发 /approve RC-ORD-2026-0007  [事实卡]"
+      }
+    },
+    {
+      "event_id": "$seat-risk",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718446000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "【风险反欺诈岗 · refund-risk】 风险档位：low（评分 10）\n命中信号：同一客户名下有 4 笔订单快照，存在批量退款的可能\n同一订单是否已有退款记录：否\n同账号关联订单：4 单，近 30 天退款申请 1 次  [事实卡]"
+      }
+    },
+    {
+      "event_id": "$seat-evidence",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718442000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "【证据核验岗 · refund-evidence】 证据核验结论：pass\n逐份核验：2 份材料，其中通过 2 份\n规则要求的证据类型：image，最少份数 1\n缺口：无\n交叉核对：3 项，未通过 0 项（无）  [事实卡]"
+      }
+    },
+    {
+      "event_id": "$seat-policy",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718438000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "【规则审核岗 · refund-policy】 裁定：批准\n决定性规则：无单条规则决定，按基线裁定\n命中规则：3 条（AS-001@v1、AS-002@v1、AS-003@v1）\n下单锁定的政策版本：v1\n距付款：9 天\n放行需要的审批角色：supervisor\n判定理由：命中 3 条 AS- 规则，其中没有适用于 quality_defect 的时限规则，按基线裁定  [事实卡]"
+      }
+    },
+    {
+      "event_id": "$seat-intake",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718434000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "【申请受理岗 · refund-intake】 订单号：ORD-2026-0007\n商品：SKU-BRG-6204\n订单实付：9600.00\n申报金额：9600.00（与订单实付一致；申请表没填金额时就按实付计）\n诉求类型：质量问题（quality_defect）\n申请日期：2026-09-10T00:00:00+00:00\n随案证据：2 份  [事实卡]"
+      }
+    },
+    {
+      "event_id": "$cmd-refund",
+      "type": "m.room.message",
+      "sender": "@boss:maos.local",
+      "origin_server_ts": 1789718430000,
+      "content": {
+        "msgtype": "m.text",
+        "body": "/refund ORD-2026-0007 quality_defect"
+      }
+    },
+    {
+      "event_id": "$boundary-p10",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789718400000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "圆桌就绪：5 岗，等 /refund <订单号> <诉求类型>"
+      }
+    },
+    {
+      "event_id": "$old-before-boundary",
+      "type": "m.room.message",
+      "sender": "@maos-bot:maos.local",
+      "origin_server_ts": 1789717800000,
+      "content": {
+        "msgtype": "m.notice",
+        "body": "上一轮的最后一条，不该被这次采集带进来"
+      }
+    }
+  ],
+  "end": "t-fixture-end"
+}

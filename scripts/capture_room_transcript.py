@@ -139,10 +139,20 @@ def _redact_body(body: str) -> str:
     return out
 
 
+#: 段标题的缺省值。**刻意是中性的**：此前这里硬编码着
+#: ``## P8 退款核心链（--case refund-s7b）``，而这个脚本 2026-09-01 之后一个字没改、
+#: 房间侧却改了三波（T129 命令面收口、T135 房间闸不代签、T136 两个入口统一建表）。
+#: 真跑日（2026-09-18/19）采的是 p10 的退款圆桌 + 真人 `/approve` 与 `/reject`，
+#: 落盘却会写成「P8 refund-s7b」—— 那是一句错的出处，而证据的出处写错比没写更坏。
+#: 采的是什么由 `--title` 当场指定，脚本不替人猜。
+DEFAULT_SECTION_TITLE = "## 真房间采集窗口"
+
+
 def render_section(events: list[dict], *, start_number: int, boundary_event_id: str,
-                   captured_at: str, git_sha: str) -> str:
+                   captured_at: str, git_sha: str,
+                   title: str = DEFAULT_SECTION_TITLE) -> str:
     lines = [
-        "## P8 退款核心链（`--case refund-s7b`）",
+        title,
         "",
         f"采集时间：`{captured_at}`  ",
         f"git sha：`{git_sha}`  ",
@@ -293,6 +303,11 @@ def main(argv: list[str] | None = None) -> int:
     append.add_argument("--boundary-file", required=True)
     append.add_argument("--transcript", required=True)
     append.add_argument("--limit", type=int, default=1000)
+    append.add_argument(
+        "--title", default=DEFAULT_SECTION_TITLE,
+        help=("这一段的标题（Markdown 标题行）。缺省是中性的采集窗口标题；"
+              "真跑日请写清采的是哪一轮，例如 "
+              "'## 2026-09-18 真跑日 · 退款圆桌五岗 + 真人 /approve 与 /reject'"))
     args = parser.parse_args(argv)
 
     try:
@@ -314,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         old = transcript.read_text(encoding="utf-8")
         section = render_section(
             events, start_number=_next_number(old), boundary_event_id=boundary,
-            captured_at=_now(), git_sha=_git_sha(),
+            captured_at=_now(), git_sha=_git_sha(), title=args.title,
         )
         append_section_atomic(transcript, section, boundary_event_id=boundary)
         print(f"appended {len(events)} room messages to {transcript}")

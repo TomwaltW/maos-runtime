@@ -346,9 +346,14 @@ def test_fts_channel_runs_on_tsvector(flow_on_pg):
     assert rows, "英数查询该命中 —— 空集说明 tsvector 这条路没通"
     assert all(isinstance(doc_id, str) and isinstance(score, float) for doc_id, score in rows)
 
+    # EXPLAIN 的对象要跟 `fts_search` 真发的那条对上：T139 起全文查的是影子表
+    # `kb_doc_fts`（里面存的是 `kb.fts_text()` 的产物），不是 `kb_doc` 的原文列。
+    # 照着旧路径 EXPLAIN 的话，这条断言在真实检索通道已经断掉时照样是绿的。
+    assert port._fts_target("kb_doc") == "kb_doc_fts", \
+        "全文目标不是影子表 —— 按错误码检索会退回恒不命中（BACKLOG task-t132 第 1 条）"
     plan = port._raw_query(
-        "EXPLAIN SELECT id FROM kb_doc"
-        " WHERE to_tsvector(%s, body) @@ plainto_tsquery(%s, %s)",
+        "EXPLAIN SELECT id FROM kb_doc_fts"
+        " WHERE to_tsvector(%s, body) @@ to_tsquery(%s, %s)",
         (port.fts_config(), port.fts_config(), "lesson"))
     text = " ".join(str(v) for row in plan for v in row.values())
     assert "tsvector" in text or "idx_kb_doc_fts" in text, f"执行计划里看不到全文这条路：{text}"
@@ -369,23 +374,75 @@ def test_chinese_query_degrades_instead_of_pretending(flow_on_pg):
 
 
 @live_only
-def test_vector_channel_degrades_on_text_column(flow_on_pg):
-    """向量通道在 PG 上退化 —— `kb_doc.embedding` 是 TEXT，`<=>` 用不了。
+def test_vector_channel_runs_on_pgvector_through_assembly(flow_on_pg):
+    """🔴 向量通道**经装配**跑在 pgvector 上，不再退化成纯 Python 余弦。
 
-    这是「一份 DDL 两个后端、形状必须一样」的直接代价，记在 BACKLOG `## task-t115`。
-    退化本身不是缺陷，**装作没退化**才是：所以这里断言它抛，且抛的是那条说得清
-    原因的 `LookupError`。要在 PG 上真用 HNSW 得给 PG 侧单开一列 `vector(64)`
-    并在写入侧双写，那是两个后端形状分叉，不在本轨。
+    这条是本文件里 T139 那件事的装配级判据；通道内部「真走了 HNSW 索引」的证明在
+    `test_pg_vector_channel_t139.py`，那边比的是执行计划。这里只守三件更外层的事：
+
+    1. **权威列没变**。`kb_doc.embedding` 仍然是 TEXT，与 SQLite 侧同形 —— 加速列是
+       PG 侧多出来的一列，不是把权威搬了家。这一条变了就说明形状分叉越界了。
+    2. **加速列是派生的**，`is_generated = ALWAYS`。写入口 `kb.upsert_doc()` 一个字
+       没改，它只写 TEXT 那列；加速列由 PG 自己在同一次写入里派生。断言这一条是
+       因为「普通列 + 忘了回填」与「生成列」在查询结果上一模一样，只在覆盖写之后
+       才分道扬镳，而那时已经没有症状了。
+    3. **通道真被判定为可用**。`_port_search` 的探测结论为 True 才说明这一跑没退化；
+       只断言 `vector_search` 有返回值是不够的，退化路径也有返回值（本地余弦算的）。
+
+    改这条之前先读：T139 之前这里断言的是**抛 LookupError**（`kb_doc.embedding` 是
+    TEXT，`<=>` 用不了）。那条判据在加速列建得出来的库上已经过期，但它的语义没废 ——
+    加速列建不出来时（云上普通账号建不了 `vector` 扩展）仍然必须抛、必须退化，
+    那条回落判据搬去了 `test_pg_vector_channel_t139.py::test_vector_search_falls_back_
+    to_text_column_when_accel_missing`。两条一起看才是完整的。
     """
     store = flow_on_pg
     port = kb.attached_port(store)
     _seed(store)
-    dtype = port.query(
-        "SELECT data_type FROM information_schema.columns"
-        " WHERE table_name='kb_doc' AND column_name='embedding'", ())[0]["data_type"]
-    assert dtype == "text"
-    with pytest.raises(LookupError):
-        port.vector_search("kb_doc", "embedding", retriever.embed("lesson"), 5)
+
+    cols = {r["column_name"]: r for r in port._raw_query(
+        "SELECT column_name, data_type, is_generated FROM information_schema.columns"
+        " WHERE table_name='kb_doc'"
+        "   AND column_name IN ('embedding', 'embedding_vec')", ())}
+    assert cols["embedding"]["data_type"] == "text", "权威列必须仍是 TEXT，与 SQLite 同形"
+    assert cols["embedding_vec"]["data_type"] == "USER-DEFINED"
+    assert cols["embedding_vec"]["is_generated"] == "ALWAYS", \
+        "加速列必须是生成列 —— 普通列要靠回填，而覆盖写之后回填会悄悄留下陈旧向量"
+
+    hits = port.vector_search("kb_doc", "embedding", retriever.embed("lesson"), 5)
+    assert hits, "向量通道该有召回"
+    assert all(0.0 <= score <= 1.0 for _, score in hits)
+
+    # 探测结论记在 **store** 上（`_port_state(store)`），不是记在 port 上 —— 装配级
+    # 的 store 是本地 SqliteStore + 贴上去的 PG 端口，问错对象会拿到空字典。
+    retriever.retrieve(store, {"tenant_id": TENANT, "keyword": "lesson"}, limit=5)
+    assert retriever.port_channel_state(store)["vector_search"] is True, \
+        "通道被判定为不可用 —— 这一跑其实退化成纯 Python 余弦了"
+
+
+@live_only
+def test_accel_column_never_leaks_into_query_results(flow_on_pg):
+    """加速列不许从 `query()` 漏出去 —— 漏了「换后端不换语义」当场破。
+
+    `kb_doc` 的读路径大多是 `SELECT *`（`prefilter` / `get_doc` / `list_docs`）。PG
+    侧多一列的直接后果是同一条 SQL 在两个后端返回的行不再相等，而那是硬判据
+    （`test_kb_pg_prefilter.py::test_prefilter_limit_is_honoured_on_both`），也是案例
+    证据束「业务状态与 SQLite 束逐字一致」的前提。差异是 `PgStorePort` 自己制造的，
+    就由它自己收掉，见 `pg_store._ACCEL_COLUMNS`。
+
+    用 `_raw_query` 对照：加速列**确实在库上**，只是不从 `query()` 出来。少了这个
+    对照，这条测试在「加速列根本没建出来」时也是绿的。
+    """
+    store = flow_on_pg
+    port = kb.attached_port(store)
+    _seed(store)
+
+    assert port._raw_query(
+        "SELECT embedding_vec FROM kb_doc WHERE embedding IS NOT NULL LIMIT 1", ()), \
+        "库上就没有加速列 —— 这条对照不成立，先看上一条"
+    for row in port.query("SELECT * FROM kb_doc", ()):
+        assert "embedding_vec" not in row, f"加速列漏进了 query() 的结果：{sorted(row)}"
+    assert {r["doc_id"] for r in port.query("SELECT * FROM kb_doc", ())} == {
+        "d-online", "d-offline"}, "剔除列不该把行也剔掉"
 
 
 @live_only

@@ -58,11 +58,21 @@ GRANT CREATE ON SCHEMA public TO <普通账号>;
 细节与实录见 `deploy/polardb-live.md` §1.3。
 
 然后把 `maos/store/pg_schema.sql` 灌进去（建 F-2 形状的表、tsvector 的 GIN 索引、
-向量的 HNSW 索引）：
+向量的加速列与 HNSW 索引）。🔴 **T139 起不能直接 `-f` 那个文件**，要先渲染：
 
 ```bash
-psql "$MAOS_PG_DSN" -v ON_ERROR_STOP=1 -f maos/store/pg_schema.sql
+python3 -c "from maos.store.pg_store import rendered_schema_sql as r; print(r())" \
+    | psql "$MAOS_PG_DSN" -v ON_ERROR_STOP=1 -f -
 ```
+
+文件里的向量列写的是 `vector(@EMBED_DIM@)`，占位符由 `rendered_schema_sql()` 替换成
+`maos/kb/retriever.py::EMBED_DIM`。SQL 里再写一个字面量 64 的后果是静默分叉：改了
+`EMBED_DIM` 之后 Python 侧算 128 维、PG 侧的列还是 64，每一行的 cast 都失败回 NULL，
+**整条向量通道悄悄退回纯 Python 余弦** —— 不报错、不变慢，只是不走索引了。
+忘了渲染直接 `-f` 的话 `@EMBED_DIM@` 是语法错，当场炸 —— 有意的，好过静默建错维度。
+
+> 平时不用手跑：`maos/kb/__init__.py::ensure_schema()` 在 PG 后端上会把本文件里除
+> `CREATE EXTENSION` 之外的语句一并执行（走的就是 `rendered_schema_sql()`）。
 
 漏了 `CREATE EXTENSION` 的症状是 `operator does not exist: vector <=> vector`，
 看起来像 SQL 写错了，跟「扩展没装」完全是两个印象。`maos/store/pg_store.py` 会把它
@@ -341,10 +351,37 @@ LookupError: 查询串含中日韩字符，而当前文本检索配置是 PG 内
 24 条真语料上全文召回 8/10（漏的两条是 `plainto_tsquery` 的 AND 语义，不是分词的锅）。
 详见 `deploy/polardb-live.md` §1.4。
 
-⚠️ 一处连带：`maos/tests/test_pg_store_live.py::test_chinese_query_raises_instead_of_silently_missing`
-断言「CJK 查询必抛 `LookupError`」，它写死了「配置一定是 PG 内置的」这个前提，
-所以在 `MAOS_PG_FTS_CONFIG=zhcfg` 下会红（39 passed, 1 failed）。**库代码没问题，
-是这条测试没有跟着配置走**，账记在 `docs/BACKLOG.md ## polardb-live-r2`。
+#### 🔴 T139：中文分成两档，各有判据（真跑日照这个走）
+
+上面那条「测试没跟着配置走」的账，T139 结掉了。原来只有一条守卫，钉的是「中文必须
+抛 `LookupError`」—— 对本机是对的，但 `MAOS_PG_FTS_CONFIG=zhcfg` 一切过去它就变红，
+**真跑日当天撞红线 = 当场没法决定「该切还是不该切」**。现在是两条：
+
+| 档 | 判据（`maos/tests/test_pg_store_live.py`） | 本机 |
+|---|---|---|
+| `MAOS_PG_FTS_CONFIG` 指向 PG 内置配置（`simple`） | `test_chinese_query_raises_on_builtin_config`：中文查询**必须抛 `LookupError`**，不许静默漏 | 跑，绿 |
+| 指向真分词器（`zhcfg` / `jiebacfg`） | `test_chinese_query_recalls_on_real_tokenizer`：中文查询**必须真召回** | **skip**（没装 zhparser） |
+
+skip 不是绿：第二档在本机永远不执行断言。它存在的意义是真跑日那天把
+`MAOS_PG_FTS_CONFIG` 指过去、这一束就地重跑一次 —— **红了就知道不该切**。
+
+⚠️ 切之前必须知道的形状约束（T139 换了全文的查询目标，见下面 §6）：全文现在查影子表
+`kb_doc_fts`，里面存的是 `kb.fts_text()` 的产物，**中文在那一步已经按字切开**了。所以
+zhparser 在这条路上拿到的是 `退 款 政 策` 而不是 `退款政策`，它的词典分词能力**发挥
+不出来**，实际效果是「按字 AND」。这比 `simple` 档的「恒不命中」强（中文真的召得回
+来），但**不是**真·中文分词检索。
+
+两个连带结论，都要记住：
+
+1. **那句口径没松。** `docs/submission-checklist.md:224` 的「本仓库缺省支持中文分词
+   检索」在**任何一档上都仍然不许说**（跨轨契约 §J）。本机走 `simple`，中文通道是抛
+   错退化的；真跑日走 `zhcfg`，也只是按字 AND。
+2. **真跑日第二档要是 0 命中**，最可能的原因是 zhparser 把单字 token 过滤掉了
+   （它有 `zhparser.punctuation_ignore` 一类的开关）。那时的选择是「保持 `simple`、
+   中文照旧走本地退化」，**不要在现场改判据**。要让 zhparser 真按词切，得把 zhcfg 的
+   索引建回 `kb_doc` 的原文列、且查询侧不过 `kb.fts_text()` —— 那是第三种形状，会把
+   错误码那条通道重新打瞎（原文上 `ACQ.TRADE_NOT_EXIST` 又被黏成一个 token）。
+   两者不可兼得，取舍记在 `docs/DECISIONS.md` 的 `## task-t139`。
 
 ### 2. 占位符方言：`?` vs `%s`
 
@@ -391,13 +428,46 @@ SQLite 侧逐行比对，能点名 `id=d3` 那行；PG 侧由 pgvector 在查询
 本层沿用 SQLite 适配器的做法，校验形状后**不加引号**直接拼（加引号 `"KB_Doc"`
 反而要求精确匹配，更容易踩）。所以表名/列名一律用小写，别用驼峰。
 
-### 6. 表达式索引绑死了 FTS 配置
+### 6. 表达式索引绑死了 FTS 配置；全文的查询目标是影子表（T139 改）
 
 `pg_schema.sql` 里的 GIN 索引建在 `to_tsvector('simple', title)` 与
 `to_tsvector('simple', body)` 上（T115 起两列各一条 —— F-2 的 `fts_search` 一次
 只认一列，检索器每列各问一次，只给 body 建索引的话标题那一次退化成顺序扫描）。
-换了 `MAOS_PG_FTS_CONFIG` 之后查询用的是新配置，**这两条索引就用不上了**，
-同样退化成顺序扫描 —— 不报错，只是慢。换配置就照 `pg_schema.sql` 的注释再建两条。
+换了 `MAOS_PG_FTS_CONFIG` 之后查询用的是新配置，**这几条索引就用不上了**，
+同样退化成顺序扫描 —— 不报错，只是慢。换配置就照 `pg_schema.sql` 的注释再建。
+
+🔴 **T139 起全文查的是影子表 `kb_doc_fts`，不是 `kb_doc` 的原文列。**
+
+成因（BACKLOG `## task-t132` 第 1 条，「按错误码检索恒不命中且不报错」）：
+`kb.fts_text()` 的 `_TOKEN_RE` 把 `ACQ.TRADE_NOT_EXIST` 切成 `acq trade not exist`
+四个 token，而 `to_tsvector('simple', body)` 在原文上走默认 parser 的 file/host
+规则，`acq.trade` 被黏成一个 token（实测切成 `'acq.trade' 'not' 'exist'` 三个）。
+两边各切各的，查 `acq` 恒 0 命中，**而且不报错** —— 退款域的知识条目里错误码是
+主键式的线索，这条通道对它是全瞎的。
+
+影子表的 title / body 存的**正是 `kb.fts_text()` 的产物**（`kb.upsert_doc()` 的第三条
+语句），所以把索引与查询都挪过去，两边就都是那一个函数的口径了。查询侧同时从
+`plainto_tsquery`（让 PG 自己再切一遍）换成 `to_tsquery`（Python 切好的 token 用 `&`
+连）。切词于是在全仓库只剩 `kb.tokenize()` 一处。
+
+顺带一个好处：两个后端**更**同构了 —— SQLite 的 FTS5 本来就建在这张影子表上。
+
+| | T139 之前 | 之后 |
+|---|---|---|
+| 查询目标 | `kb_doc` 的 title / body（原文） | `kb_doc_fts` 的 title / body（切过） |
+| 查询构造 | `plainto_tsquery(cfg, q)` | `to_tsquery(cfg, 'a & b & c')` |
+| 索引 | `idx_kb_doc_fts_simple_{title,body}` | `idx_kb_doc_fts_shadow_{title,body}` |
+| 查 `acq` | **0 命中**（不报错） | 命中 |
+| 查 `lesson` | 命中 | 命中，条数不变 |
+
+旧的两条 `idx_kb_doc_fts_simple_*` **留着没删**（跨轨契约只许新增索引），今天没有
+调用方；影子表不在的旧库上 `_fts_target()` 会回落查 `kb_doc`，那时它们还得上。
+
+**注入面**：`&` `|` `!` `:` `*` `(` `)` 都是 `to_tsquery` 的元字符，直接拼用户串会让
+查询变语法错（被检索器当成「后端坏了」把整条通道判死），或者更糟 —— `!lesson` 变成
+「不含 lesson」，召回集整个翻过来而不报错。所以端口侧**不信任输入**，再过一遍
+`kb.tokenize()`：对已切好的串幂等，对没切过的串把元字符全丢掉。判据见
+`maos/tests/test_pg_vector_channel_t139.py::test_tsquery_metacharacters_are_stripped_not_executed`。
 
 ### 7. ~~`kb_doc` 的主键与 F-2 的 `id` 约定对不上~~（T115 已解决，留档）
 
@@ -413,17 +483,61 @@ SQLite 侧逐行比对，能点名 `id=d3` 那行；PG 侧由 pgvector 在查询
 > `deploy/polardb-live.md` 里那些提到 `kb_doc_pg` 的实测读数**一字未动**（铁律 3）：
 > 那是 2026-08-30 在云上那张表上量到的，表不再随代码交付，读数仍然是当时的读数。
 
-### 8. PG 上 `kb_doc.embedding` 是 TEXT，向量通道走不通
+### 8. ~~PG 上 `kb_doc.embedding` 是 TEXT，向量通道走不通~~（T139 已解决，留档）
 
-`kb_doc.embedding` 在 SQLite 侧是 TEXT（存 JSON 数组文本），翻到 PG 仍然是 TEXT ——
-这是「一份 DDL 两个后端」的直接后果，也是刻意的：形状不一样就不叫同构。
+原状：`kb_doc.embedding` 在 SQLite 侧是 TEXT（存 JSON 数组文本），翻到 PG 仍然是
+TEXT。代价是 pgvector 的 `<=>` 在这一列上用不了，`vector_search` 抛 `LookupError`，
+检索器退化成纯 Python 余弦 —— 召回照常，只是不走索引、也不走 pgvector。
 
-代价是 pgvector 的 `<=>` 在这一列上用不了，`vector_search` 抛 `LookupError`，
-检索器退化成纯 Python 余弦。**召回照常，只是不走索引**，且退化会告警一次。
-全文那条通道不受影响（`kb_doc` 上有 tsvector GIN 索引，走的是 `body` / `title`）。
+#### 🔴 T139 拍的板：PG 侧多一列，这是**两个后端唯一的形状分叉**
 
-要在 PG 上真用 HNSW，得给 PG 侧单开一列 `vector(64)` 并在写入侧双写 —— 那就是
-两个后端形状分叉，不是 T115 该拍的板。已记 `docs/BACKLOG.md` 的 `## task-t115`。
+| | SQLite | PG |
+|---|---|---|
+| 权威列 | `embedding TEXT` | `embedding TEXT`（**一模一样**） |
+| 加速列 | 无 | `embedding_vec vector(N)`，`GENERATED ALWAYS AS (kb_embedding_vec(embedding)) STORED` |
+| 索引 | 无 | `idx_kb_doc_embedding_hnsw`，`hnsw (embedding_vec vector_cosine_ops)` |
+| 写入口 | `kb.upsert_doc()`，只写权威列 | **同一个函数，一个字没改** |
+
+**边界（整合期照这个核）**：
+
+1. **只在 PG 侧新增列与索引。** SQLite 侧一个字没改，`maos/kb/schema.sql`、
+   `maos/domain/refund/schema.sql`、`maos/core/store.py` 都没动。DDL 只落在
+   `maos/store/pg_schema.sql`。
+2. **权威仍在 TEXT 那一列**，加速列是派生的。cast 失败一律回 NULL，**绝不拒绝写入**
+   —— `embedding` 是 TEXT，历史上什么都塞得进去（解析不了的串、换了模型之后维度对
+   不上的旧向量）。让加速列挡回这些写入，等于把一条「加速」的路改成一道闸，那是比
+   没有 HNSW 严重得多的回归。坏数据只是没有加速向量，检索由纯 Python 余弦兜住。
+3. **维度从 `retriever.EMBED_DIM` 取**，SQL 里是占位符 `@EMBED_DIM@`（见第 2 步）。
+4. **回落路径留着**：加速列不存在（云上普通账号建不了 `vector` 扩展，见
+   `polardb-live.md` §1.3）或一行都没派生出来时，`vector_search` 抛 `LookupError`，
+   检索器退化成纯 Python 余弦 —— 也就是 T139 之前的行为，逐字相同。整条检索不许
+   因为「没有 HNSW」而挂掉。
+
+**为什么是生成列，不是普通列 + 回填**：`kb.upsert_doc()` 翻成
+`INSERT ... ON CONFLICT DO UPDATE SET <插入列>`，而加速列不在插入列里。回填方案会在
+**覆盖写**之后留下一条陈旧向量 —— 查询照常返回、分数照常有，只是对应的早已不是这条
+知识的内容了，没有任何症状。生成列由 PG 自己在同一次写入里派生，没有这个缝。
+
+**「真走了索引」的证明**（不是「跑得过」—— 退化路径也跑得过，只是一次 pgvector 都没
+碰到）：`maos/tests/test_pg_vector_channel_t139.py::test_vector_search_plan_uses_hnsw_index`
+把两条 SQL 摆在一起 `EXPLAIN`，本机实测：
+
+```
+索引形状  ORDER BY embedding_vec <=> q LIMIT n（内层）
+  -> Index Scan using idx_kb_doc_embedding_hnsw on kb_doc
+退化形状  ORDER BY 1 - (embedding_vec <=> q) DESC
+  -> Seq Scan on kb_doc
+```
+
+两者结果集一致（不然就是「为了走索引把召回改了」）。**两层查询不是为了好看**：
+planner 认的是算子本身，认不出 `ORDER BY 1 - dist DESC` 与「按距离升序」等价，所以
+内层按距离取 top-limit 走索引，外层再翻成 F-2 要的「相似度降序、同分 id 升序」。
+
+⚠️ 一处必须知道的连带：加速列**不许从 `PgStorePort.query()` 漏出去**（见
+`pg_store._ACCEL_COLUMNS`）。`kb_doc` 的读路径大多是 `SELECT *`，PG 侧凭空多一列的
+后果是同一条 SQL 在两个后端返回的行不再相等 —— 「换后端不换语义」那条硬判据当场破，
+案例证据束的「业务状态与 SQLite 束逐字一致」也跟着破。差异是本层制造的，本层收掉；
+本层内部要看加速列走 `_raw_query()`，不过滤。
 
 ### 9. `workflow_version` 的类型：SQLite 收、PG 拒
 

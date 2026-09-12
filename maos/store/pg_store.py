@@ -37,6 +37,15 @@ P1 留的是空壳（五个方法全 `raise NotImplementedError`），本模块�
    一致 —— 检索器按名次归一，名次不一致等于「换后端悄悄改排序」。**分数本身仍然
    不可跨后端比较**，别去比绝对值。
 5. **中文全文**：见下。
+6. **PG 侧比 SQLite 多一列**（T139 拍的板，见 `pg_schema.sql` 的「向量通道」一节）：
+   `kb_doc.embedding_vec vector(N)`，`GENERATED ALWAYS AS` 生成列，由权威列
+   `embedding`（TEXT，两个后端同形）派生，上面建 HNSW。权威仍在 TEXT 那一列，
+   SQLite 侧一个字没动。加速列建不出来（云上普通账号建不了 `vector` 扩展）时读路径
+   自动回落，回落之后的行为与 T139 之前逐字相同。
+7. **PG 的全文查影子表，SQLite 查 FTS5 虚表**，两边其实是同一张 `kb_doc_fts`。
+   T139 之前 PG 查的是 `kb_doc` 的原文列，于是 PG 自己再切一遍词，与
+   `kb.fts_text()` 的口径对不上 —— 按错误码检索恒不命中且不报错。改查影子表之后
+   切词在全仓库只剩 `kb.tokenize()` 一处。详见 `_FTS_SHADOW` 与 `_fts_terms()`。
 
 ## 中文全文检索的口径（本轨的选择，理由记在 docs/DECISIONS.md）
 
@@ -248,6 +257,87 @@ _PG_SCHEMA_PATH = Path(__file__).with_name("pg_schema.sql")
 #: 见 deploy/polardb-live.md §1.3），挂在建表路径上会让整个知识层在那种实例上起不来。
 _EXTENSION_HEAD = re.compile(r"^\s*CREATE\s+EXTENSION\b", re.IGNORECASE)
 
+#: `pg_schema.sql` 里的嵌入维度占位符。**唯一事实源是 `retriever.EMBED_DIM`** ——
+#: SQL 文件里再写一个字面量 64 的后果是：改了 EMBED_DIM 之后 Python 侧算 128 维、
+#: PG 侧的列还是 vector(64)，每一行的 cast 都失败回 NULL，整条向量通道**静默**退回
+#: 纯 Python 余弦。不报错、不变慢，只是召回悄悄不走索引了 —— 铁律 8 要防的那类假象。
+EMBED_DIM_PLACEHOLDER = "@EMBED_DIM@"
+
+#: 渲染之后不许再有这个形状的东西剩下。漏一个就当场抛，好过发给 PG 当语法错 ——
+#: 语法错的报文里看不出「是占位符没渲染」这件事。
+_PLACEHOLDER_RE = re.compile(r"@[A-Z][A-Z0-9_]*@")
+
+#: 向量加速列的命名规则：`<权威列>` + 本后缀。`embedding` -> `embedding_vec`。
+#: 建列 DDL 在 `pg_schema.sql`，读路径的解析在 `PgStorePort._vector_accel()`，
+#: 两处靠这一个常量对齐。
+VECTOR_ACCEL_SUFFIX = "_vec"
+
+#: 全文通道在 PG 上的**实际查询目标**：`kb_doc` 的全文查影子表 `kb_doc_fts`。
+#:
+#: 理由见 `pg_schema.sql` 里 `kb_doc_fts` 那一节的红字，一句话是：影子表存的正是
+#: `kb.fts_text()` 的产物，而 `kb_doc` 的 title/body 是原文。查原文时 PG 自己按
+#: 默认 parser 的 file/host 规则切，`ACQ.TRADE_NOT_EXIST` 整串是一个 token，于是
+#: **按错误码检索恒不命中且不报错**（BACKLOG `## task-t132` 第 1 条）。
+#:
+#: 表不在（影子表还没建的旧库）就回落查原表 —— 那是 T139 之前的行为，仍然可用，
+#: 只是错误码那条通道照旧是瞎的。回落由 `_fts_target()` 探一次记一次。
+_FTS_SHADOW = {"kb_doc": "kb_doc_fts"}
+
+
+#: 本层在 PG 侧额外加出来的列。**它们不许出现在 `query()` 的结果里。**
+#:
+#: 加速列是本后端的实现细节，权威列始终是 `embedding`。但 `kb_doc` 的读路径大多是
+#: `SELECT *`（`retriever.prefilter` / `kb.get_doc` / `kb.list_docs`），加一列的直接
+#: 后果是**同一条 SQL 在两个后端上返回的行不再相等** —— `test_kb_pg_prefilter.py::
+#: test_prefilter_limit_is_honoured_on_both` 那条「换后端不换语义」当场破，案例证据束
+#: 的「业务状态与 SQLite 束逐字一致」也跟着破。差异是本层自己制造的，就由本层收掉。
+#:
+#: 逃生口是 `_raw_query()`：本层内部要看加速列（探测维度、验双写）都走它，不过滤。
+_ACCEL_COLUMNS = frozenset({f"embedding{VECTOR_ACCEL_SUFFIX}"})
+
+
+def _without_accel_columns(row: Any) -> dict:
+    """一行结果去掉本层的加速列。见 `_ACCEL_COLUMNS`。"""
+    out = dict(row)
+    if not _ACCEL_COLUMNS.isdisjoint(out):
+        for name in _ACCEL_COLUMNS:
+            out.pop(name, None)
+    return out
+
+
+def embed_dim() -> int:
+    """向量加速列的维度。**从 `retriever.EMBED_DIM` 取，不在本模块另写一个数。**
+
+    惰性 import 的理由与 `_dialect` 那处相同：`maos.store` 是内核侧的可插拔面，
+    模块级依赖知识层会把 `maos.kb` 挂到内核的 import 图上。调用时机都在建表 /
+    检索路径上，那时 `maos.kb` 早已加载完。
+    """
+    from maos.kb.retriever import EMBED_DIM        # noqa: PLC0415 —— 惰性，见 docstring
+
+    return int(EMBED_DIM)
+
+
+def rendered_schema_sql() -> str:
+    """`pg_schema.sql` 的可执行形态：占位符已替换成真实维度。
+
+    手跑本文件时**不能直接 `psql -f`**，要先过这里：
+
+        python3 -c "from maos.store.pg_store import rendered_schema_sql as r; print(r())" \\
+            | psql -U <user> -d <db> -f -
+
+    忘了渲染的话 `@EMBED_DIM@` 是语法错，当场炸 —— 有意的，好过静默建错维度。
+    """
+    text = _PG_SCHEMA_PATH.read_text(encoding="utf-8")
+    out = text.replace(EMBED_DIM_PLACEHOLDER, str(embed_dim()))
+    left = sorted(set(_PLACEHOLDER_RE.findall(out)))
+    if left:
+        raise ValueError(
+            f"pg_schema.sql 里还剩没渲染的占位符 {left}。每个占位符都要在本模块里有"
+            " 一条替换规则，加了新的就把规则一起加上 —— 漏渲染的语句发到 PG 上只会"
+            " 报语法错，那条报文里看不出真正的原因。"
+        )
+    return out
+
 
 def kb_extra_statements() -> list[str]:
     """`pg_schema.sql` 里知识层建表要跟着跑的那几条，已滤掉 `CREATE EXTENSION`。
@@ -255,11 +345,13 @@ def kb_extra_statements() -> list[str]:
     单一事实源：这几条 DDL 只写在 `pg_schema.sql` 里，Python 侧不另抄一份 ——
     抄一份的后果是「手跑那份文件」与「ensure_schema 自动跑的那份」形状不同，
     而两边都不报错。
+
+    走 `rendered_schema_sql()` 而不是直接读文件：向量加速列那条 DDL 带维度占位符。
     """
     from maos.domain import _dbport                # noqa: PLC0415 —— 惰性，理由同 _dialect
 
-    text = _PG_SCHEMA_PATH.read_text(encoding="utf-8")
-    return [s for s in _dbport.split_statements(text) if not _EXTENSION_HEAD.match(s)]
+    return [s for s in _dbport.split_statements(rendered_schema_sql())
+            if not _EXTENSION_HEAD.match(s)]
 
 
 class PgStorePort:
@@ -273,6 +365,10 @@ class PgStorePort:
         self.sqlite_dialect = (
             _env_flag(SQLITE_DIALECT_ENV) if sqlite_dialect is None else bool(sqlite_dialect))
         self._pk_cache: dict[str, tuple[str, ...]] = {}
+        #: `(table, field) -> 加速列名 | None`。见 `_vector_accel()`。
+        self._vec_accel_cache: dict[tuple[str, str], str | None] = {}
+        #: `影子表名 -> 在不在`。见 `_fts_target()`。
+        self._fts_target_cache: dict[str, bool] = {}
 
     def __repr__(self) -> str:
         # 只报有没有，不报是什么 —— DSN 里通常带口令。
@@ -299,7 +395,7 @@ class PgStorePort:
             cur.execute(sql, bound)
             if cur.description is None:
                 return []
-            return [dict(row) for row in cur.fetchall()]
+            return [_without_accel_columns(row) for row in cur.fetchall()]
 
     # -- 方言 ------------------------------------------------------------------
     def _dialect(self, sql: str, params: tuple) -> tuple[str, tuple | None]:
@@ -356,6 +452,14 @@ class PgStorePort:
 
         config = self.fts_config()
         if _CJK.search(q) and config.lower() in _PG_BUILTIN_FTS_CONFIGS:
+            # ⚠️ T139 之后这条抛错**不再是「查了也命不中」**：全文改查影子表，
+            #    里面的中文已被 `kb.fts_text()` 按字切开，`simple` 其实匹配得上。
+            #    仍然抛，是因为「按字 AND」不是中文检索：「退款政策」与「政策退款」
+            #    在它眼里一样，召回偏宽而排序无意义。把这种劣质召回当成「中文通了」
+            #    会直接诱出那句不许说的话（`docs/submission-checklist.md:224`
+            #    「缺省支持中文分词检索」）。显式退化比悄悄用劣质召回诚实。
+            #    装了真分词器的部署走不到这里（配置不在内置表里），判据见
+            #    `test_chinese_query_recalls_on_real_tokenizer`。
             raise LookupError(
                 f"查询串含中日韩字符，而当前文本检索配置是 PG 内置的 {config!r} ——"
                 " 内置配置一个都没有中文分词器，`to_tsvector` 会把整串汉字当成一个"
@@ -366,21 +470,79 @@ class PgStorePort:
                 " 不装就让检索器退化为本地实现，中文召回照常。"
             )
 
+        terms = self._fts_terms(q)
+        if not terms:
+            # 整条查询里一个可用 token 都没有（全是标点 / 算子字符）。空集是真的
+            # 「没命中」，不是「后端没准备好」—— 别往下发一条空的 tsquery。
+            return []
+        tsquery = " & ".join(terms)
+        target = self._fts_target(table)
+
         # normalization 直接拼进 SQL 而不走 `%s`：它是本模块的 int 常量、不是调用方
         # 传进来的值（`int()` 再拼，形状卡死），而 `ts_rank` 的第三个参数要求解析成
         # `integer` —— 走占位符时驱动会按 Python int 自己挑类型，挑成 numeric 就报
         # 「function ts_rank(tsvector, tsquery, numeric) does not exist」。
         sql = (
             f"SELECT id, ts_rank(to_tsvector(%s, {field}),"
-            f" plainto_tsquery(%s, %s), {int(FTS_RANK_NORMALIZATION)}) AS score"
-            f" FROM {table}"
-            f" WHERE to_tsvector(%s, {field}) @@ plainto_tsquery(%s, %s)"
+            f" to_tsquery(%s, %s), {int(FTS_RANK_NORMALIZATION)}) AS score"
+            f" FROM {target}"
+            f" WHERE to_tsvector(%s, {field}) @@ to_tsquery(%s, %s)"
             f" ORDER BY score DESC, id ASC LIMIT %s"
         )
         rows = self._search_query(
-            sql, (config, config, q, config, config, q, limit), table=table, field=field
+            sql, (config, config, tsquery, config, config, tsquery, limit),
+            table=target, field=field,
         )
         return [(str(r["id"]), float(r["score"])) for r in rows]
+
+    @staticmethod
+    def _fts_terms(q: str) -> list[str]:
+        """查询串切成喂给 `to_tsquery` 的 token。**切词借 `kb.tokenize()`，不另写。**
+
+        为什么从 `plainto_tsquery` 换成 `to_tsquery`（BACKLOG `## task-t132` 第 1 条
+        给的两条路里更收口的那条）：`plainto_tsquery` 会让 PG **自己再切一遍**，而
+        PG 的默认 parser 与 `kb.fts_text()` 的 `_TOKEN_RE` 对英数复合词口径不同 ——
+        `acq.trade_not_exist` 在 PG 眼里是一个 token，在 `_TOKEN_RE` 眼里是四个。
+        两边各切各的，按错误码检索就恒不命中且不报错。改成「Python 切好、PG 只匹配」
+        之后，切词在全仓库只剩 `kb.tokenize()` 一处。
+
+        **注入面**：`&` `|` `!` `:` `*` `(` `)` 都是 `to_tsquery` 的元字符，把用户串
+        直接拼进去会让查询变成语法错（抛 `SyntaxError` 给调用方，那是把「查了个怪
+        东西」升格成「后端坏了」，检索器会据此把整条通道判死）。所以这里**不信任
+        输入**：调用方递进来的通常已经是 `kb.fts_text()` 的产物，但那是约定不是保证。
+        再过一遍 `kb.tokenize()` 对已切好的串是幂等的，对没切过的串则把元字符全丢掉。
+        判据见 `test_fts_search_survives_hostile_query_text` 与
+        `test_tsquery_metacharacters_are_stripped_not_executed`。
+        """
+        from maos.kb import tokenize                # noqa: PLC0415 —— 惰性，见 embed_dim
+
+        return tokenize(q)
+
+    def _fts_target(self, table: str) -> str:
+        """全文实际查哪张表。见 `_FTS_SHADOW`。探一次记一次。
+
+        影子表不在就回落查原表：那是 T139 之前的行为，仍然可用（只是错误码那条
+        通道照旧是瞎的）。**回落而不是抛** —— 影子表缺席只影响召回质量，让整条
+        知识层因此起不来是比问题本身大得多的破坏。
+        """
+        shadow = _FTS_SHADOW.get(table)
+        if shadow is None:
+            return table
+        if shadow not in self._fts_target_cache:
+            self._fts_target_cache[shadow] = self._relation_exists(shadow)
+            if not self._fts_target_cache[shadow]:
+                log.warning(
+                    "%s 不在，全文回落查 %s 的原文列。按错误码检索（形如"
+                    " ACQ.TRADE_NOT_EXIST）在原文列上恒不命中且不报错 —— 建表 DDL 见"
+                    " maos/store/pg_schema.sql。", shadow, table)
+        return shadow if self._fts_target_cache[shadow] else table
+
+    def _relation_exists(self, name: str) -> bool:
+        """当前 search_path 上有没有这张表。目录查询，不靠 try/except 试探。"""
+        return bool(self._raw_query(
+            "SELECT 1 FROM information_schema.tables"
+            " WHERE table_schema = ANY(current_schemas(true)) AND table_name = %s",
+            (name,)))
 
     def vector_search(
         self, table: str, field: str, vec: list[float], limit: int
@@ -404,14 +566,112 @@ class PgStorePort:
         # pgvector 的 `<=>` 是**余弦距离**（0 最近），而 F-2 要求分数「越大越相关」，
         # SQLite 侧返回的是余弦**相似度**。所以取 1 - 距离，两边同一把尺子。
         # 这一步搞反的症状是排序整个倒过来，且看上去仍然「有结果」。
-        sql = (
-            f"SELECT id, 1 - ({field} <=> %s::vector) AS score"
-            f" FROM {table} WHERE {field} IS NOT NULL"
-            f" ORDER BY score DESC, id ASC LIMIT %s"
-        )
         literal = "[" + ",".join(repr(x) for x in probe) + "]"
-        rows = self._search_query(sql, (literal, limit), table=table, field=field)
+        accel = self._vector_accel(table, field)
+        if accel is None:
+            # 回落 = T139 之前的行为：直接对权威列发 `<=>`。那一列是 TEXT，PG 报
+            # 「operator does not exist: text <=> vector」→ `_search_query` 翻成
+            # LookupError → 检索器退化成纯 Python 余弦。**这条路必须留着**：
+            # PolarDB 上普通账号建不了 `vector` 扩展（deploy/polardb-live.md §1.3），
+            # 那种实例上加速列根本建不出来，整条检索不许因此挂掉。
+            sql = (
+                f"SELECT id, 1 - ({field} <=> %s::vector) AS score"
+                f" FROM {table} WHERE {field} IS NOT NULL"
+                f" ORDER BY score DESC, id ASC LIMIT %s"
+            )
+            rows = self._search_query(sql, (literal, limit), table=table, field=field)
+            return [(str(r["id"]), float(r["score"])) for r in rows]
+
+        # 🔴 两层查询，**不是为了好看**。HNSW 索引只在 `ORDER BY <列> <=> <常量>`
+        #    这个形状上用得上：planner 认的是算子本身，认不出 `ORDER BY 1 - dist DESC`
+        #    与它等价（实测 `EXPLAIN` 里是 `Seq Scan`，换成本形状才是
+        #    `Index Scan using idx_kb_doc_embedding_hnsw`）。所以内层按距离升序取
+        #    top-limit 走索引，外层再翻成 F-2 要的「相似度降序、同分 id 升序」——
+        #    外层只排 ≤limit 行，代价可忽略。判据见
+        #    `test_pg_vector_channel_t139.py::test_vector_search_plan_uses_hnsw_index`。
+        sql = (
+            f"SELECT id, score FROM ("
+            f" SELECT id, 1 - ({accel} <=> %s::vector) AS score"
+            f" FROM {table} WHERE {accel} IS NOT NULL"
+            f" ORDER BY {accel} <=> %s::vector LIMIT %s"
+            f") AS hits ORDER BY score DESC, id ASC"
+        )
+        rows = self._search_query(
+            sql, (literal, literal, limit), table=table, field=accel)
+        if not rows and self._vector_accel_is_empty(table, field, accel):
+            # 加速列在、却一行都没派生出来，而权威列有值 —— 双写没生效（最可能是
+            # 建列时 `vector` 扩展还在、后来被 DROP，或有人手工灌数据绕开了生成列）。
+            # 这时**空集不是「没命中」**，照原样返回会让检索器把它当真，语义召回
+            # 静默归零。抛出去让它退化成纯 Python 余弦，召回照常。
+            raise LookupError(
+                f"{table}.{accel} 一行都没有派生出向量，而 {table}.{field} 有值 ——"
+                " 加速列的双写没生效，返回空集会被当成『真的没命中』。建列 DDL 见"
+                " maos/store/pg_schema.sql；它是 GENERATED ALWAYS 生成列，正常情况下"
+                " 由 PG 自己跟着每次写入派生，不需要回填。"
+            )
         return [(str(r["id"]), float(r["score"])) for r in rows]
+
+    def _vector_accel(self, table: str, field: str) -> str | None:
+        """`table.field` 的向量加速列，没有就 `None`（调用方回落到权威列）。
+
+        权威列是 `embedding` 那一列 TEXT（与 SQLite 同构，一份 DDL 两个后端）；
+        加速列是 PG 侧多出来的 `embedding_vec vector(N)` 生成列。**这是 T139 拍板的
+        形状分叉**，边界写在 `pg_schema.sql` 的「向量通道」一节。
+
+        探一次记一次（schema 事实，一条连接内不会变；`close()` 清缓存）。这一次探测
+        顺带守两件**静默失效**：
+
+        1. **维度对不上**就当没有加速列。`ALTER TABLE ADD COLUMN IF NOT EXISTS` 对
+           已存在的列是 no-op，所以改了 `EMBED_DIM` 之后老库上的列还是旧维度 ——
+           不报错，只是每一行的 cast 都回 NULL，向量通道悄悄退成纯 Python 余弦。
+        2. **部分行没派生**记一条 warning。生成列的 cast 失败会回 NULL（有意的：
+           加速列不许拦写入），于是坏数据那几行没有加速向量、召回里就少了它们。
+           少几条召回不该打死通道，但也不该一声不吭。
+        """
+        key = (table, field)
+        if key in self._vec_accel_cache:
+            return self._vec_accel_cache[key]
+        accel = _ident("字段", f"{field}{VECTOR_ACCEL_SUFFIX}")
+        self._vec_accel_cache[key] = None           # 先记「没有」，任何一步不成立就停在这
+        rows = self._raw_query(
+            "SELECT a.atttypmod AS dim FROM pg_attribute a"
+            " JOIN pg_class c ON c.oid = a.attrelid"
+            " JOIN pg_type t ON t.oid = a.atttypid"
+            " JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " WHERE c.relname = %s AND a.attname = %s AND t.typname = 'vector'"
+            "   AND a.attnum > 0 AND NOT a.attisdropped"
+            "   AND n.nspname = ANY(current_schemas(true))",
+            (table, accel))
+        if not rows:
+            return None
+        want = embed_dim()
+        got = int(rows[0]["dim"])
+        if got != want:
+            log.warning(
+                "%s.%s 是 vector(%s)，而 retriever.EMBED_DIM 是 %s —— 维度对不上，"
+                "本次起向量通道不用这条加速列（回落纯 Python 余弦）。ADD COLUMN IF NOT"
+                " EXISTS 改不动已存在的列，要么重建这一列，要么把 EMBED_DIM 改回去。",
+                table, accel, got, want)
+            return None
+        counts = self._raw_query(
+            f"SELECT count(*) FILTER (WHERE {field} IS NOT NULL) AS txt,"
+            f" count(*) FILTER (WHERE {accel} IS NOT NULL) AS vec FROM {table}", ())
+        txt, vec = int(counts[0]["txt"]), int(counts[0]["vec"])
+        if txt > vec:
+            log.warning(
+                "%s 里有 %s 行的 %s 有值、却只有 %s 行派生出了 %s —— 差的那 %s 行"
+                "多半是解析不了的向量文本或维度对不上的旧向量，它们不会出现在 pgvector"
+                "的召回里（本地纯 Python 余弦仍能给分）。加速列的 cast 失败回 NULL 是"
+                "有意的：它不许拦住写入。", table, txt, field, vec, accel, txt - vec)
+        self._vec_accel_cache[key] = accel
+        return accel
+
+    def _vector_accel_is_empty(self, table: str, field: str, accel: str) -> bool:
+        """权威列有值、加速列一行都没有？只在查询返回空集时才问，正常路径零成本。"""
+        rows = self._raw_query(
+            f"SELECT count(*) FILTER (WHERE {field} IS NOT NULL) AS txt,"
+            f" count(*) FILTER (WHERE {accel} IS NOT NULL) AS vec FROM {table}", ())
+        return int(rows[0]["txt"]) > 0 and int(rows[0]["vec"]) == 0
 
     def dialect(self) -> str:
         # 方言是静态事实，不是「还没实现的操作」：即使连不上库也答得出。检索器要按
@@ -488,10 +748,17 @@ class PgStorePort:
         return value if value > 0 else DEFAULT_HNSW_EF_SEARCH
 
     def close(self) -> None:
-        """关掉缓存的连接。不在 F-2 里，给测试和一次性脚本收尾用。"""
+        """关掉缓存的连接。不在 F-2 里，给测试和一次性脚本收尾用。
+
+        顺带清掉两张 schema 探测缓存：连接换了可能连的是另一个库 / 另一条
+        search_path，那边的表与列不一定同形。留着旧判定会让「换库之后加速列明明
+        建好了却一直不用」这种事没有任何症状。
+        """
         if self._conn is not None and not self._conn.closed:
             self._conn.close()
         self._conn = None
+        self._vec_accel_cache.clear()
+        self._fts_target_cache.clear()
 
     def connect_timeout(self) -> int:
         raw = os.environ.get(CONNECT_TIMEOUT_ENV, "")

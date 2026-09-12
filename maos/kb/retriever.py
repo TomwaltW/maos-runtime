@@ -84,6 +84,18 @@ CHANNELS = tuple(DEFAULT_WEIGHTS)
 
 DEFAULT_LIMIT = 5
 #: hash embedding 的维度。够把几百条语料分开，且纯 Python 算得动。
+#:
+#: 🔴 **改它要连着 PG 侧一起改。** T139 起 PG 侧的 `kb_doc` 多一列
+#: `embedding_vec vector(N)`（生成列 + HNSW，见 `maos/store/pg_schema.sql`），那个 N
+#: 就从这里取 —— `pg_store.embed_dim()` 读的是本常量，SQL 文件里写的是占位符
+#: `@EMBED_DIM@`，不许出现第二个字面量。
+#:
+#: 改大改小之后，**已经建过表的 PG 库不会自己跟上**：`ALTER TABLE ADD COLUMN IF NOT
+#: EXISTS` 对已存在的列是 no-op，于是 Python 侧算新维度、PG 侧的列还是旧维度，每一行
+#: 的 cast 都失败回 NULL，整条向量通道静默退回纯 Python 余弦 —— 不报错、不变慢，只是
+#: 召回悄悄不走索引了。`pg_store._vector_accel()` 探到维度对不上会记 warning 并回落，
+#: 判据是 `test_pg_vector_channel_t139.py::test_accel_column_dimension_comes_from_embed_dim`。
+#: 真要改维度：先在目标库上把那一列 DROP 掉，再让 `ensure_schema()` 重建。
 EMBED_DIM = 64
 #: 候选集上限 —— 预过滤之后仍然太多时截断，避免全表打分。
 MAX_CANDIDATES = 500
@@ -484,7 +496,14 @@ def _fts_scores(store: Any, tenant_id: str, keyword: str,
 
 def _vector_scores(store: Any, query_text: str,
                    candidates: dict[str, dict], limit: int) -> dict[str, float]:
-    """语义通道。优先 StorePort.vector_search（pgvector），走不通就纯 Python 余弦。"""
+    """语义通道。优先 StorePort.vector_search（pgvector），走不通就纯 Python 余弦。
+
+    递过去的列名是 `embedding`（权威列，两个后端同形）。**PG 侧走的其实是
+    `embedding_vec`**，那是 `PgStorePort` 自己解析的加速列（生成列 + HNSW，T139）——
+    本层不知道也不该知道它的存在：加速是后端的事，权威列是契约。加速列不在 / 维度
+    对不上 / 一行都没派生出来时，端口抛 `LookupError`，`_port_search` 接住并退化成
+    下面那条纯 Python 余弦，召回照常。见 `maos/store/pg_schema.sql` 的「向量通道」。
+    """
     if not query_text:
         return {}
     vec = embed(query_text)

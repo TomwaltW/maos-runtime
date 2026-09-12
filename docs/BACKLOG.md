@@ -2657,3 +2657,21 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | `WARN_BASELINE_CASE` 里 `history-case` 那行 warn 的正文带着一个**会涨的条数**（实测 64 条，再并一束变 80 条），而判据只钉行数 | 不是 bug（钉行数正是为了不让它随语料漂），但读 warn 正文的人会以为那个数字是被钉住的 | 无需处理，记一笔免得下一个人去「修」它。真要钉数字得先有一个稳定的分母，而历史知识是外部导入的，分母本就会涨 |
 | 2026-09-12 | p10 | 派单 §3.3 与 `docs/BACKLOG.md ## task-t131` 都把 `maos/model/client.py:42` 当成「有意不进 `GOVERNED_KEYS`」的现存例子，实际 `MAOS_FORCE_SCRIPTED` 早在 T131 就进清单了 | 只是过期文字（那笔账 `## task-t131` 已记，归 T140 改），但它让派单给出的 `INTENTIONALLY_UNGOVERNED` 应当非空的预期落了空 —— 本轨据实跑把白名单留空 | 与 `## task-t131` 记的另外四处过期口径（`deploy/nacos.md:142`、`deploy/nacos-live.md:236`、`docs/agent-teams-gap-analysis.md:110`）一起，**归 T140**。本轨白名单外一个字没动 |
 | 2026-09-12 | p10 | `docs/BACKLOG.md` 里「单案例束恒 8 条 `stray_events`」的账**已过期**（T134 把圆桌挂上时间线之后归零） | 照着它写新文字的人会钉一个不存在的数。本轨实测今天八束 + 单案例束四条路径**共 12 束，`stray_event_count` 与 `unattributed_usage_count` 全是 0** | 本轨已按实测在 `maos/obs/trace.py::stray_events` 的 docstring 里补了半句（「该例已于 P5 D 轨并进树，此处留作判据来由，不是现存例子」）。BACKLOG 那些旧行按契约 §A.3 不回头改，在这里说明 |
+## task-t139（PG 上的检索真成立，2026-09-12）
+
+先结掉三条旧账（都在 `## task-t132`，原文不改，以本节为准）：
+
+- **第 1 条「按错误码检索恒不命中」→ 已解决**。全文改查影子表 `kb_doc_fts` +
+  `to_tsquery`，`fts_search(body,'acq')` 从 0 命中变成命中。
+- **第 3 条「PG 上没有 HNSW」→ 已解决**。PG 侧加 `embedding_vec vector(64)` 生成列 +
+  `idx_kb_doc_embedding_hnsw`，执行计划实测 `Index Scan`。`## task-t115` 里同一笔账
+  （「要真用 HNSW 得单开一列并双写，是形状分叉的决定，值得一轨」）一并结掉。
+- **第 2 条「中文通道在 PG 上退化」→ 没结，但有判据了**。见下面第 2 行。
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | **`## task-t132` 第 1 条对病根的描述不够准确**。原文写「`to_tsvector('simple', body)` 把 `ACQ.TRADE_NOT_EXIST` 当成**一个** token `acq.trade_not_exist`」。本轨实测：默认 parser 在第一个下划线处断开，实际切成 `'acq.trade'` / `'not'` / `'exist'` **三个** token | 不影响结论（带点的前缀被黏住，查 `acq` 照样 0 命中），但照原文去复现的人会以为自己搞错了 | 已在 `test_error_code_is_searchable_after_the_shadow_table_switch` 的 docstring 里写清实测形状，并把断言改成钉 `'acq.trade' in tv and 'acq' not in tv`。t132 那节的原文**不改**（历史记录照留） |
+| 2026-09-12 | p10 | **PG 上中文全文通道仍然是 0 分通道**，`## task-t132` 第 2 条那笔账没结。换影子表之后 `simple` 档技术上已经匹配得上（影子表里的中文已按字切开），但 `fts_search` 仍然对 CJK 抛 `LookupError` —— 这是 T139 **有意保留**的口径（按字 AND 不是中文检索，当成「中文通了」会诱出那句不许说的话），不是漏改 | 本机 PG 上跑 DAG 时 fts 这一路记 0 分，四通道实际只有向量与精确两路在算。混合召回的权重分布与 SQLite 上不一样，而两边都不报错 | 真正的解法仍是装 `zhparser` / `pg_jieba`（要改 Docker 镜像，不是本轨的面）。**但要先想清楚形状**：影子表口径下 zhparser 拿到的是已按字切开的文本，词典分词能力发挥不出来；要让它真按词切就得把 zhcfg 索引建回 `kb_doc` 原文列且查询侧不过 `fts_text()`，那会把错误码通道重新打瞎。两者不可兼得，取舍与两档判据见 `docs/DECISIONS.md ## task-t139` 与 `deploy/polardb.md` §1 |
+| 2026-09-12 | p10 | 旧的两条 GIN 索引 `idx_kb_doc_fts_simple_{title,body}`（建在 `kb_doc` 原文列上）**今天没有调用方**：`fts_search("kb_doc", ...)` 已改查影子表 | 只费写入开销与磁盘，不影响正确性。留着是因为跨轨契约只许新增索引不许删（删了在别人的库上不可逆），且影子表不在的旧库上 `_fts_target()` 会回落查 `kb_doc`，那时它们还得上 | 等影子表这条路在 PolarDB 真实例上也跑过一轮之后，单独一轨收掉。**别顺手删** —— 删索引这件事在持久库上没有回头路 |
+| 2026-09-12 | p10 | `PgStorePort.query()` 现在会剔除 `_ACCEL_COLUMNS` 里的列。这是一份**手工维护的清单**，将来 PG 侧再加派生列时容易忘记加进去 | 忘了的症状与本轨踩到的一模一样：`prefilter` 在两个后端返回的行不再相等，`test_kb_pg_prefilter.py::test_prefilter_limit_is_honoured_on_both` 变红，案例证据束的「逐字一致」也跟着破。**这次是有测试兜住的**，所以症状会当场显形，不算无声失效 | 加列的人自己记得加。真要机器化，可以让 `_ACCEL_COLUMNS` 从 `pg_schema.sql` 里现解析（那份 DDL 已经是单一事实源），但正则解析 DDL 又是一处新的漂移源 —— 条目只有一条时不值得 |
+| 2026-09-12 | p10 | `deploy/polardb-live.md` §3.6 那组 `ef_search` 实测读数（HNSW p50 0.62ms、召回 99.3%、20 万行）量的是 **8/30 当时临时建的 `kb_doc_pg`**，不是装配路径上的 `kb_doc`。T139 把同类能力接到了 `kb_doc` 上，但**没有在 20 万行规模上重量过** | 那组数字现在更有参考价值了（同一种索引、同一个算子），但仍然不是 `kb_doc` 的读数。对外引用时别把两者说成一回事 | 真跑日若有余裕，在 PolarDB 上对 `kb_doc` 跑一次同规模的对照，把读数补进 `polardb-live.md` 的新一节。**不是必须**：复赛演示的语料只有几百条，HNSW 与顺序扫描在这个规模上都看不出差别，那组 20 万行的数字本来就是「能撑住」的旁证而非演示路径的读数 |

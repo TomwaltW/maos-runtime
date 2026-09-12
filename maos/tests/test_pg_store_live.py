@@ -32,12 +32,14 @@ import sys
 
 import pytest
 
+import maos.kb as kb
 from maos.store import create_store
 from maos.store.pg_store import (
     DSN_ENV,
     FTS_CONFIG_ENV,
     PgBackendUnavailable,
     PgStorePort,
+    _PG_BUILTIN_FTS_CONFIGS,
 )
 
 #: 靶表。名字带轨号，免得跟 pg_schema.sql 建的 kb_doc_pg 或别人的表撞上。
@@ -150,18 +152,68 @@ def test_fts_search_survives_hostile_query_text(pg: PgStorePort) -> None:
         assert pg.fts_search(TABLE, "body", hostile, 5) == []
 
 
-def test_chinese_query_raises_instead_of_silently_missing(pg: PgStorePort) -> None:
-    """本轨的中文口径：抛，让检索器退化 —— 不许安静地返回空集。
+def test_chinese_query_raises_on_builtin_config(pg: PgStorePort) -> None:
+    """**中文第一档**（`MAOS_PG_FTS_CONFIG` 指向 PG 内置配置，本机今天的 `simple`）：
+    中文查询必须抛 `LookupError`，不许静默漏。
 
     F-2 原话「『后端没准备好』不许伪装成『没命中』」。PG 内置配置没有中文分词器，
     这就是「没准备好」。报错里必须写清修法，否则下一个人只会以为库里没数据。
+
+    ⚠️ T139 之后这条抛错**不再等于「查了也命不中」**。全文改查影子表之后，里面的
+    中文已被 `kb.fts_text()` 按字切开，`simple` 其实匹配得上。仍然抛，是因为「按字
+    AND」不是中文检索：「退款政策」与「政策退款」在它眼里一样，召回偏宽而排序无
+    意义。把这种劣质召回当成「中文通了」会直接诱出那句不许说的话
+    （`docs/submission-checklist.md:224`「缺省支持中文分词检索」）。显式退化比悄悄
+    用劣质召回诚实 —— 这是 T139 明确保留的口径，别顺手把它放开。
+
+    装了真分词器的部署走的是下一条，两条一起看才是完整的分档。
     """
+    if pg.fts_config().lower() not in _PG_BUILTIN_FTS_CONFIGS:
+        pytest.skip(f"这个库配的是 {pg.fts_config()}，不是 PG 内置配置 —— 第二档的事")
+
     with pytest.raises(LookupError) as err:
         pg.fts_search(TABLE, "body", "退款政策", 5)
 
     msg = str(err.value)
     assert FTS_CONFIG_ENV in msg, "报错要点名换哪个环境变量"
     assert "zhparser" in msg or "pg_jieba" in msg, "报错要点名装什么扩展"
+
+
+def test_chinese_query_recalls_on_real_tokenizer(pg: PgStorePort) -> None:
+    """**中文第二档**（`MAOS_PG_FTS_CONFIG` 指向真分词器，9/18 真跑日的 PolarDB）：
+    中文查询必须**真召回**。
+
+    为什么要有这一档：8/30 那次在 PolarDB 真实例上 `zhparser 2.2` 已经装成、`zhcfg`
+    检索配置已建、中文召回已实测（`docs/submission-checklist.md:224` 与
+    `deploy/polardb-live.md` §1.4）。也就是说真跑日那天 `MAOS_PG_FTS_CONFIG=zhcfg`
+    是能真跑的 —— 但在 T139 之前**没有任何判据**描述那一档该是什么样，而切过去会让
+    上面那条守卫直接变红。真跑日当天撞红线 = 当场没法决定「该切还是不该切」。
+
+    本机跑不到这一档（`pgvector/pgvector:pg16` 没装 zhparser），所以 skip。
+    **skip 不是绿**：这条用例在本机永远不执行断言，它存在的意义是真跑日那天把
+    `MAOS_PG_FTS_CONFIG` 指过去、这一整束就地重跑一次，红了就知道不该切。
+    不许为了「本机也绿」把断言弱化成 `if hits:` 那种形状 —— 那才是伪装成绿。
+
+    ⚠️ 已知的形状约束，真跑日验不过先看这里：这条路上 zhparser 拿到的是影子表里
+    **已按字切开**的 "退 款 政 策"，不是原文 "退款政策"，所以它的词典分词能力发挥
+    不出来，实际仍是按字 AND。真跑日要是 0 命中，最可能的原因是 zhparser 把单字
+    token 过滤掉了（它有 `zhparser.punctuation_ignore` 一类的开关）。那时的选择见
+    `maos/store/pg_schema.sql` 中文那一节末尾与 `deploy/polardb.md`，**不要**在现场
+    改判据。
+    """
+    config = pg.fts_config()
+    if config.lower() in _PG_BUILTIN_FTS_CONFIGS:
+        pytest.skip(
+            f"这个库配的是 PG 内置的 {config}，没有中文分词器 —— 本机"
+            " pgvector/pgvector:pg16 没装 zhparser，跑不到这一档。"
+            " 装了之后 export MAOS_PG_FTS_CONFIG=zhcfg 再跑本条（见 pg_schema.sql）。"
+        )
+
+    hits = pg.fts_search(TABLE, "body", kb.fts_text("退款政策"), 5)
+
+    assert [doc_id for doc_id, _ in hits] == ["d5"], \
+        f"中文查询在 {config} 上没召回 d5 —— 装了分词器却召不回，这一档不成立"
+    assert all(score > 0.0 for _, score in hits)
 
 
 def test_simple_config_makes_a_whole_chinese_string_one_token(pg: PgStorePort) -> None:

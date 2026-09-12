@@ -2711,3 +2711,24 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | `docs/BACKLOG.md ## task-t140` 里指向 `docs/agent-teams-gap-analysis.md:109` 的行号差一行（实为 `:108`），且同一份文件 `:232` 还有第二处同样的过期说法，条目里没提 | 下一轮照这条去 `:109` 找，落在的是「- 房间身份：每岗可有独立 Matrix 账号…」那一行；按「另两处」的说法只改两处，`:232` 会被漏掉 | 纯文字。`agent-teams-gap-analysis.md` 自述是钉在 `8a6c2f9` 的只读测绘快照，重写它是另一件事 —— 归 Wave G 的 T152（它独占那一族文档的漂移清单） |
 | 2026-09-12 | p10 | **离线演练夹具此前整体偏离真房间**：四条结果面回执的文案、两张回帖卡的首行全是手写的，三波房间文案改动一次都没让它红。整合期用真 router 抓原文逐条改回（`/assign` 是「已派单」不是「已改派」；`/resolve` 是「已关单 …（settled）· 提交人 …」+ 四判据行，没有「对客户口径」那一行；`/confirm` `/complain` 第二行是四判据行不是「结果面：…」；回帖卡首行是 `已放行 <案号>（操作人 …）` + `<摘要> · 案子 <案号>` 两行） | 已修，并加了 `test_the_fixture_outcome_replies_match_the_real_templates` 把夹具钉到 `outcome_commands.py` 的字面模板上 | 遗留一件：夹具里那张 `┌─ 收口 · approve` 箱线卡与 `[事实卡]` 后缀，对抗验证指出房间侧**确实**有一张收口卡（`hiclaw/room_ingress.py::_ChairTeam._chair()` → `hiclaw/room_voices.py::render_verdict_card()`），但形状是 HTML，不是 `room_team_smoke.py` 打到 stdout 的那个箱线形状。**没改**（`hiclaw/**` 本波无人独占）。归下一波动 `hiclaw/` 的轨：按 `render_verdict_card()` 的真产物改夹具那一条 |
 | 2026-09-12 | p10 | 同一张 `approval_record` 上，闸循环那几行的 `approver` 带岗位后缀（`@boss:maos.local（supervisor）`），房间补落那行是裸账号（`@boss:maos.local`）—— 同一个人两种写法 | 今天没有按 `approver` 精确匹配的查询，所以不是缺陷。但「这一单谁签的」若哪天要按人聚合，两种写法会把同一个人算成两个 | 无需当场处理，记一笔免得下一个人以为是数据脏。真要统一，统一到带岗位后缀那一种（它信息更全），并同时改两处写入点 |
+
+
+## task-t145（知识层不再 import 退款域 + 补偿收口不当范本，2026-09-12）
+
+> 本轨办结三条旧账。按契约 §A.3 不回头改中间那几行，在这里记：
+>
+> 1. **办结 `docs/BACKLOG.md` 里「`maos/kb/promotion.py:54` 是模块级 import 退款域」那条**
+>    （`## task-t130` 小节，2026-09-11 记）—— 改成函数体内 `_refund()` / `_objects()`
+>    局部 import，9 个函数各取各的，调用点一个字没动。判据也从「只管 `plan_advice.py`
+>    一个文件」扩到扫 `maos/kb/*.py` 全片（`test_no_kb_module_puts_a_business_domain_on_its_import_graph`）。
+> 2. **办结「已补偿的案子会被晋升成『成功范本』」那条**（`## task-t114` 小节，2026-09-11 记）——
+>    `_classify_by_outcome` 正例分支加 `status not in FAILED_BIZ_STATUS`，复用现成常量。
+> 3. **办结「铁律 9 在 `plan_advice.py` 上实际有例外、没写进权威文本」那条**
+>    （`## 整合期 p10-e` 小节，2026-09-12 记）—— `CLAUDE.md` 铁律 9 加一句括号说明，
+>    `maos/kb/__init__.py` 的「依赖方向」段同口径展开。
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | **`maos/runtime/plan_finalizer.py:123-126` 那个 `except ImportError` 分支现在多半走不到了**。它 try 的是 `from maos.kb.promotion import promote_plan`，注释写着「域未合入时软降级」—— 而退款域缺席现在由 `promotion._has_table()` 收（实测：域被 meta_path 拦掉时 `import maos.kb.promotion` 照样成功，`promote_plan` 返回 `[]`） | 不是缺陷：那条分支仍拦得住「`maos/kb/promotion.py` 这个文件本身不在」的部署，只是它原本要挡的那件事已经在上游解决了。留着的代价是一条没有判据、也没有现役触发路径的分支 | `plan_finalizer.py` 本轨不在白名单，没动。下一个动它的轨决定：要么把注释改成实况（「模块文件缺席时软降级」），要么连同那一层 try 一起去掉。**别顺手删**——`promote_plan` 下面那个 `except Exception` 才是现役兜底，两层作用不同 |
+| 2026-09-12 | p10 | **`scripts/make_case_bundle.py:128 RESOLUTION_KIND = "not_settled"` 现在可以换回 `settled` 了**。当初改成 `not_settled` 正是为了绕开「补偿收口被晋升成成功范本」那个洞（`## task-t114` 小节那条末尾写着「做完可以换回」），护栏今天落地了 | 换回去那条路径就能演「人工线下退成了」的闭环，而不是只演「核对过、确实没退成」。不换也不错，只是少演一档 | `make_case_bundle.py` 是 Wave G 的 **T144 独占**，本轨不代改。换回之后 `case-real-01/gateway_fail` 束的 `kb` 那一族产物会变（那一单从 `history_case/success` 落到 `failure_hint/failed`），要连带重产并核对 verify 第 5、7 项的分母 —— 交整合期 |
+| 2026-09-12 | p10 | **`docs/domain-portability.md:458-461` 与跨轨契约 §C 的口径仍然相反**：那段说「`flows/` 与 `kb/` **本来就是按域写的**（演示流程与知识语料），不在『内核零改动』的主张范围内」，而契约 §C 与本轨落地的判据说的是「`maos/kb/**` 是领域无关内核，取值可以局部 import + 兜底、断言不行」 | 两处措辞打架，评委任取一处都能质疑另一处。本轨把 `kb/` 那一半做实了（模块级 domain import 全片归零，有 AST 判据钉着），文档那句话现在**落后于代码** | 归 Wave H 的 **T152**（它独占那一族文档的漂移清单）。建议措辞：把「`flows/` 与 `kb/`」拆开写 —— **「`flows/` 本来就是按域写的演示流程，不在主张范围内；`kb/` 是领域无关的检索内核，模块级不 import 任何业务域（判据 `test_plan_advice.py::test_no_kb_module_puts_a_business_domain_on_its_import_graph`），已知例外只有『函数体内局部 import 取值 + 兜底』一个形状，见 `maos/kb/__init__.py` 的依赖方向段」**。两处的行数统计（`kb/` +1568 / +1885）不用改，那说的是改动量不是依赖方向 |

@@ -20,6 +20,20 @@
 `__init__` 一旦回 import 子模块，`skills/builtin/kb_retrieve.py` 那条 import 链就成环。
 使用方写 `from maos.kb.retriever import retrieve`，不要指望从包顶层拿到它。
 
+依赖方向还有**往下**的那一半：`maos/kb/**` 整片是领域无关的检索内核，**不许在
+模块级 import 任何业务域**（`maos.domain.*`）。「换个业务域不必改内核」是本项目
+对外的主张之一，而模块级 import 让它一个 `grep` 就能被证伪 —— T145 之前
+`promotion.py` 正是这样把整个退款域挂在了 `import maos.kb.promotion` 上。
+已知例外只有一个形状（整合期 p10-e 定，原文在 `docs/DECISIONS.md`）：
+
+    **取值可以局部 import + 兜底，断言不行。**
+
+即在**函数体内** import 域、只为读它的表或取它的缺省值，且域不在时能回落到本片
+自己的字面量或空结果（`plan_advice._ticket_role()` / `_approver_role()` /
+`_warn_unknown_role()`、`promotion._refund()`、`experiment.py` 那一串）。
+拿域的存在与否当断言、或把 import 提到模块级，都不在例外里。
+判据是 `maos/tests/test_plan_advice.py` 的两条 AST 测试，扫的是 `maos/kb/*.py` 全片。
+
 **建表与迁移是两件事**：`schema.sql` 只描述**目标形状**，整份都是 `IF NOT EXISTS`，
 所以它对**已经存在**的表一个字都改不动 —— 改列静默无效，直到某条 SELECT 报
 no such column。把老库搬到目标形状的是本模块的 `_MIGRATIONS`，记账落在

@@ -51,10 +51,37 @@ import logging
 from typing import Any, Mapping, Sequence
 
 from maos import kb
-from maos.domain.refund import guard, objects, outcome as outcome_mod
 from maos.kb import guardrails
 
 log = logging.getLogger("maos.kb.promotion")
+
+
+def _refund():
+    """退款域的三个模块，**用到才拖**。返回 `(guard, objects, outcome_mod)`。
+
+    `maos/kb/**` 是领域无关的检索内核（铁律 9）：模块级 `from maos.domain.refund
+    import ...` 会让 `import maos.kb.promotion` 顺带把整个退款域拉进来，于是
+    「换个业务域不必改内核」这句话一个 `grep` 就能证伪。口径与
+    `plan_advice._ticket_role()`、`experiment.py` 那一串局部 import 同一条
+    （整合期 p10-e 定的，原文在 `docs/DECISIONS.md`）：
+
+        **取值可以局部 import + 兜底，断言不行。**
+
+    本模块取的全是值（读域的表、算域的四判据），没有一处拿域的存在与否当断言。
+    域不在时的落点也分两档，**不是一律吞掉**：
+    · `promote_plan` / `list_failure_hints` 经 `_has_table()` 退化成空列表 ——
+      它们挂在**通用**的 Plan 终态钩子上，软件域那几个场景照样会走到。
+    · `promote_case` 让 ImportError 原样上抛 —— 域不在还直接点名要晋升某个退款
+      case，那是调用方的错，吞掉只会让知识层静默地少一条。
+    """
+    from maos.domain.refund import guard, objects, outcome as outcome_mod
+    return guard, objects, outcome_mod
+
+
+def _objects():
+    """只要 `objects`（退款域的通用 SQL 访问器）那一个时的简写。见 `_refund()`。"""
+    return _refund()[1]
+
 
 #: `event_log.event_type` 字符串（契约 §F）。同 `CaseOutcomeComputed`，
 #: 走 `append_event_log` 的字符串类型，不碰 `maos/contracts/events.py`（铁律 1）。
@@ -103,6 +130,7 @@ def bump_failure_hint(store: Any, *, tenant_id: str, channel_id: str,
     第二次带来的新步骤要留下，已有的不该被覆盖掉 —— 覆盖的症状是
     「越聚合知道得越少」，而那与这张表的目的正好相反。
     """
+    _, objects, outcome_mod = _refund()
     outcome_mod.ensure_outcome_schema(store)
     rows = objects.query(
         store,
@@ -136,7 +164,8 @@ def bump_failure_hint(store: Any, *, tenant_id: str, channel_id: str,
 def list_failure_hints(store: Any, *, tenant_id: str | None = None) -> list[dict]:
     """读聚合表。T119 在 Wave B 消费这个函数。表不在就返回空，不抛。"""
     if not _has_table(store, "failure_hint_index"):
-        return []
+        return []                                  # 退款域缺席也落这一支，见 `_has_table`
+    objects = _objects()
     sql = "SELECT * FROM failure_hint_index"
     params: tuple = ()
     if tenant_id:
@@ -153,11 +182,14 @@ def list_failure_hints(store: Any, *, tenant_id: str | None = None) -> list[dict
 def promote_plan(store: Any, *, plan_id: str) -> list[dict]:
     """把这个 Plan 上的每个退款 case 各晋升一次。返回逐 case 的结果。
 
-    退款域没落地（表不在）就返回空 —— 本函数挂在**通用**的 Plan 终态钩子上，
-    软件域那几个场景一样会走到这里，不能因为它们没有 `refund_case` 表就抛。
+    退款域没落地就返回空 —— 本函数挂在**通用**的 Plan 终态钩子上，软件域那几个
+    场景一样会走到这里，不能因为它们没有 `refund_case` 表就抛。**两种「没落地」
+    都算**：表不在（域在、库里还没建表），以及 `maos.domain.refund` 整个装不出来
+    （换业务域的部署）。两条都由 `_has_table()` 收，见那里的注释与 `_refund()`。
     """
     if not _has_table(store, "refund_case"):
-        return []
+        return []                                  # 退款域缺席也落这一支，见 `_has_table`
+    objects = _objects()
     cases = objects.query(
         store, "SELECT * FROM refund_case WHERE plan_id=? ORDER BY created_at", (plan_id,))
     results = []
@@ -172,7 +204,11 @@ def promote_case(store: Any, *, tenant_id: str, case_id: str, plan_id: str) -> d
 
     返回 `{"case_id", "outcome", "verdict", "doc_id", "hint"}`，`verdict` 为 None
     表示**不进知识层**（还没收口、观察不全）—— 那不是失败，是「没结论」。
+
+    退款域装不出来时 `_refund()` 的 ImportError **原样上抛**（与 `promote_plan`
+    的软降级相反）：点名要晋升某个退款 case 却没有退款域，是调用方的错。
     """
+    guard, objects, outcome_mod = _refund()
     row = outcome_mod.record_case_outcome(
         store, tenant_id=tenant_id, case_id=case_id, plan_id=plan_id)
     case = guard.get_case(store, tenant_id, case_id)
@@ -298,6 +334,7 @@ def _note_of(kind: str, row: Mapping[str, Any],
 
 # ------------------------------------------------------------------ 维度取值
 def _region_of(store: Any, tenant_id: str) -> str | None:
+    objects = _objects()
     rows = objects.query(store, "SELECT region FROM tenant WHERE tenant_id=?", (tenant_id,))
     return rows[0]["region"] if rows else None
 
@@ -308,6 +345,7 @@ def _policy_version_of(store: Any, case: Mapping[str, Any]) -> int | None:
     口径唯一一份在 `objects.pinned_policy_version`，这里直接调它。取不到就 None：
     知识文档少一维会少被召回，而抄一个「当前最新版」进去会让它在错误的场景被召回。
     """
+    objects = _objects()
     try:
         return objects.pinned_policy_version(
             store, tenant_id=str(case.get("tenant_id") or ""),
@@ -324,6 +362,7 @@ def _rule_no_of(store: Any, tenant_id: str, case_id: str) -> str:
     才是**这一单当时真的按哪条规则算的**，重跑一次得到的是「现在按哪条算」，
     在政策改过版之后两者会不一样，而这条知识说的是当时那一单。
     """
+    objects = _objects()
     rows = objects.query(
         store, "SELECT rule_refs FROM finance_entry WHERE tenant_id=? AND case_id=?",
         (tenant_id, case_id))
@@ -374,6 +413,7 @@ def _extra_steps_of(store: Any, plan_id: str, tenant_id: str, case_id: str,
     """
     from maos.tools.gateway_codes import lookup
 
+    objects = _objects()
     steps: list[str] = []
     for finding in _gateway_findings(store, plan_id):
         remedy = str(finding.get("remedy") or "")
@@ -409,8 +449,15 @@ def _extra_steps_of(store: Any, plan_id: str, tenant_id: str, case_id: str,
 
 # ------------------------------------------------------------------ 小工具
 def _has_table(store: Any, name: str) -> bool:
+    """这张域表在不在。**「退款域整个装不出来」也从这里回 False**。
+
+    `_objects()` 的局部 import 特意放在 try **里面**：换业务域的部署上
+    `maos.domain.refund` 压根不存在，那时 ImportError 与「表还没建」是同一件事
+    —— 本函数的两个调用方（`promote_plan` / `list_failure_hints`）都挂在通用的
+    Plan 终态钩子上，两种情况都该退化成空列表，而不是把一条跑完的 Plan 掀翻。
+    """
     try:
-        rows = objects.query(
+        rows = _objects().query(
             store, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,))
     except Exception:                                  # noqa: BLE001 —— 探针不该炸
         return False

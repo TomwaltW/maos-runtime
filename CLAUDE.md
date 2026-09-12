@@ -17,6 +17,12 @@
 9. 【领域无关】后续业务域（退款）不许在 contracts/states.py 里加任何新状态
    或新迁移。业务状态是业务对象自己的字段，不是 Task 状态。
    做不到就停下来问我 —— 那说明抽象错了，不是状态机不够用。
+   （已知例外，整合期 p10-e 定，见 docs/DECISIONS.md：`maos/kb/**` 里允许
+   **函数体内局部 import 退款域取值并兜底** —— `plan_advice.py` 的
+   `_ticket_role()` / `_approver_role()` / `_warn_unknown_role()` 三个函数按这个
+   形状问角色目录要缺省岗位名，目录读不到就回落本模块字面量；`promotion.py` 的
+   `_refund()` 同理。**取值可以，断言不行**，且一律不许提到模块级 ——
+   判据在 `maos/tests/test_plan_advice.py` 的两条 AST 测试上。）
 
 ## 决策与讨论上限
 

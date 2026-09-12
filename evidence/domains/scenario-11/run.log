@@ -1,4 +1,4 @@
-# generated at 2026-09-12T10:04:37.597993+00:00 from 6aa1a4541820c0bef97a28492a90e5c9cf3476b3
+# generated at 2026-09-12T10:09:51.624070+00:00 from 4118d817d55b76010f266e101416995da7c0790c
 场景 11：跨域协同 —— 应付账款付出去之后，供应商报来重复支付
 
 [1] 三单匹配: 通过（跑了 11 条判据）
@@ -10,7 +10,7 @@
 [3] 付款指令: 91978.84 CNY，受理回单 accepted（**非终态**）
 
 [4] 银行回单: settled（问了 2 次）
-    流水号  : bkref-c54d4df9090f  起息 2026-08-31
+    流水号  : bkref-003433ee1943  起息 2026-08-31
     —— ap 域到此收口: 钱确实付出去了，settled 是**问出来的**
 
 [5] 待主管收口: 发出付款指令并观察银行回单
@@ -19,16 +19,16 @@
     —— 「这笔重复了」的权威在供应商，不在 MAOS；ap 域没有、也不该有重复发票检测器（铁律 8）
 
 [6] 编排层翻译: ap 观察 -> investigation 原始支付快照
-    original_msg_id   = bkref-c54d4df9090f       ← ap_payment_observation.bank_reference
-    end_to_end_id     = bkins-c54d4df9090f       ← payment_instruction.instruction_id
+    original_msg_id   = bkref-003433ee1943       ← ap_payment_observation.bank_reference
+    end_to_end_id     = bkins-003433ee1943       ← payment_instruction.instruction_id
     interbank_amount  = 91978.84                 ← payment_instruction.amount
     currency          = CNY                      ← payment_instruction.currency
     value_date        = 2026-08-31               ← ap_payment_observation.value_date
     debtor_agent      = ICBKCNBJXXX              ← payment_instruction.bank
     creditor_agent    = BKCHCNBJ300              ← maos.flows.scenario_11.CREDITOR_BIC（编排层路由表，两个域都不持有）
-    —— 读的是 ap **观察到的**那一版（actor 3eed9f8d4236…），没有重新去问银行
+    —— 读的是 ap **观察到的**那一版（actor 351f7a6e483c…），没有重新去问银行
 
-[7] 差错案受理: case-s11-inv-0001（原报文 bkref-c54d4df9090f，CNY 91978.84）
+[7] 差错案受理: case-s11-inv-0001（原报文 bkref-003433ee1943，CNY 91978.84）
     —— 金额币种取自翻译层写的快照，不是任务入参自称的
 
 [8] 待人工调账审批: 差错定性并申请人工调账授权（动别人的钱必须有人批，监管要求）
@@ -91,14 +91,14 @@ Plan: DONE  |  支付长三角精密传动 2026-09 月结货款；付出后供�
     task-s11-inv-observe  AWAITING_REVIEW  -> BLOCKED          [gate_needs_human]
     task-s11-inv-observe  BLOCKED          -> DONE             [human_approve]
 
-  ap 业务状态        : settled（plan=plan_18446d7e3f83）
-  investigation 状态 : returned（plan=plan_18446d7e3f83）
-  ap settled 观察    : 1 条，流水号 ['bkref-c54d4df9090f']
+  ap 业务状态        : settled（plan=plan_ab9bd2c2965a）
+  investigation 状态 : returned（plan=plan_ab9bd2c2965a）
+  ap settled 观察    : 1 条，流水号 ['bkref-003433ee1943']
   差错观察           : 3 条 ['pending', 'cancellation_confirmed', 'returned']
   returned 观察      : 1 条，来自 ['pacs.004.001.09']
   Plan 终态          : DONE
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_18446d7e3f83，共 8 个任务
+INFO  maos.cp      创建计划 plan_ab9bd2c2965a，共 8 个任务
 INFO  maos.cp      [task-s11-ap-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s11-ap-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s11-ap-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -143,4 +143,4 @@ INFO  maos.cp      [task-s11-inv-observe] RUNNING -> AWAITING_REVIEW (submit_res
 INFO  maos.gate    [task-s11-inv-observe] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s11-inv-observe] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s11-inv-observe] BLOCKED -> DONE (human_approve)
-INFO  maos.finalizer [plan_18446d7e3f83] 复盘完成，沉淀 1 条
+INFO  maos.finalizer [plan_ab9bd2c2965a] 复盘完成，沉淀 1 条

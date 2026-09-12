@@ -62,6 +62,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -220,37 +221,140 @@ def _ssl_state(conn) -> str:
     return "unknown（驱动不报 ssl_in_use）"
 
 
+#: 取不到出口 IP 时的人话出路。口径与 `real_run_preflight.py::probe_4_egress_ip()`
+#: 对齐 —— 两个脚本报的是同一个值，不许一边说得到、一边说不到。
+_EGRESS_FALLBACK = "控制台白名单页面通常会显示当前来访 IP，照那个填"
+
+
 def _egress_ip() -> str:
     """本机公网出口 IP。**不泄漏目标 host**，所以可以直接打印。
 
-    白名单是按出口 IP 放行的，报障时人第一个要查的就是这个值。
+    白名单是按出口 IP 放行的，报障时人第一个要查的就是这个值 —— 真跑日（9/18）
+    第一条要抄下来的也是它。
+
+    🔴 **`-4` 不能省**（T142 补上，整合期 p10-f 在 preflight 那边先查实）：此前这条
+    不带 `-4`，`dig` 可能走 IPv6 去问 `resolver1.opendns.com`，那一路到不了真的
+    OpenDNS resolver，回 `NOERROR / ANSWER: 0` —— 于是本函数在这台机器上**恒返回
+    「取不到」**，而它恰恰是白名单漂移时唯一要抄的值。强制 IPv4 之后同一条查询
+    稳定返回真实出口 IP（实测连跑三次一致，偶发一次超时）。备用 resolver 走
+    `208.67.222.222`（OpenDNS 的 IP 字面量，连域名解析这一跳都省了），因为实测
+    第一台偶尔超时。
+
+    取不到时**分档报**，各档的下一步完全不同：
+
+    - `dig` 不在 → 装它，或直接去控制台看来访 IP；重试没意义
+    - 查询超时 → 网络或 resolver 的事，**可以重试**
+    - 空答案 → 查询被接管（DNS 劫持 / 分流），重试没用，只能去控制台看
+
+    原来那句笼统的「取不到（dig 不可用或网络不通）」把这三条路混成一条，而且它
+    还是错的 —— 本机 `dig` 在、网络也通，真因是走了 IPv6。
+
+    ⚠️ 两条 `dig` 的坑，分档全靠它们（本轨实测）：
+
+    1. `dig` 把「连不上」也写在 **stdout** 上（`;; connection timed out; no servers
+       could be reached`）。那不是一个 IP，当成答案抄进白名单会把真跑日引到沟里 ——
+       所以 `;` 开头的行一律不算答案。
+    2. **但把它当成「空答案」也是错的**：那是**超时**（`dig` 退出码 9），下一步是
+       「可以重试」，而空答案的下一步是「重试没用，去控制台看」。只按「答案行为空」
+       归档会把这两条路混起来 —— 本轨实测撞到过一次（连跑两次，第二次 `dig` 自己
+       超时，被归成了空答案）。所以这里**先看退出码 9 / `connection timed out`**，
+       再看有没有答案行。
     """
-    try:
-        out = subprocess.run(
-            ["dig", "+short", "myip.opendns.com", "@resolver1.opendns.com"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        ip = out.stdout.strip().splitlines()
-        if ip and ip[-1]:
-            return ip[-1]
-    except Exception:  # noqa: BLE001 —— 拿不到就拿不到，不影响主流程
-        pass
-    return "取不到（dig 不可用或网络不通）"
+    if not shutil.which("dig"):
+        return f"取不到：dig 不可用 —— {_EGRESS_FALLBACK}"
+    last = "取不到"
+    for resolver in ("@resolver1.opendns.com", "@208.67.222.222"):
+        try:
+            out = subprocess.run(
+                ["dig", "-4", "+short", "+time=5", "+tries=1",
+                 "myip.opendns.com", resolver],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            # subprocess 这一层的超时：`dig` 连自己的 `+time` 都没兜住。
+            last = "取不到：查询超时"
+            continue
+        except Exception as exc:  # noqa: BLE001 —— 拿不到就拿不到，不影响主流程
+            # 只报类名，不报 message：口径同 `step1_connect`。
+            last = f"取不到：取出口 IP 失败 -> {type(exc).__name__}"
+            continue
+        lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        answer = [ln for ln in lines if not ln.startswith(";")]
+        if answer:
+            return answer[-1]
+        # `dig` 自己超时：退出码 9 = no servers could be reached。文本判据是兜底
+        # （退出码语义跨版本稳，但 `+short` 的这行字更显眼，两条一起判）。
+        if out.returncode == 9 or any("connection timed out" in ln for ln in lines):
+            last = "取不到：查询超时"
+            continue
+        last = "取不到：查询返回空答案"
+    return f"{last}（两台 resolver 都试过）—— {_EGRESS_FALLBACK}"
 
 
-def _diagnose_unreachable(dsn: str, rep: Reporter) -> None:
+def _sqlstate(exc: BaseException | None) -> str | None:
+    """驱动异常上的 SQLSTATE（五位字符）。psycopg3 叫 `sqlstate`，psycopg2 叫 `pgcode`。
+
+    **只取这一个字段，绝不碰 message** —— 连接失败的 message 里几乎一定带 host
+    （铁律 6，口径同 `step1_connect` 那条「只报驱动异常类名、不报 message」）。
+    SQLSTATE 是五位字母数字的 PG 错误码，本身不可能夹带 host 或口令。
+
+    它有没有值是 `_diagnose_unreachable()` 第三档的分水岭：**能报出 SQLSTATE 就说明
+    这条连接真的走到了 PG 服务端**（那串码是 PG 自己发回来的），此时才谈得上鉴权层；
+    报不出来就只是 TCP 握上了，中间设备也能让 TCP 握上。
+    """
+    if exc is None:
+        return None
+    for attr in ("sqlstate", "pgcode"):
+        code = getattr(exc, attr, None)
+        if code:
+            return str(code)
+    return None
+
+
+def _diagnose_unreachable(
+    dsn: str, rep: Reporter, exc: BaseException | None = None
+) -> None:
     """连不上时分层诊断 DNS -> TCP，把「白名单没放行」从别的原因里择出来。
 
-    为什么必须单独择：白名单不放行时的症状是 **TCP 静默超时，不是拒绝** ——
-    `dig` 能解析出公网 IP，`connect()` 挂满超时，看起来跟「网络不通 /
-    实例没起来 / host 写错了」完全一样。而第 1 步刻意只报驱动异常类名
-    不报 message（防 host 泄漏），所以从脚本输出上**更看不出**是白名单。
-    这一段就是拿来省那一轮排障往返的。
+    为什么必须单独择：第 1 步刻意只报驱动异常的**类名**、不报 message（防 host
+    泄漏），所以从脚本输出上看不出到底卡在哪一层。这一段就是拿来省那一轮排障往返的。
 
-    全程不打印 host，也不打印解析到的 IP —— 那是目标 host 的地址，
-    打出来等于泄漏（铁律 6）。只报「解析到几个」。
+    ## 四档（T142 重写。原来只认「TCP 静默超时 = 白名单」一档，那是错的）
+
+    | 档 | 症状 | 结论 |
+    |---|---|---|
+    | 1 | `getaddrinfo` 抛 | host 写错 / 实例名不对，**不是**白名单 |
+    | 2 | `socket.timeout` | 白名单没放行（链路 A），并打出本机出口 IP |
+    | 3 | `connect()` 成功 | 按驱动异常**有没有 SQLSTATE** 再分：无 → 优先怀疑白名单（链路 B）；有 → 才是真的鉴权层 |
+    | 4 | `ConnectionRefusedError` / `ConnectionResetError` | 端口没在听，或被中间设备重置，不是白名单 |
+
+    🔴 第 3 档是这次重写的要害。原来那句「握手成功 —— 网络通，问题在 PG 鉴权层
+    （账号 / 库名 / SSL 策略）」在**真正的白名单场景下会把人指向错误的方向**：
+    `docs/BACKLOG.md:1431` 实测记着，**公网地址前有 SLB 时，白名单不放行的症状是
+    「TCP 握手成功 → 连接随即被断，`OperationalError`、无 SQLSTATE」**，不是静默
+    超时 —— SLB 先替后端把 TCP 握上了，放不放行是它在应用层之前做的决定。照旧说法
+    人会去翻口令和 SSL 策略，实际只要加一条白名单。**比没有判据更糟。**
+
+    分水岭是 SQLSTATE 而不是别的：那串码是 PG 服务端自己发回来的，**能收到它就证明
+    这条连接真的走到了 PG**；中间设备能让 TCP 握上，但发不出 SQLSTATE。所以
+    「握上了 + 没有 SQLSTATE」= 还没走到 PG = 先怀疑链路，不是鉴权。
+
+    两条链路的名字沿用 `docs/BACKLOG.md:1431`（那条实测记录自己起的名，本函数没另造）：
+    **链路 A** = 直连实例地址（内网 / 无 SLB 前置），白名单不放行时包被丢掉，静默超时；
+    **链路 B** = 公网地址经 SLB，白名单不放行时握得上、随即被断。
+
+    ⚠️ **本轨没有复现过这两条链路**，而 BACKLOG:1431 的建议里写着「改之前先把两种链路
+    各复现一次，别照抄本条」。复现不了的原因是硬的：真实例只由人类在 9/18 接入，本轨
+    一律打本机容器（直连、无 SLB），造不出链路 B。所以这里的分档**照的是那条实测记录**，
+    `test_polardb_smoke_t142.py` 里四档用的也是**构造出来的异常**，验的是「拿到这种症状
+    会说哪句话」，不是「真链路上会不会出现这种症状」。真跑日撞上时按实际症状回头核这一段
+    （已记进 `docs/DECISIONS.md` 与 `docs/BACKLOG.md` 的 `## task-t142`）。
+
+    全程不打印 host，也不打印解析到的 IP —— 那是目标 host 的地址，打出来等于泄漏
+    （铁律 6）。只报「解析到几个」。出口 IP 是**本机**的，不泄漏目标，可以打印
+    （口径见 `_egress_ip()`）。
     """
     try:
         parts = urlsplit(dsn)
@@ -260,30 +364,70 @@ def _diagnose_unreachable(dsn: str, rep: Reporter) -> None:
     if not host:
         return
 
+    # ---- 第 1 档：DNS ----------------------------------------------------
     try:
         infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
         addrs = sorted({i[4][0] for i in infos})
         rep.note("诊断 DNS", f"解析成功，{len(addrs)} 个 A 记录")
-    except Exception as exc:  # noqa: BLE001
-        rep.note("诊断 DNS", f"解析失败 -> {type(exc).__name__}（host 写错了？）")
+    except Exception as dns_exc:  # noqa: BLE001
+        rep.note("诊断 DNS", f"解析失败 -> {type(dns_exc).__name__}")
+        rep.note(
+            "诊断结论",
+            "DNS 解析不出来 = **host 写错 / 实例名不对，不是白名单**。解析是本机到"
+            " 公共 DNS 的事，白名单管的是对端放不放行，在这一层根本看不出来 ——"
+            " 先核对 DSN 里的 host 拼写，以及那台实例是不是还在（被释放 / 改名）。",
+        )
         return
 
+    # ---- 第 2 / 3 / 4 档：TCP --------------------------------------------
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(8)
     try:
         sock.connect((addrs[0], port))
-        rep.note("诊断 TCP", "握手成功 —— 网络通，问题在 PG 鉴权层（账号 / 库名 / SSL 策略）")
     except socket.timeout:
         rep.note("诊断 TCP", "静默超时（8s）")
         rep.note(
             "诊断结论",
-            f"DNS 通 + TCP 静默超时 = **大概率是白名单没放行本机出口 IP**。"
-            f"本机出口 IP: {_egress_ip()} —— 去控制台把它加进白名单再复跑。",
+            f"DNS 通 + TCP 静默超时 = **大概率是白名单没放行本机出口 IP（链路 A："
+            f"直连实例地址，包被丢掉）**。本机出口 IP: {_egress_ip()} ——"
+            f" 去控制台把它加进白名单再复跑。",
         )
-    except ConnectionRefusedError:
-        rep.note("诊断 TCP", "被拒绝 —— 端口没在听，不是白名单（实例停了？端口写错了？）")
-    except Exception as exc:  # noqa: BLE001
-        rep.note("诊断 TCP", f"失败 -> {type(exc).__name__}")
+    except (ConnectionRefusedError, ConnectionResetError) as tcp_exc:
+        rep.note("诊断 TCP", f"{type(tcp_exc).__name__}")
+        rep.note(
+            "诊断结论",
+            "连接被干脆地拒绝 / 重置 = **端口没在听，或路径上有设备把它掐了，"
+            "不是白名单**（实例停了？端口写错了？企业网关拦了 5432？）。"
+            "白名单不放行的症状是丢包静默超时（链路 A）或握手后被断（链路 B），"
+            "不会回一个立刻的 RST。",
+        )
+    except Exception as tcp_exc:  # noqa: BLE001
+        rep.note("诊断 TCP", f"失败 -> {type(tcp_exc).__name__}")
+        rep.note(
+            "诊断结论",
+            "TCP 这一层报了个意料外的错，上面四档都对不上 —— 把类名连同"
+            " `polardb_smoke.py` 的完整输出一起记下来再查，别猜。",
+        )
+    else:
+        state = _sqlstate(exc)
+        rep.note("诊断 TCP", "握手成功")
+        if state:
+            rep.note(
+                "诊断结论",
+                f"TCP 握手成功 + 驱动报了 SQLSTATE {state} = **确实走到了 PG 鉴权层**"
+                f"（账号 / 口令 / 库名 / SSL 策略）。那串码是 PG 服务端自己发回来的，"
+                f"收得到就说明链路通到了底 —— 这一档才轮得到查账号和 SSL 策略。",
+            )
+        else:
+            rep.note(
+                "诊断结论",
+                f"TCP 握手成功但**驱动没报 SQLSTATE** = 连接在走到 PG 之前就被断了。"
+                f"公网地址前有 SLB 时，白名单不放行的症状正是这个（握得上、随即被断，"
+                f"BACKLOG:1431 实测），**不是**静默超时 —— 所以这里**优先怀疑白名单"
+                f"（链路 B），不是鉴权层**。本机出口 IP: {_egress_ip()} ——"
+                f" 先去控制台确认它在白名单里；确认在了，再查账号 / 口令 / 库名 /"
+                f" SSL 策略。",
+            )
     finally:
         sock.close()
 
@@ -299,9 +443,11 @@ def step1_connect(connect, dsn: str, rep: Reporter):
         conn = connect(dsn, connect_timeout=10)
         conn.autocommit = True
     except Exception as exc:
-        # 刻意只报类名：连接失败的 message 里几乎一定带 host。
+        # 刻意只报类名：连接失败的 message 里几乎一定带 host。**这条口径没松** ——
+        # 往下传的是异常对象本身，而诊断那头只从它身上取 SQLSTATE 那一个字段
+        # （`_sqlstate()`，五位字母数字，夹带不了 host 或口令），仍然不碰 message。
         rep.fail("1. 连接 + SELECT version()", f"连不上：{type(exc).__name__}")
-        _diagnose_unreachable(dsn, rep)
+        _diagnose_unreachable(dsn, rep, exc)
         return None
     try:
         with conn.cursor() as cur:

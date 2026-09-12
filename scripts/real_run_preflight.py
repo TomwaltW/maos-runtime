@@ -300,6 +300,11 @@ def probe_4_egress_ip() -> Probe:
     连域名解析这一跳都省了），因为实测第一台偶尔超时。
 
     取不到时仍分档报，三档的下一步完全不同：dig 不在、超时、空答案。
+    **`dig` 自己超时算「超时」档，不算「空答案」**（T142 补）：它超时时把
+    `;; connection timed out` 写在 stdout 上、退出码 9，答案行同样为空，只按
+    「答案行为空」归档会把「可以重试」和「重试没用」混成一条。
+    口径与 `polardb_smoke.py::_egress_ip()` 逐条一致，判据
+    `test_polardb_smoke_t142.py::test_both_scripts_classify_digs_own_timeout_the_same`。
 
     **这是软项**（整合期 p10-f 由硬改软）：它产出的是**一个要抄下来的值**，
     不是「跑不跑得起来」的前提 —— 控制台白名单页面自己会显示当前来访 IP，
@@ -331,6 +336,14 @@ def probe_4_egress_ip() -> Probe:
         answer = [ln for ln in lines if ln and not ln.startswith(";")]
         if answer:
             return probe.pass_(f"{answer[-1]} —— 控制台白名单里必须有这个 IP")
+        # 🔴 但把它归成「空答案」也是错的（T142 补）：那是 `dig` **自己**超时
+        # （退出码 9 = no servers could be reached），下一步是「可以重试」，而空
+        # 答案的下一步是「重试没用，去控制台看」。只按「答案行为空」归档会把这两
+        # 条路混起来 —— T142 在 `polardb_smoke.py::_egress_ip()` 上实测撞到过一次
+        # （连跑两次，第二次 dig 自己超时，被归成了空答案）。两个脚本同一口径。
+        if out.returncode == 9 or any("connection timed out" in ln for ln in lines):
+            last = "查询超时"
+            continue
         last = "查询返回空答案"
     return probe.fail(f"{last or '取不到'}（两台 resolver 都试过）—— {fallback}")
 

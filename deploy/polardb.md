@@ -357,13 +357,37 @@ LookupError: 查询串含中日韩字符，而当前文本检索配置是 PG 内
 抛 `LookupError`」—— 对本机是对的，但 `MAOS_PG_FTS_CONFIG=zhcfg` 一切过去它就变红，
 **真跑日当天撞红线 = 当场没法决定「该切还是不该切」**。现在是两条：
 
-| 档 | 判据（`maos/tests/test_pg_store_live.py`） | 本机 |
+| 档 | 判据 | 本机 |
 |---|---|---|
-| `MAOS_PG_FTS_CONFIG` 指向 PG 内置配置（`simple`） | `test_chinese_query_raises_on_builtin_config`：中文查询**必须抛 `LookupError`**，不许静默漏 | 跑，绿 |
-| 指向真分词器（`zhcfg` / `jiebacfg`） | `test_chinese_query_recalls_on_real_tokenizer`：中文查询**必须真召回** | **skip**（没装 zhparser） |
+| `MAOS_PG_FTS_CONFIG` 指向 PG 内置配置（`simple`） | `test_pg_store_live.py::test_chinese_query_raises_on_builtin_config`：中文查询**必须抛 `LookupError`**，不许静默漏 | 跑，绿 |
+| 指向**非内置**配置（链路档） | `test_pg_vector_channel_t139.py::test_second_tier_chinese_recalls_through_the_assembly_path`：中文**必须真召回**，且错误码通道不许因此变瞎 | **跑，绿**（T142 起） |
+| 指向真分词器（`zhcfg` / `jiebacfg`） | `test_pg_vector_channel_t139.py::test_chinese_query_recalls_on_real_tokenizer`：中文查询**必须真召回** | **skip**（没装 zhparser） |
 
-skip 不是绿：第二档在本机永远不执行断言。它存在的意义是真跑日那天把
-`MAOS_PG_FTS_CONFIG` 指过去、这一束就地重跑一次 —— **红了就知道不该切**。
+#### 🔴 T142：第二档搬上装配路径，并拆成「链路」与「分词」两半
+
+T139 那条第二档判据有两个毛病，T142 一起结掉：
+
+1. **它建在原文靶表上，真跑日会假红。** 原来断言打的是 `test_pg_store_live.py` 里手建
+   的 `t10_live_doc`（body 存原文），而 `fts_search()` 内部一律把查询串再过一遍
+   `kb.tokenize()` —— 按上表的 zhcfg 建法（索引建在影子表）是**索引侧出词、查询侧出
+   字，恒 0 命中**。本机双重门控所以 skip、不显形。现在它搬到了**生产装配路径**上
+   （`kb.ensure_schema()` 建表 + `kb.upsert_doc()` 灌语料）。
+2. **它在本机永远不执行断言。** 现在中间多了一档「链路档」：本机现造一个
+   `COPY = simple` 的**非内置**配置，于是 `fts_search()` 不再走第一档那条
+   `LookupError`，第二档整条链路（不抛 → 切词 → `to_tsquery` → 影子表 → 召回）
+   **每次跑测试都真走一遍**，断言一个字没弱化。
+
+于是真跑日那条一旦红，病根只剩**唯一一个**：zhparser 在「单字序列」上不出词
+（影子表里中文已被 `kb.fts_text()` 按字切开，它拿到的是 `退 款 政 策`）。判据红时会
+就地把 `to_tsvector` / `to_tsquery` 的实际产物打出来，省掉现场那一轮排查。
+
+**当场处置**（照这个走，不要临场发挥）：把 `MAOS_PG_FTS_CONFIG` 退回 `simple`，
+口径退回第一档 —— 中文照旧抛 `LookupError`、检索器退化走本地实现，召回照常，只是
+不走 PG。**不要在现场改判据，也不要改索引形状。**
+
+> ⚠️ 原来这里写的是「红了就知道不该切」。**那句话给的是错误结论**，T142 已删：
+> 红了说明的是「这个形状下 zhcfg 没增益」，不是「影子表这条路选错了」——
+> 切不切是形状问题，而形状已经定了（见下）。
 
 ⚠️ 切之前必须知道的形状约束（T139 换了全文的查询目标，见下面 §6）：全文现在查影子表
 `kb_doc_fts`，里面存的是 `kb.fts_text()` 的产物，**中文在那一步已经按字切开**了。所以
@@ -378,10 +402,32 @@ zhparser 在这条路上拿到的是 `退 款 政 策` 而不是 `退款政策`�
    错退化的；真跑日走 `zhcfg`，也只是按字 AND。
 2. **真跑日第二档要是 0 命中**，最可能的原因是 zhparser 把单字 token 过滤掉了
    （它有 `zhparser.punctuation_ignore` 一类的开关）。那时的选择是「保持 `simple`、
-   中文照旧走本地退化」，**不要在现场改判据**。要让 zhparser 真按词切，得把 zhcfg 的
-   索引建回 `kb_doc` 的原文列、且查询侧不过 `kb.fts_text()` —— 那是第三种形状，会把
-   错误码那条通道重新打瞎（原文上 `ACQ.TRADE_NOT_EXIST` 又被黏成一个 token）。
-   两者不可兼得，取舍记在 `docs/DECISIONS.md` 的 `## task-t139`。
+   中文照旧走本地退化」，**不要在现场改判据**。
+
+#### 🔴 形状取舍已定：**A 影子表口径**（T142）
+
+两条路，不可兼得，T139 摆出来但没拍板，**T142 拍了**：
+
+| | A · 影子表口径（**选它**） | B · zhcfg 建回原文列 |
+|---|---|---|
+| zhcfg 索引目标 | `kb_doc_fts`（存 `kb.fts_text()` 的产物） | `kb_doc` 的 title/body 原文 |
+| 查询侧 | 过 `kb.fts_text()`（与索引侧同一个函数） | **不过** `fts_text()` |
+| 中文 | 召得回来，但实际是**按字 AND**（排序无意义） | zhparser 真按词切 |
+| 错误码（`ACQ.TRADE_NOT_EXIST`） | **通**（切成四个 token） | **瞎**（原文上黏成一个 token） |
+| 改动面 | 零（今天就是这个形状） | 索引 + 查询侧 + 一条现有判据当场红 |
+
+**选 A 的理由一句话**：错误码是退款域知识条目的主键式线索，**是今天生产路径上真在用
+的一条通道**（判据 `test_error_code_is_searchable_after_the_shadow_table_switch`）；
+而中文在 A 上**召得回来**，只是排序无意义。拿一条正在用的通道去换另一条通道的排序
+质量，不划算 —— 何况混合召回里中文还有向量那一路兜着。
+
+所以**不要**把 zhcfg 的索引建到 `kb_doc` 原文列上（上面安装步骤里索引目标写的是
+`kb_doc_fts`，不是笔误）。这个取舍在三处逐字一致：本节、`maos/store/pg_schema.sql`
+中文那一节、`docs/DECISIONS.md` 的 `## task-t142`。
+
+> **那句口径仍然没松**：A 口径下中文是按字 AND，不是真·分词检索。
+> 「本仓库缺省支持中文分词检索」在**任何一档上都不许说**
+> （`docs/submission-checklist.md:224`，T139 定，T142 没翻案）。
 
 ### 2. 占位符方言：`?` vs `%s`
 

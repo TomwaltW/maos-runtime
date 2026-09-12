@@ -39,9 +39,12 @@ ENV_MODEL = "MAOS_LLM_MODEL"
 ENV_TIMEOUT = "MAOS_LLM_TIMEOUT"
 
 #: 强制脚本回放（契约 §G）。读取点走配置面，登记在 `maos/config/__init__.py` 的
-#: 表格里、**不进** `GOVERNED_KEYS` —— 口径照抄 `MAOS_KB_ADVICE`（T119 的
-#: DECISIONS 那一行）：`test_config_source.py::test_governed_keys_are_exactly_
-#: the_four_this_track_owns` 钉着「就是这四个」，而那个文件不在本轨白名单里。
+#: 表格里，**已进** `GOVERNED_KEYS`（T131 补的四个之一）。本行原写「不进」，那是
+#: T125 接读取点那一刻的实况 —— 当时卡的是 `test_config_source.py` 那条按数目写的
+#: 断言不在本轨白名单里，不是「这个旋钮不值得审计」。它恰恰最值得：一改，整批证据束
+#: 的成本读数含义就全变了（束标签据它写「真模型 / 脚本」），而不落审计就没人看得见。
+#: 清单今天是十个，由 `test_config_source.py::
+#: test_governed_keys_are_the_ten_whose_changes_must_land_in_the_audit` 逐项钉着。
 ENV_FORCE_SCRIPTED = "MAOS_FORCE_SCRIPTED"
 
 #: 认的那几个「关」值，与 `kb._KB_OFF_VALUES` / `plan_advice._ADVICE_OFF_VALUES`

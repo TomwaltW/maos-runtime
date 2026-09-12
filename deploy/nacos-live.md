@@ -233,7 +233,7 @@ Nacos 真连不可用：未装 nacos-sdk-python（63 个包 / 135MB 的可选依
 | 2.3 | **Nacos 的灰度（beta）发布** | 30% 维度提到「灰度」，但 beta 发布按 IP 白名单推送，与本轨的「四个旋钮」不是一个粒度 | 现在的「灰度」只到「不重启改配置」这一层，**没有按实例分批** |
 | 2.4 | **多实例同时监听同一个 dataId** | 单进程演示 | 多个 MAOS 进程各自落一条 `ConfigChanged`，会不会重复计数没验 |
 | 2.5 | **配置回滚（历史版本一键回退）** | 没做 | Nacos 控制台自带，MAOS 这侧只会看到又一次推送 |
-| 2.6 | ~~`MAOS_KB_ENABLED` / `MAOS_KB_WEIGHTS`~~ **T35 已接读取点** | T28 当时 `maos/kb/**` 归 T24 / T25，同轮并行改同一个文件必冲突 | 六个旋钮的**读取点全接完了**（`kb_enabled` / `load_weights`）。但那两个键**没进 `GOVERNED_KEYS`** —— 于是它们「能治理、变更不落审计」，理由与后续接法见 `docs/BACKLOG.md` 的 `## task-T35`。**仍未在真 Nacos 上跑过** |
+| 2.6 | ~~`MAOS_KB_ENABLED` / `MAOS_KB_WEIGHTS`~~ **T35 已接读取点、T131 已进清单** | T28 当时 `maos/kb/**` 归 T24 / T25，同轮并行改同一个文件必冲突 | 六个旋钮的**读取点全接完了**（`kb_enabled` / `load_weights`）。~~但那两个键**没进 `GOVERNED_KEYS`** —— 于是它们「能治理、变更不落审计」~~ —— **这句今天不成立**：T131 把这两个连同 `MAOS_KB_ADVICE` / `MAOS_FORCE_SCRIPTED` 一并补进清单，T136 再补 `MAOS_SANDBOX_REQUIRE_CONTAINER` / `MAOS_MAX_PLAN_REJECT`，**`GOVERNED_KEYS` 现在是十个**（`maos/config/source.py:124-142`），改它们照样 diff 出变更、照样落审计。经过见 `docs/BACKLOG.md` 的 `## task-T35` 与 `## task-t131`。**仍未在真 Nacos 上跑过** |
 | 2.8 | **探活心跳（T35）在真 SDK + 真 Nacos 上的表现** | T35 那台机器没装 `nacos-sdk-python`，也没有 Nacos 容器 | `server_health()` 那一支是用桩验的：SDK 3.2.0 到底有没有这个方法、是同步还是协程、返回什么，**一次都没验过**。探不到时会退到就绪端点兜底（那一支验过），所以最坏情况是「用的是兜底那条」，不是心跳失效 —— 但这句话本身也没在真 SDK 上验过。判据见 §3.2 |
 | 2.7 | **真 Matrix 房间 + Nacos 联合演示** | 本机没有 Synapse 在跑 | §1.4 走的是真 `RoomApprovalBridge`，但审批命令是直接调 `handle_message` 送进去的，不是从 Element 里打出来的 |
 

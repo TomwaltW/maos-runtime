@@ -113,7 +113,7 @@ export MAOS_NACOS_PASSWORD=<口令>          # 铁律 6：只从环境变量读�
 | `MAOS_NACOS_SERVER` | `127.0.0.1:8848` | |
 | `MAOS_NACOS_NAMESPACE` | `""`（public） | |
 | `MAOS_NACOS_GROUP` | `DEFAULT_GROUP` | |
-| `MAOS_NACOS_DATA_ID` | `maos-governance` | 四个旋钮装在同一个 dataId 里 |
+| `MAOS_NACOS_DATA_ID` | `maos-governance` | 十个旋钮装在同一个 dataId 里 |
 | `MAOS_NACOS_USERNAME` / `MAOS_NACOS_PASSWORD` | 空 | 开了鉴权就必填 |
 | `MAOS_NACOS_TIMEOUT_MS` | `5000` | |
 | `MAOS_NACOS_HEALTH_INTERVAL_S` | `30` | 探活心跳节拍（秒，T35）。**演示才调低，部署里别动**；`<=0` 关掉心跳；低于 `1` 会被抬到 `1` |
@@ -122,10 +122,14 @@ export MAOS_NACOS_PASSWORD=<口令>          # 铁律 6：只从环境变量读�
 
 ## 4. 配置文档长什么样
 
-一个 dataId 装四个旋钮。**properties 与 JSON 两种写法都认**：
+一个 dataId 装十个旋钮（T28 立的四个 + T131 补的四个 + T136 补的两个，
+清单以 `maos/config/source.py:124-142` 的 `GOVERNED_KEYS` 为准，
+每个的读取点与取值口径见 `maos/config/__init__.py` 那张表）。
+**properties 与 JSON 两种写法都认**，写几行都行 —— 没写的那些照旧走
+「Nacos 无此项 → 回落 env」那一档（有日志）：
 
 ```properties
-# Nacos 控制台里 dataId = maos-governance 的正文
+# Nacos 控制台里 dataId = maos-governance 的正文（这里只示范四个，另外六个同理）
 MAOS_APPROVERS=@boss:maos.local,@cfo:maos.local
 MAOS_FINANCE_THRESHOLD=5000
 MAOS_MAX_REPLAN=2
@@ -139,7 +143,9 @@ MAOS_SANDBOX_TIMEOUT=300
 写坏了（比如 JSON 少个括号）**按空文档处理，不抛** —— 控制台上一次手滑不该让审批链路
 当场停摆；空文档会让每个 key 都走「Nacos 无此项 → 回落 env」，而那一档是有日志的。
 
-**只有 `GOVERNED_KEYS` 里那四个 key 会被 diff 出变更**，文档里的其他行原样忽略。
+**只有 `GOVERNED_KEYS` 里那十个 key 会被 diff 出变更**，文档里的其他行原样忽略。
+（T28 立的四个 + T131 补的四个 + T136 补的两个 —— **改了别的旋钮照样生效、但不落审计**，
+`_resolve` 读快照时对任何 key 一视同仁，清单只管「推送到达时为谁落一条 `ConfigChanged`」。）
 
 ---
 

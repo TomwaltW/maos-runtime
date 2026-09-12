@@ -2675,3 +2675,18 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | 旧的两条 GIN 索引 `idx_kb_doc_fts_simple_{title,body}`（建在 `kb_doc` 原文列上）**今天没有调用方**：`fts_search("kb_doc", ...)` 已改查影子表 | 只费写入开销与磁盘，不影响正确性。留着是因为跨轨契约只许新增索引不许删（删了在别人的库上不可逆），且影子表不在的旧库上 `_fts_target()` 会回落查 `kb_doc`，那时它们还得上 | 等影子表这条路在 PolarDB 真实例上也跑过一轮之后，单独一轨收掉。**别顺手删** —— 删索引这件事在持久库上没有回头路 |
 | 2026-09-12 | p10 | `PgStorePort.query()` 现在会剔除 `_ACCEL_COLUMNS` 里的列。这是一份**手工维护的清单**，将来 PG 侧再加派生列时容易忘记加进去 | 忘了的症状与本轨踩到的一模一样：`prefilter` 在两个后端返回的行不再相等，`test_kb_pg_prefilter.py::test_prefilter_limit_is_honoured_on_both` 变红，案例证据束的「逐字一致」也跟着破。**这次是有测试兜住的**，所以症状会当场显形，不算无声失效 | 加列的人自己记得加。真要机器化，可以让 `_ACCEL_COLUMNS` 从 `pg_schema.sql` 里现解析（那份 DDL 已经是单一事实源），但正则解析 DDL 又是一处新的漂移源 —— 条目只有一条时不值得 |
 | 2026-09-12 | p10 | `deploy/polardb-live.md` §3.6 那组 `ef_search` 实测读数（HNSW p50 0.62ms、召回 99.3%、20 万行）量的是 **8/30 当时临时建的 `kb_doc_pg`**，不是装配路径上的 `kb_doc`。T139 把同类能力接到了 `kb_doc` 上，但**没有在 20 万行规模上重量过** | 那组数字现在更有参考价值了（同一种索引、同一个算子），但仍然不是 `kb_doc` 的读数。对外引用时别把两者说成一回事 | 真跑日若有余裕，在 PolarDB 上对 `kb_doc` 跑一次同规模的对照，把读数补进 `polardb-live.md` 的新一节。**不是必须**：复赛演示的语料只有几百条，HNSW 与顺序扫描在这个规模上都看不出差别，那组 20 万行的数字本来就是「能撑住」的旁证而非演示路径的读数 |
+## task-t140（评委会读到的四处，2026-09-12）
+
+> 本轨办结了 `## task-t134` 第 1 条（`model-usage.json` 的 note 自打自脸）、`## task-t133` 第 2 条
+> （`arrival_basis` 被判「可疑相同」）、`## task-t136` 第 3 条（`GOVERNED_KEYS` 四处口径过期）。
+> 按契约 §A 不回头改那三行，在这里划掉。第三条的四处已全部改完，行号也刷准：
+> `deploy/nacos.md:142`（连带 `:116` / `:125`）、`deploy/nacos-live.md:236`、
+> `docs/agent-teams-gap-analysis.md:110`（`source.py:96-101` → `:124-142`）、`maos/model/client.py:41-47`。
+
+| 发现日期 | Phase | 问题 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | `scripts/make_case_bundle.py` 写 `roundtable.json` 那一段的注释仍写着「圆桌基线上不落库（T113 未并入）」—— 与本轨刚改掉的那条 note 是同一个过期说法的另一份 | 只在**源码注释**里，读证据的人看不到（产物里没有这句）。但下一个改这个脚本的人会照它判断 | 本轨没改：派单 §3.1 明令「别顺手改这个脚本的别的段落」，且这个脚本同时是 T139 / T141 要读的产物来源。下一次动 `make_case_bundle.py` 的轨顺手删掉那半句 |
+| 2026-09-12 | p10 | `maos/roundtable/speaker.py` 模块 docstring（`:14-18`）说圆桌用量「如实落进 `trace.json` 的 `unattributed_usage`」——**T134 之后不是了**，那几行按 `plan_id LIKE 'roundtable:%'` 归进了 `roundtable_traces[].cost`，`unattributed` 那一栏已归零 | 只是文字。但它是「圆桌的钱记在哪」这件事最权威的一段说明，照它去 `unattributed_usage` 里找那五行的人会找不到 | `maos/roundtable/**` 是本波谁都不许动的面（契约 §A.4），本轨一个字没改。归下一次动 roundtable 的轨，或材料面 9/20–9/21 那一轮 |
+| 2026-09-12 | p10 | `deploy/nacos.md` 的标题与 §1 / §8 仍写「四个治理旋钮」（`:1` / `:26` / `:54` / `:336` / `:343`），只有「今天有几个会落审计」那几处改成了十 | **有意的**，不是漏改：那几处说的是 T28 / T35 那两轮**做了什么**，是历史叙述与实测小结 | 不必改。若哪天有人觉得整份文档的标题该跟着现况走，那是一次重写，不是刷数目 —— 重写前先看这一行 |
+| 2026-09-12 | p10 | `docs/agent-teams-gap-analysis.md:109` 也写着「这五岗的模型调用**不落 `model_usage`**」——与本轨刚改掉的那条 note 是**同一个谎的第三处**（另两处：`make_case_bundle` 的 note 已改、`speaker.py` 的 docstring 见上一行） | 只是文字。这份文件是内部差距分析，不在评委的证据面上，但照它判断「圆桌的钱记在哪」会错 | 本轨没改：整份文件自述是**钉在 `8a6c2f9`（2026-09-07）的只读测绘快照**，「行号会漂，核对请用同一 sha」。派单 §3.3 只点名 `:110` 那一行的治理键数目，改它是派单明令；顺手再改 `:109` 就越过了「刷过期数目」与「重写一份快照」的界。下一次有人重写这份分析时一并改 |
+| 2026-09-12 | p10 | `docs/expected-metrics.json` 的 `collected` 落后：本轨新增 8 条测试（`test_pg_snapshot_t140.py`，**一条 PG 门控都没有**，纯单元），worktree 实跑无库档 `1 failed, 3878 passed, 93 skipped`、有库档 `1 failed, 3956 passed, 15 skipped` | `test_expected_metrics::test_collected_count_matches_source_of_truth` 红。**预期内**（契约 §0 点名「谁都不许动那个文件」） | 整合期按合并树的实跑末行一次刷到位。本轨的 8 条在两档里都 passed，所以 `pg_gated_tests` 不变（仍是 78） |

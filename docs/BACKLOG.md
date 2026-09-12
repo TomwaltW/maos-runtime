@@ -2711,3 +2711,26 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | `docs/BACKLOG.md ## task-t140` 里指向 `docs/agent-teams-gap-analysis.md:109` 的行号差一行（实为 `:108`），且同一份文件 `:232` 还有第二处同样的过期说法，条目里没提 | 下一轮照这条去 `:109` 找，落在的是「- 房间身份：每岗可有独立 Matrix 账号…」那一行；按「另两处」的说法只改两处，`:232` 会被漏掉 | 纯文字。`agent-teams-gap-analysis.md` 自述是钉在 `8a6c2f9` 的只读测绘快照，重写它是另一件事 —— 归 Wave G 的 T152（它独占那一族文档的漂移清单） |
 | 2026-09-12 | p10 | **离线演练夹具此前整体偏离真房间**：四条结果面回执的文案、两张回帖卡的首行全是手写的，三波房间文案改动一次都没让它红。整合期用真 router 抓原文逐条改回（`/assign` 是「已派单」不是「已改派」；`/resolve` 是「已关单 …（settled）· 提交人 …」+ 四判据行，没有「对客户口径」那一行；`/confirm` `/complain` 第二行是四判据行不是「结果面：…」；回帖卡首行是 `已放行 <案号>（操作人 …）` + `<摘要> · 案子 <案号>` 两行） | 已修，并加了 `test_the_fixture_outcome_replies_match_the_real_templates` 把夹具钉到 `outcome_commands.py` 的字面模板上 | 遗留一件：夹具里那张 `┌─ 收口 · approve` 箱线卡与 `[事实卡]` 后缀，对抗验证指出房间侧**确实**有一张收口卡（`hiclaw/room_ingress.py::_ChairTeam._chair()` → `hiclaw/room_voices.py::render_verdict_card()`），但形状是 HTML，不是 `room_team_smoke.py` 打到 stdout 的那个箱线形状。**没改**（`hiclaw/**` 本波无人独占）。归下一波动 `hiclaw/` 的轨：按 `render_verdict_card()` 的真产物改夹具那一条 |
 | 2026-09-12 | p10 | 同一张 `approval_record` 上，闸循环那几行的 `approver` 带岗位后缀（`@boss:maos.local（supervisor）`），房间补落那行是裸账号（`@boss:maos.local`）—— 同一个人两种写法 | 今天没有按 `approver` 精确匹配的查询，所以不是缺陷。但「这一单谁签的」若哪天要按人聚合，两种写法会把同一个人算成两个 | 无需当场处理，记一笔免得下一个人以为是数据脏。真要统一，统一到带岗位后缀那一种（它信息更全），并同时改两处写入点 |
+
+## task-t143（结果面第二档 + 四判据接上 DAG，2026-09-12）
+
+**本轨办结三条老账**（原条目留在原处、一个字未改，按跨轨契约 §A.3 只在这里注明出处）：
+
+- 办结 `## task-t114（单案例端到端证据束，2026-09-11）` 里「`handle_resolve` 把 `resolution_kind`
+  写死成 `CP.RESOLUTION_SETTLED`」那条 —— `/resolve` 加了 `--not-settled` 第二档。**形状与当初
+  建议的末位可选参数不同**（选了紧跟工单号的开关位），理由记在 `docs/DECISIONS.md ## task-t143` 第 1 行。
+- 办结 `## task-t122` 里「`outcome._receipt_source()` 读观察回执的**顶层**」那条 ——
+  改成 `detail.gateway` 先读、顶层两个键后读，`ManualReceiptAdapter` 与码表一个字节没动。
+- 办结 `## task-t129` 里「`CaseOutcomeComputed` 事件只挂得上 `plan_id`」那条 ——
+  `record_case_outcome` 加了 keyword-only 的 `trace_id` / `task_id`，三个入站函数一起透传；
+  钉现状的那条反向测试改判成正向（新名字
+  `test_case_outcome_computed_now_carries_the_whole_trace_triple`，判据是查库）。
+  连带补齐 `## 整合期 p10-c（Wave C 五轨合并，2026-09-11）` 里「三个事件的 `trace_id` /
+  `task_id` 是空的」那条的最后一格 —— 另两个事件 T129 已补，只剩这一个。
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | 🔴 **证据束里那条 `CaseOutcomeComputed` 仍然只挂 `plan_id`**。本轨补的 trace 三件套只在**房间命令面**填得上（`/resolve` `/confirm` `/complain` 经 `router._command_extras` 拿到三件套）；证据束走的是另一条路 —— `PlanFinalizer.poll` → `maos/kb/promotion.py::promote_case`（`:176`）与 `scripts/make_case_bundle.py:587`，两处都只传 `plan_id` | 评委在 trace 树里看的是**证据束**，而束里那条事件照旧接不上 DAG —— 本轨的目标在房间面达成了，在证据面没有。实测（重产 `--all-paths` 之后）：`evidence/case-real-01/{happy,gateway_fail}/event-chain.json` 里 `CaseOutcomeComputed` 的 `trace_id` / `task_id` 仍是空串。**连带一条好消息**：证据面因此不受本轨影响，本轨不需要为自己重产束 | **本轨一个字没改**：`maos/kb/**` 是 T145 独占、`scripts/make_case_bundle.py` 是 T144 独占。改法 3–5 行：`promote_case` 手上有 `plan_id`，照 `router._command_extras` 的写法取 `store.get_plan(plan_id)["trace_id"]` 与那条 `-payment` 任务，透传给 `record_case_outcome`（两个参数已经在了，keyword-only + 缺省空串）。归整合期或 Wave H |
+| 2026-09-12 | p10 | **`/compensate` 两处回帖里的「关单」示范只给缺省形状**（`outcome_commands.py` 的「不用补开」与「已补开」两段都印 `关单：/resolve <单号> <渠道流水号> <线下凭证摘要>`），没提第二档 | 不是缺陷：那一行给的是最常见的走法，第二档在 `/help`（router.USAGE）与 `/resolve` 参数不合法时回的 USAGE 里都看得到。但房间里的人最先看到的是这一行，真跑日若撞上「确实没退成」那种单，他可能要先翻一次 `/help` | 本轨没改（派单只点名两处 USAGE 必须同步，改这两行属范围外）。要加就一行字：`（没退成加 --not-settled）`。归下一个动 `outcome_commands.py` 回帖模板的轨 |
+| 2026-09-12 | p10 | **`docs/real-run-runbook.md` 与材料面里 `/resolve` 的用法仍只写缺省形状**（runbook 里那条真跑日照抄的命令行没有 `--not-settled`） | 真跑日照 runbook 敲命令时，「线下核对过、这笔确实没退成」这一档在纸面上不存在 —— 而这一档正是本轨为真跑日补出来的 | 本轨白名单里没有那些文件，**一个字都没改**。归 Wave H：`real-run-runbook.md`（T151）与 demo-script / defense-brief（材料面）各刷一句。回执里已单列 |
+| 2026-09-12 | p10 | `compensation_record` 一个案子有两行（`kind=refund_request_revoked` 与 `kind=manual_ticket`），而 `_correction_of` 只看「有没有补偿记录」就判 `compensated` | 今天不误判（有工单的案子判 compensated 是对的），但那条判据的分母其实是「两类补偿记录之一」。将来若出现只作废请求、不开工单的路径，它也会被判成「人工纠错=compensated」，而那一档本该是 `overridden` 或 `none` | 记一笔免得下一个人以为分母是工单。真要收窄得先定义「哪几类 compensation_record 算人工纠错」，那是判据面的改动，不是一行 |

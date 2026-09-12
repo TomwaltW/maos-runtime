@@ -65,6 +65,10 @@ APPROVERS = frozenset({BOSS, PAYOPS})
 #: 写在 `/resolve` 的用法里，也是这份人工凭证作为外部事实的出处。
 EVIDENCE = "20260911104500999 支付宝商家后台已入账 6800.00 元"
 
+#: 第二档的线下凭证（T143）：人到渠道后台核对过，这笔**确实没退成**。
+#: 形状与上面那一份一样（第一个词是渠道流水号），区别只在它说的事实。
+EVIDENCE_NOT_SETTLED = "20260911110000777 支付宝商家后台查无此笔入账，收款账户被冻结"
+
 
 class FakeAdapter:
     """记下发出去的消息。`configured` 恒真 —— 这一层测的不是凭证。"""
@@ -314,7 +318,12 @@ def chain(tmp_path_factory):
     said["assign"] = r.handle(_msg(f"/assign {TICKET} payment_ops", msg_id="c3"))
     said["resolve"] = r.handle(_msg(f"/resolve {TICKET} {EVIDENCE}",
                                     sender=PAYOPS, msg_id="c4"))
-    return {"store": store, "said": said, "router": r, "adapter": ad}
+    # 关单**那一刻**的四判据行（T143）。下面 `/confirm` 与 `/complain` 两条测试会把
+    # 这一行改掉（投诉一开 `business_success` 就翻），而「缺省回帖逐字未变」那条断言
+    # 要比的是关单当时印出去的那句四判据 —— 隔着两次改动再读库，比的就是另一行了。
+    at_resolve = OUT.read_case_outcome(store, tenant_id=TENANT, case_id=CASE)
+    return {"store": store, "said": said, "router": r, "adapter": ad,
+            "outcome_at_resolve": at_resolve}
 
 
 def test_gateway_failure_opens_a_manual_ticket(chain):
@@ -1014,20 +1023,62 @@ def test_room_commands_hang_their_events_on_the_same_trace(chain):
             f"{event_type} 的 task_id 没挂在付款那一步上：{row['task_id']!r}")
 
 
-def test_case_outcome_computed_still_only_carries_the_plan_id(chain):
-    """`CaseOutcomeComputed` **只有 `plan_id`** —— 这一条 T129 补不了，钉住现状。
+def test_case_outcome_computed_now_carries_the_whole_trace_triple(chain):
+    """🔴 `CaseOutcomeComputed` 的 trace 三件套齐全（T143 补上，判据是**查库**）。
 
-    它由 `maos/domain/refund/outcome.py::record_case_outcome` 落，而那个文件在
-    跨轨契约 §A 的禁动面上（`{projection,objects,guard,outcome}.py` 一个字不许动）；
-    它 append 事件时压根没有 `trace_id` / `task_id` 这两个键，命令层把 extras 填满
-    也传不进去。钉成测试而不是只写进 BACKLOG：不钉的话「三个事件里有一个挂不上」
-    这件事会随着下次有人读代码重新发现一遍。
+    T129 时这一条补不了：`record_case_outcome` append 事件时压根没有 `trace_id` /
+    `task_id` 这两个键，命令层把 extras 填满也传不进去，而 `outcome.py` 那时在
+    禁动面上。于是三个事件里只有它挂不上 —— 按 trace 串「这一单发生过什么」时它
+    接不上 DAG，在事件表里像是另一件事的记录，而评委第三条要的正是「用四判据
+    验证整个 DAG」。T143 给那个函数加了两个 keyword-only 参数（缺省空串，四个
+    白名单外的调用方一个都不用改），命令层三处一起透传。
+
+    判据查的是 `event_log` 那三列，**不是入参** —— 断言入参等于用自己证明自己：
+    参数传对了而 append 那一段没接上，测试照样绿。
     """
-    rows = _events(chain["store"], OUT.EVENT_OUTCOME_COMPUTED)
+    store = chain["store"]
+    plan_id = objects.query(store, "SELECT plan_id FROM refund_case WHERE case_id=?",
+                            (CASE,))[0]["plan_id"]
+
+    rows = _events(store, OUT.EVENT_OUTCOME_COMPUTED)
     assert rows, "CaseOutcomeComputed 一条都没落"
-    assert rows[-1]["plan_id"], "plan_id 是它今天唯一挂得上的一格"
-    assert not rows[-1]["trace_id"], (
-        "trace_id 居然有值了 —— outcome.py 变了，本测试与 BACKLOG 那条要一起改")
+    row = rows[-1]
+    assert row["plan_id"] == plan_id
+    assert row["trace_id"], "trace_id 还是空的 —— 四判据这条事件仍接不上 DAG"
+    assert str(row["task_id"] or "").endswith("-payment"), (
+        f"task_id 没挂在付款那一步上：{row['task_id']!r}（口径同另两条事件）")
+    # 三个事件挂法一致，这才是「接得上」的完整判据：只看自己那一条，看不出它
+    # 是不是挂到了另一条链上。
+    for event_type in (CP.EVENT_COMPENSATION_ASSIGNED, CP.EVENT_COMPENSATION_RESOLVED):
+        peer = _events(store, event_type)[-1]
+        assert (peer["trace_id"], peer["task_id"]) == (row["trace_id"], row["task_id"]), (
+            f"{event_type} 与 CaseOutcomeComputed 挂在不同的 trace/task 上")
+
+
+def test_confirm_and_complain_also_hang_their_outcome_event_on_the_trace(chain):
+    """🔴 `/confirm` `/complain` 落的那条 `CaseOutcomeComputed` 也带三件套（T143）。
+
+    这两条命令走的是 `record_confirmation` / `record_complaint`，它们各自再调
+    `record_case_outcome` —— 只给主函数加参数、不给这两个入站函数透传的话，房间里
+    打这两条命令落下的仍是只挂 `plan_id` 的孤行，而那是四判据里**客户确认**与
+    **投诉**这两条的入站口，恰恰最该串得起来。
+
+    两条命令**在本测试里自己打**，判据是「新落下的那几行」：借上面第 6 节那两条
+    测试留下的行会让本测试依赖文件内的执行顺序，单挑一条跑（`-k`）就假绿。
+    """
+    store, r = chain["store"], chain["router"]
+    before = len(_events(store, OUT.EVENT_OUTCOME_COMPUTED))
+
+    r.handle(_msg(f"/confirm {CASE}", msg_id="t143-c"))
+    r.handle(_msg(f"/complain {CASE} 到账金额比核定的少了 200", msg_id="t143-p"))
+
+    rows = _events(store, OUT.EVENT_OUTCOME_COMPUTED)
+    assert len(rows) >= before + 2, (
+        f"两条命令各该落一次重算，实际只多了 {len(rows) - before} 条")
+    for row in rows[before:]:
+        assert row["trace_id"], "trace_id 是空的 —— 入站函数没把三件套透传下去"
+        assert str(row["task_id"] or "").endswith("-payment"), (
+            f"task_id 没挂在付款那一步上：{row['task_id']!r}")
 
 
 # ==========================================================================
@@ -1109,3 +1160,204 @@ def test_ensure_room_schema_is_idempotent():
     have = {row["name"] for row in objects.query(
         store, "SELECT name FROM pragma_table_info('compensation_record')", ())}
     assert cols <= have, "加列探针没跑到 —— 三句 ensure 的顺序被换了？"
+
+
+# ==========================================================================
+# 17. /resolve 的第二档 —— 线下核对过，这笔确实没退成（T143）
+# ==========================================================================
+def test_parse_resolve_args_defaults_to_settled():
+    """缺省形状逐字同从前：第一个词当凭证引用，整句当摘要，结论 `settled`。"""
+    assert OC.parse_resolve_args([TICKET, "20260911104500999", "支付宝", "已入账"]) == (
+        CP.RESOLUTION_SETTLED, "20260911104500999", "20260911104500999 支付宝 已入账")
+    # 只给流水号、不写摘要也照旧收：那时摘要与引用是同一个词。
+    assert OC.parse_resolve_args([TICKET, "SN-1"]) == (
+        CP.RESOLUTION_SETTLED, "SN-1", "SN-1")
+
+
+def test_parse_resolve_args_eats_the_not_settled_flag():
+    """标记在紧跟工单号那一位，认到就吃掉：后面照旧是引用 + 摘要。"""
+    assert OC.parse_resolve_args(
+        [TICKET, OC.FLAG_NOT_SETTLED, "SN-9", "账户被冻结", "退不回去"]) == (
+        CP.RESOLUTION_NOT_SETTLED, "SN-9", "SN-9 账户被冻结 退不回去")
+    # 标记不进摘要 —— 摘要是提交人写的凭证原文，不该多出一个命令开关。
+    kind, ref, summary = OC.parse_resolve_args([TICKET, OC.FLAG_NOT_SETTLED, "SN-9"])
+    assert (kind, ref) == (CP.RESOLUTION_NOT_SETTLED, "SN-9")
+    assert OC.FLAG_NOT_SETTLED not in summary
+
+
+def test_parse_resolve_args_refuses_an_unknown_flag_instead_of_guessing():
+    """🔴 认不出的标记回 `None`（调用方回 USAGE），**不许当凭证吃掉**。
+
+    `--not-setled` 少一个字母若被当成渠道流水号，系统会照旧关出一张 `settled` 的单
+    （回填一条到账观察），还把那个错字留成这份凭证的出处 —— 而按键的人以为自己
+    关的是「这笔确实没退成」。宁可什么都不做，回一句用法。
+    """
+    assert OC.parse_resolve_args([TICKET, "--not-setled", "SN-9"]) is None
+    assert OC.parse_resolve_args([TICKET, "--settled", "SN-9"]) is None
+    # 只给标记、不给凭证一样不收：凭证引用是这份人工凭证作为外部事实的全部出处。
+    assert OC.parse_resolve_args([TICKET, OC.FLAG_NOT_SETTLED]) is None
+    assert OC.parse_resolve_args([TICKET]) is None
+    assert OC.parse_resolve_args([]) is None
+
+
+def test_parse_resolve_args_does_not_hunt_for_flags_inside_the_summary():
+    """摘要里出现的 `--…` 原样留在摘要里 —— 标记只在固定那一位认。"""
+    kind, ref, summary = OC.parse_resolve_args(
+        [TICKET, "SN-7", "渠道备注", OC.FLAG_NOT_SETTLED, "是对方系统里的字样"])
+
+    assert kind == CP.RESOLUTION_SETTLED, "在自由文本里找标记 = 替提交人改他写的凭证"
+    assert ref == "SN-7"
+    assert summary.endswith(f"{OC.FLAG_NOT_SETTLED} 是对方系统里的字样")
+
+
+def test_an_unknown_flag_only_replies_usage_and_closes_nothing(tmp_path):
+    """🔴 打错标记这一步**什么都不做**：回用法，工单照旧开着。
+
+    判据是库 —— 回帖里有没有「用法」是措辞，工单关没关是事实。
+    """
+    store = _room_store()
+    path = _ledger_file(tmp_path, {ORDER: FAIL_CODE})
+    r, _ad = _router(store, path)
+    r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="u1"))
+    r.handle(_msg(f"/approve {CASE}", msg_id="u2"))
+    r.handle(_msg(f"/reject {CASE} 钱没退出去，不签这一步", msg_id="u3"))
+    r.handle(_msg(f"/assign {TICKET} payment_ops", msg_id="u4"))
+
+    out = r.handle(_msg(f"/resolve {TICKET} --not-setled {EVIDENCE_NOT_SETTLED}",
+                        sender=PAYOPS, msg_id="u5"))
+
+    assert "用法" in out and "已关单" not in out
+    ticket = CP.ticket_of(store, TENANT, CASE)
+    assert not str(ticket.get("resolved_at") or ""), "打错一个标记把单关掉了"
+    assert not str(ticket.get("resolution_kind") or ""), "结论被写上了"
+    obs = objects.query(store, "SELECT * FROM payment_observation WHERE case_id=?", (CASE,))
+    assert not [o for o in obs if "MANUAL" in str(o["gateway_code"])], (
+        "认不出的标记被当成凭证吃掉了 —— 落下了一条人工观察")
+
+
+def test_both_usages_show_how_to_close_a_case_that_did_not_settle():
+    """🔴 两处用法都看得到第二档 —— 房间里 `/help` 走的是 router 那份。
+
+    只改一处的症状不是报错，是真跑日那天人在房间里看不到新用法，于是
+    「线下核对过、这笔确实没退成」这种单还是只能敲一条说谎的 `settled`。
+    """
+    from maos.ingress.router import USAGE as ROUTER_USAGE
+
+    for text in (OC.USAGE, ROUTER_USAGE):
+        assert "/resolve" in text
+        assert OC.FLAG_NOT_SETTLED in text, "这份用法里看不到第二档怎么敲"
+
+
+@pytest.fixture(scope="module")
+def not_settled_chain(tmp_path_factory):
+    """同一条链，最后那一步带 `--not-settled`：线下核对过，这笔确实没退成。
+
+    自己一条链、自己一个库：`chain` 那条链的单已经关过了，在它上面再关一次会被
+    `compensation_close` 正确拒绝（那条路测的是另一件事，见第 14 节）。
+    """
+    tmp = tmp_path_factory.mktemp("room-not-settled")
+    store = _room_store()
+    path = tmp / "ledger.json"
+    path.write_text(json.dumps(_ledger({ORDER: FAIL_CODE}), ensure_ascii=False),
+                    encoding="utf-8")
+    r, ad = _router(store, path)
+
+    said: dict[str, str] = {}
+    said["refund"] = r.handle(_msg(f"/refund {ORDER} 质量问题", msg_id="n1"))
+    said["approve"] = r.handle(_msg(f"/approve {CASE}", msg_id="n2"))
+    said["reject"] = r.handle(_msg(f"/reject {CASE} 钱没退出去，不签这一步",
+                                   msg_id="n2b"))
+    said["assign"] = r.handle(_msg(f"/assign {TICKET} payment_ops", msg_id="n3"))
+    said["resolve"] = r.handle(
+        _msg(f"/resolve {TICKET} {OC.FLAG_NOT_SETTLED} {EVIDENCE_NOT_SETTLED}",
+             sender=PAYOPS, msg_id="n4"))
+    return {"store": store, "said": said, "router": r, "adapter": ad}
+
+
+def test_the_second_kind_closes_the_ticket_as_not_settled(not_settled_chain):
+    """🔴 `--not-settled` 关出来的单：结论 `not_settled`，回填的观察是 `failed`。
+
+    回帖把两者**分两处印**（铁律 8）：`resolution_kind` 是这张工单以什么结论关闭
+    （人的结论，`compensation_record` 自己的列，不是 Task 状态 —— 铁律 9），
+    `observed_state` 是外部渠道说那笔钱怎么样了（`payment.observe` 这条唯一通道
+    落的观察）。这一单里两句恰恰都是「没成」，最容易被合成一句 —— 合了就分不出
+    哪一句是谁说的。
+    """
+    out = not_settled_chain["said"]["resolve"]
+    assert "已关单" in out and f"（{CP.RESOLUTION_NOT_SETTLED}）" in out
+    assert "observed_state=failed" in out
+    assert "observed_state=settled" not in out, "第二档下印出了一条到账观察"
+
+    ticket = CP.ticket_of(not_settled_chain["store"], TENANT, CASE)
+    assert ticket["resolution_kind"] == CP.RESOLUTION_NOT_SETTLED
+    assert ticket["resolution_observation_id"], "关单没回填观察引用"
+
+
+def test_the_second_kind_writes_a_failed_manual_observation(not_settled_chain):
+    """观察经 `ManualReceiptAdapter` -> `payment.observe` 落，码是 `MANUAL.NOT_SETTLED`。
+
+    码值从码表取，不在测试里手写第二份字面量；`biz_status` 照旧不动 ——
+    `compensated` 是终态，不为回填一条观察加新迁移（铁律 9）。
+    """
+    from maos.tools.gateway import MANUAL_NOT_SETTLED
+
+    store = not_settled_chain["store"]
+    obs = objects.query(
+        store, "SELECT * FROM payment_observation WHERE case_id=? ORDER BY observed_at",
+        (CASE,))
+    last = obs[-1]
+    assert last["observed_state"] == "failed"
+    assert last["gateway_code"] == MANUAL_NOT_SETTLED.code
+    receipt = json.loads(last["raw_receipt_json"] or "{}")
+    assert receipt["detail"]["gateway"] == OUT.MANUAL_RECEIPT_SOURCE
+    assert receipt["detail"]["submitted_by"] == PAYOPS, "凭证的提交人没留下"
+    assert receipt["detail"]["evidence_ref"] == EVIDENCE_NOT_SETTLED.split()[0]
+
+    ticket = CP.ticket_of(store, TENANT, CASE)
+    assert ticket["resolution_observation_id"] == (
+        f"{last['request_id']}@{last['observed_at']}"), "工单指到了别人那条观察上"
+    case = objects.query(
+        store, "SELECT biz_status FROM refund_case WHERE case_id=?", (CASE,))[0]
+    assert case["biz_status"] == "compensated"
+
+
+def test_the_second_kind_leaves_the_case_unsettled_and_unsuccessful(not_settled_chain):
+    """🔴 四判据：`arrival=unsettled`、业务没算成。
+
+    `unsettled` 与 `unknown` 不许混：网关明确回了 failed、人也线下核对过确实没退成，
+    两条都是**明确的**失败观察；`unknown` 说的是「问不出来」，那笔钱可能已经出去了。
+    """
+    row = OUT.read_case_outcome(not_settled_chain["store"], tenant_id=TENANT,
+                                case_id=CASE)
+
+    assert row["arrival"] == OUT.ARRIVAL_UNSETTLED
+    assert not row["business_success"], "一笔确实没退成的单被判成业务成功"
+    # 有工单就判 compensated（工单那一档信息更全）—— 与第二档无关，钉住不受影响。
+    assert row["manual_correction"] == OUT.CORRECTION_COMPENSATED
+
+
+def test_the_default_resolve_receipt_is_byte_identical_to_the_baseline(chain):
+    """🔴 不带标记的 `/resolve` 回帖**逐字**同从前 —— 第二档是加出来的一档。
+
+    按库里的行把整段文本重建再比对，比 `assert "已关单" in out` 硬得多：模板少一个
+    字、`kind` 与 `observed_state` 被合成一句、四判据那行挪了位置，它都红。
+    末行是 router 补的客户告知（T137），跟在同一条回帖里，一起比。
+
+    四判据那一行取自 fixture 在**关单当刻**存下的快照：第 6 节那两条测试之后
+    库里那一行已经变了（投诉一开 `business_success` 就翻）。
+    """
+    store = chain["store"]
+    obs = objects.query(
+        store, "SELECT * FROM payment_observation WHERE case_id=? ORDER BY observed_at",
+        (CASE,))[-1]
+    ticket = CP.ticket_of(store, TENANT, CASE)
+    assert ticket["resolution_kind"] == CP.RESOLUTION_SETTLED, "缺省结论变了"
+    assert obs["observed_state"] == OUT.ARRIVAL_SETTLED
+
+    expected = (
+        f"已关单 {TICKET}（{CP.RESOLUTION_SETTLED}）· 提交人 {PAYOPS}\n"
+        f"回填观察：{obs['request_id']}@{obs['observed_at']}"
+        f"（observed_state={OUT.ARRIVAL_SETTLED}，来源 人工线下凭证）\n"
+        f"{OC._verdict_line(chain['outcome_at_resolve'])}\n"
+        "已按补偿收口的事实告知客户（工单号与凭证引用都在正文里）")
+    assert chain["said"]["resolve"] == expected

@@ -146,8 +146,85 @@ def test_evidence_complete_needs_every_required_type():
     assert full["evidence_complete"] is True
 
 
+def _manual_receipt(outcome_kind: str = "success") -> dict:
+    """一份**真实形状**的人工线下凭证回执（T143）。
+
+    由 `ManualReceiptAdapter` 亲手产出，不手搓：真实回执的顶层 `source` 是码表里
+    那句中文说明，`gateway='manual'` 这个标记只在 `detail` 里。夹具来自真正的
+    生产者，适配器哪天改了回执形状，靠它的测试就跟着红 —— 而不是继续钉着一个
+    真实世界里不存在的形状（下面那条合成夹具的教训）。
+    """
+    from maos.tools.gateway import ManualReceiptAdapter
+
+    return ManualReceiptAdapter().submit(
+        request_id="req-1", idempotency_key="idem-1", outcome=outcome_kind,
+        evidence_ref="20260911104500999", summary="支付宝商家后台已入账 6800.00 元",
+        submitted_by="@payops:maos.local",
+        submitted_at="2026-09-11T10:45:00+00:00").to_dict()
+
+
+def _gateway_receipt() -> dict:
+    """一份真实形状的**普通网关**终态回执 —— 同样走真正的生产者。"""
+    from maos.tools.gateway import MockGateway, RefundRequest
+
+    gw = MockGateway(settle_after=1)
+    accepted = gw.refund(RefundRequest(out_trade_no="T-OK", refund_amount="1.00",
+                                       idempotency_key="idem-2", reason="quality_defect"))
+    return gw.query(accepted.request_id).to_dict()
+
+
+def _with_receipt(receipt: dict) -> list[dict]:
+    """把一份回执包成一条观察行（`payment_observation` 那张表的形状）。"""
+    return [{"observed_state": "settled", "request_id": "r", "observed_at": "T",
+             "raw_receipt_json": json.dumps(receipt, ensure_ascii=False, sort_keys=True)}]
+
+
+def test_manual_correction_reads_the_real_manual_receipt_shape():
+    """🔴 真实形状的人工回执要判出 `overridden` —— 判据在 `detail.gateway`（T143）。
+
+    从前 `_receipt_source` 只读回执顶层，而真实人工回执的顶层 `source` 是
+    `MANUAL_SETTLED.source` 那句中文说明（「人工提交的线下凭证摘要（**非**支付宝
+    官方码表…）」），`gateway='manual'` 只在 `detail` 里。于是
+    `== MANUAL_RECEIPT_SOURCE` **恒不命中**：四判据里「人工纠错」这一档从来判不
+    出来，且没有任何测试会红 —— 唯一钉它的那条喂的是手搓的 `{"source": "manual"}`，
+    一种真实世界里不存在的回执形状，钉的是它自己的想象。
+    """
+    from maos.tools.gateway import MANUAL_SETTLED
+
+    receipt = _manual_receipt()
+    # 先把「顶层读不出 manual」这件事本身钉住：码表那句 source 哪天被改成
+    # "manual"，下面那条断言会因为一个**错误的理由**变绿。
+    assert receipt["source"] == MANUAL_SETTLED.source
+    assert receipt["source"] != outcome.MANUAL_RECEIPT_SOURCE
+    assert receipt["detail"]["gateway"] == outcome.MANUAL_RECEIPT_SOURCE
+
+    row = outcome.compute_case_outcome(observations=_with_receipt(receipt))
+    assert row["manual_correction"] == outcome.CORRECTION_OVERRIDDEN
+
+
+def test_an_ordinary_gateway_receipt_is_not_a_manual_correction():
+    """🔴 普通网关回执仍判 `none` —— 先读 `detail` 不许把 API 观察算成人工纠错。
+
+    这是 T143 那处改动的负例：`detail.gateway` 提到顶层两个键之前读，
+    所以要有一条盯着「网关回执的 detail 里本来就没有 `gateway` 这个键」。
+    """
+    receipt = _gateway_receipt()
+    assert "gateway" not in receipt["detail"], (
+        f"网关回执的 detail 里出现了 gateway 键：{receipt['detail']!r} —— "
+        "它会被当成人工纠错的标记")
+
+    row = outcome.compute_case_outcome(observations=_with_receipt(receipt))
+    assert row["manual_correction"] == outcome.CORRECTION_NONE
+
+
 def test_manual_correction_prefers_compensation_over_manual_receipt():
-    """补偿工单与人工回执都在时判 compensated —— 走了工单的那一档信息更全。"""
+    """补偿工单与人工回执都在时判 compensated —— 走了工单的那一档信息更全。
+
+    夹具刻意是**合成**的顶层形状（`{"source": "manual"}`）：`_receipt_source` 今天
+    仍读顶层那两个键，别的域将来自己拼的回执行只有顶层，这一条钉的就是那条读法。
+    真实回执的形状由上面 `test_manual_correction_reads_the_real_manual_receipt_shape`
+    钉着（T143）。
+    """
     manual_obs = [{"observed_state": "settled", "request_id": "r", "observed_at": "T",
                    "raw_receipt_json": json.dumps({"source": "manual"})}]
     both = outcome.compute_case_outcome(
@@ -254,6 +331,45 @@ def test_no_event_without_plan_id(store):
     _observe(store, state="settled")
     outcome.record_case_outcome(store, tenant_id=TENANT, case_id=CASE)
     assert store.list_event_log("") == []
+
+
+def test_the_outcome_event_carries_the_trace_triple_when_it_is_given(store):
+    """🔴 给了 trace 三件套就一起落进事件行；不给照旧只剩 plan_id（T143）。
+
+    判据是**查库那三列**，不是入参 —— 断言入参等于用自己证明自己。
+
+    第二半（不给的那一次仍是两个空串）同样要钉：`record_case_outcome` 还有四个
+    白名单外的调用方拿不到 trace 三件套（`kb/promotion.py`、`scripts/run_case.py`、
+    `scripts/make_case_bundle.py`、`scripts/case_inbound.py`），两个参数都是
+    keyword-only + 缺省空串，它们一个字都不用改 —— 这一条就是那件事的判据。
+    """
+    _observe(store, state="settled")
+    outcome.record_case_outcome(store, tenant_id=TENANT, case_id=CASE, plan_id="plan-t",
+                                trace_id="tr-1", task_id="plan-t-payment")
+    outcome.record_case_outcome(store, tenant_id=TENANT, case_id=CASE, plan_id="plan-t")
+
+    rows = [e for e in store.list_event_log("plan-t")
+            if e["event_type"] == outcome.EVENT_OUTCOME_COMPUTED]
+    assert [(r["trace_id"], r["task_id"]) for r in rows] == [
+        ("tr-1", "plan-t-payment"), ("", "")]
+
+
+def test_the_inbound_functions_pass_the_trace_triple_through(store):
+    """🔴 `record_complaint` 也把三件套带下去 —— 三个入站函数一个不落。
+
+    只补主函数的症状：房间里打 `/confirm` `/complain` 落下的仍是只挂 `plan_id` 的
+    孤行，而那两条恰恰是四判据里**客户确认**与**投诉**的入站口。
+    （`/confirm` 那一侧要先有通知才走得通，端到端那条在
+    `test_room_outcome_commands.py` 第 15 节。）
+    """
+    _observe(store, state="settled")
+    outcome.record_complaint(store, tenant_id=TENANT, case_id=CASE, content="少了 200",
+                             plan_id="plan-c", trace_id="tr-c", task_id="plan-c-payment")
+
+    rows = [e for e in store.list_event_log("plan-c")
+            if e["event_type"] == outcome.EVENT_OUTCOME_COMPUTED]
+    assert rows and (rows[-1]["trace_id"], rows[-1]["task_id"]) == (
+        "tr-c", "plan-c-payment")
 
 
 # ======================================================================

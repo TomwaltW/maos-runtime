@@ -1,6 +1,6 @@
-# generated at 2026-09-12T10:09:53.503873+00:00 from 4118d817d55b76010f266e101416995da7c0790c
+# generated at 2026-09-13T03:39:00.264584+00:00 from 6ecc10a8946d43bfa0b7b3990f46ec3d7d2017da
 {
-  "git_sha": "4118d817d55b76010f266e101416995da7c0790c",
+  "git_sha": "6ecc10a8946d43bfa0b7b3990f46ec3d7d2017da",
   "case_id": "RC-2026-0904-001",
   "case_file": "scenarios/refund/cases/case_real_01.json",
   "model_mode": "scripted",
@@ -14,7 +14,7 @@
   ],
   "bundles": [
     {
-      "git_sha": "4118d817d55b76010f266e101416995da7c0790c",
+      "git_sha": "6ecc10a8946d43bfa0b7b3990f46ec3d7d2017da",
       "case_id": "RC-2026-0904-001",
       "tenant_id": "tnt-mfg-a",
       "path": "drift",
@@ -23,7 +23,7 @@
       "control_plane_backend": "sqlite",
       "title": "执行前发现外部改单：付款前那一步报漂移，核算停在 BLOCKED 等人",
       "dir": "evidence/case-real-01/drift",
-      "plan_id": "plan_6fe24fc40c1f",
+      "plan_id": "plan_500c9c33def8",
       "plan_state": "RUNNING",
       "biz_status": "submitted",
       "public_status": "",
@@ -42,10 +42,10 @@
       "event_count": 32,
       "stray_events": 0,
       "tree_errors": [],
-      "wall_ms": 135
+      "wall_ms": 160
     },
     {
-      "git_sha": "4118d817d55b76010f266e101416995da7c0790c",
+      "git_sha": "6ecc10a8946d43bfa0b7b3990f46ec3d7d2017da",
       "case_id": "RC-2026-0904-001",
       "tenant_id": "tnt-mfg-a",
       "path": "gateway_fail",
@@ -54,25 +54,23 @@
       "control_plane_backend": "sqlite",
       "title": "网关退款失败：机器返工重发一次 -> 网关改口终态失败 -> 人在付款闸上拒签 -> 开补偿工单 -> 派单 -> 线下凭证回填观察",
       "dir": "evidence/case-real-01/gateway_fail",
-      "plan_id": "plan_4cce71be425f",
+      "plan_id": "plan_9dbb96007a3f",
       "plan_state": "FAILED",
       "biz_status": "compensated",
       "public_status": "已补偿（未到账）",
       "business_success": false,
-      "skills_present": "7/8",
-      "business_ref_coverage": "9/10",
-      "business_ref_missing": [
-        "notification"
-      ],
-      "business_refs_resolved": "21/21",
-      "span_count": 80,
-      "event_count": 65,
+      "skills_present": "8/8",
+      "business_ref_coverage": "10/10",
+      "business_ref_missing": [],
+      "business_refs_resolved": "22/22",
+      "span_count": 82,
+      "event_count": 67,
       "stray_events": 0,
       "tree_errors": [],
-      "wall_ms": 169
+      "wall_ms": 159
     },
     {
-      "git_sha": "4118d817d55b76010f266e101416995da7c0790c",
+      "git_sha": "6ecc10a8946d43bfa0b7b3990f46ec3d7d2017da",
       "case_id": "RC-2026-0904-001",
       "tenant_id": "tnt-mfg-a",
       "path": "happy",
@@ -81,7 +79,7 @@
       "control_plane_backend": "sqlite",
       "title": "顺利到账：计划获批 -> 主管放行核算 -> 网关退款 -> 观察到 settled",
       "dir": "evidence/case-real-01/happy",
-      "plan_id": "plan_c9dc5205ecf8",
+      "plan_id": "plan_a09d3818aedf",
       "plan_state": "DONE",
       "biz_status": "settled",
       "public_status": "退款已到账",
@@ -92,14 +90,14 @@
         "compensation_record"
       ],
       "business_refs_resolved": "20/20",
-      "span_count": 67,
-      "event_count": 53,
+      "span_count": 68,
+      "event_count": 54,
       "stray_events": 0,
       "tree_errors": [],
-      "wall_ms": 145
+      "wall_ms": 139
     },
     {
-      "git_sha": "4118d817d55b76010f266e101416995da7c0790c",
+      "git_sha": "6ecc10a8946d43bfa0b7b3990f46ec3d7d2017da",
       "case_id": "RC-2026-0904-001",
       "tenant_id": "tnt-mfg-a",
       "path": "reject",
@@ -108,7 +106,7 @@
       "control_plane_backend": "sqlite",
       "title": "两级驳回：计划先被驳回一次，放行后主管在核算闸上驳回这一单",
       "dir": "evidence/case-real-01/reject",
-      "plan_id": "plan_75a43f25d337",
+      "plan_id": "plan_913f19829598",
       "plan_state": "FAILED",
       "biz_status": "rejected",
       "public_status": "已驳回",
@@ -122,22 +120,22 @@
         "compensation_record"
       ],
       "business_refs_resolved": "17/17",
-      "span_count": 49,
-      "event_count": 38,
+      "span_count": 50,
+      "event_count": 39,
       "stray_events": 0,
       "tree_errors": [],
-      "wall_ms": 130
+      "wall_ms": 117
     }
   ],
   "files": [
     {
       "name": ".DS_Store",
-      "bytes": 8196,
+      "bytes": 10244,
       "sourced": null
     },
     {
       "name": "INDEX.json",
-      "bytes": 4742,
+      "bytes": 4825,
       "sourced": true
     }
   ],

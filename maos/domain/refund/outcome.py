@@ -183,14 +183,33 @@ def _correction_of(compensations: Sequence[Mapping[str, Any]],
 
 
 def _receipt_source(observation: Mapping[str, Any]) -> str:
-    """观察行回执里自报的来源。读不出来当空串 —— 判据不该被一份脏 JSON 掀翻。"""
+    """观察行回执里自报的来源。读不出来当空串 —— 判据不该被一份脏 JSON 掀翻。
+
+    **`detail.gateway` 先读，顶层那两个键后读**（T143）。真实人工回执的顶层 `source`
+    是码表里那句中文说明（`MANUAL_SETTLED.source`「人工提交的线下凭证摘要（**非**
+    支付宝官方码表…）」，由 `gateway._receipt` 从码表照抄），而 `gateway='manual'`
+    这个标记只在 `detail` 里（`ManualReceiptAdapter.submit` 亲手打上）。只读顶层的话
+    `== MANUAL_RECEIPT_SOURCE` **恒不命中** —— `overridden` 那一档从来判不出来，
+    且没有任何测试会红（原先那条用的是手搓的 `{"source": "manual"}`，一种真实世界里
+    不存在的回执形状，钉的是它自己的想象）。
+
+    判据取自回执自己的 `detail.gateway`，口径逐字同 `payment_observe._is_manual`：
+    网关**名字**是装配方随手起的（场景里叫 `s7-manual`，测试里叫别的），detail 里
+    那个标记跟着回执一起进 `raw_receipt_json`，审计看到的与这里判的是同一个字节。
+
+    顶层那两个键照旧读：合成回执（测试夹具、别的域将来自己拼的回执行）只有顶层。
+    先读 detail 不改变网关回执今天的取值 —— `_receipt` 往 detail 里只放
+    `duplicate_of` / `resolved_from`，没有 `gateway` 这个键。
+    """
     try:
         receipt = json.loads(observation.get("raw_receipt_json") or "{}")
     except (TypeError, ValueError):
         return ""
     if not isinstance(receipt, dict):
         return ""
-    return str(receipt.get("source") or receipt.get("gateway") or "")
+    detail = receipt.get("detail")
+    gateway = detail.get("gateway") if isinstance(detail, dict) else ""
+    return str(gateway or receipt.get("source") or receipt.get("gateway") or "")
 
 
 def _complaint_of(complaints: Sequence[Mapping[str, Any]]) -> str:
@@ -331,12 +350,23 @@ def read_case_outcome(store: Any, *, tenant_id: str, case_id: str) -> dict | Non
 
 
 def record_case_outcome(store: Any, *, tenant_id: str, case_id: str,
-                        plan_id: str | None = None) -> dict:
+                        plan_id: str | None = None,
+                        trace_id: str = "", task_id: str = "") -> dict:
     """按库里当前的观察重算四判据，落 `case_outcome`，落事件 `CaseOutcomeComputed`。
 
     可以反复调：结论随观察变（一笔先 unknown、人工补录回执后变 settled 是真实路径，
     T117 的闭环走的就是它），所以这一行是**就地覆盖**而不是一次性写入。
     `computed_at` 记的是这次算的时刻，不是业务发生的时刻。
+
+    `trace_id` / `task_id` 只进事件行，不进 `case_outcome`（T143）。补它们的理由是
+    四判据这条事件从前**只挂 `plan_id`**：按 trace 串「这一单发生过什么」时它接不上
+    DAG，在事件表里像是另一件事的记录 —— 而评委第三条要的正是「用四判据验证整个
+    DAG」。同一条链上 `CompensationAssigned` 与 `CompensationResolved` 三件套齐全，
+    三个事件挂法不一致比三个都不挂更难查。
+
+    两个都是 **keyword-only 且缺省空串**：`kb/promotion.py`、`scripts/run_case.py`、
+    `scripts/make_case_bundle.py`、`scripts/case_inbound.py` 四个调用方拿不到 trace
+    三件套（也不该为此去改它们），缺省值一填，它们的行为逐字节不变。
     """
     ensure_outcome_schema(store)
     previous = read_case_outcome(store, tenant_id=tenant_id, case_id=case_id)
@@ -352,9 +382,16 @@ def record_case_outcome(store: Any, *, tenant_id: str, case_id: str,
     )
     row = _persist(store, tenant_id=tenant_id, case_id=case_id, computed=computed)
 
+    # `if plan_id:` 这道门不动：没有 plan 的调用方（CLI 探针、晋升时的重算）本来就
+    # 不该凭空往事件表里多加一行，改掉它会让所有证据束的事件数一起变。
     if plan_id:
         store.append_event_log({
             "plan_id": plan_id,
+            # trace 三件套凑齐（T143）。空串照落 —— `append_event_log` 的两列缺省
+            # 也是空串，显式传空与不传在库里一个样，而显式传让「这次没拿到」
+            # 与「这个函数压根不支持」在读代码时分得开。
+            "trace_id": str(trace_id or ""),
+            "task_id": str(task_id or ""),
             "event_type": EVENT_OUTCOME_COMPUTED,
             "reason": (f"四判据：到账={computed['arrival']}"
                        f" 确认={computed['customer_confirmation']}"
@@ -404,7 +441,8 @@ def digest_of(text: str) -> str:
 
 def record_confirmation(store: Any, *, tenant_id: str, case_id: str,
                         decision: str = CONFIRMATION_CONFIRMED,
-                        channel: str = "cli", plan_id: str | None = None) -> dict:
+                        channel: str = "cli", plan_id: str | None = None,
+                        trace_id: str = "", task_id: str = "") -> dict:
     """客户确认（或提出异议）。返回重算后的 `case_outcome` 行。
 
     `confirmed` 时**同时**把该 case 的通知标成已 ack：`classify_case` 与 R5 读的都是
@@ -436,7 +474,11 @@ def record_confirmation(store: Any, *, tenant_id: str, case_id: str,
     # （`recorded_confirmation` 优先于 ack），顺序反了 disputed 会被 ack 顶掉。
     _stamp_confirmation(store, tenant_id=tenant_id, case_id=case_id, decision=decision,
                         channel=channel)
-    return record_case_outcome(store, tenant_id=tenant_id, case_id=case_id, plan_id=plan_id)
+    # trace 三件套透传（T143）：`/confirm` 落的那条 `CaseOutcomeComputed` 也要接得上
+    # DAG。三个入站函数一个不落地传 —— 只补 `record_case_outcome` 的话，房间里
+    # 打 `/confirm` `/complain` 落下的仍是只挂 plan_id 的孤行。
+    return record_case_outcome(store, tenant_id=tenant_id, case_id=case_id,
+                               plan_id=plan_id, trace_id=trace_id, task_id=task_id)
 
 
 def _stamp_confirmation(store: Any, *, tenant_id: str, case_id: str,
@@ -454,7 +496,8 @@ def _stamp_confirmation(store: Any, *, tenant_id: str, case_id: str,
 
 
 def record_complaint(store: Any, *, tenant_id: str, case_id: str, content: str,
-                     channel: str = "cli", plan_id: str | None = None) -> dict:
+                     channel: str = "cli", plan_id: str | None = None,
+                     trace_id: str = "", task_id: str = "") -> dict:
     """客户投诉入站。返回重算后的 `case_outcome` 行。
 
     投诉一开就是 `open`，而 open 一票否决 `business_success` —— 这正是评委那句
@@ -471,12 +514,14 @@ def record_complaint(store: Any, *, tenant_id: str, case_id: str, content: str,
         " ON CONFLICT (tenant_id, case_id, channel, content_digest) DO NOTHING",
         (tenant_id, case_id, channel, digest_of(content), objects._now(), None, ""),
     )
-    return record_case_outcome(store, tenant_id=tenant_id, case_id=case_id, plan_id=plan_id)
+    return record_case_outcome(store, tenant_id=tenant_id, case_id=case_id,
+                               plan_id=plan_id, trace_id=trace_id, task_id=task_id)
 
 
 def close_complaint(store: Any, *, tenant_id: str, case_id: str, content_digest: str,
                     resolution: str, channel: str = "cli",
-                    plan_id: str | None = None) -> dict:
+                    plan_id: str | None = None,
+                    trace_id: str = "", task_id: str = "") -> dict:
     """关掉一条投诉并重算。`resolution` 是人写的处理结论，原样存。"""
     ensure_outcome_schema(store)
     objects.execute(
@@ -485,7 +530,8 @@ def close_complaint(store: Any, *, tenant_id: str, case_id: str, content_digest:
         " AND channel=? AND content_digest=?",
         (objects._now(), resolution, tenant_id, case_id, channel, content_digest),
     )
-    return record_case_outcome(store, tenant_id=tenant_id, case_id=case_id, plan_id=plan_id)
+    return record_case_outcome(store, tenant_id=tenant_id, case_id=case_id,
+                               plan_id=plan_id, trace_id=trace_id, task_id=task_id)
 
 
 def list_complaints(store: Any, *, tenant_id: str, case_id: str) -> list[dict]:

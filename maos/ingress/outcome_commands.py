@@ -139,7 +139,9 @@ KINDS = frozenset({KIND_DONE, KIND_DENIED, KIND_USAGE, KIND_IGNORED})
 USAGE = (
     "用法：\n"
     "  /assign <工单号> <角色>            把补偿工单派给一个岗\n"
-    "  /resolve <工单号> <凭证摘要>       提交线下凭证关单（第一个词当凭证引用）\n"
+    "  /resolve <工单号> [--not-settled] <凭证摘要>\n"
+    "                                     提交线下凭证关单（第一个词当凭证引用）；\n"
+    "                                     加 --not-settled = 线下核对过，这笔确实没退成\n"
     "  /confirm <案号>                    客户确认收到退款\n"
     "  /complain <案号> <内容>            记一条客户投诉\n"
     "  /compensate <案号>                 补开一张补偿工单（自动开单没成时用）"
@@ -245,6 +247,23 @@ def in_approver_list(sender: str, approvers: Iterable[str]) -> bool:
     return roles.can_approve(sender, "", approvers=approvers)
 
 
+def _outcome_trace(extras: dict | None) -> dict:
+    """`outcome.record_*` 要的 trace 三件套，从 router 递来的 extras 里取（T143）。
+
+    从前这三处（`/resolve` `/confirm` `/complain` 各一处）只挑走 `plan_id`，另两个
+    原地丢掉 —— 于是 `CaseOutcomeComputed` 在事件表里只挂一格，按 trace 串「这一单
+    发生过什么」时接不上 DAG，而同一条链上 `CompensationAssigned` 与
+    `CompensationResolved` 三件套齐全。`router._command_extras` 早就把三个都算好了。
+
+    `plan_id` 空串换成 `None`：它在 `record_case_outcome` 里是「落不落这条事件」的门，
+    空串与 None 在那道门上同义，但传 None 更贴那个签名（`str | None`）。
+    """
+    ex = extras or {}
+    return {"plan_id": str(ex.get("plan_id") or "") or None,
+            "trace_id": str(ex.get("trace_id") or ""),
+            "task_id": str(ex.get("task_id") or "")}
+
+
 # ---------------------------------------------------------------- /assign
 def handle_assign(args: list[str], *, store, tenant_id: str, sender: str,
                   approvers: Iterable[str], extras: dict | None = None) -> CommandResult:
@@ -289,22 +308,81 @@ def handle_assign(args: list[str], *, store, tenant_id: str, sender: str,
 
 
 # ---------------------------------------------------------------- /resolve
+#: 第二档的标记。**只在紧跟工单号的那个固定位上认**（`args[1]`），认到就吃掉。
+#: 位置固定所以不与自由文本抢词：凭证摘要的第一个词是渠道流水号，不可能以 `--` 开头。
+#: 另一种形状（末位可选参数 `/resolve <单号> <摘要> not_settled`）要靠位置猜自由文本
+#: 的最后一个词是不是标记 —— 猜错一次就等于替提交人改了他写的凭证。
+FLAG_NOT_SETTLED = "--not-settled"
+
+#: 标记 -> 关单结论。取值一律取自 `refund/compensate.py`，命令层**不自造第二份字面量**
+#: （两处各写各的就会出现「命令层说 not_settled、skill 说没这种结论」这种谁都不报错
+#: 的分叉）。缺省不在这张表里：不给标记就是 `RESOLUTION_SETTLED`，逐字同从前。
+_RESOLVE_KIND_FLAGS: dict[str, str] = {FLAG_NOT_SETTLED: CP.RESOLUTION_NOT_SETTLED}
+
+
+def parse_resolve_args(args: list[str]) -> tuple[str, str, str] | None:
+    """`/resolve` 的参数 -> `(关单结论, 凭证引用, 凭证摘要)`；写得不对返回 `None`。
+
+    三种形状：
+
+      · `/resolve <工单号> <流水号> <摘要…>`               -> `settled`（**缺省，逐字同从前**）
+      · `/resolve <工单号> --not-settled <流水号> <摘要…>` -> `not_settled`
+      · 其余（缺凭证、或 `args[1]` 是个认不出的 `--x`）     -> `None`，调用方回 USAGE
+
+    **认不出的标记不许当凭证吃掉**：`--not-setled` 少一个字母若被当成渠道流水号，
+    系统会照旧关出一张 `settled` 的单（回填一条到账观察），还把那个错字留成这份
+    凭证的出处 —— 而按键的人以为自己关的是「这笔确实没退成」。宁可什么都不做、
+    回一句用法。口径同 `parse()` 的「只按空白切，不做任何语义猜测」。
+    """
+    if len(args) < 2:
+        return None
+    rest = [str(a) for a in args[1:]]
+    kind = CP.RESOLUTION_SETTLED
+    if rest[0].startswith("--"):
+        kind = _RESOLVE_KIND_FLAGS.get(rest[0], "")
+        if not kind:
+            return None
+        rest = rest[1:]
+    if not rest:
+        return None
+    # 第一个词当凭证引用，整句（不含标记）当摘要 —— 见 `handle_resolve` 的 docstring。
+    return kind, rest[0], " ".join(rest)
+
+
 def handle_resolve(args: list[str], *, store, tenant_id: str, sender: str,
                    approvers: Iterable[str], identity=None,
                    extras: dict | None = None) -> CommandResult:
-    """`/resolve <工单号> <凭证摘要>` —— 提交线下凭证关单。
+    """`/resolve <工单号> [--not-settled] <凭证摘要>` —— 提交线下凭证关单。
 
     **第一个词当凭证引用**（渠道流水号 / 外部工单号），整句原样留档当摘要。
     这条约定要写在用法里给人看：凭证引用是这份人工凭证作为**外部事实**的出处，
     没有出处的凭证只是一句断言。
+
+    ## 两种结论，`--not-settled` 是第二档（T143）
+
+    余额不足、账户冻结这类工单最常见的结局正是「线下核对过，这笔确实没退成」。
+    在此之前命令层把 `resolution_kind` 写死成 `settled`，房间里**关不掉**这种单 ——
+    要么当场卡住演示，要么被迫敲一条说谎的 `settled`（那会回填一条假的到账观察，
+    比卡住更坏）。skill 那一侧两种结论本来就都备好了
+    （`compensation_close._OUTCOME_OF`），缺口只在这一行。
+
+    `resolution_kind` 与 `observed_state` 是**两个层次的事实**，回帖分两处印，
+    不许合成一句（铁律 8）：前者是**这张工单以什么结论关闭**（人的结论，
+    `compensation_record` 自己的列，不是 Task 状态 —— 铁律 9），后者是**外部渠道说
+    那笔钱怎么样了**（`payment.observe` 这条唯一通道落的观察）。第二档下它们分别是
+    `not_settled` 与 `failed`。
     """
     case_id = CP.case_id_of_ticket(args[0]) if args else ""
     if not in_approver_list(sender, approvers):
         return _deny(store, sender=sender, command=CMD_RESOLVE, case_id=case_id,
                      why=f"{sender} 不在 MAOS_APPROVERS 名单内", extras=extras)
-    if len(args) < 2:
+    parsed = parse_resolve_args(args)
+    if parsed is None:
+        # 位置与从前一样在查单之前：参数写得不对是「你写错了」，与「这张单不存在」
+        # 分开两种回话（理由同 `handle_assign` 里那两句的分工）。
         return CommandResult(kind=KIND_USAGE, text=USAGE, command=CMD_RESOLVE,
                              case_id=case_id)
+    resolution_kind, evidence_ref, summary = parsed
 
     try:
         ticket = CP.require_ticket(store, tenant_id, case_id)
@@ -328,12 +406,13 @@ def handle_resolve(args: list[str], *, store, tenant_id: str, sender: str,
             "handle_resolve 必须带 identity：关单要经 SkillInvoker 调 "
             f"{SKILL_COMPENSATION_CLOSE}，而 invoker 的白名单校验与审计行都挂在 identity 上")
 
-    summary = " ".join(args[1:])
     res = SkillInvoker(identity, store).invoke(SKILL_COMPENSATION_CLOSE, {
         "tenant_id": tenant_id, "case_id": case_id, "operator": sender,
-        # 第一个词当凭证引用，整句当摘要 —— 见 docstring。
-        "evidence_ref": args[1], "summary": summary,
-        "resolution_kind": CP.RESOLUTION_SETTLED,
+        # 第一个词当凭证引用，整句（不含标记）当摘要 —— 见 `parse_resolve_args`。
+        "evidence_ref": evidence_ref, "summary": summary,
+        # 结论由参数定（T143）。**不在这里把它翻成观察**：观察只能由
+        # `payment.observe` 那条唯一通道落，命令层连一个 `observed_state` 都不碰。
+        "resolution_kind": resolution_kind,
     }, extras=dict(extras or {}))
     if res.status != "ok" or not isinstance(res.output, dict):
         # 关单没成不许回一句「已关单」。房间里的人会据此以为这件事办完了。
@@ -355,8 +434,7 @@ def handle_resolve(args: list[str], *, store, tenant_id: str, sender: str,
     verdict = ""
     try:
         row = OUT.record_case_outcome(
-            store, tenant_id=tenant_id, case_id=case_id,
-            plan_id=str((extras or {}).get("plan_id") or "") or None)
+            store, tenant_id=tenant_id, case_id=case_id, **_outcome_trace(extras))
         verdict = "\n" + _verdict_line(row)
     except Exception as exc:                            # noqa: BLE001
         log.warning("关单后重算四判据失败（%s）—— 关单本身已生效", exc)
@@ -501,8 +579,7 @@ def handle_confirm(args: list[str], *, store, tenant_id: str, sender: str,
         # 字面值 `confirmed` 取自跨轨契约 §E 的 `customer_confirmation` 值域。
         row = OUT.record_confirmation(store, tenant_id=tenant_id, case_id=case_id,
                                       decision=OUT.CONFIRMATION_CONFIRMED,
-                                      channel="room",
-                                      plan_id=str((extras or {}).get("plan_id") or "") or None)
+                                      channel="room", **_outcome_trace(extras))
     except OUT.OutcomeError as exc:
         return CommandResult(kind=KIND_USAGE, text=f"确认未生效：{exc}",
                              command=CMD_CONFIRM, case_id=case_id)
@@ -532,7 +609,7 @@ def handle_complain(args: list[str], *, store, tenant_id: str, sender: str,
     try:
         row = OUT.record_complaint(store, tenant_id=tenant_id, case_id=case_id,
                                    content=content, channel="room",
-                                   plan_id=str((extras or {}).get("plan_id") or "") or None)
+                                   **_outcome_trace(extras))
     except OUT.OutcomeError as exc:
         return CommandResult(kind=KIND_USAGE, text=f"投诉未记下：{exc}",
                              command=CMD_COMPLAIN, case_id=case_id)

@@ -2728,3 +2728,25 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | **四档诊断的判据没有在真链路上复现过**。`BACKLOG:1431` 明写「改之前先把两种链路各复现一次，别照抄本条」，而链路 B（公网 + SLB + 白名单不放行）要真实例才造得出，本轨一律打本机容器（红线 1） | 新分档在「有 SQLSTATE」那一支上与旧行为等价，所以不会比今天更坏；但「无 SQLSTATE → 优先怀疑白名单」这句话的**依据是 2026-08-31 的一次别人的实测**，本轨只验了「拿到这种症状会说哪句话」 | **9/18 真跑日当场核**：撞上连不上时，把 `polardb_smoke.py` 的完整输出连同控制台白名单的实际状态一起记下来，回头核这一段的措辞。真跑日没撞上就留着 —— 不必为了复现去故意把白名单改坏 |
 | 2026-09-12 | p10 | `_diagnose_unreachable()` 只探**第一个** A 记录（`addrs[0]`）。实例有多个 A 记录（SLB 多节点）时，第一个通不代表其余都通，反之亦然 | 今天不影响结论：四档给的都是「往哪个方向查」，不是「这条连接一定能/不能建」。但多节点实例上若只有部分节点被白名单放行，诊断会按撞上的那一个下结论，而复跑可能换一个节点、结论跟着变 | 真跑日若出现「同一条 DSN 反复跑结论不一样」，先看这里。要改就是逐个 A 记录探一遍并汇总，成本不高，但**没有真多节点实例就验不出来**，所以没当场改（铁律 4） |
 | 2026-09-12 | p10 | `deploy/polardb.md` 的「已知差异 / 局限」一节里，`plainto_tsquery` 那句话已过期：T139 起查询侧早就换成了 `to_tsquery`（Python 切好、PG 只匹配），而那句「24 条真语料上全文召回 8/10（漏的两条是 `plainto_tsquery` 的 AND 语义）」是 8/30 在旧路径上的读数 | 那是 8/30 的**历史实测记录**，数字本身没错，但读的人会以为今天还走 `plainto_tsquery`。**没改**（铁律 3：历史读数改了就是篡改证据；而本轨改的是它下面那一节的判据说法） | 归 Wave H 的文档轨：在那句旁边补一行「这是 T139 换 `to_tsquery` 之前的读数」，**不要动数字** |
+## task-t143（结果面第二档 + 四判据接上 DAG，2026-09-12）
+
+**本轨办结三条老账**（原条目留在原处、一个字未改，按跨轨契约 §A.3 只在这里注明出处）：
+
+- 办结 `## task-t114（单案例端到端证据束，2026-09-11）` 里「`handle_resolve` 把 `resolution_kind`
+  写死成 `CP.RESOLUTION_SETTLED`」那条 —— `/resolve` 加了 `--not-settled` 第二档。**形状与当初
+  建议的末位可选参数不同**（选了紧跟工单号的开关位），理由记在 `docs/DECISIONS.md ## task-t143` 第 1 行。
+- 办结 `## task-t122` 里「`outcome._receipt_source()` 读观察回执的**顶层**」那条 ——
+  改成 `detail.gateway` 先读、顶层两个键后读，`ManualReceiptAdapter` 与码表一个字节没动。
+- 办结 `## task-t129` 里「`CaseOutcomeComputed` 事件只挂得上 `plan_id`」那条 ——
+  `record_case_outcome` 加了 keyword-only 的 `trace_id` / `task_id`，三个入站函数一起透传；
+  钉现状的那条反向测试改判成正向（新名字
+  `test_case_outcome_computed_now_carries_the_whole_trace_triple`，判据是查库）。
+  连带补齐 `## 整合期 p10-c（Wave C 五轨合并，2026-09-11）` 里「三个事件的 `trace_id` /
+  `task_id` 是空的」那条的最后一格 —— 另两个事件 T129 已补，只剩这一个。
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | 🔴 **证据束里那条 `CaseOutcomeComputed` 仍然只挂 `plan_id`**。本轨补的 trace 三件套只在**房间命令面**填得上（`/resolve` `/confirm` `/complain` 经 `router._command_extras` 拿到三件套）；证据束走的是另一条路 —— `PlanFinalizer.poll` → `maos/kb/promotion.py::promote_case`（`:176`）与 `scripts/make_case_bundle.py:587`，两处都只传 `plan_id` | 评委在 trace 树里看的是**证据束**，而束里那条事件照旧接不上 DAG —— 本轨的目标在房间面达成了，在证据面没有。实测（重产 `--all-paths` 之后）：`evidence/case-real-01/{happy,gateway_fail}/event-chain.json` 里 `CaseOutcomeComputed` 的 `trace_id` / `task_id` 仍是空串。**连带一条好消息**：证据面因此不受本轨影响，本轨不需要为自己重产束 | **本轨一个字没改**：`maos/kb/**` 是 T145 独占、`scripts/make_case_bundle.py` 是 T144 独占。改法 3–5 行：`promote_case` 手上有 `plan_id`，照 `router._command_extras` 的写法取 `store.get_plan(plan_id)["trace_id"]` 与那条 `-payment` 任务，透传给 `record_case_outcome`（两个参数已经在了，keyword-only + 缺省空串）。归整合期或 Wave H |
+| 2026-09-12 | p10 | **`/compensate` 两处回帖里的「关单」示范只给缺省形状**（`outcome_commands.py` 的「不用补开」与「已补开」两段都印 `关单：/resolve <单号> <渠道流水号> <线下凭证摘要>`），没提第二档 | 不是缺陷：那一行给的是最常见的走法，第二档在 `/help`（router.USAGE）与 `/resolve` 参数不合法时回的 USAGE 里都看得到。但房间里的人最先看到的是这一行，真跑日若撞上「确实没退成」那种单，他可能要先翻一次 `/help` | 本轨没改（派单只点名两处 USAGE 必须同步，改这两行属范围外）。要加就一行字：`（没退成加 --not-settled）`。归下一个动 `outcome_commands.py` 回帖模板的轨 |
+| 2026-09-12 | p10 | **`docs/real-run-runbook.md` 与材料面里 `/resolve` 的用法仍只写缺省形状**（runbook 里那条真跑日照抄的命令行没有 `--not-settled`） | 真跑日照 runbook 敲命令时，「线下核对过、这笔确实没退成」这一档在纸面上不存在 —— 而这一档正是本轨为真跑日补出来的 | 本轨白名单里没有那些文件，**一个字都没改**。归 Wave H：`real-run-runbook.md`（T151）与 demo-script / defense-brief（材料面）各刷一句。回执里已单列 |
+| 2026-09-12 | p10 | `compensation_record` 一个案子有两行（`kind=refund_request_revoked` 与 `kind=manual_ticket`），而 `_correction_of` 只看「有没有补偿记录」就判 `compensated` | 今天不误判（有工单的案子判 compensated 是对的），但那条判据的分母其实是「两类补偿记录之一」。将来若出现只作废请求、不开工单的路径，它也会被判成「人工纠错=compensated」，而那一档本该是 `overridden` 或 `none` | 记一笔免得下一个人以为分母是工单。真要收窄得先定义「哪几类 compensation_record 算人工纠错」，那是判据面的改动，不是一行 |

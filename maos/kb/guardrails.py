@@ -544,7 +544,16 @@ def _classify_by_outcome(outcome: Any, *, status: Any,
     剩下的（到账状态 unknown 且案子还没收口）返回 None —— 那是「还没有结论」，
     不是「失败」，`--stall` 那条路径正落在这一格。
     """
-    if _flag(outcome, "business_success") and _flag(outcome, "evidence_complete") and settled_obs:
+    # 正例第四条：`biz_status` 不在明确失败那两档里（T145）。
+    # `business_success` 只问三件事 —— 钱到没到、客户有没有异议、投诉开没开着
+    # （`domain/refund/outcome.py` 的入参里压根没有 `biz_status`，那是有意的）。
+    # 它答不了「这笔是原路退成的，还是线下补偿平的」，而后者正是 `biz_status` 的事：
+    # 补偿收口的案子（`/resolve` 写 resolution_kind=settled，关单不改 biz_status，
+    # 只经 `payment.observe` 补一条 settled 观察）照样能凑齐前三条。
+    # 下一次规划照着范本抄的是**流程**，抄一条靠线下补偿收的场，等于教后来者走补偿路。
+    # 与失败侧共用 `FAILED_BIZ_STATUS`：同一条线两边判，不许各写一份。
+    if (_flag(outcome, "business_success") and _flag(outcome, "evidence_complete")
+            and settled_obs and status not in FAILED_BIZ_STATUS):
         return kb.KIND_HISTORY_CASE, kb.OUTCOME_SUCCESS
 
     definite_failure = (

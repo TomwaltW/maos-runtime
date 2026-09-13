@@ -199,6 +199,48 @@ def test_compensated_case_is_a_failure_hint_even_without_observations():
     ) == (kb.KIND_FAILURE_HINT, kb.OUTCOME_FAILED)
 
 
+@pytest.mark.parametrize("status", ["compensated", "rejected"])
+def test_an_offline_close_is_never_a_success_template(status):
+    """🔴 线下收口的案子，四判据再齐也不许当成功范本进默认知识层（T145）。
+
+    与上一条的区别正是这一条要守的洞：上一条给的是 `business_success=0` 且零观察，
+    本条给**齐全的正例三判据** —— `business_success=1`、`evidence_complete=1`、
+    数得出 settled 观察 —— 只有 `biz_status` 停在 `compensated`。
+
+    这条链今天是通的，真跑日当场就会走到：真人在房间里 `/resolve` 一单补偿工单，
+    `ingress/outcome_commands.py` 把 `resolution_kind` 写死成 settled，
+    `skills/builtin/refund/compensation_close.py` 关单**不改 `biz_status`**、
+    只经 `payment.observe` 补一条 settled 观察 —— 于是案子停在 `compensated`，
+    却凑齐了正例的三个条件。
+
+    `business_success` 只问「钱到没到、客户有没有异议、投诉开没开着」（它的入参里
+    压根没有 `biz_status`，见 `domain/refund/outcome.py` 的
+    `## arrival 为什么死盯 payment_observation`），答不了「这笔是原路退成的，
+    还是线下补偿平的」。漏判的代价是双份的：下一次规划照着范本抄的是**流程**，
+    抄一条靠线下补偿收的场等于教后来者走补偿路；而
+    `scripts/verify.py::check_history_case` 判的是 `biz_status in
+    AUTHORITATIVE_STATES`（退款域只有 `settled`），同一条文档会被核验侧当场判负 ——
+    晋升侧与核验侧口径当面打架，第 7 项直接翻红。
+    """
+    assert guardrails.classify_case(
+        observations=SETTLED_OBS, notifications=[], case_row={"biz_status": status},
+        outcome=_outcome()) == (kb.KIND_FAILURE_HINT, kb.OUTCOME_FAILED)
+
+
+@pytest.mark.parametrize("status", ["settled", "processing", None])
+def test_the_status_guard_only_bites_the_two_failed_statuses(status):
+    """上一条测护栏咬得住，这一条钉住它**没咬宽**（T145）。
+
+    判据复用 `FAILED_BIZ_STATUS`（明确失败的那两档），**不是**「除 settled 以外」：
+    案子还在推进途中（`processing`）、或调用方压根没给 `case_row`（老的 R5 路径）
+    都照旧按四判据走。一刀切成「只认 settled」会把 T120 之前那批还没收口
+    但四判据已经齐的案例全判负，那是另一种错。
+    """
+    assert guardrails.classify_case(
+        observations=SETTLED_OBS, notifications=[], case_row={"biz_status": status},
+        outcome=_outcome()) == (kb.KIND_HISTORY_CASE, kb.OUTCOME_SUCCESS)
+
+
 def test_legacy_three_criteria_path_is_unchanged():
     """不给 `outcome` 时行为逐字节照旧 —— 扩判据不许改坏老调用方。"""
     acked = [{"ack_at": "2026-07-10T00:00:00+00:00"}]
@@ -297,6 +339,35 @@ def test_settled_case_is_promoted_to_history_case(store):
     assert doc["rule_no"] == RULE and doc["channel_id"] == CHANNEL
     assert doc["policy_version"] == 1, "政策版本取下单当时锁定的那一版"
     assert res["hint"] is None, "正例不进失败聚合表"
+
+
+def test_the_real_run_day_compensation_close_lands_on_the_failure_side(store):
+    """🔴 真跑日那一单的端到端版：补偿关单 + 一条 settled 观察 -> failure_hint（T145）。
+
+    形状与上一条正例**逐字对应**，只差一件事：案子被推到了 `compensated`。
+    上一条能进默认知识层，这一条不能 —— 差别只在 `biz_status`，而那正是
+    `business_success` 答不出来的那一问（论证见 `classify_case` 那一节的
+    `test_an_offline_close_is_never_a_success_template`）。
+
+    走完整条 `promote_case` 而不只是 `classify_case`：要钉住的是**库里最后落下
+    什么**。判负之后这一单还得进失败聚合表 —— 「靠线下补偿收的场」本身就是
+    「哪类组合需要额外步骤」的一手素材，掐掉正例不等于把它整个丢掉。
+    """
+    _seed_case(store)
+    _observe(store, state="settled", code="10000")
+    guard.update_biz_status(store, TENANT, CASE, "approved",
+                            "refund.approve", "inv-approve")
+    guard.update_biz_status(store, TENANT, CASE, "compensated",
+                            "refund.compensation_close", "inv-close")
+
+    res = promotion.promote_case(store, tenant_id=TENANT, case_id=CASE, plan_id=PLAN)
+    assert res["verdict"] == (kb.KIND_FAILURE_HINT, kb.OUTCOME_FAILED), (
+        "补偿收口的案子被晋升成了成功范本 —— verify 第 7 项会当场判它负")
+    assert res["outcome"]["business_success"], (
+        "前提没立住：这一单本来就该是四判据齐全的，否则这条测的不是 biz_status 那一问")
+    doc = kb.get_doc(store, TENANT, res["doc_id"])
+    assert doc["kind"] == kb.KIND_FAILURE_HINT and doc["outcome"] == kb.OUTCOME_FAILED
+    assert res["hint"] is not None, "判负的案子照样要进失败聚合表，不是整个丢掉"
 
 
 def test_history_case_title_does_not_claim_an_ack_that_never_happened(store):

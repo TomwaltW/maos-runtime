@@ -2758,3 +2758,23 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | **`reject` 那条路的通知仍挂不上 business_ref**：`custom_case.py:931` 的驳回分支按 docstring 有意传空 `task_id`（那条通知不是任何一个 DAG 任务跑出来的），于是 `notify.py:127` 跳过 `attach_business_ref` | 实测 `reject` 束的 `business_ref_missing` 里仍有 `notification`、`case_outcome.evidence_complete` 恒 `false`。**今天不是 bug**：它如实反映「这条通知没有归属任务」，但读束的人分不清「没发通知」与「发了但挂不上引用」—— 而这两件事差得远 | 要么给 business_ref 一种「挂在 plan 上、不挂任务」的形态，要么在束里把这一格写成「已通知，无任务归属」。两条都要动 `objects.attach_business_ref` 或 `case_pack.ref_coverage`，**本轨白名单外**。复赛之后 |
 | 2026-09-12 | p10 | **跑过证据束之后 `test_render_trace::test_committed_report_is_in_sync` 必红**，而它的报错只说「跑 `python3 scripts/render_trace.py` 重新生成」，不说「你只是把工作树跑脏了」 | 任何一轨只要在验收里跑了 `make_case_bundle.py` 又忘了还原 evidence，全量 pytest 就会多出这一条红 —— 而派单给的期望是「只许 1 条 failed」，于是它看起来像回归。本轨查了一轮才排除 | 在那条测试的报错里补一句「先确认 `git status evidence/` 干净」。`test_render_trace.py` 与 `render_trace.py` 归 Wave H 的 T146，本轨不动 |
 | 2026-09-12 | p10 | **补偿路径的通知文案与房间那条共用同一个产出处，但「什么时候发」的判据在两处各写了一遍**：`router.py:1974` 判 `KIND_DONE + CMD_RESOLVE`，`make_case_bundle.py::_compensate()` 判三步都 ok | 措辞不会漂（都走 `notify.customer`），但「该不该发」会。今天两处口径一致，没有症状 | 与 T143 的接缝一起看：`/resolve` 第二档落地后两条路要不要分档发。归整合期判断，见本轨回执 |
+
+## task-t145（知识层不再 import 退款域 + 补偿收口不当范本，2026-09-12）
+
+> 本轨办结三条旧账。按契约 §A.3 不回头改中间那几行，在这里记：
+>
+> 1. **办结 `docs/BACKLOG.md` 里「`maos/kb/promotion.py:54` 是模块级 import 退款域」那条**
+>    （`## task-t130` 小节，2026-09-11 记）—— 改成函数体内 `_refund()` / `_objects()`
+>    局部 import，9 个函数各取各的，调用点一个字没动。判据也从「只管 `plan_advice.py`
+>    一个文件」扩到扫 `maos/kb/*.py` 全片（`test_no_kb_module_puts_a_business_domain_on_its_import_graph`）。
+> 2. **办结「已补偿的案子会被晋升成『成功范本』」那条**（`## task-t114` 小节，2026-09-11 记）——
+>    `_classify_by_outcome` 正例分支加 `status not in FAILED_BIZ_STATUS`，复用现成常量。
+> 3. **办结「铁律 9 在 `plan_advice.py` 上实际有例外、没写进权威文本」那条**
+>    （`## 整合期 p10-e` 小节，2026-09-12 记）—— `CLAUDE.md` 铁律 9 加一句括号说明，
+>    `maos/kb/__init__.py` 的「依赖方向」段同口径展开。
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | **`maos/runtime/plan_finalizer.py:123-126` 那个 `except ImportError` 分支现在多半走不到了**。它 try 的是 `from maos.kb.promotion import promote_plan`，注释写着「域未合入时软降级」—— 而退款域缺席现在由 `promotion._has_table()` 收（实测：域被 meta_path 拦掉时 `import maos.kb.promotion` 照样成功，`promote_plan` 返回 `[]`） | 不是缺陷：那条分支仍拦得住「`maos/kb/promotion.py` 这个文件本身不在」的部署，只是它原本要挡的那件事已经在上游解决了。留着的代价是一条没有判据、也没有现役触发路径的分支 | `plan_finalizer.py` 本轨不在白名单，没动。下一个动它的轨决定：要么把注释改成实况（「模块文件缺席时软降级」），要么连同那一层 try 一起去掉。**别顺手删**——`promote_plan` 下面那个 `except Exception` 才是现役兜底，两层作用不同 |
+| 2026-09-12 | p10 | **`scripts/make_case_bundle.py:128 RESOLUTION_KIND = "not_settled"` 现在可以换回 `settled` 了**。当初改成 `not_settled` 正是为了绕开「补偿收口被晋升成成功范本」那个洞（`## task-t114` 小节那条末尾写着「做完可以换回」），护栏今天落地了 | 换回去那条路径就能演「人工线下退成了」的闭环，而不是只演「核对过、确实没退成」。不换也不错，只是少演一档 | `make_case_bundle.py` 是 Wave G 的 **T144 独占**，本轨不代改。换回之后 `case-real-01/gateway_fail` 束的 `kb` 那一族产物会变（那一单从 `history_case/success` 落到 `failure_hint/failed`），要连带重产并核对 verify 第 5、7 项的分母 —— 交整合期 |
+| 2026-09-12 | p10 | **`docs/domain-portability.md:458-461` 与跨轨契约 §C 的口径仍然相反**：那段说「`flows/` 与 `kb/` **本来就是按域写的**（演示流程与知识语料），不在『内核零改动』的主张范围内」，而契约 §C 与本轨落地的判据说的是「`maos/kb/**` 是领域无关内核，取值可以局部 import + 兜底、断言不行」 | 两处措辞打架，评委任取一处都能质疑另一处。本轨把 `kb/` 那一半做实了（模块级 domain import 全片归零，有 AST 判据钉着），文档那句话现在**落后于代码** | 归 Wave H 的 **T152**（它独占那一族文档的漂移清单）。建议措辞：把「`flows/` 与 `kb/`」拆开写 —— **「`flows/` 本来就是按域写的演示流程，不在主张范围内；`kb/` 是领域无关的检索内核，模块级不 import 任何业务域（判据 `test_plan_advice.py::test_no_kb_module_puts_a_business_domain_on_its_import_graph`），已知例外只有『函数体内局部 import 取值 + 兜底』一个形状，见 `maos/kb/__init__.py` 的依赖方向段」**。两处的行数统计（`kb/` +1568 / +1885）不用改，那说的是改动量不是依赖方向 |

@@ -601,7 +601,9 @@ def _module_level_imports(path: pathlib.Path) -> set[str]:
             else:
                 walk(child)                     # 顶层的 if / try / with 块照样是模块级
 
-    walk(ast.parse(_PLAN_ADVICE_PY.read_text(encoding="utf-8"), filename=str(path)))
+    # T145：这里原本写死读 `_PLAN_ADVICE_PY`，`path` 只落在 `filename=` 上 ——
+    # 传谁进来都在扫 plan_advice.py，拿它去扫别的文件会**恒绿**。
+    walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
     return names
 
 
@@ -613,13 +615,49 @@ def test_the_refund_domain_is_not_on_this_module_s_import_graph():
     把那两个 import 提到模块级，规划内核就长在了退款域身上，换个业务域得先改内核
     （铁律 9、跨轨契约 §E）。
 
-    判据只管本文件。`maos/kb/` 下 `promotion.py` 是模块级 import 退款域的，
-    `experiment.py` 则是一串局部 import —— 那两个文件不在本轨白名单，
-    「kb 整片是否都该守这条」记在 BACKLOG，不在这里顺手扩大判据面。
+    本条只管本文件；**整片 `maos/kb/` 由下面那条守**（T145 把 `promotion.py`
+    那处模块级 import 改掉之后才立得住，此前它是唯一的违例）。
     """
     bad = sorted(n for n in _module_level_imports(_PLAN_ADVICE_PY)
                  if n.startswith("maos.domain"))
     assert not bad, f"退款域上了 plan_advice 的模块 import 图：{bad}"
+
+
+def test_no_kb_module_puts_a_business_domain_on_its_import_graph():
+    """🔴 `maos/kb/**` 整片都不许在模块级 import 任何业务域（铁律 9、T145）。
+
+    「领域无关内核」是本项目对外主张的核心之一，而它一个 `grep` 就能被证伪：
+    在此之前 `promotion.py:54` 是 `from maos.domain.refund import guard, objects,
+    outcome as outcome_mod`，于是 `import maos.kb.promotion` 会实打实把整个退款域
+    拖进来 —— 换个业务域得先改内核。
+
+    口径（整合期 p10-e 定，原文在 `docs/DECISIONS.md`）：**取值可以局部 import +
+    兜底，断言不行。** 所以判据管的是 import 的**位置**（模块级 vs 函数体内），
+    不是有无 —— 函数体内那些照样合规，`test_the_domain_import_is_local_not_absent`
+    与下面那条 `_refund` 判据反过来钉住「确实还在问域要」。
+
+    判据面是 `maos/domain` 整个前缀，不是 `maos.domain.refund` 一家：退款是今天
+    唯一落地的域，写死它等于下一个域进来时判据自动失效。
+    """
+    bad = {}
+    for path in sorted(pathlib.Path(plan_advice.__file__).parent.glob("*.py")):
+        hits = sorted(n for n in _module_level_imports(path)
+                      if n.startswith("maos.domain"))
+        if hits:
+            bad[path.name] = hits
+    assert not bad, f"业务域上了 maos/kb 的模块 import 图：{bad}"
+
+
+def test_promotion_still_asks_the_refund_domain_from_inside_its_functions():
+    """上一条测位置，这一条测**有无** —— 口径同 `test_the_domain_import_is_local_not_absent`。
+
+    少了这条，把 `promotion._refund()` 连同它的九个调用点整个删掉也能让上一条绿：
+    退款域确实不在 import 图上了，代价是自动晋升再也读不到域的表 —— 知识层安静地空掉。
+    """
+    source = (pathlib.Path(plan_advice.__file__).parent / "promotion.py").read_text(
+        encoding="utf-8")
+    assert "from maos.domain.refund import guard, objects, outcome as outcome_mod" in source, (
+        "promotion.py 一处退款域 import 都没有了？那上一条判据在测一件不存在的事")
 
 
 def test_the_domain_import_is_local_not_absent():

@@ -12,3 +12,22 @@
 -- 云上实例不走这条路：那边装扩展要高权限账号，见 deploy/polardb-live.md §1.3。
 
 CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 🔴 **这个镜像不带 zhparser**（`pgvector/pgvector:pg16`），所以本机跑不到中文第二档
+--    的「真分词器」那一半 —— 那条判据在本机 skip，真跑日（PolarDB，zhparser 2.2 已于
+--    8/30 实测装成）才执行。换一个带 zhparser 的镜像**要人类拍板**（改 `image:` 行
+--    属于「改 Docker」，项目 CLAUDE.md 的「不计入上限的四类」第 3 条），任何一轨都
+--    不许顺手换。
+--
+--    不换也不是盲区：`test_pg_vector_channel_t139.py` 的「4. 中文第二档」里那条**链路
+--    档**在本机现造一个 `COPY = simple` 的非内置检索配置，把第二档整条链路走通并真断
+--    言。本机唯一验不了的只剩「zhparser 对单字序列出不出词」。形状取舍见
+--    `docs/DECISIONS.md` 的 `## task-t142`。
+--
+--    真要装（人类在容器内 / 控制台执行，本轨不代跑）：
+--        CREATE EXTENSION zhparser;
+--        CREATE TEXT SEARCH CONFIGURATION zhcfg (PARSER = zhparser);
+--        ALTER TEXT SEARCH CONFIGURATION zhcfg ADD MAPPING FOR n,v,a,i,e,l WITH simple;
+--    再照 maos/store/pg_schema.sql 中文那一节把 zhcfg 的 GIN 索引建到**影子表**
+--    `kb_doc_fts` 上（不是 `kb_doc` 原文列 —— 那是 B 口径，会把错误码通道打瞎），
+--    然后 export MAOS_PG_FTS_CONFIG=zhcfg。

@@ -21,6 +21,10 @@
 4. **中文全文的局限是事实，不是缺陷伪装**。PG 内置配置一个都没有中文分词器，本层
    因此对 CJK 查询抛 `LookupError` 让检索器退化，而不是安静地返回空集。这里把
    「整串汉字被当成一个 token」这条底层事实也钉住 —— 它不报错，只能靠测试记着。
+   T142 在旁边补了**对照**（`test_shadow_table_text_is_matchable_char_by_char`）：
+   同一串中文进了影子表就匹配得上了，那正是 A 口径成立的底层依据。
+   **中文第二档（真分词器）的判据搬去了 `test_pg_vector_channel_t139.py` 的第 4 节** ——
+   它必须建在装配路径上，建在本文件这张手建的原文靶表上是恒 0 命中的假红，见那一节。
 """
 
 from __future__ import annotations
@@ -179,51 +183,64 @@ def test_chinese_query_raises_on_builtin_config(pg: PgStorePort) -> None:
     assert "zhparser" in msg or "pg_jieba" in msg, "报错要点名装什么扩展"
 
 
-def test_chinese_query_recalls_on_real_tokenizer(pg: PgStorePort) -> None:
-    """**中文第二档**（`MAOS_PG_FTS_CONFIG` 指向真分词器，9/18 真跑日的 PolarDB）：
-    中文查询必须**真召回**。
-
-    为什么要有这一档：8/30 那次在 PolarDB 真实例上 `zhparser 2.2` 已经装成、`zhcfg`
-    检索配置已建、中文召回已实测（`docs/submission-checklist.md:224` 与
-    `deploy/polardb-live.md` §1.4）。也就是说真跑日那天 `MAOS_PG_FTS_CONFIG=zhcfg`
-    是能真跑的 —— 但在 T139 之前**没有任何判据**描述那一档该是什么样，而切过去会让
-    上面那条守卫直接变红。真跑日当天撞红线 = 当场没法决定「该切还是不该切」。
-
-    本机跑不到这一档（`pgvector/pgvector:pg16` 没装 zhparser），所以 skip。
-    **skip 不是绿**：这条用例在本机永远不执行断言，它存在的意义是真跑日那天把
-    `MAOS_PG_FTS_CONFIG` 指过去、这一整束就地重跑一次，红了就知道不该切。
-    不许为了「本机也绿」把断言弱化成 `if hits:` 那种形状 —— 那才是伪装成绿。
-
-    ⚠️ 已知的形状约束，真跑日验不过先看这里：这条路上 zhparser 拿到的是影子表里
-    **已按字切开**的 "退 款 政 策"，不是原文 "退款政策"，所以它的词典分词能力发挥
-    不出来，实际仍是按字 AND。真跑日要是 0 命中，最可能的原因是 zhparser 把单字
-    token 过滤掉了（它有 `zhparser.punctuation_ignore` 一类的开关）。那时的选择见
-    `maos/store/pg_schema.sql` 中文那一节末尾与 `deploy/polardb.md`，**不要**在现场
-    改判据。
-    """
-    config = pg.fts_config()
-    if config.lower() in _PG_BUILTIN_FTS_CONFIGS:
-        pytest.skip(
-            f"这个库配的是 PG 内置的 {config}，没有中文分词器 —— 本机"
-            " pgvector/pgvector:pg16 没装 zhparser，跑不到这一档。"
-            " 装了之后 export MAOS_PG_FTS_CONFIG=zhcfg 再跑本条（见 pg_schema.sql）。"
-        )
-
-    hits = pg.fts_search(TABLE, "body", kb.fts_text("退款政策"), 5)
-
-    assert [doc_id for doc_id, _ in hits] == ["d5"], \
-        f"中文查询在 {config} 上没召回 d5 —— 装了分词器却召不回，这一档不成立"
-    assert all(score > 0.0 for _, score in hits)
+# 🔴 **中文第二档的判据不在本文件**（T142 搬走）。
+#
+# 它原来叫 `test_chinese_query_recalls_on_real_tokenizer`，断言建在本文件手建的靶表
+# `t10_live_doc` 上 —— 那张表的 body 存的是**原文**。而 `fts_search()` 内部一律把查询
+# 串再过一遍 `kb.tokenize()`（`pg_store._fts_terms`），按 `pg_schema.sql` 记的 zhcfg
+# 建法（索引建在影子表、`ADD MAPPING FOR n,v,a,i,e,l`）是**索引侧出词、查询侧出字**，
+# 恒 0 命中。本机双重门控所以 skip、不显形，真跑日装好 zhparser 一切过去就会**假红**。
+#
+# T142 把它搬到了生产装配路径上（`kb.ensure_schema()` 建表 + `kb.upsert_doc()` 灌语料）：
+# `maos/tests/test_pg_vector_channel_t139.py` 的「4. 中文第二档」一节，那里还多了一条
+# **本机就能真跑**的链路档。取舍与理由见 `docs/DECISIONS.md` 的 `## task-t142`。
 
 
 def test_simple_config_makes_a_whole_chinese_string_one_token(pg: PgStorePort) -> None:
     """上一条抛错的底层事实：`simple` 把整串汉字切成**一个** token。
 
     这条不报错，所以只能由测试记着 —— 它正是「中文召回恒空且无症状」的成因。
+
+    ⚠️ 这条量的是 **`kb_doc` 原文列**那一路。检索实际走的是影子表，那一路上的同一
+    件事量出来是相反的结论 —— 对照见下一条。
     """
     rows = pg.query("SELECT to_tsvector('simple', %s) AS tv", ("退款政策超时未到账",))
 
     assert rows[0]["tv"] == "'退款政策超时未到账':1", "整条是一个 token，子串查不中"
+
+
+def test_shadow_table_text_is_matchable_char_by_char(pg: PgStorePort) -> None:
+    """🔴 **A 影子表口径成立的底层事实**（T142 钉住）：同一串中文，存进影子表之后
+    `simple` 就**匹配得上**了 —— 因为 `kb.fts_text()` 已经按字切开。
+
+    与上一条并排读才完整：
+    - 原文列 `退款政策超时未到账` → 一个 token `'退款政策超时未到账':1`，子串恒不命中
+    - 影子表 `退 款 政 策 超 时 未 到 账` → 九个 token，`退 & 款` **真命中**
+
+    这就是 T142 选 A（保留影子表口径）而不是 B（把 zhcfg 索引建回原文列）的底层依据：
+    中文在影子表上**召得回来**（代价是「按字 AND」，排序无意义），而 B 口径要把错误码
+    那条通道重新打瞎（`acq.trade_not_exist` 在原文列上又被黏成一个 token，
+    `test_error_code_is_searchable_after_the_shadow_table_switch` 当场红）。两者不可
+    兼得，取舍记在 `docs/DECISIONS.md` 的 `## task-t142`。
+
+    ⚠️ 「匹配得上」**不等于**「中文通了」。第一档（内置配置 + CJK）照旧抛 `LookupError`，
+    口径一个字没松（`DECISIONS.md` 的 `## task-t139`）：按字 AND 会让「退款政策」与
+    「政策退款」一样，召回偏宽而排序无意义。那句「缺省支持中文分词检索」在**任何一档
+    上都仍然不许说**。
+    """
+    shadow_text = kb.fts_text("退款政策超时未到账")
+    assert shadow_text == "退 款 政 策 超 时 未 到 账", "影子表存的就是这个形状"
+
+    rows = pg.query(
+        "SELECT to_tsvector('simple', %s) AS tv,"
+        " to_tsvector('simple', %s) @@ to_tsquery('simple', %s) AS hit",
+        (shadow_text, shadow_text, " & ".join(kb.tokenize(kb.fts_text("退款")))),
+    )
+
+    assert rows[0]["tv"].count(":") == 9, \
+        f"按字切开之后该是九个 token，实际 {rows[0]['tv']!r}"
+    assert rows[0]["hit"] is True, \
+        "影子表口径下中文必须匹配得上 —— 匹配不上的话 A 口径整个不成立"
 
 
 def test_missing_table_raises_lookup_error(pg: PgStorePort) -> None:

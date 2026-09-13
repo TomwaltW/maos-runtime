@@ -138,15 +138,24 @@ CREATE INDEX IF NOT EXISTS idx_kb_doc_fts_simple_body
 --
 -- 然后 export MAOS_PG_FTS_CONFIG=zhcfg。本层不用改一行代码。
 --
--- 切过去会动到哪条判据（T139 把中文分成两档，各有判据，见
--- `maos/tests/test_pg_store_live.py` 那两条同名前缀的测试）：
+-- 切过去会动到哪条判据（T139 把中文分成两档，T142 把第二档搬上装配路径并补了一条
+-- 本机就能真跑的链路档）：
 --
 --   1. `MAOS_PG_FTS_CONFIG` 指向 PG 内置配置（本机今天的 `simple`）
---      → `test_chinese_query_raises_on_builtin_config`：中文查询**必须抛
---        LookupError**，不许静默漏。
---   2. 指向真分词器（`zhcfg` / `jiebacfg`，真跑日的 PolarDB）
---      → `test_chinese_query_recalls_on_real_tokenizer`：中文查询**必须真召回**。
---        跑不到这一档的环境 skip，**不许伪装成绿**。
+--      → `test_pg_store_live.py::test_chinese_query_raises_on_builtin_config`：
+--        中文查询**必须抛 LookupError**，不许静默漏。这一档不依赖装配路径，留在原处。
+--   2. 指向非内置配置（真跑日的 `zhcfg` / `jiebacfg`）。判据在
+--      `maos/tests/test_pg_vector_channel_t139.py` 的「4. 中文第二档」，两条：
+--      · `test_second_tier_chinese_recalls_through_the_assembly_path`
+--        —— **本机每次都真跑**。它在本机现造一个 `COPY = simple` 的非内置配置，
+--        把第二档链路（不抛 → `kb.tokenize()` → `to_tsquery` → 影子表 → 召回）整条走通，
+--        并连带钉住「错误码通道不因此变瞎」。
+--      · `test_chinese_query_recalls_on_real_tokenizer` —— 真分词器那一档，本机 skip。
+--        它唯一还没验的是「zhparser 对单字序列出不出词」。
+--
+--      🔴 T142 之前这两条合成一条，且断言建在**原文靶表**上（`t10_live_doc`），
+--      而查询侧一律再过一遍 `kb.tokenize()` —— 索引侧出词、查询侧出字，**恒 0 命中**。
+--      本机双重门控所以 skip、不显形，真跑日一切过去就是假红。别把它搬回原文靶表。
 --
 -- 切之前先知道这件事：影子表里存的是 `kb.fts_text()` 的产物，中文在那一步已经
 -- **按字切开并用空格分隔**了。所以 zhparser 在这条路上拿到的是 "退 款 政 策"
@@ -157,8 +166,18 @@ CREATE INDEX IF NOT EXISTS idx_kb_doc_fts_simple_body
 --
 -- 要让 zhparser 真按词切，得让它看到原文，也就是把 zhcfg 的索引建回 `kb_doc` 的
 -- title/body，并且查询侧**不过** `kb.fts_text()`。那是第三种形状，会把错误码那条
--- 通道重新打瞎（原文上 `ACQ.TRADE_NOT_EXIST` 又变回一个 token）。两者不可兼得，
--- 取舍见 `docs/DECISIONS.md` 的 `## task-t139` 与 `deploy/polardb.md`。
+-- 通道重新打瞎（原文上 `ACQ.TRADE_NOT_EXIST` 又变回一个 token）。两者不可兼得。
+--
+-- 🔴 **T142 已经把这个取舍定死：选 A，保留影子表口径**（`docs/DECISIONS.md` 的
+-- `## task-t142`，`deploy/polardb.md` 那一节同一口径，三处说法一致）。理由一句话：
+-- 错误码是退款域知识条目的主键式线索、**是今天生产路径上真在用的一条通道**，而中文
+-- 在影子表上**召得回来**（代价只是排序无意义）。拿一条正在用的通道去换另一条通道的
+-- 排序质量，不划算。
+--
+-- 所以**不要**把 zhcfg 的索引建到 `kb_doc` 原文列上 —— 上面那段安装步骤里的索引
+-- 目标是 `kb_doc_fts`，不是笔误。真跑日第二档要是 0 命中，处置是把
+-- `MAOS_PG_FTS_CONFIG` 退回 `simple`（口径退回第一档，中文照旧走本地退化），
+-- **不是**在现场改索引形状。判据的 docstring 里写着同一句话。
 --
 -- **本机 pgvector/pgvector:pg16 没装 zhparser**，所以本机只有 simple，中文查询由
 -- `PgStorePort.fts_search()` 抛 LookupError、检索器退化走本地通道 —— 这是如实的

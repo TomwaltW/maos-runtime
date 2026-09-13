@@ -16,8 +16,11 @@
 **没库就整组 skip，绝不红**（判据与 `test_pg_store_live.py` 同一套：DSN 未设或连不
 上）。CI、别人的机器、以及本仓库缺省的 SQLite 路径上都没有 PG，那是常态不是回归。
 
-中文分档的两条判据不在这里，在 `test_pg_store_live.py`
-（`test_chinese_query_raises_on_builtin_config` / `..._recalls_on_real_tokenizer`）。
+**T142 起多守第 4 件：中文第二档**（见本文件最后一节）。第一档「内置配置 + CJK 必须抛
+`LookupError`」仍在 `test_pg_store_live.py::test_chinese_query_raises_on_builtin_config`
+—— 那一档不依赖装配路径，留在原处。第二档搬来了这里，因为它必须建在
+`kb.ensure_schema()` + `kb.upsert_doc()` 这条真装配路径上：建在手建的原文靶表上是恒 0
+命中的假红。形状取舍（A 影子表口径）见 `docs/DECISIONS.md` 的 `## task-t142`。
 """
 
 from __future__ import annotations
@@ -32,8 +35,10 @@ from maos.kb import retriever
 from maos.store.pg_store import (
     DSN_ENV,
     EMBED_DIM_PLACEHOLDER,
+    FTS_CONFIG_ENV,
     VECTOR_ACCEL_SUFFIX,
     PgStorePort,
+    _PG_BUILTIN_FTS_CONFIGS,
     embed_dim,
     rendered_schema_sql,
 )
@@ -437,6 +442,142 @@ def test_accel_column_dimension_comes_from_embed_dim(pg: PgStorePort) -> None:
     pg._vec_accel_cache.clear()
     assert pg._vector_accel("kb_doc", "embedding") is None, \
         "维度对不上还在用这条加速列 —— 每一行都会 cast 失败，召回静默归零"
+
+
+# ====================================================== 4. 中文第二档（T142 搬来）
+#
+# 🔴 这一节整个是 T142 从 `test_pg_store_live.py` 搬过来的，因为**判据必须建在装配路径
+#    上**（`kb.ensure_schema()` 建表 + `kb.upsert_doc()` 灌语料，也就是本文件的 `pg`
+#    fixture）。原来那条建在手建的原文靶表 `t10_live_doc` 上，而 `fts_search()` 内部一律
+#    把查询串再过一遍 `kb.tokenize()`（`pg_store._fts_terms`）：按 `pg_schema.sql` 记的
+#    zhcfg 建法，索引侧出词、查询侧出字，**恒 0 命中**。它今天双重门控（有 PG + 装了
+#    zhparser）所以本机 skip、不显形，真跑日一切过去就是**假红** —— 而它原来的 docstring
+#    写着「红了就知道不该切」，会把人指向一个错误的结论。
+#
+# 形状取舍（T142 定死，`docs/DECISIONS.md` 的 `## task-t142`）：**选 A，保留影子表口径**。
+# 底层事实钉在 `test_pg_store_live.py::test_shadow_table_text_is_matchable_char_by_char`。
+
+#: T142 在本机造出来的「非内置配置」。`COPY = simple` 意味着 parser 与 `simple` 一模
+#: 一样（中文按字、英数按 `fts_text()` 已切好的形状），但**名字不在**
+#: `_PG_BUILTIN_FTS_CONFIGS` 里 —— 于是 `fts_search()` 不再走第一档那条 `LookupError`，
+#: 整条第二档链路（不抛 → `kb.tokenize()` → `to_tsquery` → 影子表 → 召回）在本机就能真跑。
+#:
+#: 这**不是**「为了本机也绿把断言弱化」（T139 原话，仍然有效）：断言一个字没松，仍然要求
+#: 真召回 `d-zh`、分数 > 0。它买的是把「真跑日第一次执行」缩成「每次跑测试都执行」——
+#: 第二档链路此前在本机永远 skip，而一条永不执行的断言守不住任何东西。
+#: 它也**没有**替代下一条：唯一还没验的是「zhparser 对单字序列出不出词」，那要真分词器。
+SECOND_TIER_PROBE_CONFIG = "t142_second_tier_probe"
+
+
+@pytest.fixture
+def second_tier(pg: PgStorePort, monkeypatch: pytest.MonkeyPatch):
+    """本机造一个非内置的文本检索配置，把第二档链路开出来。用完 DROP，不留残留。
+
+    建在 `public` 下，名字带轨号 —— 别的轨也在同一台 PG 上跑。
+    """
+    drop = f"DROP TEXT SEARCH CONFIGURATION IF EXISTS {SECOND_TIER_PROBE_CONFIG}"
+    pg._raw_query(drop, ())
+    pg._raw_query(
+        f"CREATE TEXT SEARCH CONFIGURATION {SECOND_TIER_PROBE_CONFIG} (COPY = simple)", ())
+    monkeypatch.setenv(FTS_CONFIG_ENV, SECOND_TIER_PROBE_CONFIG)
+    try:
+        yield SECOND_TIER_PROBE_CONFIG
+    finally:
+        pg._raw_query(drop, ())
+
+
+@live_only
+def test_second_tier_chinese_recalls_through_the_assembly_path(
+    pg: PgStorePort, second_tier: str
+) -> None:
+    """🔴 **第二档链路在本机就成立**：配置一旦不是 PG 内置的，装配路径上的中文查询
+    必须**真召回** —— 而且**错误码那条通道不许因此变瞎**。
+
+    这条是 A 口径（保留影子表）的完整判据。它同时钉住两件事：
+
+    1. 中文召得回来。影子表里存的是 `kb.fts_text()` 的产物（中文已按字切开），
+       查询侧过同一个函数，两边口径一致，所以 `退 & 款 & 政 & 策` 真命中。
+    2. **错误码通道还活着**。这正是 A 与 B 的分水岭：B 口径（把 zhcfg 索引建回
+       `kb_doc` 原文列、查询侧不过 `fts_text()`）能让 zhparser 真按词切中文，代价是
+       `acq.trade_not_exist` 在原文列上又被黏成一个 token，本条最后一行当场破。
+       两者不可兼得，T142 选 A —— 理由见 `docs/DECISIONS.md` 的 `## task-t142`。
+
+    ⚠️ 「召得回来」**不等于**「中文分词检索通了」。这一档实际是**按字 AND**：
+    「退款政策」与「政策退款」在它眼里一样，召回偏宽而排序无意义。所以那句
+    「缺省支持中文分词检索」在**任何一档上都仍然不许说**
+    （`docs/submission-checklist.md:224`，T139 已定，本轨没翻案）。
+    """
+    config = pg.fts_config()
+    assert config == second_tier, "fixture 没把配置指过去，这条就没在验第二档"
+    assert config.lower() not in _PG_BUILTIN_FTS_CONFIGS, \
+        "探针配置必须是非内置的，否则走的还是第一档那条 LookupError"
+
+    hits = pg.fts_search("kb_doc", "body", kb.fts_text("退款政策"), 5)
+
+    assert [doc_id for doc_id, _ in hits] == [kb.doc_row_id(TENANT, "d-zh")], \
+        f"第二档上中文没召回 d-zh：{hits} —— A 影子表口径的链路不成立"
+    assert all(score > 0.0 for _, score in hits), "F-2：分数越大越相关，不许是 0"
+
+    # 🔴 A 口径买的就是这一行：切到第二档之后错误码照样检索得到。
+    assert [d for d, _ in pg.fts_search("kb_doc", "body", kb.fts_text("acq"), 5)] == \
+        [kb.doc_row_id(TENANT, "d-err")], \
+        "第二档下错误码通道瞎了 —— 那正是 B 口径的病，A 口径不该有"
+
+
+@live_only
+def test_chinese_query_recalls_on_real_tokenizer(pg: PgStorePort) -> None:
+    """**中文第二档在真分词器上**（`MAOS_PG_FTS_CONFIG=zhcfg`，9/18 真跑日的 PolarDB）：
+    装配路径上的中文查询必须**真召回**。
+
+    为什么要有这一档：8/30 那次在 PolarDB 真实例上 `zhparser 2.2` 已经装成、`zhcfg`
+    检索配置已建、中文召回已实测（`deploy/polardb-live.md` §1.4）。真跑日那天
+    `MAOS_PG_FTS_CONFIG=zhcfg` 是能真跑的，这条描述那一档该是什么样。
+
+    🔴 **这条红了不等于「不该切」**（T142 重写；原措辞给的是错误结论）。上一条
+    `test_second_tier_chinese_recalls_through_the_assembly_path` 已经在本机证明
+    **链路本身通**了 —— 不抛错、切词一致、影子表命中、错误码不瞎。所以本条一旦红，
+    病根只剩唯一一个：**zhparser 在「单字序列」上不出词**（影子表里中文已被
+    `kb.fts_text()` 按字切开，它拿到的是 `退 款 政 策` 而不是 `退款政策`，而
+    `ADD MAPPING FOR n,v,a,i,e,l` 只收这几种词性，单字未必落在里面）。
+
+    **当场处置**（真跑日照这个走，不要临场发挥）：把 `MAOS_PG_FTS_CONFIG` 退回
+    `simple`，口径退回第一档 —— 中文照旧由 `fts_search()` 抛 `LookupError`、检索器
+    退化走本地实现，召回照常，只是不走 PG。**不要在现场改判据，也不要改索引形状**
+    （把 zhcfg 索引建回原文列是 B 口径，会把错误码通道打瞎，是一次形状改造不是现场
+    微调，见 `docs/DECISIONS.md` 的 `## task-t142`）。
+
+    本机跑不到这一档（`pgvector/pgvector:pg16` 没装 zhparser，且本波不许装），所以 skip。
+    **skip 不是绿** —— 但它不再是「唯一一条描述第二档的判据」了，链路那半已经由上一条
+    每次真跑。不许为了「本机也绿」把断言弱化成 `if hits:` 那种形状（T139 原话）。
+    """
+    config = pg.fts_config()
+    if config.lower() in _PG_BUILTIN_FTS_CONFIGS:
+        pytest.skip(
+            f"这个库配的是 PG 内置的 {config}，没有中文分词器 —— 本机"
+            " pgvector/pgvector:pg16 没装 zhparser，跑不到这一档。装了之后"
+            " export MAOS_PG_FTS_CONFIG=zhcfg 再跑本条（建法见 pg_schema.sql 中文那一节）。"
+        )
+
+    hits = pg.fts_search("kb_doc", "body", kb.fts_text("退款政策"), 5)
+
+    if not hits:
+        # 红了就地把病根打出来，省掉真跑日现场那一轮「是表没建、是没灌数据、还是分词
+        # 没出词」的排查 —— 现场最贵的就是这一轮往返。
+        probe = pg._raw_query(
+            "SELECT to_tsvector(%s, %s)::text AS tv, to_tsquery(%s, %s)::text AS tq",
+            (config, kb.fts_text("退款政策超时未到账"),
+             config, " & ".join(kb.tokenize(kb.fts_text("退款政策")))))[0]
+        pytest.fail(
+            f"{config} 上中文 0 命中。索引侧 to_tsvector = {probe['tv']!r}；"
+            f"查询侧 to_tsquery = {probe['tq']!r}。两边（或任一边）是空的 ="
+            " zhparser 在单字序列上不出词。当场处置：把 MAOS_PG_FTS_CONFIG 退回"
+            " simple，口径退回第一档，中文照旧走本地退化。不要在现场改判据或索引形状"
+            "（见本函数 docstring 与 docs/DECISIONS.md 的 ## task-t142）。"
+        )
+
+    assert [doc_id for doc_id, _ in hits] == [kb.doc_row_id(TENANT, "d-zh")], \
+        f"中文查询在 {config} 上召回的不是 d-zh：{hits}"
+    assert all(score > 0.0 for _, score in hits), "F-2：分数越大越相关，不许是 0"
 
 
 # ====================================================== 不需要库的那几条

@@ -66,7 +66,8 @@ from maos.core.control_plane import (
 from maos.core.eventbus import EventBus
 from maos.core.store import Store
 from maos.tools.gateway_codes import OUTCOME_FAILED, OUTCOME_SUCCESS, lookup
-from maos.tools.sandbox import sandbox_git_apply
+from maos.tools.port import invoke_tool
+from maos.tools.sandbox import GIT_APPLY_PORT
 
 log = logging.getLogger("maos.gate")
 
@@ -503,16 +504,29 @@ class ReviewerGate:
                                        f"attempt={ref.get('attempt')}）"})
                 continue
 
-            out.extend(self._dry_run_reverse(task, patch_art))
+            out.extend(self._dry_run_reverse(task, patch_art, store=self.store))
         return out
 
     @staticmethod
-    def _dry_run_reverse(task, patch_art) -> list[dict]:
-        """git apply -R --check。不落盘，只回答「这份补丁现在还反得回去吗」。"""
+    def _dry_run_reverse(task, patch_art, *, store=None) -> list[dict]:
+        """git apply -R --check。不落盘，只回答「这份补丁现在还反得回去吗」。
+
+        ``store`` 是 **keyword-only 且带缺省**，``@staticmethod`` 也保留原样：
+        ``ReviewerGate._dry_run_reverse(task, art)`` 这种不带实例的两参直调仍然成立
+        （``maos/tests/test_make_case_bundle.py:535`` 就是这么调的）。不传 store 时
+        ``invoke_tool`` 本就不落审计行（``port.py:60`` 的 ``if store is not None``），
+        判定逻辑一个字节不变 —— 变的只是「闸跑过这次干跑」这件事有没有留痕。
+        """
         workdir = str((task.get("inputs") or {}).get("workdir") or "")
         try:
-            res = sandbox_git_apply(patch_art["content"], workdir,
-                                    reverse=True, check_only=True)
+            res = invoke_tool(
+                GIT_APPLY_PORT,
+                {"patch_set": patch_art["content"], "workdir": workdir,
+                 "reverse": True, "check_only": True},
+                store=store,
+                extras={"trace_id": task.get("trace_id") or "",
+                        "plan_id": task.get("plan_id") or "",
+                        "task_id": task.get("task_id")})
         except NotImplementedError as exc:
             return [{"gate": "compensation", "severity": "blocker", "path": None,
                      "message": f"补偿干跑不可执行（沙箱未就位: {exc}）—— "

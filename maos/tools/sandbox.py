@@ -758,7 +758,11 @@ PYTEST_RUN_PORT = ToolPort(
     security_boundary=(
         "主路径容器：--network none --read-only --user 1000:1000 --memory 512m "
         "--cpus 1 --pids-limit 128，不继承宿主 env；降级路径裸 subprocess，"
-        "env 按白名单重建（只放行 PATH/LANG，HOME 指向一次性空目录）；"
+        "env 按白名单重建（只放行 PATH/LANG，HOME 指向一次性空目录）—— "
+        "但降级路径到此为止：**没有任何文件系统与网络隔离**。模型产出的 Python "
+        "在 pytest collection 阶段就以宿主 uid 执行，该 uid 可读的**绝对路径**一律"
+        "读得到（换掉 HOME 只影响 ~ 展开，挡不住 ~/.ssh 这类被硬编码的路径），"
+        "出网也不受限。降级是一份可信度更低的通过，不是一次被隔离的执行；"
         "超时由宿主侧 MAOS_SANDBOX_TIMEOUT（默认 300s）兜底并 docker rm -f 清场"
     ),
     rate_limit="",

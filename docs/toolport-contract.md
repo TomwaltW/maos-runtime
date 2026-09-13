@@ -264,7 +264,7 @@
 | `params_schema` | ④ 入参 | `workdir`: str |
 | `returns_schema` | ⑤ 出参 | `passed`: int<br>`failed`: int<br>`errors`: int<br>`cases`: list[{id,status,msg}]<br>`duration`: float<br>`tool_error`: str \| None<br>`summary`: str<br>`sandbox_mode`: container \| subprocess \| not-run<br>`degraded_reason`: str \| None |
 | `failure_modes` | ⑥ 失败形态 | · tool_error: workdir 不可用 / docker run 起不来 / 超时（容器已强制清除）<br>· tool_error: pytest 退出码 ≥2（中断、内部错、用法错、零用例收集）<br>· tool_error: 没产出 junit 报告或报告解析失败<br>· failed>0: 用例真的挂了 —— 这不是工具失败，Gate 逐条转 findings<br>· sandbox_mode=subprocess: 跑成了，但容器隔离本次未生效（degraded_reason 说明原因） —— 这不是失败，是一份可信度更低的通过 |
-| `security_boundary` | ⑦ 安全边界 | 主路径容器：--network none --read-only --user 1000:1000 --memory 512m --cpus 1 --pids-limit 128，不继承宿主 env；降级路径裸 subprocess，env 按白名单重建（只放行 PATH/LANG，HOME 指向一次性空目录）；超时由宿主侧 MAOS_SANDBOX_TIMEOUT（默认 300s）兜底并 docker rm -f 清场 |
+| `security_boundary` | ⑦ 安全边界 | 主路径容器：--network none --read-only --user 1000:1000 --memory 512m --cpus 1 --pids-limit 128，不继承宿主 env；降级路径裸 subprocess，env 按白名单重建（只放行 PATH/LANG，HOME 指向一次性空目录）—— 但降级路径到此为止：**没有任何文件系统与网络隔离**。模型产出的 Python 在 pytest collection 阶段就以宿主 uid 执行，该 uid 可读的**绝对路径**一律读得到（换掉 HOME 只影响 ~ 展开，挡不住 ~/.ssh 这类被硬编码的路径），出网也不受限。降级是一份可信度更低的通过，不是一次被隔离的执行；超时由宿主侧 MAOS_SANDBOX_TIMEOUT（默认 300s）兜底并 docker rm -f 清场 |
 | `rate_limit` | ⑧ 限流 | （未设限） |
 | `owner` | ⑨ 属主 | task-b |
 

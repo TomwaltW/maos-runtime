@@ -1201,13 +1201,42 @@ def test_parse_resolve_args_refuses_an_unknown_flag_instead_of_guessing():
 
 
 def test_parse_resolve_args_does_not_hunt_for_flags_inside_the_summary():
-    """摘要里出现的 `--…` 原样留在摘要里 —— 标记只在固定那一位认。"""
+    """摘要里出现的**别的** `--…` 原样留在摘要里 —— 标记只在固定那一位认。
+
+    这条钉的是「不在自由文本里认标记」：随便一个 `--xxx` 落在摘要中间，它就是提交人
+    写的那句原话的一部分，解析器不许拿它当开关，更不许把它吃掉。
+    """
     kind, ref, summary = OC.parse_resolve_args(
-        [TICKET, "SN-7", "渠道备注", OC.FLAG_NOT_SETTLED, "是对方系统里的字样"])
+        [TICKET, "SN-7", "渠道备注", "--对方系统里的字样", "已核对"])
 
     assert kind == CP.RESOLUTION_SETTLED, "在自由文本里找标记 = 替提交人改他写的凭证"
     assert ref == "SN-7"
-    assert summary.endswith(f"{OC.FLAG_NOT_SETTLED} 是对方系统里的字样")
+    assert summary.endswith("--对方系统里的字样 已核对")
+
+
+def test_the_flag_in_the_wrong_position_replies_usage_instead_of_lying_settled():
+    """🔴 打对了标记但放错位置 -> 回用法，**不许**静默关出一张 `settled`。
+
+    这是整合期 p10-g 补的判据。原先这一支把后面出现的 `--not-settled` 静默吞进摘要，
+    照旧按 `settled` 关单并回填一条**假的到账观察**：拼错一个字母（`--not-setled`）
+    会被挡下，拼对却放错位置反而「生效」成了它的反面 —— 全函数最坏的失败姿态。
+
+    判据取这一个精确字面量，不是「任意 `--` 开头的词」（上一条测试钉的正是后者
+    不许认）。两条合起来才是完整口径：**别的 `--x` 是原话，这一个是打错位置。**
+    """
+    # 末位、中间、以及把标记本身当成凭证引用的重复写法，三种都不收。
+    assert OC.parse_resolve_args(
+        [TICKET, "SN-7", "余额不足，线下核对过", OC.FLAG_NOT_SETTLED]) is None
+    assert OC.parse_resolve_args(
+        [TICKET, "SN-7", OC.FLAG_NOT_SETTLED, "余额不足"]) is None
+    assert OC.parse_resolve_args(
+        [TICKET, OC.FLAG_NOT_SETTLED, OC.FLAG_NOT_SETTLED, "SN-7"]) is None
+
+    # 打在固定那一位照旧成立 —— 加固没有把正路堵上。
+    kind, ref, summary = OC.parse_resolve_args(
+        [TICKET, OC.FLAG_NOT_SETTLED, "SN-7", "余额不足，线下核对过"])
+    assert (kind, ref) == (CP.RESOLUTION_NOT_SETTLED, "SN-7")
+    assert summary == "SN-7 余额不足，线下核对过"
 
 
 def test_an_unknown_flag_only_replies_usage_and_closes_nothing(tmp_path):

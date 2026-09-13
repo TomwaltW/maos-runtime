@@ -371,12 +371,26 @@ def _diagnose_unreachable(
         rep.note("诊断 DNS", f"解析成功，{len(addrs)} 个 A 记录")
     except Exception as dns_exc:  # noqa: BLE001
         rep.note("诊断 DNS", f"解析失败 -> {type(dns_exc).__name__}")
-        rep.note(
-            "诊断结论",
-            "DNS 解析不出来 = **host 写错 / 实例名不对，不是白名单**。解析是本机到"
-            " 公共 DNS 的事，白名单管的是对端放不放行，在这一层根本看不出来 ——"
-            " 先核对 DSN 里的 host 拼写，以及那台实例是不是还在（被释放 / 改名）。",
-        )
+        # 「解析失败」不是一件事，是两件 —— 分不开就会在真跑日指错方向（整合期 p10-g）。
+        # `EAI_AGAIN` 是解析器**没回话**（本机没网、DNS 服务器不可达、公司网关掐了 53），
+        # 与 host 拼写、与白名单都无关；把它一并说成「host 写错了」，现场 WiFi 抖一下
+        # 就会让人去查一个根本没错的拼写 —— 正是这套四档诊断立志消灭的那类误导。
+        if getattr(dns_exc, "errno", None) == getattr(socket, "EAI_AGAIN", object()):
+            rep.note(
+                "诊断结论",
+                "DNS **查不动**（EAI_AGAIN：解析器没回话）= **多半是本机没网 /"
+                " DNS 不可达**，与 host 拼写、与白名单都无关。先确认本机能上网"
+                "（`ping -c1 223.5.5.5`、`dig +short aliyun.com`），再复跑本脚本。",
+            )
+        else:
+            rep.note(
+                "诊断结论",
+                "DNS 解析不出来 = **host 写错 / 实例名不对，不是白名单**。解析是本机到"
+                " 公共 DNS 的事，白名单管的是对端放不放行，在这一层根本看不出来 ——"
+                " 先核对 DSN 里的 host 拼写，以及那台实例是不是还在（被释放 / 改名）。"
+                " 两个前提：本机 DNS 此刻是通的（不通会报 EAI_AGAIN，走上面那一档）；"
+                " 本档只查 A 记录（AF_INET），纯 IPv6 的实例在这里也会显示解析不出来。",
+            )
         return
 
     # ---- 第 2 / 3 / 4 档：TCP --------------------------------------------

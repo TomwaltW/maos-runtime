@@ -474,16 +474,36 @@ def second_tier(pg: PgStorePort, monkeypatch: pytest.MonkeyPatch):
     """本机造一个非内置的文本检索配置，把第二档链路开出来。用完 DROP，不留残留。
 
     建在 `public` 下，名字带轨号 —— 别的轨也在同一台 PG 上跑。
+
+    ## 建不出来就 skip，**不许 ERROR**（整合期 p10-g 补）
+
+    本机 `pgvector/pgvector:pg16` 是超级用户，建得出来；真跑日那台 PolarDB 的普通账号
+    **不一定有 schema 上的 CREATE 权限**（`deploy/polardb-live.md` §1.3 记着它连
+    `CREATE EXTENSION vector` 都建不出）。fixture setup 里抛异常在 pytest 里是 **ERROR
+    不是 skip** —— 那会把真跑日那一束直接打红，而本轨的立意正是拆真跑日的雷。
+
+    这是**门控，不是弱化断言**：跑起来的那一档断言一个字没松，仍然要求真召回 `d-zh`。
+    建不出配置时这条链路在那台实例上本就无从验起，与「没有可连的 PG 就整组 skip」
+    是同一件事的下一级。
     """
     drop = f"DROP TEXT SEARCH CONFIGURATION IF EXISTS {SECOND_TIER_PROBE_CONFIG}"
-    pg._raw_query(drop, ())
-    pg._raw_query(
-        f"CREATE TEXT SEARCH CONFIGURATION {SECOND_TIER_PROBE_CONFIG} (COPY = simple)", ())
+    try:
+        pg._raw_query(drop, ())
+        pg._raw_query(
+            f"CREATE TEXT SEARCH CONFIGURATION {SECOND_TIER_PROBE_CONFIG} (COPY = simple)", ())
+    except Exception as exc:                            # noqa: BLE001
+        pytest.skip(f"这台实例上建不出文本检索配置（{type(exc).__name__}: {exc}）—— "
+                    f"多半是账号没有 schema 上的 CREATE 权限。第二档链路在这里无从验起")
     monkeypatch.setenv(FTS_CONFIG_ENV, SECOND_TIER_PROBE_CONFIG)
     try:
         yield SECOND_TIER_PROBE_CONFIG
     finally:
-        pg._raw_query(drop, ())
+        # 清理失败不许把一条已经跑完的测试翻红：留下的是一个带轨号的探针配置，
+        # 下一次 setup 的 `DROP ... IF EXISTS` 会把它收掉。
+        try:
+            pg._raw_query(drop, ())
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 @live_only

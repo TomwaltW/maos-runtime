@@ -22,7 +22,9 @@
    `_ticket_role()` / `_approver_role()` / `_warn_unknown_role()` 三个函数按这个
    形状问角色目录要缺省岗位名，目录读不到就回落本模块字面量；`promotion.py` 的
    `_refund()` 同理。**取值可以，断言不行**，且一律不许提到模块级 ——
-   判据在 `maos/tests/test_plan_advice.py` 的两条 AST 测试上。）
+   判据在 `maos/tests/test_plan_advice.py`：管**位置**的那条是 AST 扫描，覆盖
+   `maos/kb/**` 整片；另两条按文本钉住「确实还在问域要」，防的是把局部 import
+   连同调用点一起删掉也能让 AST 那条变绿。）
 
 ## 决策与讨论上限
 

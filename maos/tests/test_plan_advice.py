@@ -638,9 +638,14 @@ def test_no_kb_module_puts_a_business_domain_on_its_import_graph():
 
     判据面是 `maos/domain` 整个前缀，不是 `maos.domain.refund` 一家：退款是今天
     唯一落地的域，写死它等于下一个域进来时判据自动失效。
+
+    扫描面是 `rglob` 不是 `glob`（整合期 p10-g 改）：`CLAUDE.md` 与 `kb/__init__.py`
+    写的口径都是「`maos/kb/**` 整片」。今天 `maos/kb/` 下没有子包，两者等价 ——
+    正因为等价，现在换掉不花任何代价；等到有人加了 `maos/kb/<子包>/` 再发现判据
+    一直在静默漏扫，那就是又一次「守卫在该拦的时候没拦」。
     """
     bad = {}
-    for path in sorted(pathlib.Path(plan_advice.__file__).parent.glob("*.py")):
+    for path in sorted(pathlib.Path(plan_advice.__file__).parent.rglob("*.py")):
         hits = sorted(n for n in _module_level_imports(path)
                       if n.startswith("maos.domain"))
         if hits:

@@ -455,11 +455,36 @@ def _has_table(store: Any, name: str) -> bool:
     `maos.domain.refund` 压根不存在，那时 ImportError 与「表还没建」是同一件事
     —— 本函数的两个调用方（`promote_plan` / `list_failure_hints`）都挂在通用的
     Plan 终态钩子上，两种情况都该退化成空列表，而不是把一条跑完的 Plan 掀翻。
+
+    ## 「域不在」与「域装坏了」必须分得开（整合期 p10-g）
+
+    退化成 False 是对的，**一声不吭地退化不是**。T145 把模块级 import 改成函数体内
+    局部 import 之后，`runtime/plan_finalizer.py:125` 那条 `except ImportError` 就再也
+    走不到了：从前退款域自己装坏（传递依赖缺失、模块内 `import` 写错）会让
+    `from maos.kb.promotion import promote_plan` 当场失败并打一行「晋升模块不可用」，
+    现在它被这里的 `except Exception` 一并吞掉，`promote_plan` 静默返回 `[]`，
+    finalizer 一个字都不打 —— 正是 `plan_finalizer` 自己 docstring 点名的那种坏味道：
+    **静默的晋升失败会让知识库慢慢空掉，而每一次跑都显示成功。**
+
+    所以按 `exc.name` 分两档，不是按异常类型：
+
+      · 缺的就是 `maos.domain.*` 本身 —— 换业务域部署上的**预期路径**，`debug` 一行。
+        软件域那几个场景每条 Plan 终态都会走到这里，warning 会刷屏。
+      · 缺的是别的东西 —— 退款域在，但它装不起来，这是 **bug**，`warning` 出声。
     """
     try:
         rows = _objects().query(
             store, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,))
+    except ImportError as exc:
+        missing = getattr(exc, "name", "") or ""
+        if missing.startswith("maos.domain"):
+            log.debug("退款域未部署（%s），探 %s 退化成「表不在」", missing, name)
+        else:
+            log.warning("退款域装不起来（缺 %s：%s），本轮不晋升 —— "
+                        "这不是「换了业务域」，是依赖坏了", missing or "?", exc)
+        return False
     except Exception:                                  # noqa: BLE001 —— 探针不该炸
+        # 表还没建、store 连不上、非 sqlite 后端不认这条 SQL —— 都照旧静默退化。
         return False
     return bool(rows)
 

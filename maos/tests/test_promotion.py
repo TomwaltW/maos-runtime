@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
 
 import pytest
 
@@ -495,3 +497,67 @@ def test_promotion_failure_does_not_break_the_finalizer(store, monkeypatch):
     finalizer = PlanFinalizer(store)
     assert finalizer.promote(PLAN) == []
     assert finalizer.poll(PLAN), "复盘照跑，沉淀的 knowledge 一条都不许少"
+
+
+# ---------------------------------------------------------------------------
+# `_has_table` 的 ImportError 分档（整合期 p10-g）
+#
+# T145 把退款域的 import 从模块级挪进函数体之后，`plan_finalizer.py:125` 那条
+# `except ImportError` 就再也走不到了 —— 从前「退款域自己装坏了」会在那里打一行
+# 「晋升模块不可用」，改完之后它被 `_has_table` 的 `except Exception` 一并吞掉，
+# `promote_plan` 静默返回 []，finalizer 一个字都不打。那正是 `plan_finalizer`
+# 自己 docstring 点名的坏味道：静默的晋升失败会让知识库慢慢空掉，而每一次跑都
+# 显示成功。这两条钉住「两档分得开」。
+# ---------------------------------------------------------------------------
+
+
+class _BlockDomain:
+    """让 `import maos.domain.*` 抛真正的 ModuleNotFoundError。
+
+    不用 `sys.modules[name] = None`：那条路抛的 ImportError 的 `.name` 是空的，
+    而 `_has_table` 的判据正是 `exc.name` —— 用假形态测等于没测到那一支。
+    口径同 `test_matrix_bus.py::_BlockNio`。
+    """
+
+    def find_spec(self, name, path=None, target=None):
+        if name == "maos.domain" or name.startswith("maos.domain."):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return None
+
+
+def test_a_missing_domain_is_the_expected_path_and_stays_quiet(store, monkeypatch, caplog):
+    """换业务域的部署上退款域压根不在 —— 退化成「表不在」，且**不许**告警。
+
+    软件域那几个场景每条 Plan 终态都会走到这里，warning 会刷屏。
+    """
+    for mod in [m for m in list(sys.modules) if m.startswith("maos.domain")]:
+        monkeypatch.delitem(sys.modules, mod, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_BlockDomain(), *sys.meta_path])
+
+    with caplog.at_level(logging.DEBUG, logger="maos.kb.promotion"):
+        assert promotion._has_table(store, "refund_case") is False
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], (
+        "域没部署是预期路径，不该每条 Plan 都喊一声")
+    assert [r for r in caplog.records if r.levelno == logging.DEBUG], (
+        "一声不吭也不行 —— debug 里要留得下「为什么退化了」")
+
+
+def test_a_broken_domain_dependency_is_a_bug_and_says_so(store, monkeypatch, caplog):
+    """退款域在、但它装不起来 —— 这是 bug，必须出声。
+
+    判据落在 `exc.name` 上而不是异常类型：两档都是 ModuleNotFoundError，分界是
+    「缺的是域本身」还是「缺的是域依赖的别的东西」。这里直接让 `_objects()` 抛一个
+    缺外部依赖形态的异常 —— 真 import 机制那一支由上一条用 meta_path 覆盖了。
+    """
+    def broken(*_a, **_kw):
+        raise ModuleNotFoundError("No module named 'psycopg'", name="psycopg")
+
+    monkeypatch.setattr(promotion, "_objects", broken)
+
+    with caplog.at_level(logging.DEBUG, logger="maos.kb.promotion"):
+        assert promotion._has_table(store, "refund_case") is False
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "退款域装不起来却一声不吭 —— 知识库会安静地空掉"
+    assert "psycopg" in warnings[0].getMessage(), "告警里要写清到底缺了什么"

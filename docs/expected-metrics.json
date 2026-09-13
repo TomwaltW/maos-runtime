@@ -38,11 +38,22 @@
     "主仓从 90 涨到 101。整合期自己又补了 8 条判据（铁律 8 那条、工单兜底、AST 盲区、",
     "出口 IP 的 -4 与备用 resolver、夹具对齐真模板），全是纯单元、一条 PG 门控都没有，",
     "所以 passed 从 3950 涨到 3958 而 skipped / pg_gated 不变。",
-    "主仓从 90 涨到 101，worktree 那一档同步涨到 104，差值仍是 3。"
+    "主仓从 90 涨到 101，worktree 那一档同步涨到 104，差值仍是 3。",
+    "",
+    "2026-09-13 整合期 p10-g（Wave G 五轨 T142/T143/T144/T145/T147）：收集 4120 条，",
+    "passed 3958 -> 4017、skipped 101 -> 103、pg_gated 88 -> 90。",
+    "passed 涨的 59 条里 56 条来自五轨自身，另 3 条是整合期按审查捞出的问题补的判据",
+    "（`--not-settled` 放错位置回用法、退款域装坏了要出声两条）。",
+    "**pg_gated 涨的 2 条**：`test_pg_vector_channel_t139.py::test_second_tier_…`",
+    "与 `test_pg_store_live.py::test_shadow_table_text_is_matchable_char_by_char` 各 1 条。",
+    "T139 那条中文分词（`test_chinese_query_recalls_on_real_tokenizer`）本波从",
+    "`test_pg_store_live.py` **搬进了** `test_pg_vector_channel_t139.py`：它仍是双重门控",
+    "（有 PG + 装了 zhparser），有库那档照样 skip，搬家不改变差值 —— 所以两个文件的",
+    "收集数一增一减而 skipped 只涨 2。"
   ],
-  "pytest_passed_nopg": 3958,
-  "pytest_skipped_nopg": 101,
-  "pg_gated_tests": 88,
+  "pytest_passed_nopg": 4017,
+  "pytest_skipped_nopg": 103,
+  "pg_gated_tests": 90,
   "evidence_bundles": 8,
   "verify_result_line": "RESULT: 10/10 PASS"
 }

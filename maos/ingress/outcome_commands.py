@@ -312,6 +312,9 @@ def handle_assign(args: list[str], *, store, tenant_id: str, sender: str,
 #: 位置固定所以不与自由文本抢词：凭证摘要的第一个词是渠道流水号，不可能以 `--` 开头。
 #: 另一种形状（末位可选参数 `/resolve <单号> <摘要> not_settled`）要靠位置猜自由文本
 #: 的最后一个词是不是标记 —— 猜错一次就等于替提交人改了他写的凭证。
+#:
+#: 但「不在自由文本里认」不等于「看见了也当没看见」：放错位置的**这个精确字面量**
+#: 一律回用法，见 `parse_resolve_args`（整合期 p10-g 加固）。
 FLAG_NOT_SETTLED = "--not-settled"
 
 #: 标记 -> 关单结论。取值一律取自 `refund/compensate.py`，命令层**不自造第二份字面量**
@@ -327,12 +330,24 @@ def parse_resolve_args(args: list[str]) -> tuple[str, str, str] | None:
 
       · `/resolve <工单号> <流水号> <摘要…>`               -> `settled`（**缺省，逐字同从前**）
       · `/resolve <工单号> --not-settled <流水号> <摘要…>` -> `not_settled`
-      · 其余（缺凭证、或 `args[1]` 是个认不出的 `--x`）     -> `None`，调用方回 USAGE
+      · 其余（缺凭证、`args[1]` 是个认不出的 `--x`、
+        或标记打在了后面某一位）                           -> `None`，调用方回 USAGE
 
     **认不出的标记不许当凭证吃掉**：`--not-setled` 少一个字母若被当成渠道流水号，
     系统会照旧关出一张 `settled` 的单（回填一条到账观察），还把那个错字留成这份
     凭证的出处 —— 而按键的人以为自己关的是「这笔确实没退成」。宁可什么都不做、
     回一句用法。口径同 `parse()` 的「只按空白切，不做任何语义猜测」。
+
+    ## 打对了但打错位置，同样什么都不做（整合期 p10-g 加固）
+
+    标记只在固定那一位生效，这条不变 —— 在自由文本里**认**标记等于替提交人改他
+    写的凭证。但原先的写法是把后面出现的 `--not-settled` 静默吞进摘要，照旧关出一张
+    `settled` 的单并回填一条**假的到账观察**：拼错一个字母会被挡下，拼对却放错位置
+    反而「生效」成了它的反面。这是全函数最坏的一种失败姿态，正是上一段要治的病。
+
+    所以判据取**这一个精确字面量**（不是「任意 `--` 开头的词」——那才会跟自由文本
+    抢词）：它出现在凭证位之后就一律回用法。渠道流水号与线下凭证摘要里逐字出现
+    `--not-settled` 的概率为零；真要留这句原话，去掉那两个前导横线即可。
     """
     if len(args) < 2:
         return None
@@ -344,6 +359,11 @@ def parse_resolve_args(args: list[str]) -> tuple[str, str, str] | None:
             return None
         rest = rest[1:]
     if not rest:
+        return None
+    # 吃掉固定那一位之后，剩下的任何一位再出现它都是打错了位置。不猜它想干什么，
+    # 回用法（见 docstring 第二段）。判据落在 `rest` 整片而不是 `rest[1:]`：
+    # `--not-settled --not-settled SN-9` 会把标记本身当成凭证引用，同样是错的。
+    if FLAG_NOT_SETTLED in rest:
         return None
     # 第一个词当凭证引用，整句（不含标记）当摘要 —— 见 `handle_resolve` 的 docstring。
     return kind, rest[0], " ".join(rest)

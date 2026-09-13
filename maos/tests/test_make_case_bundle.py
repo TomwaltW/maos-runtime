@@ -334,19 +334,29 @@ def test_the_bundle_event_chain_never_leaks_customer_identity(gateway_fail):
 
     比的是**快照里的原值**（这份靶场数据本身已打码，`王**` / `138****6021`）：
     真值泄漏当然要红，打码值出现同样要红 —— 它意味着有人把快照往正文里拼了。
+
+    ## 两份文件一起扫，不能只扫 `event-chain.json`（整合期 p10-g 补）
+
+    `event-chain.json` 的 detail 是被 `make_case_bundle.py:672` 那张键白名单**裁过**的，
+    而 `trace.json` 落的是**全量 detail**。只扫前者，这条扛着「never leaks customer
+    identity」名字的红线会漏掉真正会泄的那一份：往 `_log_notified` 的 detail 里塞一个
+    `customer_name`，`event-chain.json` 把它裁掉、这条照绿，`trace.json` 里却躺着原值
+    —— 而整束是一起交出去的。白名单是**减法**，判据不该只盖住减完之后的那一半。
     """
     conn = sqlite3.connect(f"file:{gateway_fail / 'maos.db'}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     snap = conn.execute("SELECT payload_json FROM order_snapshot ORDER BY version").fetchone()
     payload = json.loads((snap["payload_json"] if snap else "") or "{}")
-    blob = json.dumps(_read(gateway_fail / "event-chain.json"), ensure_ascii=False)
+    scanned = {name: json.dumps(_read(gateway_fail / name), ensure_ascii=False)
+               for name in ("event-chain.json", "trace.json")}
     checked = 0
     for field in ("customer_name", "phone", "address", "receipt_no"):
         value = str(payload.get(field) or "").strip()
         if not value:
             continue
         checked += 1
-        assert value not in blob, f"{field}（{value}）进了给评委看的那份事件链"
+        for name, blob in scanned.items():
+            assert value not in blob, f"{field}（{value}）进了给评委看的 {name}"
     assert checked == 4, f"四项身份没比全 —— 靶场数据的字段名变了？{sorted(payload)}"
 
 

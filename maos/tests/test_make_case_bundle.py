@@ -37,7 +37,11 @@ from maos.core.store import SqliteStore  # noqa: E402
 from maos.domain.refund.case_pack import load_case_pack  # noqa: E402
 from maos.flows import custom_case  # noqa: E402
 from maos.runtime.gate import ReviewerGate  # noqa: E402
+from maos.skills.builtin.refund.notify import NotifyCustomerSkill as NOTIFY  # noqa: E402
 from maos.skills.invoker import SkillInvoker  # noqa: E402
+#: 红线词表从 skill 那侧的测试里借，**不在这里抄第二份**（T144）：两份清单迟早
+#: 漂成两套口径，而这条红线的全部意义就是只有一套（铁律 8 / 跨轨契约 §C）。
+from maos.tests.test_reject_aftermath_t137 import FORBIDDEN  # noqa: E402
 from maos.tools.sandbox import sandbox_git_apply  # noqa: E402
 
 #: 脚本不是包，按路径装载（idiom 同 `maos/tests/test_generated_docs.py`）。
@@ -90,6 +94,19 @@ def gateway_fail(tmp_path_factory, payload) -> Path:     # noqa: ANN001
     MCB.build_path("gateway_fail", payload, str(out), sha=SHA, secrets={}, live=False,
                    transcript=None)
     return out / "gateway_fail"
+
+
+@pytest.fixture(scope="module")
+def drift(tmp_path_factory, payload) -> Path:            # noqa: ANN001
+    """漂移那条 —— 「缺席的 skill 也占一行」现在只剩它与 `reject` 钉得住（T144）。
+
+    补偿收口之后补发的那条通知让 `gateway_fail` 成了 8/8，原先那条判据挂在它
+    身上。漂移这条停在核算前面，三个 skill 确实没跑过，判据搬过来仍然是真的。
+    """
+    out = tmp_path_factory.mktemp("case-drift")
+    MCB.build_path("drift", payload, str(out), sha=SHA, secrets={}, live=False,
+                   transcript=None)
+    return out / "drift"
 
 
 def _read(path: Path) -> dict:
@@ -236,17 +253,101 @@ def test_happy_path_shows_all_eight_contract_skills(happy):
         assert row["version"], f"{row['skill']} 没记版本 —— 「哪一版判的」答不出来"
 
 
-def test_absent_skills_are_written_down_not_dropped(gateway_fail):
+def test_absent_skills_are_written_down_not_dropped(drift):
     """缺席的 skill 留在清单里标 `present=false`，不是从清单里删掉。
 
     删掉的话，一份自称完整的清单里悄悄少了一行 —— 比明写「这个没跑」难查得多。
+
+    **判据从 `gateway_fail` 挪到 `drift`（T144）**：它从前钉的是「付款被拒之后
+    通知岗不该跑过」，而补偿收口之后**该**补一条通知 —— 那条路因此成了 8/8。
+    那是真相变好，不是判据失效，所以判据搬到仍然缺席的路径上，不是删掉了事。
+    漂移这条停在核算前面，付款与通知那几岗确实一次都没跑过。
     """
-    skills = _read(gateway_fail / "skills.json")
+    skills = _read(drift / "skills.json")
     listed = {s["skill"] for s in skills["contract_skills"]}
     assert len(listed) == 8, "清单条数得恒为 8，缺席的也占一行"
-    assert skills["present"] < 8, "付款被拒之后通知岗不该跑过"
+    assert skills["present"] < 8, "漂移停在核算前面，付款与通知那几岗不该跑过"
     absent = [s for s in skills["contract_skills"] if not s["present"]]
     assert absent and all(s["invocation_id"] is None for s in absent)
+
+
+def test_the_compensated_case_actually_tells_the_customer(gateway_fail):
+    """🔴 补偿收口那一束里，客户**收到了**一条通知，而且束里查得到发的是哪一句。
+
+    这一束从前的样子：`notification` 零行、`skills_present` 7/8、
+    `business_ref_missing` 里挂着 `notification`。三步收口（补偿、派单、关单）
+    全做了，客户一个字都不知道 —— 真跑日房间那条会当场演出通知，评委回头翻束里
+    却查不到（`docs/BACKLOG.md` 第 2382、2648 条）。
+
+    「通知恰好一条」是判据的一半：多于一条就是同一件事发了两遍，那比不发更糟。
+    """
+    conn = sqlite3.connect(f"file:{gateway_fail / 'maos.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    notes = conn.execute("SELECT * FROM notification").fetchall()
+    assert len(notes) == 1, f"补偿收口之后客户收到的通知不是恰好一条：{len(notes)}"
+
+    events = conn.execute("SELECT detail FROM event_log WHERE event_type=?",
+                          (NOTIFY.EVENT_CUSTOMER_NOTIFIED,)).fetchall()
+    assert len(events) == 1, "说过的那句话没留痕，或留了不止一条"
+    detail = json.loads(events[0]["detail"])
+    assert detail["content_digest"] == notes[0]["content_digest"], (
+        "事件里那句话与表上那条通知的摘要对不上 —— 留痕留的是另一条")
+
+    # 补偿那一档的正文要给出**抓手**：工单号与凭证引用，客户拿它们去追问。
+    assert "MT-" in detail["content"] and "工单" in detail["content"], (
+        f"补偿那一档没给工单号，客户无从追问：{detail['content']}")
+
+    # 束里（给评委看的那一份）直接读得到，不必翻 trace.json 的全量 detail。
+    chain = _read(gateway_fail / "event-chain.json")
+    said = [e for e in chain["events"]
+            if e["event_type"] == NOTIFY.EVENT_CUSTOMER_NOTIFIED]
+    assert len(said) == 1 and said[0]["detail"]["content"] == detail["content"]
+    assert chain["missing_required"] == [], (
+        f"这条路径的必需事件缺了：{chain['missing_required']}")
+    assert _read(gateway_fail / "skills.json")["present"] == 8, "通知岗跑过了，该是 8/8"
+
+
+def test_the_compensation_notice_never_says_the_money_arrived(gateway_fail):
+    """🔴 铁律 8：这条**真跑路径**上发出去的正文，四个到账口径一个都不许有。
+
+    今天那几条钉的是纯函数（`_compensation_tail` / `_default_content`）——
+    它们证明得了措辞函数是对的，证明不了这一束里真发出去的那句话是对的。
+    钱没退成、补偿只开了工单，说出任何一句到账都是替外部系统宣布了一个
+    本系统无从观察的资金结果。
+    """
+    conn = sqlite3.connect(f"file:{gateway_fail / 'maos.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT detail FROM event_log WHERE event_type=?",
+                       (NOTIFY.EVENT_CUSTOMER_NOTIFIED,)).fetchone()
+    assert row is not None, "这条路径上没有通知，红线判据无从谈起"
+    content = json.loads(row["detail"])["content"]
+    for word in FORBIDDEN:
+        assert word not in content, f"这一束发给客户的正文里说了 {word}：{content}"
+
+
+def test_the_bundle_event_chain_never_leaks_customer_identity(gateway_fail):
+    """🔴 事件链要连同整束交给外人逐条读 —— 客户身份一项都不许在里面。
+
+    正文里本来只有案号、对外三态、工单号与凭证流水（`contract.security_boundary`）。
+    姓名、手机、地址、收货凭证号躺在 `order_snapshot.payload_json` 里，搬一项进
+    `detail`，这份束就再也不能原样交出去了 —— 而它正是要交出去的那一份。
+
+    比的是**快照里的原值**（这份靶场数据本身已打码，`王**` / `138****6021`）：
+    真值泄漏当然要红，打码值出现同样要红 —— 它意味着有人把快照往正文里拼了。
+    """
+    conn = sqlite3.connect(f"file:{gateway_fail / 'maos.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    snap = conn.execute("SELECT payload_json FROM order_snapshot ORDER BY version").fetchone()
+    payload = json.loads((snap["payload_json"] if snap else "") or "{}")
+    blob = json.dumps(_read(gateway_fail / "event-chain.json"), ensure_ascii=False)
+    checked = 0
+    for field in ("customer_name", "phone", "address", "receipt_no"):
+        value = str(payload.get(field) or "").strip()
+        if not value:
+            continue
+        checked += 1
+        assert value not in blob, f"{field}（{value}）进了给评委看的那份事件链"
+    assert checked == 4, f"四项身份没比全 —— 靶场数据的字段名变了？{sorted(payload)}"
 
 
 def test_compensation_skills_only_show_up_on_the_failure_path(happy, gateway_fail):

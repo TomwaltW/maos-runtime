@@ -572,3 +572,65 @@ def test_the_compensation_tail_never_announces_money(tmp_path, resolution):
         assert word not in tail, f"关单结论 {resolution} 下那一段说了 {word}：{tail}"
     assert f"工单 {TICKET}" in tail and "20260911104500999" in tail, (
         f"工单号或凭证流水没进正文，客户无从追问：{tail}")
+
+
+# ==========================================================================
+# 4. 说过的那句话本身要查得到（T144）
+# ==========================================================================
+def _customer_notified(store) -> list[dict]:
+    """本案的 `CustomerNotified` 事件 detail，按发生顺序。
+
+    按 `case_id` 过滤而不是按 plan_id：这条事件在**编排层补发**的那两条路上
+    （驳回分支、房间 `/resolve` 之后）`task_id` 可能为空，而案子是它恒有的锚。
+    """
+    rows = objects.query(
+        store, "SELECT detail FROM event_log WHERE event_type=? ORDER BY seq",
+        (NOTIFY.EVENT_CUSTOMER_NOTIFIED,))
+    return [d for d in (_detail(row) for row in rows) if d.get("case_id") == CASE]
+
+
+def test_what_the_customer_was_told_is_readable_without_recomputing_it(rejected):
+    """发出去的正文进了 `event_log`，不必拿库里的事实重算一遍才答得上来。
+
+    上面那条（`..._tells_the_customer_it_was_rejected`）钉的是「摘要对得上」：
+    它证明得了措辞没在别处被拼第二遍，却答不出「你到底跟客户说了什么」——
+    `notification` 表上只有 `content_digest`，没有正文列（`schema.sql:176-184`）。
+    于是这个问题从前只剩两个答案：当场重算一遍，或者请人读代码。
+
+    正文落事件而不是给那张表加列的理由见 `NotifyCustomerSkill._log_notified`
+    的 docstring（`schema.sql` 是冻结面，铁律 1 / 跨轨契约 §D）。
+    """
+    store = rejected["store"]
+    said = _customer_notified(store)
+    assert len(said) == 1, f"说过的那句话没留痕，或留了不止一条：{said}"
+
+    case = guard.get_case(store, TENANT, CASE)
+    expect = NOTIFY._default_content(
+        case, NOTIFY._public_status(store, TENANT, CASE, case),
+        NOTIFY._compensation_tail(store, TENANT, CASE, case))
+    assert said[0]["content"] == expect, (
+        "事件里留的与按库里事实重算的不是同一句 —— 措辞在别处被拼了第二遍：\n"
+        f"事件：{said[0]['content']}\n重算：{expect}")
+    assert C.digest(said[0]["content"]) == _notifications(store)[0]["content_digest"], (
+        "事件里那句话与表上那条通知的摘要对不上 —— 留痕留的是另一条")
+    assert said[0]["public_status"] == projection.PUBLIC_REJECTED
+    assert said[0]["revision"] == 1 and said[0]["channel"] == "sms"
+    for word in FORBIDDEN:
+        assert word not in said[0]["content"], f"留痕那句说了 {word}：{said[0]['content']}"
+
+
+def test_the_notified_event_carries_only_what_the_customer_was_told(rejected):
+    """detail 的键是**说过什么 + 说给哪个案子**，没有第五个来源的东西混进来。
+
+    身份那条红线钉在束那侧（`test_make_case_bundle.py` 的
+    `..._never_leaks_customer_identity`）：这条路的 `ledger.json` 里
+    `order_snapshot.payload_json` 是空的，四项身份**造不出来**，在这里钉等于钉了
+    一条恒绿的判据。真有姓名手机的是 `case_pack` 那一份，而它也正是要交出去的
+    那一份 —— 风险面在那边，判据就该在那边。
+    """
+    said = _customer_notified(rejected["store"])[0]
+    assert set(said) == {"domain", "tenant_id", "case_id", "channel", "content",
+                         "content_digest", "revision", "public_status", "invocation_id"}, (
+        f"detail 的键变了 —— 多出来的那个是从哪读的？{sorted(said)}")
+    assert said["domain"] == C.BIZ_TYPE and said["tenant_id"] == TENANT
+    assert said["invocation_id"], "没有 invocation_id，这句话回查不到是哪一次调用说的"

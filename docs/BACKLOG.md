@@ -2750,3 +2750,11 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-12 | p10 | **`/compensate` 两处回帖里的「关单」示范只给缺省形状**（`outcome_commands.py` 的「不用补开」与「已补开」两段都印 `关单：/resolve <单号> <渠道流水号> <线下凭证摘要>`），没提第二档 | 不是缺陷：那一行给的是最常见的走法，第二档在 `/help`（router.USAGE）与 `/resolve` 参数不合法时回的 USAGE 里都看得到。但房间里的人最先看到的是这一行，真跑日若撞上「确实没退成」那种单，他可能要先翻一次 `/help` | 本轨没改（派单只点名两处 USAGE 必须同步，改这两行属范围外）。要加就一行字：`（没退成加 --not-settled）`。归下一个动 `outcome_commands.py` 回帖模板的轨 |
 | 2026-09-12 | p10 | **`docs/real-run-runbook.md` 与材料面里 `/resolve` 的用法仍只写缺省形状**（runbook 里那条真跑日照抄的命令行没有 `--not-settled`） | 真跑日照 runbook 敲命令时，「线下核对过、这笔确实没退成」这一档在纸面上不存在 —— 而这一档正是本轨为真跑日补出来的 | 本轨白名单里没有那些文件，**一个字都没改**。归 Wave H：`real-run-runbook.md`（T151）与 demo-script / defense-brief（材料面）各刷一句。回执里已单列 |
 | 2026-09-12 | p10 | `compensation_record` 一个案子有两行（`kind=refund_request_revoked` 与 `kind=manual_ticket`），而 `_correction_of` 只看「有没有补偿记录」就判 `compensated` | 今天不误判（有工单的案子判 compensated 是对的），但那条判据的分母其实是「两类补偿记录之一」。将来若出现只作废请求、不开工单的路径，它也会被判成「人工纠错=compensated」，而那一档本该是 `overridden` 或 `none` | 记一笔免得下一个人以为分母是工单。真要收窄得先定义「哪几类 compensation_record 算人工纠错」，那是判据面的改动，不是一行 |
+
+## task-t144（失败路径的客户通知 + 正文可查，2026-09-12）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-12 | p10 | **`reject` 那条路的通知仍挂不上 business_ref**：`custom_case.py:931` 的驳回分支按 docstring 有意传空 `task_id`（那条通知不是任何一个 DAG 任务跑出来的），于是 `notify.py:127` 跳过 `attach_business_ref` | 实测 `reject` 束的 `business_ref_missing` 里仍有 `notification`、`case_outcome.evidence_complete` 恒 `false`。**今天不是 bug**：它如实反映「这条通知没有归属任务」，但读束的人分不清「没发通知」与「发了但挂不上引用」—— 而这两件事差得远 | 要么给 business_ref 一种「挂在 plan 上、不挂任务」的形态，要么在束里把这一格写成「已通知，无任务归属」。两条都要动 `objects.attach_business_ref` 或 `case_pack.ref_coverage`，**本轨白名单外**。复赛之后 |
+| 2026-09-12 | p10 | **跑过证据束之后 `test_render_trace::test_committed_report_is_in_sync` 必红**，而它的报错只说「跑 `python3 scripts/render_trace.py` 重新生成」，不说「你只是把工作树跑脏了」 | 任何一轨只要在验收里跑了 `make_case_bundle.py` 又忘了还原 evidence，全量 pytest 就会多出这一条红 —— 而派单给的期望是「只许 1 条 failed」，于是它看起来像回归。本轨查了一轮才排除 | 在那条测试的报错里补一句「先确认 `git status evidence/` 干净」。`test_render_trace.py` 与 `render_trace.py` 归 Wave H 的 T146，本轨不动 |
+| 2026-09-12 | p10 | **补偿路径的通知文案与房间那条共用同一个产出处，但「什么时候发」的判据在两处各写了一遍**：`router.py:1974` 判 `KIND_DONE + CMD_RESOLVE`，`make_case_bundle.py::_compensate()` 判三步都 ok | 措辞不会漂（都走 `notify.customer`），但「该不该发」会。今天两处口径一致，没有症状 | 与 T143 的接缝一起看：`/resolve` 第二档落地后两条路要不要分档发。归整合期判断，见本轨回执 |

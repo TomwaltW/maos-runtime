@@ -1,0 +1,51 @@
+# docs/client-manifest.txt —— 客户发行版的裁剪清单
+#
+# 谁读它：`bash scripts/make_release.sh --client`。
+# 怎么写：每行一个仓库相对路径，目录带结尾斜杠；`#` 起头是整行注释，
+#         路径后面也可以跟 `# 说明`；空行忽略。
+#
+# 脚本对每一行做三件事：
+#
+#   1. 先确认它在干净副本里**确实存在**。对不上就整包打不出来 ——
+#      清单会过期（路径改名、目录合并），而过期的裁剪清单最坏的结局是
+#      「以为裁了，其实没裁」。宁可打不出包，也不许静默放过。
+#
+#   2. `git rm -r` 掉，随后 orphan commit + `reflog expire` + `gc --prune=now`。
+#      少了 orphan 这一步，裁剪就是假的：`--depth 1` 的包里虽然只有一个 commit，
+#      它的 tree 却含全部文件，裁完再 commit 一次，`git show HEAD^:docs/BACKLOG.md`
+#      照样吐全文。实测判据是 `git rev-list --all --objects | grep -c BACKLOG`：
+#      普通 commit 后 = 1，orphan + gc 之后 = 0。
+#
+#   3. 写进包内 `.git/info/exclude`，让路径退出 `scripts/check_docs.py` 的射程。
+#      理由见该脚本模块头「射程 = git 管得到的东西」：被 git 忽略的路径
+#      「按设计进不了版本库」，文档引用它们不算断链 —— 客户包里这些路径正是
+#      「按设计进不了版本库」。不登记的话，留在包里的 27 份文档共 152 条引用
+#      当场判负（实测 2026-09-14：D-link 9 + E-missing 143），
+#      `test_docs_guard.py` / `test_rtv_sop_doc.py` 跟着红，包内 pytest 3 红。
+#      登记之后判决与主仓逐条一致：44 条全是提示类，阻断 0。
+#
+# 这份清单只管「裁什么」。裁完要按包内新 HEAD 重产全部证据束（否则客户一跑
+# 核验就是 provenance 判负），那一段在 make_release.sh 里，不在这里。
+
+# ---- 一、内部开发物料 ----
+# 客户是业务方与决策者，解压就看效果。这些是给开发会话看的，不随客户包发布。
+docs/phases/                       # 复赛执行手册，逐 Phase 的内部步骤
+legacy-ts/                         # 早期 TS 契约参考实现，已封存
+review/                            # 并行轨派单与编排面
+docs/BACKLOG.md                    # 内部欠账账本
+docs/DECISIONS.md                  # 内部决策账本
+CLAUDE.md                          # 会话须知，只对开发会话有意义
+
+# ---- 二、客户机器上重产不出来的证据束 ----
+# 这三束留在包里，客户跑 verify.py 必红：它们的出处 sha 会永远停在打包之前，
+# 而第 9 项 provenance 的判据是「每束自称的出处 == 当前 HEAD」。
+# 裁掉不是回避判据 —— 是不把「你这台机器上复现不了」的东西算进可复现的证据链。
+evidence/case-real-01-pg/          # PG 四路径，重产要一台装着 PostgreSQL 的机器
+evidence/case-real-01/happy-live/  # 真模型束，重产要 API key
+evidence/room/                     # 真房间截图与逐字记录，无生成器，人工采集
+
+# ---- 三、这份清单自己 ----
+# 它逐条写着内部物料**叫什么名字、是干什么的**（复赛执行手册、并行轨派单、
+# 两本内部账本），留在客户包里等于把第一节想挡的东西换个地方又说了一遍。
+# 它属于「打包」这件事，不属于交付物 —— 留在仓库里就够了。
+docs/client-manifest.txt

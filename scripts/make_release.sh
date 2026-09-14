@@ -37,10 +37,16 @@
 #      包里不许有内部开发物料（产品决策）。裁什么写在 `docs/client-manifest.txt`，
 #      裁法与三条配套动作都不可省，缺一条包就是坏的：
 #
-#        a. **orphan commit**。`git rm` + 普通 commit 是假裁：`--depth 1` 的包里只有
-#           一个 commit，它的 tree 却含全部文件，`git show HEAD^:docs/BACKLOG.md`
-#           照样吐全文。实测 `git rev-list --all --objects | grep -c BACKLOG`：
-#           普通 commit 后 = 1，orphan + `reflog expire` + `gc --prune=now` 后 = 0。
+#        a. **orphan commit**。`git rm` + 普通 commit 是假裁：clone 带进来的**每个**
+#           commit 的 tree 都含这些文件，裁完再 commit 一次，
+#           `git show HEAD^:docs/BACKLOG.md` 照样吐全文。
+#           判据是 `git rev-list --all --objects` 里还剩几个对象，两种克隆深度都实测过：
+#             --depth 1  —— 包里 1 个 commit，裁前 BACKLOG 可达对象 1 个
+#             --depth 50 —— 包里 151 个 commit，裁前 BACKLOG 可达对象 106 个
+#           两种情况下，普通 commit 之后都仍然捞得到；而 orphan + `branch -D` +
+#           `remote remove` + `reflog expire` + `gc --prune=now` 之后都是 **0**
+#           （旧历史整个不可达，一律被 prune 掉）。所以这一步与克隆深度无关，
+#           改 `--depth` 不影响这条保证 —— 但改完要重跑一次 `--client` 才算验过。
 #        b. **登记进包内 `.git/info/exclude`**。裁掉之后，留在包里的文档仍在引用它们；
 #           `scripts/check_docs.py` 的射程按 git 划（见其模块头「射程 = git 管得到的
 #           东西」），被忽略的路径整个不在射程内。不登记的实测后果是包内 152 条判负
@@ -383,10 +389,13 @@ if [ "$DO_VERIFY" = "1" ]; then
   fi
   RUN="${VERIFY_DIR}/${NAME}"
 
-  # 解压出来的目录里**有** `.git`，但那是个浅克隆（`--depth 1`，带 `.git/shallow`，
-  # 只有一个 commit）—— 上面第 1 节的正向检查要的就是它，`make_evidence.py`
-  # 要靠它取出处 sha。这正是评委 / 客户拿到压缩包时的处境，所以验证必须在这个处境下做，
-  # 不许 cd 回仓库取巧：仓库里 `git cat-file` 得到的历史对象，包里查不到。
+  # 解压出来的目录里**有** `.git` —— 上面第 1 节的正向检查要的就是它，
+  # `make_evidence.py` 要靠它取出处 sha。但它不是完整仓库，两种模式还不一样：
+  #   默认模式   浅克隆，带 `.git/shallow`，只有 clone 深度那几个 commit
+  #   `--client` orphan 之后是**单根仓库**：1 个 commit、没有 `.git/shallow`
+  #              （`git rev-parse --is-shallow-repository` 回 false），旧历史已 prune
+  # 两种情况下都一样：仓库里 `git cat-file` 得到的历史对象，包里查不到。
+  # 这正是评委 / 客户拿到压缩包时的处境，所以验证必须在这个处境下做，不许 cd 回仓库取巧。
   (
     cd "$RUN" || exit 1
     echo "    --- pytest ---"

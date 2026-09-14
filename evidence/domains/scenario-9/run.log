@@ -1,4 +1,4 @@
-# generated at 2026-09-13T03:38:47.137189+00:00 from 6ecc10a8946d43bfa0b7b3990f46ec3d7d2017da
+# generated at 2026-09-14T04:41:29.215215+00:00 from 5c3a5224342cda07e036ce8e5e0c6a88ad0e8e74
 场景 9：银行差错处理（顺利路径），无 key 确定性复现
 
 [1] 待人工调账审批: 差错定性并申请人工调账授权（effect_risk=H —— 动别人的钱必须有人批，监管要求）
@@ -119,7 +119,7 @@ Plan: FAILED  |  处理第二笔跨行重复支付差错：清算方确认撤销
             在于外部权威到底给没给出资金证据。
 ========================================================================
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_66641bc7ae5f，共 4 个任务
+INFO  maos.cp      创建计划 plan_0939f3ab925a，共 4 个任务
 INFO  maos.cp      [task-s9-file] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s9-file] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s9-file] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -142,7 +142,7 @@ INFO  maos.cp      [task-s9-observe] RUNNING -> AWAITING_REVIEW (submit_result)
 INFO  maos.gate    [task-s9-observe] Gate {'schema': 'pass', 'acceptance': 'pass', 'security': 'pass', 'evidence': 'pass', 'compensation': 'pass', 'finance': 'pass', 'gateway': 'pass'} -> pass
 INFO  maos.cp      [task-s9-observe] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s9-observe] BLOCKED -> DONE (human_approve)
-INFO  maos.cp      创建计划 plan_7c2b52ddc48e，共 4 个任务
+INFO  maos.cp      创建计划 plan_3d60d4bf501a，共 4 个任务
 INFO  maos.cp      [task-s9b-file] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s9b-file] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s9b-file] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -166,5 +166,5 @@ INFO  maos.gate    [task-s9b-observe] Gate {'schema': 'pass', 'acceptance': 'pas
 INFO  maos.cp      [task-s9b-observe] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s9b-observe] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s9b-observe] BLOCKED -> FAILED (human_reject)
-INFO  maos.finalizer [plan_66641bc7ae5f] 复盘完成，沉淀 1 条
-INFO  maos.finalizer [plan_7c2b52ddc48e] 复盘完成，沉淀 2 条
+INFO  maos.finalizer [plan_0939f3ab925a] 复盘完成，沉淀 1 条
+INFO  maos.finalizer [plan_3d60d4bf501a] 复盘完成，沉淀 2 条

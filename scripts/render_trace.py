@@ -1340,6 +1340,10 @@ def render_report(bundles: list[dict], index: dict | None = None,
                 "<code>evidence/scenario-*/trace.json</code> 与 "
                 "<code>evidence/case-*/&lt;路径&gt;/trace.json</code>")
 
+    # 抬头那条「返回入口页」写死 ``../START-HERE.html``：客户包里这一页永远在
+    # ``evidence/`` 下、入口页永远在包根，这个层级是打包脚本保证的。挪了 ``--out``
+    # 的人自己知道自己在干什么，那条链接降级成一个点不响的锚，不影响本页任何内容 ——
+    # 本页的全部读数都来自 ``evidence/``，从不依赖包根有什么。
     body = [
         "<!doctype html>",
         '<html lang="zh-CN">',
@@ -1351,6 +1355,7 @@ def render_report(bundles: list[dict], index: dict | None = None,
         "</head>",
         "<body>",
         f"""<header>
+  <p><a class="back" href="../START-HERE.html">← 返回入口页</a></p>
   <h1>{esc(TITLE)}</h1>
   <p class="lede">这一页由 <code>scripts/render_trace.py</code> 从
     {src_line} 直接渲染，
@@ -1454,6 +1459,9 @@ table.grid td.mono,table.grid th.mono,td.nw{white-space:nowrap}
 .prov{font-size:12px;color:var(--dim)}
 .prov i{font-style:normal;margin-right:8px;color:var(--dim);
   text-transform:uppercase;letter-spacing:.08em;font-size:10px}
+.back{display:inline-block;font-size:12px;color:var(--dim);
+  border-bottom:1px solid transparent}
+.back:hover{color:var(--info);border-bottom-color:currentColor}
 nav{margin:14px 0 6px;display:flex;flex-wrap:wrap;gap:6px}
 nav a{background:var(--panel);border:1px solid var(--line);border-radius:999px;
   padding:3px 11px;font-size:12px}

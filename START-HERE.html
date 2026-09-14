@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAOS · 从这里开始</title>
+<style>
+/* 配色与字体栈与 evidence/report.html 同源（scripts/render_trace.py::CSS），
+   两页并排打开应当读起来像同一套东西。 */
+:root{
+  --bg:#f6f5f2; --panel:#fff; --ink:#1b1a16; --dim:#6b675e; --line:#dcd8cf;
+  --ok:#166534; --ok-bg:#dcfce7; --warn:#92400e; --warn-bg:#fef0c7;
+  --danger:#b02020; --danger-bg:#fde2e2;
+  --info:#1e4fa8; --info-bg:#dbe7fe; --muted:#57534e; --muted-bg:#ebe8e2;
+  --cta:#1e4fa8; --cta-ink:#fff;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#16151a; --panel:#1e1d24; --ink:#eae7e1; --dim:#a29d94; --line:#343139;
+    --ok:#86efac; --ok-bg:#14351f; --warn:#fcd34d; --warn-bg:#3a2c0a;
+    --danger:#fca5a5; --danger-bg:#3d1616;
+    --info:#a5c8ff; --info-bg:#152647; --muted:#c6c1b8; --muted-bg:#2a282f;
+    --cta:#a5c8ff; --cta-ink:#16151a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",
+  "Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+header,main,footer{max-width:920px;margin:0 auto;padding:0 22px}
+header{padding-top:64px;padding-bottom:8px}
+h1{font-size:34px;line-height:1.28;margin:0 0 14px;letter-spacing:-.02em}
+h2{font-size:20px;margin:0 0 6px;letter-spacing:-.01em}
+h3{font-size:16px;margin:0 0 6px;font-weight:600;letter-spacing:-.01em}
+p{margin:8px 0}
+code{font-family:var(--mono);font-size:.86em;background:var(--muted-bg);
+  padding:1px 5px;border-radius:4px;word-break:break-word}
+a{color:var(--info);text-decoration:none;border-bottom:1px solid transparent}
+a:hover{border-bottom-color:currentColor}
+.lede{color:var(--dim);font-size:17px;line-height:1.75;max-width:60ch;margin:0}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--dim);margin:0 0 16px}
+.rule{border:0;border-top:1px solid var(--line);margin:46px 0 0}
+
+/* —— 去处按钮 —— */
+.go{display:flex;flex-wrap:wrap;gap:12px;align-items:stretch;margin:30px 0 6px}
+.go a,.go .box{display:flex;flex-direction:column;justify-content:center;
+  border-radius:10px;padding:15px 20px;border:1px solid var(--line);
+  background:var(--panel);min-width:246px;flex:1 1 246px}
+.go a.primary{background:var(--cta);border-color:var(--cta);color:var(--cta-ink)}
+.go a.primary:hover{border-bottom-color:var(--cta);filter:brightness(1.08)}
+.go b{font-size:16px;letter-spacing:-.01em}
+.go .why{font-size:12.5px;line-height:1.55;margin-top:3px;color:var(--dim)}
+.go a.primary .why{color:var(--cta-ink);opacity:.82}
+.go .box{color:var(--dim)}
+.go .box b{color:var(--ink)}
+.hint{font-size:12.5px;color:var(--dim);margin-top:14px;line-height:1.6;max-width:70ch}
+
+/* —— 三条硬结论 —— */
+.claims{display:grid;gap:16px;margin:22px 0 0}
+@media (min-width:800px){.claims{grid-template-columns:repeat(3,1fr)}}
+.claim{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:18px 20px 16px;display:flex;flex-direction:column}
+.claim .no{font-family:var(--mono);font-size:11px;color:var(--dim);
+  letter-spacing:.1em;margin:0 0 9px}
+.claim p{font-size:13.5px;line-height:1.65;margin:6px 0 0;color:var(--dim)}
+.claim p b{color:var(--ink);font-weight:600}
+.claim .src{margin-top:auto;padding-top:13px;font-size:11px;line-height:1.55;
+  color:var(--dim);border-top:1px solid var(--line)}
+.claim .src i{font-style:normal;text-transform:uppercase;letter-spacing:.09em;
+  font-size:10px;margin-right:7px}
+.claim .src code{background:none;padding:0;font-size:11px}
+
+/* —— 读数条 —— */
+.figures{display:flex;flex-wrap:wrap;gap:26px;margin:20px 0 0;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:16px 20px}
+.figures span{display:flex;flex-direction:column;gap:1px}
+.figures b{font-size:21px;font-family:var(--mono);font-weight:600;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.figures b.txt{font-size:15px}
+.figures i{font-style:normal;font-size:11px;color:var(--dim);letter-spacing:.03em}
+
+.note{color:var(--dim);font-size:12.5px;line-height:1.65;
+  border-left:2px solid var(--line);padding-left:12px;max-width:78ch;margin:14px 0 0}
+.steps{margin:10px 0 0;padding-left:20px;color:var(--dim);font-size:13.5px;line-height:1.75}
+.steps b{color:var(--ink);font-weight:600}
+footer{padding:32px 22px 60px;color:var(--dim);font-size:12.5px;line-height:1.7}
+section{margin:44px 0 0}
+</style>
+</head>
+<body>
+
+<header>
+  <p class="eyebrow">MAOS · 多 Agent 协作运行时</p>
+  <h1>一条退款，从客户投诉<br>到钱有没有到账。</h1>
+  <p class="lede">一条制造企业的售后退款诉求 —— 客户报修一批轴承，说货有质量问题，
+    要求退 6800 元 —— 由受理、政策、财务、支付几个 Agent 接力完成。
+    <b>每一步都留下了可以被外人重放核验的证据</b>：谁在什么时候做了什么、
+    卡在哪一道闸、哪一步等了人、外部系统到底怎么回的。</p>
+
+  <div class="go">
+    <a class="primary" href="evidence/report.html">
+      <b>看完整链路 →</b>
+      <span class="why">一页离线报告，17 束证据全在里面。现在就能点开，不用装任何东西。</span>
+    </a>
+    <span class="box">
+      <b>想自己跑一遍？</b>
+      <span class="why">可选，见本页最后一节。需要 Python 3.10+，约 7 秒跑完。</span>
+    </span>
+  </div>
+  <p class="hint">报告是一个单独的 HTML 文件，不连网、不读数据库、不引一个外部文件 ——
+    断网的会议室里照样打开。页面上每个数字都能在 <code>evidence/</code> 里逐字找到出处。</p>
+</header>
+
+<main>
+
+<section>
+  <h2>这套东西想解决的三件事</h2>
+  <p class="lede" style="font-size:15px;margin-top:4px">
+    下面每一条都不是主张，是这个包里可以逐条去查的读数。</p>
+
+  <div class="claims">
+
+    <div class="claim">
+      <p class="no">结论 01</p>
+      <h3>「Agent 都回复完成」<br>不等于业务成功</h3>
+      <p>场景 7 里，支付 Agent 每一步的自报状态<b>全是 <code>ok</code></b> ——
+        发起、查询、观察，一路绿灯，它两次提交结果说自己做完了。
+        闸第一次打回返工，第二次转人工，主管驳回：任务终态 <b>FAILED</b>，
+        整个 Plan 终态也是 <b>FAILED</b>。
+        系统没有因为每个 Agent 都交了活就判这单成功。</p>
+      <p class="src"><i>出处</i>
+        <code>evidence/scenario-7/trace.json</code>（各 skill / tool 的
+        <code>status</code>）· <code>result.json</code>（任务与 Plan 终态）</p>
+    </div>
+
+    <div class="claim">
+      <p class="no">结论 02</p>
+      <h3>权威事实<br>不在我们的库里</h3>
+      <p>退款到没到账，权威在支付网关。场景 7 里改派了备用渠道重发、连问网关
+        <b>三次</b>，始终问不出到账终态 —— 于是 <b>系统一条终态都没写</b>：
+        两条网关观察全是 <code>failed</code>，<code>settled</code> 观察 <b>0 条</b>。
+        后来是人到渠道后台查实、把线下凭证交回来，案子才标
+        <code>compensated</code>。不猜，不推断。</p>
+      <p class="src"><i>出处</i>
+        <code>evidence/scenario-7/business-objects.json</code> ·
+        <code>trace.json</code>（第二轮三次 <code>gateway.query</code>）·
+        <code>docs/authoritative-facts.md</code></p>
+    </div>
+
+    <div class="claim">
+      <p class="no">结论 03</p>
+      <h3>换一个业务域<br>内核零改动</h3>
+      <p>同一个内核既跑软件交付，也跑退款、保险理赔、银行差错、应付账款。
+        接这三个新域的提交，对
+        <code>contracts/</code>、<code>core/</code>、<code>runtime/</code>
+        的改动 <b>逐条比对下来全是空的</b>。换域只换业务技能与外部接口。</p>
+      <p class="src"><i>出处</i>
+        <code>docs/domain-portability.md</code> §1.1
+        （三条 <code>git diff --stat</code> 命令，输出均为空）</p>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <h2>包里已经躺着的读数</h2>
+  <p class="lede" style="font-size:15px;margin-top:4px">
+    不用跑任何命令，这些数字此刻就在 <code>evidence/</code> 里。</p>
+
+  <p class="figures">
+    <span><b>17</b><i>证据束</i></span>
+    <span><b>20</b><i>plan</i></span>
+    <span><b>1,008</b><i>执行节点</i></span>
+    <span><b>788</b><i>事件</i></span>
+    <span><b>20</b><i>转人工</i></span>
+    <span><b>5</b><i>返工</i></span>
+    <span><b class="txt">10/10 PASS</b><i>核验项</i></span>
+  </p>
+  <p class="note">前六个数取自 <code>evidence/report.html</code> 页首
+    （由 <code>scripts/render_trace.py</code> 从证据现算，改了证据不重跑会变红）；
+    <b>10/10 PASS</b> 是核验器 <code>scripts/verify.py</code> 的 RESULT 行，
+    期望值记在 <code>docs/expected-metrics.json</code>。
+    「转人工 20」不是毛病 —— 该停下来等人的地方它确实停了，这正是我们要的。</p>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2>两条去处</h2>
+
+  <div class="go">
+    <a class="primary" href="evidence/report.html">
+      <b>① 看完整链路 →</b>
+      <span class="why">主入口。双击即开，不需要 Python、不需要网络。</span>
+    </a>
+    <a href="README.md">
+      <b>② 技术方读代码 →</b>
+      <span class="why">架构、契约、每一项核验的判据都在 README 里。</span>
+    </a>
+  </div>
+
+  <h3 style="margin-top:34px">③ 自己跑一遍（可选，需要 Python 3.10+）</h3>
+  <p class="lede" style="font-size:14px">
+    上面那份报告是我们这边跑出来的。你也可以在自己机器上重跑一遍，
+    看跑出来的是不是同一套数 —— 这一步<b>纯属可选</b>，不做也不影响上面两条。</p>
+  <ol class="steps">
+    <li>回到刚才解压出来的那个文件夹（就是本页所在的这一层）；</li>
+    <li>macOS 双击 <code>RUN-ME.command</code>，Windows 双击 <code>RUN-ME.bat</code>；</li>
+    <li>它会自己检查 Python、跑完 7 个场景、把证据重新生成一遍，再逐项核验。
+      <b>全绿就是 RESULT: 10/10 PASS。</b></li>
+  </ol>
+  <p class="note"><b>为什么这里不是一个可以点的链接：</b>
+    浏览器点本地的 <code>.command</code> / <code>.bat</code> 只会下载或者直接拦掉，
+    不会运行它。要在文件夹里双击才行。<br>
+    机器上没有 Python 3.10+ 的话这一步会提示你，不会跑到一半留下半截东西；
+    装 Python 不是看这个包的前提条件。</p>
+</section>
+
+</main>
+
+<footer>
+  <p>本页不连网、不读数据库、不加载任何外部资源，所有链接都是包内相对路径 ——
+    整个包拷到 U 盘里、拿到断网的会议室照样看。<br>
+    数据口径：政策与历史案例是按行业惯例构造的合成数据，支付网关的错误码与时序取自公开规范；
+    场景 8–11 使用各域的 Mock 外部接口，证明的是编排边界，尚不代表真实赔付方或银行已接通。
+    完整口径见 <a href="README.md">README</a>。</p>
+</footer>
+
+</body>
+</html>

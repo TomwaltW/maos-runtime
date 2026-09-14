@@ -11,7 +11,7 @@
 #
 # 四条不可协商的口径（第 4 条只管 `--client`）：
 #
-#   1. **只打版本库里的东西**，用 `git clone --depth 1`。绝不 `zip -r .` ——
+#   1. **只打版本库里的东西**，用 `git clone`（浅克隆，深度见下面 CLONE_DEPTH）。绝不 `zip -r .` ——
 #      那会把 .worktrees/、__pycache__/、evidence/**/maos.db、.env、
 #      review/paste-*.md（.git/info/exclude 里排除的内部派单）一起打进去。
 #      clone 只带版本库内容，未跟踪文件一个都进不来。
@@ -21,8 +21,9 @@
 #      （「证据必须有出处」）拒绝生成 —— 实测 `exit=2`，连带
 #      `maos/tests/test_repro_path.py` 的 5 条也红。也就是说 archive 出来的包
 #      **跑不了 README 的 ①②**，等于交了一个不可复现的「可执行代码仓库」。
-#      `clone --depth 1` 保留 git 上下文，解压即等同 clone 一份仓库，
+#      `clone` 保留 git 上下文，解压即等同 clone 一份仓库，
 #      同时照样只带版本库内容。这是「等价手段」里唯一两头都满足的那个。
+#      **深度必须够 `verify.py` 的第 9 项读到祖先 tree**，理由见下面 CLONE_DEPTH 处。
 #
 #   2. **打完必须解压跑一遍**：pytest 全绿 + make_evidence.py + verify.py 到 10/10 PASS。
 #      任一不过就非 0 退出，不产出「跑不起来的交付物」。
@@ -123,10 +124,22 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "${STAGE}/${NAME}"
 
 # ---------------------------------------------------------------- 1. clone 出干净副本
+#
+# **深度不是 1**（T153）：`verify.py` 第 9 项 provenance 要回答「这批证据是不是当前
+# 这份代码跑出来的」。证据入库本身会让 HEAD 前进一格，于是证据恒自称上一个 sha，
+# 判据靠 `touched_outside_evidence()` 去问「那一格之后动过 evidence/ 以外的东西吗」。
+# 那一问要读**祖先 commit 的 tree** —— `--depth 1` 一个字节都没带过来，于是包里
+# 12 束证据全部核不出出处（实测 `provenance 4/16`、`RESULT 9/10`、verify exit=1），
+# 连带这个脚本自己第 2 条口径不过、产不出可提交的包。
+#
+# 深度取 50 而不是"完整历史"：够跨连续若干个纯证据 commit（实测当前形态 2 就够），
+# 又不必把整部历史塞进交付包。真跨过 50 格还核不出来的话，`verify.py` 会说
+# 「这个克隆带不到那段历史」并按 SKIP 计，不会冒充判负（见 `_SHALLOW_HINT`）。
+CLONE_DEPTH=50
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-echo "==> git clone --depth 1 (${BRANCH}) -> ${STAGE}/${NAME}"
+echo "==> git clone --depth ${CLONE_DEPTH} (${BRANCH}) -> ${STAGE}/${NAME}"
 rmdir "${STAGE}/${NAME}" 2>/dev/null
-if ! git clone --quiet --depth 1 --no-hardlinks --single-branch \
+if ! git clone --quiet --depth "$CLONE_DEPTH" --no-hardlinks --single-branch \
        --branch "$BRANCH" "file://${REPO_ROOT}" "${STAGE}/${NAME}"; then
   echo "[FAIL] git clone 失败"
   exit 1

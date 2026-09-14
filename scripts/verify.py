@@ -1463,6 +1463,11 @@ _PROVENANCE_HINTS = {
             "（本束无生成器，截图与逐字记录靠人工采集）",
 }
 
+#: 浅克隆里出处核不了时的「下一步动作」。给的是**把历史补回来**的命令，不是
+#: 「换个判据」—— 这一项判不了的原因是包里少了东西，补上就判得了（T153）。
+_SHALLOW_HINT = ("这个克隆是 git clone --depth N 的产物，出处那一格不在包里；"
+                 "用完整克隆重跑，或先 git fetch --unshallow 把历史补回来")
+
 #: **人工采集的束**：过期只 warn，不判负。
 #:
 #: 判负的前提是「一条命令就能重跑」—— `make_evidence.py` 十几秒的事，红了立刻能绿。
@@ -1471,6 +1476,47 @@ _PROVENANCE_HINTS = {
 #: 守卫等于噪音，下次它真的抓到东西时没人会看（口径同本文件头「SKIP 的纪律」：
 #: 红灯要能被消掉才叫红灯）。warn 仍然把它点名在屏幕上，答辩前该重拍还是要重拍。
 _MANUAL_BUNDLES = frozenset({"room"})
+
+
+def commit_present(sha: str, root: str | None = None) -> bool:
+    """``sha`` 这个 commit **对象在本地拿得到吗**（T153）。
+
+    区分两件长得一样、后果完全不同的事：
+
+    - **sha 不在这个仓库的历史里** —— 证据自称出自一个谁也 checkout 不出来的地方，
+      那是真判负。
+    - **sha 在历史里，但这个克隆没带它** —— ``git clone --depth 1`` 只带 HEAD 一格，
+      祖先的 tree 根本不在对象库里。这时守卫**判不了**，而不是判负。
+
+    合起来看它们都表现为「``git diff`` 报错」，于是 T153 之前一律按判负处理，报出的
+    那句「该 sha 不在本仓库历史里，谁也 checkout 不出来」在浅克隆里**是假话** ——
+    核验器说错话比说不知道更糟：照着它去追查的人会认定证据被伪造。
+    """
+    root = ROOT if root is None else root
+    try:
+        subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=root,
+                       check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
+def is_shallow_repo(root: str | None = None) -> bool:
+    """这个仓库是不是**浅克隆**（``git clone --depth N`` 的产物）。
+
+    只在 ``commit_present`` 已经说「拿不到」之后才问它，用来决定那句话该怎么说：
+    浅克隆 -> 判不了（SKIP）；完整仓库 -> 那个 sha 真的不存在（FAIL）。
+
+    拿不准就返回 False（当成完整仓库，从严判负）—— 「不认识就从严」同
+    ``index_model_mode``。
+    """
+    root = ROOT if root is None else root
+    try:
+        proc = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=root,
+                              check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return proc.stdout.strip() == "true"
 
 
 def touched_outside_evidence(base: str, head: str, root: str | None = None) -> bool:
@@ -1484,11 +1530,19 @@ def touched_outside_evidence(base: str, head: str, root: str | None = None) -> b
     代码一个字节没变，证据当然仍然有效。所以判据从「sha 相等」放宽成
     「sha 之后没动过代码」，语义反而更准了。
 
-    算不出（浅克隆、评委解压 tar 包）就返回 True 让它照旧判负 —— 拿不到证据说明
-    它没过期时，宁可误报也不漏报。
+    **``base`` 必须真是 ``head`` 的祖先**（T153 补）。``git diff A..B`` 比的是两棵
+    tree，不要求 A 在 B 的历史上 —— 少了这一问，一个旁支上、恰好只在 ``evidence/``
+    与 HEAD 有差异的 commit 也能放行，而那份代码从来没进过主干。放宽判据必须配
+    这条：放宽的是「同一条历史上的证据 commit」，不是「任何 tree 像的地方」。
+
+    算不出就返回 True 让它照旧判负 —— 拿不到证据说明它没过期时，宁可误报也不漏报。
+    调用方要先用 ``commit_present`` 把「浅克隆拿不到」摘出去：那种情况不是判负，
+    是判不了（见 ``check_provenance``）。
     """
     root = ROOT if root is None else root
     try:
+        subprocess.run(["git", "merge-base", "--is-ancestor", base, head], cwd=root,
+                       check=True, capture_output=True, text=True)
         proc = subprocess.run(["git", "diff", "--name-only", f"{base}..{head}"],
                               cwd=root, check=True, capture_output=True, text=True)
     except (OSError, subprocess.CalledProcessError):
@@ -1536,15 +1590,21 @@ def commit_distance(sha: str, head: str, root: str | None = None) -> str:
 
     sha 不在本仓库历史里时要说出来：那比「落后 N 个」更严重，证据自称出自一个这个
     仓库里根本不存在的 commit，谁也 checkout 不出来。``root`` 的缺省解析同 ``git_head``。
+
+    **浅克隆要说的是另一句话**（T153）：那里拿不到祖先不是因为它不存在，而是因为
+    ``--depth`` 把历史截断了。把这两件事说成同一句，等于指着一份好证据喊伪造。
     """
     root = ROOT if root is None else root
+    if not commit_present(sha, root):
+        if is_shallow_repo(root):
+            return ("这是个浅克隆，那一格历史不在包里 —— 距离算不出来，"
+                    "不是说这个 sha 不存在")
+        return "该 sha 不在本仓库历史里，谁也 checkout 不出来"
     try:
-        subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=root,
-                       check=True, capture_output=True, text=True)
         proc = subprocess.run(["git", "rev-list", "--left-right", "--count", f"{sha}...{head}"],
                               cwd=root, check=True, capture_output=True, text=True)
     except (OSError, subprocess.CalledProcessError):
-        return "该 sha 不在本仓库历史里，谁也 checkout 不出来"
+        return "与 HEAD 的距离算不出来"
     parts = proc.stdout.split()
     if len(parts) != 2:
         return "与 HEAD 的距离算不出来"
@@ -1645,6 +1705,9 @@ def check_provenance(cases: list[Case]) -> Check:
         chk.skip(f"{root} 下没有带出处首行的证据文件（先跑 {_DB_HINT_DEFAULT}）")
         return chk
 
+    # 「浅克隆里判不了」的束攒在这里，循环完再统一处置：它们既不是 ok 也不是 bad，
+    # 而是**没查成**。逐束就地 skip 做不到 —— skip 是整项的状态（见 Check.skip）。
+    undecidable: list[str] = []
     for bundle, path in anchors:
         where = f"{bundle} ({os.path.relpath(path, ROOT)})"
         try:
@@ -1672,6 +1735,18 @@ def check_provenance(cases: list[Case]) -> Check:
             chk.bad(note)
             continue
         if raw != head:
+            # 浅克隆：那一格历史根本不在包里，出处**核不了**。判负会把一份好证据
+            # 说成伪造（见 commit_present），放行则是拿「我查不了」冒充「我查过了」。
+            # 两条都不走：记下来，整项按 SKIP 处置 —— 不进分子，屏幕上看得见。
+            if not commit_present(raw) and is_shallow_repo():
+                note = (f"{where}: 出处 {raw[:7]} 那一格历史不在这个克隆里，"
+                        f"与 HEAD {head[:7]} 的关系核不了 —— {_SHALLOW_HINT}")
+                if bundle in _MANUAL_BUNDLES:
+                    chk.warn(note)
+                    chk.ok()
+                    continue
+                undecidable.append(note)
+                continue
             if not touched_outside_evidence(raw, head):
                 # 这中间只提交了证据本身，代码一个字节没动 —— 证据仍然对得上。
                 chk.info(f"{where}: 出处 {raw[:7]} 落在 HEAD {head[:7]} 之前，"
@@ -1687,6 +1762,16 @@ def check_provenance(cases: list[Case]) -> Check:
             chk.bad(note)
             continue
         chk.ok()
+    if undecidable:
+        # 点名在先：SKIP 的理由里只有数字，屏幕上看不出是**哪几束**没查成 ——
+        # 静默跳过等于谎报（文件头「SKIP 的纪律」），跳过得含糊也一样。
+        for note in undecidable:
+            chk.warn(note)
+        # 已经有束真的判负时**不许降级成 SKIP**：判负是确定结论，SKIP 会把它盖掉，
+        # 屏幕上从「有证据对不上」变成「这项没跑」—— 那是拿判不了当挡箭牌。
+        if chk.status != FAIL:
+            chk.skip(f"{len(undecidable)} 束的出处落在这个克隆带不到的历史里，"
+                     f"核不了（另有 {chk.passed} 束已核过）—— {_SHALLOW_HINT}")
     return chk
 
 

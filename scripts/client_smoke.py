@@ -445,11 +445,26 @@ def run_entry(pkg: Path, env: dict[str, str], timeout: int) -> subprocess.Comple
 
     带可执行位就直接执行（客户双击走的正是这条），没有就退回 `bash <file>` ——
     退回是为了让 C 组在 A2 红的时候仍然能给出读数，A2 自己照红不误。
+
+    另外两件事按 T149 的接口约定办（2026-09-14 跨会话对齐）。不按约定办不会
+    报错，只会让本脚本自己坏掉 —— 两种坏法都很难查：
+
+    - **stdin 必须是 DEVNULL。** 入口脚本跑完会暂停等回车（客户双击时窗口否则
+      瞬间关掉，什么都看不到），macOS 那侧用 `[ -t 0 ]` 守着 —— stdin 不是 tty
+      就不暂停。本脚本若把自己的 stdin 继承下去，在交互终端里跑就会一路挂到
+      超时，然后报一条「客户双击后不会等这么久」的假回归。
+    - **认得 `--no-open` 就传。** 成功路径最后一步会用系统默认浏览器真的打开
+      `evidence/report.html`；验收脚本每跑一次弹一个浏览器窗口是不能接受的。
+      按脚本自己的字节探、不写死参数：这样对不认这个参数的版本同样安全，
+      也不会因为 T149 哪天改了参数名就静默失效（探不到就是不传，行为回到老样子）。
     """
     entry = pkg / "RUN-ME.command"
     argv = [str(entry)] if os.access(entry, os.X_OK) else ["bash", str(entry)]
+    if "--no-open" in entry.read_text(encoding="utf-8", errors="replace"):
+        argv.append("--no-open")
     return subprocess.run(argv, cwd=str(pkg), env=env, capture_output=True,
-                          text=True, timeout=timeout, errors="replace")
+                          text=True, timeout=timeout, errors="replace",
+                          stdin=subprocess.DEVNULL)
 
 
 def check_layer1(rep: Report, pkg: Path, tmp: Path, timeout: int) -> None:

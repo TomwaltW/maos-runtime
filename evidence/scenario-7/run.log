@@ -1,4 +1,4 @@
-# generated at 2026-09-14T04:41:20.842151+00:00 from 5c3a5224342cda07e036ce8e5e0c6a88ad0e8e74
+# generated at 2026-09-14T05:22:02.007205+00:00 from ff8dd8ab57bdb3fedab40b5793117f8c8c29e502
 场景 7：制造企业售后退款（失败路径），无 key 确定性复现
 
 [1] 待主管审批: 核算退款金额并写财务分录
@@ -106,15 +106,15 @@ Plan: FAILED  |  处理第二笔轴承退款诉求：政策与金额均无异议
     task-s7b-payment  BLOCKED          -> FAILED           [human_reject]
 
 [6] 工单闭环（T117）—— 「流程卡住后应由谁补偿」
-    开单: MT-case-s7-0001 · 承接岗 payment_ops（支付运维）· 接单人 沈思锴 · opened_at=2026-09-14T04:41:20.751475+00:00
+    开单: MT-case-s7-0001 · 承接岗 payment_ops（支付运维）· 接单人 沈思锴 · opened_at=2026-09-14T05:22:01.900150+00:00
     越权: @intern:maos.local 派单 -> denied（无权限：@intern:maos.local 不在 MAOS_APPROVERS 名单内）；event_log 留下 1 条 ApprovalDenied
     派单: done -> 承接岗 payment_ops · 接单人 @payops:maos.local
-    关单: MT-case-s7-0001 · resolved_at=2026-09-14T04:41:20.809074+00:00 · 结论 settled
-    回填: resolution_observation_id=gw_12cdb96378af4a42@2026-09-14T04:41:20.808405+00:00
-    观察: gateway=manual code=MANUAL.SETTLED observed_state=settled actor=af60c686…
+    关单: MT-case-s7-0001 · resolved_at=2026-09-14T05:22:01.971137+00:00 · 结论 settled
+    回填: resolution_observation_id=gw_2980759a27f24844@2026-09-14T05:22:01.969994+00:00
+    观察: gateway=manual code=MANUAL.SETTLED observed_state=settled actor=2293c674…
     业务状态: compensated —— **仍是 compensated**。钱到没到账记在那条观察上，不在 biz_status 上（铁律 8/9：compensated 是终态，不为回填一条观察去加一条新迁移）
 INFO  maos.worker  Worker w1 启动，可插拔 Agent: ['ap_control', 'ap_intake', 'ap_match', 'ap_treasury', 'architecture', 'claim_adjudicator', 'claim_intake', 'claim_payment', 'claim_settlement', 'coding', 'investigation_cancel', 'investigation_classify', 'investigation_intake', 'investigation_observe', 'refund_channel', 'refund_evidence', 'refund_finance', 'refund_intake', 'refund_payment', 'refund_policy', 'refund_risk', 'requirement', 'reviewer', 'rtv_disposition', 'rtv_intake', 'rtv_logistics', 'rtv_reconcile', 'rtv_settlement', 'testing']
-INFO  maos.cp      创建计划 plan_f2d0ab6fa1e8，共 4 个任务
+INFO  maos.cp      创建计划 plan_0b5fcb911210，共 4 个任务
 INFO  maos.cp      [task-s7-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -145,7 +145,7 @@ INFO  maos.gate    [task-s7-payment] Gate {'schema': 'pass', 'acceptance': 'pass
 INFO  maos.cp      [task-s7-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s7-payment] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s7-payment] BLOCKED -> FAILED (human_reject)
-INFO  maos.cp      创建计划 plan_2675ddede45a，共 4 个任务
+INFO  maos.cp      创建计划 plan_67bc3112297a，共 4 个任务
 INFO  maos.cp      [task-s7b-intake] PENDING -> DISPATCHED (dispatch)
 INFO  maos.cp      [task-s7b-intake] DISPATCHED -> RUNNING (claim)
 INFO  maos.cp      [task-s7b-intake] RUNNING -> AWAITING_REVIEW (submit_result)
@@ -170,8 +170,8 @@ WARNING maos.cp      [task-s7b-payment] gateway_needs_human —— 机器返工�
 INFO  maos.cp      [task-s7b-payment] AWAITING_REVIEW -> BLOCKED (gate_needs_human)
 INFO  maos.cp      [task-s7b-payment] 无补偿引用，跳过回滚
 INFO  maos.cp      [task-s7b-payment] BLOCKED -> FAILED (human_reject)
-INFO  maos.tools.gateway 收到人工线下凭证 request=gw_12cdb96378af4a42 outcome=success 提交人=@payops:maos.local
-INFO  maos.finalizer [plan_f2d0ab6fa1e8] case case-s7-0001 -> ('failure_hint', 'failed')（到账=settled）
-INFO  maos.finalizer [plan_f2d0ab6fa1e8] 复盘完成，沉淀 3 条
-INFO  maos.finalizer [plan_2675ddede45a] case case-s7-0002 -> ('failure_hint', 'failed')（到账=unsettled）
-INFO  maos.finalizer [plan_2675ddede45a] 复盘完成，沉淀 2 条
+INFO  maos.tools.gateway 收到人工线下凭证 request=gw_2980759a27f24844 outcome=success 提交人=@payops:maos.local
+INFO  maos.finalizer [plan_0b5fcb911210] case case-s7-0001 -> ('failure_hint', 'failed')（到账=settled）
+INFO  maos.finalizer [plan_0b5fcb911210] 复盘完成，沉淀 3 条
+INFO  maos.finalizer [plan_67bc3112297a] case case-s7-0002 -> ('failure_hint', 'failed')（到账=unsettled）
+INFO  maos.finalizer [plan_67bc3112297a] 复盘完成，沉淀 2 条

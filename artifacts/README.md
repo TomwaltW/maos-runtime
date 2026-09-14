@@ -2,10 +2,24 @@
 
 | 文件 | 是什么 | 关系 |
 | :-- | :-- | :-- |
-| `maos-复赛方案.html` | **正本**。自包含单文件演示稿，15 页，16:9 | 改这一份 |
-| `maos-复赛方案.pdf` | **提交件**。从正本导出，15 页，页面 960×540 pt（= 1280×720 px，16:9） | 由正本重导，不要手改 |
+| `maos-proposal.html` | **正本**。自包含单文件演示稿，15 页，16:9 | 改这一份 |
+| `maos-proposal.pdf` | **提交件**。从正本导出，15 页，页面 960×540 pt（= 1280×720 px，16:9） | 由正本重导，不要手改 |
 
 正本是 HTML 不是 PPTX：可版本控制、可 diff、可一条命令重导。PPTX 改一个字就是一坨没法 review 的二进制 diff。
+
+**这四个文件名必须是 ASCII，不许改回中文。** 2026-09-14 整合期实测：macOS 自带的 `zip`
+是 Info-ZIP 2.x，**不支持 `-UN=UTF8`**（报 `short option 'N' not supported`），
+打出来的包条目标志位是 `flag=0x0000` —— UTF-8 位没设。按 ZIP 规范，解压方这时该用
+CP437 解码文件名，而 Python 的 `zipfile` 与 **Windows 自带解压器**都照规范办，
+于是中文名解出来是乱码（实测长这样：`maos-σ£║µÖ»Θô╛Φ╖»Θ¬îΦ»ü.html`），
+git 把原文件看成**已删除** —— 工作区在 `evidence/` 之外脏掉，
+`make_evidence.py::git_sha()` 于是写出 `<sha>-dirty`，`verify.py` 第 9 项 provenance
+当场判负。**评委在 Windows 上解压提交包再跑 README 的 ①②，看到的会是 `9/10`。**
+
+用 `unzip` 解压同一个包则一切正常（Info-ZIP 有自己的编码启发式）—— 也就是说这个坑
+**只在「按规范解压」那一侧发作**，在 macOS 上正常操作怎么试都试不出来，
+它是被 `scripts/client_smoke.py`（用 `zipfile` 解压）恰好撞出来的。
+原委与当时的三条候选解记在 `docs/BACKLOG.md` 的 `## integrate-p10-h`。
 
 ---
 
@@ -18,8 +32,8 @@
 ```bash
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless --disable-gpu --no-pdf-header-footer \
-  --print-to-pdf="$PWD/artifacts/maos-复赛方案.pdf" \
-  "file://$PWD/artifacts/maos-复赛方案.html"
+  --print-to-pdf="$PWD/artifacts/maos-proposal.pdf" \
+  "file://$PWD/artifacts/maos-proposal.html"
 ```
 
 成功时最后一行是 `<N> bytes written to file …`。**不要**加 `--print-to-pdf-no-header`（旧拼法，已失效），
@@ -27,12 +41,12 @@
 
 ### 路子 B：浏览器手动（不装 Chrome 命令行也能做）
 
-1. 浏览器打开 `artifacts/maos-复赛方案.html`
+1. 浏览器打开 `artifacts/maos-proposal.html`
 2. 打印（`⌘P`）
 3. 目标选「另存为 PDF」
 4. 纸张 → **自定义 1280 × 720 px**（或 13.33 × 7.5 英寸）
 5. 边距 **无**，缩放 **100%**，**关闭**页眉和页脚
-6. 存为 `artifacts/maos-复赛方案.pdf`
+6. 存为 `artifacts/maos-proposal.pdf`
 
 页面里按 `P` 键可直接唤起打印对话框。
 
@@ -40,11 +54,11 @@
 
 ```bash
 # ① 页数必须是 15，不多不少
-grep -a -o "/Count [0-9]*" artifacts/maos-复赛方案.pdf | sort -u -t' ' -k2 -n | tail -1
+grep -a -o "/Count [0-9]*" artifacts/maos-proposal.pdf | sort -u -t' ' -k2 -n | tail -1
 # → /Count 15
 
 # ② 页面尺寸必须是 16:9
-grep -a -o "/MediaBox\s*\[[^]]*\]" artifacts/maos-复赛方案.pdf | sort -u
+grep -a -o "/MediaBox\s*\[[^]]*\]" artifacts/maos-proposal.pdf | sort -u
 # → /MediaBox [0 0 960 540]
 ```
 
@@ -54,7 +68,7 @@ grep -a -o "/MediaBox\s*\[[^]]*\]" artifacts/maos-复赛方案.pdf | sort -u
 
 ## 2. 截图 slot：房间实拍**已回填**（2026-08-31）
 
-**位置**：`maos-复赛方案.html` 的 **P6**（AgentTeams 事件链）页，右栏下部。
+**位置**：`maos-proposal.html` 的 **P6**（AgentTeams 事件链）页，右栏下部。
 在源码里搜这一行注释即可定位：
 
 ```html
@@ -115,8 +129,8 @@ CSS、JS、图片全部内联；中文走系统字体栈，不 `@import` 网络�
 **不引 mermaid 的 CDN 脚本**。评委离线打开也必须是完整的。改完自查：
 
 ```bash
-grep -c "cdn\|https://unpkg\|https://cdnjs\|@import url(" artifacts/maos-复赛方案.html   # 必须是 0
-grep -oE 'https?://[^"'"'"' )]+' artifacts/maos-复赛方案.html                              # 必须无输出
+grep -c "cdn\|https://unpkg\|https://cdnjs\|@import url(" artifacts/maos-proposal.html   # 必须是 0
+grep -oE 'https?://[^"'"'"' )]+' artifacts/maos-proposal.html                              # 必须无输出
 ```
 
 ### ② 一页就是一页 —— 不许溢出

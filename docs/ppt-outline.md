@@ -910,8 +910,8 @@ Y 轮四轨与 Z 轮五轨全部合入，本文件的断言**本轮已全部对�
 
 | 产物 | 说明 |
 | :-- | :-- |
-| `artifacts/maos-复赛方案.html` | **正本**。自包含单文件，15 页，16:9，无任何外链 |
-| `artifacts/maos-复赛方案.pdf` | **提交件**。无头 Chrome 导出，15 页，`/MediaBox [0 0 960 540]` |
+| `artifacts/maos-proposal.html` | **正本**。自包含单文件，15 页，16:9，无任何外链 |
+| `artifacts/maos-proposal.pdf` | **提交件**。无头 Chrome 导出，15 页，`/MediaBox [0 0 960 540]` |
 | `artifacts/README.md` | 重导 PDF 的两条路子、截图 slot 回填步骤、改稿三条硬约束 |
 
 页锚 P1–P14（P8 拆 P8a/P8b）**一一对应，一页不多一页不少**，编号与页名未改。

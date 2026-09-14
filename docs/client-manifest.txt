@@ -46,29 +46,22 @@ evidence/room/                     # 真房间截图与逐字记录，无生成�
 
 # ---- 三、复赛提交件 ----
 # `artifacts/` 是给评委的提案稿与场景验证（15 页演示稿 + 导出的 PDF，共 7.7M），
-# 不是给客户的产品内容，按第一节的标准本来就该裁。但真正逼着它必须裁的是另一件事：
+# 不是给客户的产品内容，按第一节的标准就该裁 —— **这是现在裁它的唯一理由**。
 #
-#   它是**整个版本库里仅有的 4 个非 ASCII 文件名**所在地。实测判据：
-#   `git -c core.quotePath=false ls-files | LC_ALL=C grep '[^ -~]'` 只有 4 条，全在这里。
-#   而 macOS 自带的 zip 是 Info-ZIP 2.x，**不支持 `-UN=UTF8`**（实测报
-#   `short option 'N' not supported`），打出来的包文件名标志位是 `flag=0x0000`
-#   —— UTF-8 位没设。按 ZIP 规范，解压方这时该用 CP437 解码，而 Python 的
-#   zipfile 与 Windows 自带解压器都照规范办，于是这 4 个名字解出来是乱码
-#   （`maos-σ£║µÖ»Θô╛Φ╖»Θ¬îΦ»ü.html`），git 把原文件看成已删除。
+# 曾经还有第二条理由，现已不成立，但值得留个记录（它是本条的由来）：
+# 这四个文件原本是中文名，而 macOS 自带的 zip 是 Info-ZIP 2.x、不支持 `-UN=UTF8`
+# （实测报 `short option 'N' not supported`），包内条目 `flag=0x0000`、UTF-8 位没设。
+# 按 ZIP 规范，解压方这时须用 CP437 解码文件名 —— Python 的 zipfile 与 Windows
+# 自带解压器都照规范办，于是名字解成乱码（`maos-σ£║µÖ»Θô╛Φ╖»Θ¬îΦ»ü.html`），
+# git 视原文件为已删除，工作区在 `evidence/` 之外脏掉，`make_evidence.py::git_sha()`
+# 写出 `<sha>-dirty`，verify.py 第 9 项当场判负。实测：Python zipfile 解压的包
+# `provenance 7/8`、`RESULT: 9/10`；`unzip` 解压同一个包则 8/8、10/10。
 #
-#   后果是致命的，而且正好落在最不该出事的地方：工作区于是在 `evidence/` 之外
-#   脏了 4 行，`make_evidence.py::git_sha()` 写出 `<sha>-dirty`，verify.py 第 9 项
-#   当场判负 —— 客户双击 RUN-ME 跑到最后看到的是 **9/10 FAIL**。
-#
-#   2026-09-14 整合期实测复现：用 Python zipfile 解压的包里 `provenance 7/8`、
-#   `RESULT: 9/10`；用 `unzip` 解压同一个包则 8/8、10/10 —— 因为 Info-ZIP 有自己的
-#   编码启发式。也就是说这个 bug **只在「按规范解压」的那一侧发作**，
-#   而那一侧正是 Windows，正是本机永远验不了的那一侧。
-#
-# 裁掉它，客户包里一个非 ASCII 文件名都不剩，这一类隐患整体消失。
-# **提交包（默认模式）不裁** —— 那个包必须含提交件，同一个隐患仍在，
-# 已记 `docs/BACKLOG.md`，不在本清单射程内。
-artifacts/                         # 复赛提案稿与场景验证；且是仓库仅有的非 ASCII 文件名
+# 2026-09-14 已把这四个文件改成 ASCII 名（`maos-proposal.*`、
+# `maos-scenario-trace.*`）根治，全仓非 ASCII 文件名归零，原委钉在
+# `artifacts/README.md` 抬头。所以**现在即使把 artifacts/ 留进客户包也不会再触发
+# 那个 bug** —— 但它仍然不是客户内容，仍然裁。
+artifacts/                         # 复赛提案稿与场景验证，非客户内容
 
 # ---- 四、这份清单自己 ----
 # 它逐条写着内部物料**叫什么名字、是干什么的**（复赛执行手册、并行轨派单、

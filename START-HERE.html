@@ -127,25 +127,27 @@ section{margin:44px 0 0}
     <div class="claim">
       <p class="no">结论 01</p>
       <h3>「Agent 都回复完成」<br>不等于业务成功</h3>
-      <p>场景 7 里，支付 Agent <b>两次提交结果说自己做完了</b>。
-        第一次被闸打回返工，第二次转人工，主管驳回 —— 任务终态
-        <b>FAILED</b>，整个 Plan 终态也是 <b>FAILED</b>。
+      <p>场景 7 里，支付 Agent 每一步的自报状态<b>全是 <code>ok</code></b> ——
+        发起、查询、观察，一路绿灯，它两次提交结果说自己做完了。
+        闸第一次打回返工，第二次转人工，主管驳回：任务终态 <b>FAILED</b>，
+        整个 Plan 终态也是 <b>FAILED</b>。
         系统没有因为每个 Agent 都交了活就判这单成功。</p>
       <p class="src"><i>出处</i>
-        <code>evidence/scenario-7/result.json</code> ·
-        报告「场景 7 → 状态迁移时间线」那条泳道</p>
+        <code>evidence/scenario-7/trace.json</code>（各 skill / tool 的
+        <code>status</code>）· <code>result.json</code>（任务与 Plan 终态）</p>
     </div>
 
     <div class="claim">
       <p class="no">结论 02</p>
       <h3>权威事实<br>不在我们的库里</h3>
-      <p>退款到没到账，权威在支付网关。场景 7 里发起、改派备用渠道都试过了，
-        网关始终没给出到账终态，于是 <b>系统一条终态都没写</b> ——
+      <p>退款到没到账，权威在支付网关。场景 7 里改派了备用渠道重发、连问网关
+        <b>三次</b>，始终问不出到账终态 —— 于是 <b>系统一条终态都没写</b>：
         两条网关观察全是 <code>failed</code>，<code>settled</code> 观察 <b>0 条</b>。
         后来是人到渠道后台查实、把线下凭证交回来，案子才标
         <code>compensated</code>。不猜，不推断。</p>
       <p class="src"><i>出处</i>
         <code>evidence/scenario-7/business-objects.json</code> ·
+        <code>trace.json</code>（第二轮三次 <code>gateway.query</code>）·
         <code>docs/authoritative-facts.md</code></p>
     </div>
 

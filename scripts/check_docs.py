@@ -129,6 +129,10 @@ SEVERITY: dict[str, str] = {
 EXTERNAL_REPOS: dict[str, str] = {
     "cumora": "docs/refs/cumora-*.md 解析的外部项目（cumora@1e883f6），"
               "其 docs/COORDINATION.md / docs/BYOA.md 永远不会出现在本仓",
+    "saas-skills-suite": "docs/payment-inbound-plan.md 逐条对照的外部项目"
+                         "（github.com/Alex647648/saas-skills-suite），其 "
+                         "mvp-billing-system/ 与 stripe-payments/ 两个 Skill "
+                         "永远不会出现在本仓",
 }
 
 #: 只判存在性、绝不读内容（与 guard_bash.py 的保护面口径一致）

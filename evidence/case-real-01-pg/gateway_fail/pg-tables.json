@@ -1,8 +1,8 @@
-# generated at 2026-09-14T06:26:31.885149+00:00 from 42976789055577bcf59b9a75544dcf4c9ca14661
+# generated at 2026-09-23T12:20:35.742043+00:00 from 1925c851b508523e774a64359fe68f994d83ff70
 {
   "source": {
     "backend": "postgres",
-    "host": "localhost",
+    "host": "127.0.0.1",
     "port": 5432,
     "database": "maos",
     "user": "maos",
@@ -12,7 +12,7 @@
   "case": {
     "tenant_id": "tnt-mfg-a",
     "case_id": "RC-2026-0904-001",
-    "plan_id": "plan_1df055b5cbc1"
+    "plan_id": "plan_3b0263652d38"
   },
   "row_counts": [
     {
@@ -141,14 +141,14 @@
       "key_value": "RC-2026-0904-001",
       "version": null,
       "row": {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "refund_case",
         "object_id": "RC-2026-0904-001",
         "object_version": 0,
         "purpose": "受理建案",
-        "created_at": "2026-09-14T06:26:31.598255+00:00"
+        "created_at": "2026-09-23T12:20:35.504359+00:00"
       }
     },
     {
@@ -163,7 +163,7 @@
         "approver": "沈思锴（region_manager）",
         "decision": "approved",
         "reason": "金额与订单锁定的政策 v2 一致",
-        "decided_at": "2026-09-14T06:26:31.683617+00:00",
+        "decided_at": "2026-09-23T12:20:35.555407+00:00",
         "revision": 1
       }
     },
@@ -176,17 +176,17 @@
       "row": {
         "tenant_id": "tnt-mfg-a",
         "case_id": "RC-2026-0904-001",
-        "kind": "manual_ticket",
-        "detail_json": "{\"assignee\": \"沈思锴（after_sales_supervisor）\", \"assignee_role\": \"payment_ops\", \"assignee_role_title\": \"支付运维\", \"case_id\": \"RC-2026-0904-001\", \"last_observed_state\": \"failed\", \"opened_at\": \"2026-09-14T06:26:31.761701+00:00\", \"reason\": \"网关明确失败（ACQ.SELLER_BALANCE_NOT_ENOUGH），机器已按可重试码（40005）返工重发过一次仍失败，转人工线下退款\", \"requests\": [\"gw_874e0b2c876e4889\"], \"ticket_id\": \"MT-RC-2026-0904-001\", \"todo\": [\"到支付渠道后台按 idempotency_key 核对这笔退款的真实下落\", \"下落为已退款则补记账；未退款则按人工流程重新发起或改单\", \"对客户回访并关闭本案\"]}",
-        "executed_at": "2026-09-14T06:26:31.761701+00:00",
+        "kind": "refund_request_revoked",
+        "detail_json": "{\"amount\": 1280.0, \"gateway\": \"custom-case\", \"idempotency_key\": \"rfd-tnt-mfg-a-RC-2026-0904-001\", \"last_observed_state\": \"failed\", \"meaning\": \"MAOS 侧不再推进本请求；外部资金下落以 last_observed_state 为准，需人工到支付渠道对账后确认\", \"reason\": \"网关明确失败（ACQ.SELLER_BALANCE_NOT_ENOUGH），机器已按可重试码（40005）返工重发过一次仍失败，转人工线下退款\", \"request_id\": \"gw_3169f49c3a1f4fb7\"}",
+        "executed_at": "2026-09-23T12:20:35.624419+00:00",
         "operator": "沈思锴（after_sales_supervisor）",
         "revision": 1,
-        "assignee_role": "payment_ops",
-        "assignee": "@payops:maos.local",
-        "opened_at": "2026-09-14T06:26:31.761701+00:00",
-        "resolved_at": "2026-09-14T06:26:31.803055+00:00",
-        "resolution_kind": "not_settled",
-        "resolution_observation_id": "gw_874e0b2c876e4889@2026-09-14T06:26:31.799635+00:00"
+        "assignee_role": "",
+        "assignee": "",
+        "opened_at": "",
+        "resolved_at": "",
+        "resolution_kind": "",
+        "resolution_observation_id": ""
       }
     },
     {
@@ -202,7 +202,7 @@
         "kind": "video",
         "uri": "oss://after-sales/RC-2026-0904-001/unboxing.mp4",
         "digest": "sha256:demo-unboxing-01",
-        "submitted_at": "2026-09-14T06:26:31.571540+00:00",
+        "submitted_at": "2026-09-23T12:20:35.500159+00:00",
         "version": 1
       }
     },
@@ -216,10 +216,10 @@
         "tenant_id": "tnt-mfg-a",
         "case_id": "RC-2026-0904-001",
         "amount_approved": 1280.0,
-        "breakdown_json": "{\"amount_approved\": \"1280.00\", \"amount_claimed\": \"1280.00\", \"amount_paid\": \"1280.00\", \"applied_rules\": [\"AS-002@v2\", \"AS-003@v2\", \"AS-004@v2\"], \"base\": \"1280.00\", \"capped_by_paid\": false, \"deduct_fee\": \"0.00\", \"excluded_rules\": [{\"reason\": \"no_reason_days 7 > actual 25.185\", \"rule_ref\": \"AS-001@v2\"}], \"gross\": \"1280.00\", \"policy_version\": 2, \"refund_ratio\": \"1\"}",
+        "breakdown_json": "{\"amount_approved\": \"1280.00\", \"amount_claimed\": \"1280.00\", \"amount_paid\": \"1280.00\", \"applied_rules\": [\"AS-002@v2\", \"AS-003@v2\", \"AS-004@v2\"], \"base\": \"1280.00\", \"capped_by_paid\": false, \"deduct_fee\": \"0.00\", \"excluded_rules\": [{\"reason\": \"no_reason_days 7 > actual 34.431\", \"rule_ref\": \"AS-001@v2\"}], \"gross\": \"1280.00\", \"policy_version\": 2, \"refund_ratio\": \"1\"}",
         "rule_refs": "[\"AS-001@v2\", \"AS-002@v2\", \"AS-003@v2\", \"AS-004@v2\"]",
         "checked_by": "refund-finance",
-        "checked_at": "2026-09-14T06:26:31.676649+00:00",
+        "checked_at": "2026-09-23T12:20:35.549410+00:00",
         "revision": 1
       }
     },
@@ -234,7 +234,7 @@
         "case_id": "RC-2026-0904-001",
         "channel": "sms",
         "content_digest": "f994bc122b8e9b1f913a06bd9bffc5f32c463222d0e72ef8b53c273c5e6ff843",
-        "sent_at": "2026-09-14T06:26:31.811558+00:00",
+        "sent_at": "2026-09-23T12:20:35.668736+00:00",
         "ack_at": null,
         "revision": 1
       }
@@ -262,17 +262,17 @@
       "object_type": "payment_observation",
       "table": "payment_observation",
       "key_column": "request_id",
-      "key_value": "gw_874e0b2c876e4889",
+      "key_value": "gw_3169f49c3a1f4fb7",
       "version": null,
       "row": {
         "tenant_id": "tnt-mfg-a",
         "case_id": "RC-2026-0904-001",
-        "request_id": "gw_874e0b2c876e4889",
+        "request_id": "gw_3169f49c3a1f4fb7",
         "gateway_code": "40005",
-        "raw_receipt_json": "{\"code\": \"40005\", \"detail\": {}, \"idempotency_key\": \"rfd-tnt-mfg-a-RC-2026-0904-001\", \"is_terminal\": true, \"message\": \"调用频次超限\", \"outcome\": \"failed\", \"poll_count\": 0, \"remedy\": \"降低请求并发量\", \"request_id\": \"gw_874e0b2c876e4889\", \"retriable\": true, \"source\": \"https://ideservice.alipay.com/cms/site/02km9f#API公共错误码\", \"status\": \"failed\"}",
+        "raw_receipt_json": "{\"code\": \"40005\", \"detail\": {}, \"idempotency_key\": \"rfd-tnt-mfg-a-RC-2026-0904-001\", \"is_terminal\": true, \"message\": \"调用频次超限\", \"outcome\": \"failed\", \"poll_count\": 0, \"remedy\": \"降低请求并发量\", \"request_id\": \"gw_3169f49c3a1f4fb7\", \"retriable\": true, \"source\": \"https://ideservice.alipay.com/cms/site/02km9f#API公共错误码\", \"status\": \"failed\"}",
         "observed_state": "failed",
-        "observed_at": "2026-09-14T06:26:31.709626+00:00",
-        "actor_invocation_id": "3e950be4715d49a1bc95994fc67ecfa6"
+        "observed_at": "2026-09-23T12:20:35.579567+00:00",
+        "actor_invocation_id": "ced0a11751c44f5a8e43b89d0856c34c"
       }
     },
     {
@@ -325,24 +325,24 @@
         "reason_code": "quality_defect",
         "amount_claimed": 1280.0,
         "biz_status": "compensated",
-        "plan_id": "plan_1df055b5cbc1",
-        "created_at": "2026-09-14T06:26:31.560033+00:00"
+        "plan_id": "plan_3b0263652d38",
+        "created_at": "2026-09-23T12:20:35.498657+00:00"
       }
     },
     {
       "object_type": "refund_request",
       "table": "refund_request",
       "key_column": "request_id",
-      "key_value": "gw_874e0b2c876e4889",
+      "key_value": "gw_3169f49c3a1f4fb7",
       "version": 2,
       "row": {
         "tenant_id": "tnt-mfg-a",
         "case_id": "RC-2026-0904-001",
-        "request_id": "gw_874e0b2c876e4889",
+        "request_id": "gw_3169f49c3a1f4fb7",
         "amount": 1280.0,
         "gateway": "custom-case",
         "idempotency_key": "rfd-tnt-mfg-a-RC-2026-0904-001",
-        "submitted_at": "2026-09-14T06:26:31.727290+00:00",
+        "submitted_at": "2026-09-23T12:20:35.593749+00:00",
         "version": 2
       }
     }
@@ -350,14 +350,14 @@
   "business_refs": {
     "refs": [
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-finance",
         "tenant_id": "tnt-mfg-a",
         "object_type": "approval_record",
         "object_id": "RC-2026-0904-001",
         "object_version": 1,
         "purpose": "主管审批（approved，第 1 次）",
-        "created_at": "2026-09-14T06:26:31.686332+00:00",
+        "created_at": "2026-09-23T12:20:35.558850+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -365,40 +365,40 @@
           "approver": "沈思锴（region_manager）",
           "decision": "approved",
           "reason": "金额与订单锁定的政策 v2 一致",
-          "decided_at": "2026-09-14T06:26:31.683617+00:00",
+          "decided_at": "2026-09-23T12:20:35.555407+00:00",
           "revision": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-finance",
         "tenant_id": "tnt-mfg-a",
         "object_type": "finance_entry",
         "object_id": "RC-2026-0904-001",
         "object_version": 1,
         "purpose": "本案的财务核算（第 1 版，核准 1280.00）",
-        "created_at": "2026-09-14T06:26:31.677687+00:00",
+        "created_at": "2026-09-23T12:20:35.550126+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
           "case_id": "RC-2026-0904-001",
           "amount_approved": 1280.0,
-          "breakdown_json": "{\"amount_approved\": \"1280.00\", \"amount_claimed\": \"1280.00\", \"amount_paid\": \"1280.00\", \"applied_rules\": [\"AS-002@v2\", \"AS-003@v2\", \"AS-004@v2\"], \"base\": \"1280.00\", \"capped_by_paid\": false, \"deduct_fee\": \"0.00\", \"excluded_rules\": [{\"reason\": \"no_reason_days 7 > actual 25.185\", \"rule_ref\": \"AS-001@v2\"}], \"gross\": \"1280.00\", \"policy_version\": 2, \"refund_ratio\": \"1\"}",
+          "breakdown_json": "{\"amount_approved\": \"1280.00\", \"amount_claimed\": \"1280.00\", \"amount_paid\": \"1280.00\", \"applied_rules\": [\"AS-002@v2\", \"AS-003@v2\", \"AS-004@v2\"], \"base\": \"1280.00\", \"capped_by_paid\": false, \"deduct_fee\": \"0.00\", \"excluded_rules\": [{\"reason\": \"no_reason_days 7 > actual 34.431\", \"rule_ref\": \"AS-001@v2\"}], \"gross\": \"1280.00\", \"policy_version\": 2, \"refund_ratio\": \"1\"}",
           "rule_refs": "[\"AS-001@v2\", \"AS-002@v2\", \"AS-003@v2\", \"AS-004@v2\"]",
           "checked_by": "refund-finance",
-          "checked_at": "2026-09-14T06:26:31.676649+00:00",
+          "checked_at": "2026-09-23T12:20:35.549410+00:00",
           "revision": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-finance",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-001",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.667272+00:00",
+        "created_at": "2026-09-23T12:20:35.541529+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -413,14 +413,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-finance",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-002",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.668180+00:00",
+        "created_at": "2026-09-23T12:20:35.542300+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -435,14 +435,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-finance",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-003",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.669082+00:00",
+        "created_at": "2026-09-23T12:20:35.543030+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -457,14 +457,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-finance",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-004",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.669913+00:00",
+        "created_at": "2026-09-23T12:20:35.543750+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -479,14 +479,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "customer_evidence",
         "object_id": "ev-real-01",
         "object_version": 1,
         "purpose": "客户提交的video证据",
-        "created_at": "2026-09-14T06:26:31.611688+00:00",
+        "created_at": "2026-09-23T12:20:35.506800+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -495,19 +495,19 @@
           "kind": "video",
           "uri": "oss://after-sales/RC-2026-0904-001/unboxing.mp4",
           "digest": "sha256:demo-unboxing-01",
-          "submitted_at": "2026-09-14T06:26:31.571540+00:00",
+          "submitted_at": "2026-09-23T12:20:35.500159+00:00",
           "version": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "customer_evidence",
         "object_id": "ev-real-02",
         "object_version": 1,
         "purpose": "客户提交的image证据",
-        "created_at": "2026-09-14T06:26:31.615730+00:00",
+        "created_at": "2026-09-23T12:20:35.507483+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -516,19 +516,19 @@
           "kind": "image",
           "uri": "oss://after-sales/RC-2026-0904-001/gearbox-noise-01.jpg",
           "digest": "sha256:demo-gearbox-01",
-          "submitted_at": "2026-09-14T06:26:31.587588+00:00",
+          "submitted_at": "2026-09-23T12:20:35.501408+00:00",
           "version": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "customer_evidence",
         "object_id": "ev-real-03",
         "object_version": 1,
         "purpose": "客户提交的image证据",
-        "created_at": "2026-09-14T06:26:31.619861+00:00",
+        "created_at": "2026-09-23T12:20:35.508251+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -537,19 +537,19 @@
           "kind": "image",
           "uri": "oss://after-sales/RC-2026-0904-001/rpm-unstable-02.jpg",
           "digest": "sha256:demo-rpm-02",
-          "submitted_at": "2026-09-14T06:26:31.591331+00:00",
+          "submitted_at": "2026-09-23T12:20:35.502727+00:00",
           "version": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "customer_evidence",
         "object_id": "ev-real-04",
         "object_version": 1,
         "purpose": "客户提交的document证据",
-        "created_at": "2026-09-14T06:26:31.622440+00:00",
+        "created_at": "2026-09-23T12:20:35.508995+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -558,19 +558,19 @@
           "kind": "document",
           "uri": "oss://after-sales/RC-2026-0904-001/purchase-receipt.pdf",
           "digest": "sha256:demo-receipt-04",
-          "submitted_at": "2026-09-14T06:26:31.595706+00:00",
+          "submitted_at": "2026-09-23T12:20:35.503793+00:00",
           "version": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "order_snapshot",
         "object_id": "ORD-2026-AG-0413",
         "object_version": 1,
         "purpose": "退款依据的订单快照",
-        "created_at": "2026-09-14T06:26:31.602438+00:00",
+        "created_at": "2026-09-23T12:20:35.505070+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -586,14 +586,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "product_snapshot",
         "object_id": "SKU-AG-125B",
         "object_version": 1,
         "purpose": "质保期判定依据的商品快照",
-        "created_at": "2026-09-14T06:26:31.609108+00:00",
+        "created_at": "2026-09-23T12:20:35.506251+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -606,14 +606,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-intake",
         "tenant_id": "tnt-mfg-a",
         "object_type": "refund_case",
         "object_id": "RC-2026-0904-001",
         "object_version": 0,
         "purpose": "受理建案",
-        "created_at": "2026-09-14T06:26:31.598255+00:00",
+        "created_at": "2026-09-23T12:20:35.504359+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -625,19 +625,19 @@
           "reason_code": "quality_defect",
           "amount_claimed": 1280.0,
           "biz_status": "compensated",
-          "plan_id": "plan_1df055b5cbc1",
-          "created_at": "2026-09-14T06:26:31.560033+00:00"
+          "plan_id": "plan_3b0263652d38",
+          "created_at": "2026-09-23T12:20:35.498657+00:00"
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-payment",
         "tenant_id": "tnt-mfg-a",
         "object_type": "approval_record",
         "object_id": "RC-2026-0904-001",
         "object_version": 2,
         "purpose": "主管审批（rejected，第 2 次）",
-        "created_at": "2026-09-14T06:26:31.743979+00:00",
+        "created_at": "2026-09-23T12:20:35.608837+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -645,107 +645,107 @@
           "approver": "沈思锴（region_manager）",
           "decision": "approved",
           "reason": "金额与订单锁定的政策 v2 一致",
-          "decided_at": "2026-09-14T06:26:31.683617+00:00",
+          "decided_at": "2026-09-23T12:20:35.555407+00:00",
           "revision": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-payment",
         "tenant_id": "tnt-mfg-a",
         "object_type": "compensation_record",
         "object_id": "RC-2026-0904-001",
         "object_version": 1,
         "purpose": "域内补偿收口（工单 MT-RC-2026-0904-001，第 1 次）",
-        "created_at": "2026-09-14T06:26:31.778689+00:00",
+        "created_at": "2026-09-23T12:20:35.637276+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
           "case_id": "RC-2026-0904-001",
-          "kind": "manual_ticket",
-          "detail_json": "{\"assignee\": \"沈思锴（after_sales_supervisor）\", \"assignee_role\": \"payment_ops\", \"assignee_role_title\": \"支付运维\", \"case_id\": \"RC-2026-0904-001\", \"last_observed_state\": \"failed\", \"opened_at\": \"2026-09-14T06:26:31.761701+00:00\", \"reason\": \"网关明确失败（ACQ.SELLER_BALANCE_NOT_ENOUGH），机器已按可重试码（40005）返工重发过一次仍失败，转人工线下退款\", \"requests\": [\"gw_874e0b2c876e4889\"], \"ticket_id\": \"MT-RC-2026-0904-001\", \"todo\": [\"到支付渠道后台按 idempotency_key 核对这笔退款的真实下落\", \"下落为已退款则补记账；未退款则按人工流程重新发起或改单\", \"对客户回访并关闭本案\"]}",
-          "executed_at": "2026-09-14T06:26:31.761701+00:00",
+          "kind": "refund_request_revoked",
+          "detail_json": "{\"amount\": 1280.0, \"gateway\": \"custom-case\", \"idempotency_key\": \"rfd-tnt-mfg-a-RC-2026-0904-001\", \"last_observed_state\": \"failed\", \"meaning\": \"MAOS 侧不再推进本请求；外部资金下落以 last_observed_state 为准，需人工到支付渠道对账后确认\", \"reason\": \"网关明确失败（ACQ.SELLER_BALANCE_NOT_ENOUGH），机器已按可重试码（40005）返工重发过一次仍失败，转人工线下退款\", \"request_id\": \"gw_3169f49c3a1f4fb7\"}",
+          "executed_at": "2026-09-23T12:20:35.624419+00:00",
           "operator": "沈思锴（after_sales_supervisor）",
           "revision": 1,
-          "assignee_role": "payment_ops",
-          "assignee": "@payops:maos.local",
-          "opened_at": "2026-09-14T06:26:31.761701+00:00",
-          "resolved_at": "2026-09-14T06:26:31.803055+00:00",
-          "resolution_kind": "not_settled",
-          "resolution_observation_id": "gw_874e0b2c876e4889@2026-09-14T06:26:31.799635+00:00"
+          "assignee_role": "",
+          "assignee": "",
+          "opened_at": "",
+          "resolved_at": "",
+          "resolution_kind": "",
+          "resolution_observation_id": ""
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-payment",
         "tenant_id": "tnt-mfg-a",
         "object_type": "notification",
         "object_id": "f994bc122b8e9b1f913a06bd9bffc5f32c463222d0e72ef8b53c273c5e6ff843",
         "object_version": 1,
         "purpose": "告知客户处理结果（sms，第 1 次）",
-        "created_at": "2026-09-14T06:26:31.812617+00:00",
+        "created_at": "2026-09-23T12:20:35.669823+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
           "case_id": "RC-2026-0904-001",
           "channel": "sms",
           "content_digest": "f994bc122b8e9b1f913a06bd9bffc5f32c463222d0e72ef8b53c273c5e6ff843",
-          "sent_at": "2026-09-14T06:26:31.811558+00:00",
+          "sent_at": "2026-09-23T12:20:35.668736+00:00",
           "ack_at": null,
           "revision": 1
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-payment",
         "tenant_id": "tnt-mfg-a",
         "object_type": "payment_observation",
-        "object_id": "gw_874e0b2c876e4889",
+        "object_id": "gw_3169f49c3a1f4fb7",
         "object_version": 0,
         "purpose": "网关终态观察（failed）—— 到账结论的唯一依据",
-        "created_at": "2026-09-14T06:26:31.800622+00:00",
+        "created_at": "2026-09-23T12:20:35.658261+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
           "case_id": "RC-2026-0904-001",
-          "request_id": "gw_874e0b2c876e4889",
+          "request_id": "gw_3169f49c3a1f4fb7",
           "gateway_code": "40005",
-          "raw_receipt_json": "{\"code\": \"40005\", \"detail\": {}, \"idempotency_key\": \"rfd-tnt-mfg-a-RC-2026-0904-001\", \"is_terminal\": true, \"message\": \"调用频次超限\", \"outcome\": \"failed\", \"poll_count\": 0, \"remedy\": \"降低请求并发量\", \"request_id\": \"gw_874e0b2c876e4889\", \"retriable\": true, \"source\": \"https://ideservice.alipay.com/cms/site/02km9f#API公共错误码\", \"status\": \"failed\"}",
+          "raw_receipt_json": "{\"code\": \"40005\", \"detail\": {}, \"idempotency_key\": \"rfd-tnt-mfg-a-RC-2026-0904-001\", \"is_terminal\": true, \"message\": \"调用频次超限\", \"outcome\": \"failed\", \"poll_count\": 0, \"remedy\": \"降低请求并发量\", \"request_id\": \"gw_3169f49c3a1f4fb7\", \"retriable\": true, \"source\": \"https://ideservice.alipay.com/cms/site/02km9f#API公共错误码\", \"status\": \"failed\"}",
           "observed_state": "failed",
-          "observed_at": "2026-09-14T06:26:31.709626+00:00",
-          "actor_invocation_id": "3e950be4715d49a1bc95994fc67ecfa6"
+          "observed_at": "2026-09-23T12:20:35.579567+00:00",
+          "actor_invocation_id": "ced0a11751c44f5a8e43b89d0856c34c"
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-payment",
         "tenant_id": "tnt-mfg-a",
         "object_type": "refund_request",
-        "object_id": "gw_874e0b2c876e4889",
+        "object_id": "gw_3169f49c3a1f4fb7",
         "object_version": 2,
         "purpose": "向网关发起的退款请求（第 2 次）",
-        "created_at": "2026-09-14T06:26:31.728828+00:00",
+        "created_at": "2026-09-23T12:20:35.595151+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
           "case_id": "RC-2026-0904-001",
-          "request_id": "gw_874e0b2c876e4889",
+          "request_id": "gw_3169f49c3a1f4fb7",
           "amount": 1280.0,
           "gateway": "custom-case",
           "idempotency_key": "rfd-tnt-mfg-a-RC-2026-0904-001",
-          "submitted_at": "2026-09-14T06:26:31.727290+00:00",
+          "submitted_at": "2026-09-23T12:20:35.593749+00:00",
           "version": 2
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-policy",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-001",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.643794+00:00",
+        "created_at": "2026-09-23T12:20:35.521893+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -760,14 +760,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-policy",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-002",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.644578+00:00",
+        "created_at": "2026-09-23T12:20:35.522541+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -782,14 +782,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-policy",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-003",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.645410+00:00",
+        "created_at": "2026-09-23T12:20:35.523272+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -804,14 +804,14 @@
         }
       },
       {
-        "plan_id": "plan_1df055b5cbc1",
+        "plan_id": "plan_3b0263652d38",
         "task_id": "task-rc-2026-0904-001-policy",
         "tenant_id": "tnt-mfg-a",
         "object_type": "policy_rule",
         "object_id": "AS-004",
         "object_version": 2,
         "purpose": "裁定依据的政策规则",
-        "created_at": "2026-09-14T06:26:31.646197+00:00",
+        "created_at": "2026-09-23T12:20:35.523986+00:00",
         "resolved": true,
         "object": {
           "tenant_id": "tnt-mfg-a",
@@ -841,10 +841,10 @@
       "refund_case",
       "refund_request"
     ],
-    "scope": "tenant_id=tnt-mfg-a AND plan_id=plan_1df055b5cbc1",
+    "scope": "tenant_id=tnt-mfg-a AND plan_id=plan_3b0263652d38",
     "note": "resolve 走 maos.domain.refund.objects.resolve_business_ref，本脚本不另立映射；这些行是从 PG 读的，不是从 maos.db。business_ref 没有 case_id 列，本案的收窄走 plan_id。"
   },
-  "generated_at": "2026-09-14T06:26:31.884474+00:00",
+  "generated_at": "2026-09-23T12:20:35.741440+00:00",
   "cleared_before_run": {
     "tenant": 1,
     "channel": 2,

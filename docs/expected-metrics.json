@@ -57,10 +57,17 @@
     "`evidence/` 才放行、中间动过 `maos/` 判负、旁支 commit 不是祖先判负）与浅克隆下",
     "「判不了按 SKIP 计」，全是纯单元 + 真 git 仓库，一条 PG 门控都没有。",
     "**`verify_result_line` 不改**：完整 clone 与加深后的交付包都仍是 10/10；",
-    "只有非标准的 `git clone --depth 1` 会看到 `9/9 PASS, 1 SKIP`，那不是本值描述的场景。"
+    "只有非标准的 `git clone --depth 1` 会看到 `9/9 PASS, 1 SKIP`，那不是本值描述的场景。",
+    "",
+    "2026-09-23 整合期 p11（跨境电商六轨 T161–T166 合入 integrate/p11）：收集 4202 -> 4379（+177），",
+    "passed 4099 -> 4273、skipped 103 -> 106、pg_gated 仍是 90。+177 条全在六轨新增的",
+    "maos/tests/test_commerce_*.py（六个平台适配器 + 跨平台一致性守卫），一条 PG 门控都没有。",
+    "新增的 3 条 skip 与 PG 无关、有库无库两档都 skip：test_commerce_ebay.py 2 条（未装 cryptography，",
+    "真 ECDSA 验签跑不了）+ test_commerce_shopify.py 1 条（没有 Shopify dev store 凭据）——",
+    "所以 skipped 涨 3 而 pg_gated 不变。Lazada 与 Shopee 推送验签用户 09-23 拍板延后，不在本数里。"
   ],
-  "pytest_passed_nopg": 4099,
-  "pytest_skipped_nopg": 103,
+  "pytest_passed_nopg": 4273,
+  "pytest_skipped_nopg": 106,
   "pg_gated_tests": 90,
   "evidence_bundles": 8,
   "verify_result_line": "RESULT: 10/10 PASS"

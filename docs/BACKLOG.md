@@ -2888,3 +2888,14 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-23 | p11 | **Notification API 里没找到订单取消 / 退款类的 topic**（本轮核到的订单相关 topic 只有 ORDER_CONFIRMATION 与 ITEM_MARKED_SHIPPED） | 订单被取消、被退款这两类变化收不到推送，只能靠执行前 order.query 主动拉；两次执行之间发生的取消 MAOS 看不见 | M2 接线时定：是否另接 Post-Order API 的取消查询做轮询，或接受「只在执行前拉一次」 |
 | 2026-09-23 | p11 | **两种令牌都是短命的，本轨只读、不负责续期。** EBAY_APP_TOKEN（client credentials 应用令牌）与 EBAY_OAUTH_TOKEN（用户令牌）按官方说明都是约两小时过期；用户令牌要靠 refresh token 续 | 凭据到位后跑不了多久就会 401（查单）或取公钥失败（通知全判 bad_signature）。后者尤其隐蔽：通知照常落库，只是 verify_result 全是 bad_signature | M2 装配时定谁来签发与刷新（client id / secret 与 refresh token 属新增凭据，同样只许走环境变量）；EBAY_APP_TOKEN 本身也不在契约 §D.2 表里，要人拍板 |
 | 2026-09-23 | p11 | **契约表里的 EBAY_VERIFICATION_TOKEN 本轨没用上。** 它服务的是通知端点的 challenge 握手（eBay 建订阅时先 GET 一次端点、要求回一个哈希），那是 HTTP 路由那一侧的事 | 没有握手，eBay 那边建不成推送订阅，本轨的验签器在生产上收不到任何一条通知 | M2 加 HTTP 路由时一并实现握手，本轨不做（派单「不做什么」明列） |
+
+## task-t164（Amazon SP-API 订单适配器，2026-09-23）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-23 | p11 | T164 Amazon SP-API 是 B 档、没有真凭据，适配器只在 `FakeTransport` 上验过（请求构造、LWA 换令牌、字段映射、错误读法） | 请求头取舍（x-amz-date / user-agent）、LWA 错误体的实际措辞、429 时平台实际给的响应头都还没见过真货 | 凭据到位后：装配处注入默认 transport，用一笔真单跑一次 `query()`，核五字段与 LWA 换新时序 |
+| 2026-09-23 | p11 | T164 SP-API 订单通知（Notifications API 投 SQS / EventBridge）未接 | Amazon 的订单变化只能在查单时读到，没有推送入口。将来接的话，verifier 必须在自己测试的 fixture 里重新注册：`maos/tests/test_shop_callback.py` 的 autouse fixture 每条用例前后都 reset_verifiers，依赖导入期注册会拿到 VERIFY_NO_VERIFIER | 需要订单推送时另开一轨 |
+| 2026-09-23 | p11 | T164 Orders API v0 已宣布弃用：官方 SP-API Deprecations Schedule 写明 getOrder 等六个 v0 操作 2026-01-28 弃用、**2027-03-27 起调用失败**，接替者 Orders API v2026-01-01 | `maos/tools/commerce/amazon_sp.py` 按 v0 写（路径与字段名），到期后 Amazon 查单全部失败 | 2027-03-27 之前迁到 v2026-01-01：路径、响应形状、字段名都要按新模型 orders_2026-01-01.json 重核，规则表 source 同步改；跨轨契约 §B 表里 Amazon 那一句也要跟着核 |
+| 2026-09-23 | p11 | T164 已取消的单可能读不出来：官方模型里 OrderTotal 不是 required；Pending 单不返回定价是写明了的，Canceled 单文档没写，但官方仓 selling-partner-api-models 讨论区 #3657 有开发者实报 Canceled 单缺 OrderTotal | `query()` 先 map_status 后 normalize_amount：这类单状态能映射成 cancelled，却会在金额一步抛 ValueError —— 「订单已被取消」这个恰恰最该让退款停下的事实读不出来，上层只看到「读单失败」 | 基座层面的后果，本轨不修（改基座越界）。整合期或基座轨定：cancelled 单缺金额时要不要也能交出去，需用户拍板 |
+| 2026-09-23 | p11 | 基座 `maos/tools/commerce/base.py:110-112` 的注释说「Amazon SP-API 用 400 + InvalidInput 表达找不到单」，与官方模型不符（getOrder 的 404 =「The resource specified does not exist.」，400 是参数错） | 只是注释失实，行为没错（缺省 404）；但后来人照注释把 Amazon 的 not_found_status 扩成 400 + 404，会把参数错误判成「订单不存在」 | 下次动基座时改注释（基座不在 T164 白名单） |
+| 2026-09-23 | p11 | 派单判据里 grep 数 PASSED / FAILED 的写法对彩色输出失效：会话环境带 FORCE_COLOR=3 时 pytest 给状态词包 ANSI 码，T164 的 C6 首跑把 32 条通过数成 0 | 判据会在「全过」时报「全缺」，或在有红时报 0 条 FAILED —— 两个方向都失去区分力 | 下一版派单模板：判据里的 pytest 命令加 `--color=no`，或前缀 `env -u FORCE_COLOR` |

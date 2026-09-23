@@ -2911,3 +2911,10 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-23 | p11 | TikTok 两处状态拼写不一致：查单接口 Get Order Detail (202309) 的取消态是 `CANCELLED`，而 webhook「(1) Order status change」页列出的取值是 `CANCEL` | 现在不影响：规则表只用于查单响应，webhook 只触发回源、不读状态。日后若有人拿 webhook 的 `order_status` 直接走规则表，取消单会抛 `UnmappedOrderStatus` | 真要读 webhook 状态时再处理，届时先拿真回调核实实际拼写 |
 | 2026-09-23 | p11 | 后台会话（`claude --bg`）带 `FORCE_COLOR=3`，pytest 输出带 ANSI 码；派单模板里按行首 FAILED 计数、按「名字 PASSED」计数的 grep 会**静默数到 0**，看起来像「没有失败」或「一条都没过」 | 派单判据在后台会话里失真，而且不报错 | 下次写派单时在 pytest 命令前统一加 `NO_COLOR=1`（本轨已这样跑，见 `docs/DECISIONS.md` 的 `## task-t165`） |
 | 2026-09-23 | p11 | `docs/expected-metrics.json` 的采集总数要刷：本轨新增 47 条测试（TikTok 26 + Shopee 21，skip 0），`maos/tests/test_expected_metrics.py` 的 `test_collected_count_matches_source_of_truth` 在本轨恰好红这一条、差 +47 | 本轨按派单不改该文件，单轨全量因此恒有 1 条红 | 整合轨 TΩ 合并六轨后统一刷 |
+
+## task-t166（跨平台一致性守卫；Lazada 适配器待授权，2026-09-23）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-23 | p11 | **一致性测试在本 worktree 里只扫得到 0 个真实适配器。**`maos/tests/test_commerce_consistency.py` 的判据 1–8 对真包是空跑的（发现结果为空，空集合上断言成立），它们的牙只由本文件的合成用例与派单的两个一次性探针（撞名、导入期读凭据）证明过 | 真对象上的第一次判定发生在整合期：六轨合流后才第一次有平台模块被扫。**判据 6 的扩展禁单（aiohttp / urllib3 / urllib.request / http.client）与判据 8（导入期不读凭据 / 环境变量）是本轨在契约之外加的**，别轨派单没写、无从预知，整合期因这两条红的概率最高；判据 3 的口径也只在合成用例上验过。另：判据 1 要求**每个**被发现的子类都声明 platform 与 status_rules，平台文件里若另写一个不带 platform 的抽象中间类，也会被判 1 点名 | 整合轨 TΩ：① 另加「发现数 == 7」的精确断言（本轨按派单不许加下限，只有整合期能加）；② 一致性测试若红，按报错点名的模块**退回所属轨**修，**不许在一致性测试里加豁免** —— TΩ 没有白名单去改别轨文件；退回时点明判据 6 的扩展禁单与判据 8 是契约外判据，免得对方以为是自己漏看了契约 |
+| 2026-09-23 | p11 | 派单里「grep PASSED 计数」「grep ^FAILED 计数」这类判据，在环境变量 FORCE_COLOR 非空的会话里恒为 0：pytest 即使输出重定向到文件也照样着色，颜色码插在 test id 与 PASSED / FAILED 之间。本轮 T166 会话实测 FORCE_COLOR=3 | 照原文跑的子会话会把一次全绿读成「0 条 PASSED」、把「恰好 1 个 FAILED」读成 0，按派单停机或报假警；本轮本轨已按 DECISIONS 同日一行处理（加 `--color=no`） | 下一轮派单模板：凡把 pytest 输出落日志再 grep 的命令，一律带 `--color=no`（或在命令前加 NO_COLOR=1）；起草员在自己会话里实跑取期望值时也要带上，否则起草环境与子会话环境着色不同会出现两边读数对不上 |

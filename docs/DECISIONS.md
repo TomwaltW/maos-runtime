@@ -3306,3 +3306,20 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-24 | p13 | 理解层要不要调模型 | 确定性优先，只在确定性判不出意图、且注入的是真模型时调；CALL_SITE 登记、model_usage 行 trace_id 空、task_id None、plan_id=cs:…；Scripted / None 下零 usage 行 | 测试与证据恒为 Scripted，行为要确定；verify 第 8 项的四条判据在这个口径下自然成立 |
 | 2026-09-24 | p13 | p13 的评测集算什么 | scenarios/cs/eval/p13_cases.json 定性为开发集（T174 会拿它调）；门槛预登记在文件里（intent 0.9 / route 0.9 / handoff 0.95 / 编造 0 / 措辞 1.0 / 错状态 0）；泛化由 p12 留出集与 p14 新写的留出集量 | 查单流程是规则驱动的，开发集调到满分合理；泛化另量 |
 | 2026-09-24 | p13 | 骨架里顺手动了 p12 各轨的文件（schema.sql、desk.py、两份测试） | 只动到「枚举增长后 p12 测试仍全绿」所需的最小面：CHECK 三处、原因表各四条、契约钉子、留出测试的失败消息 | 骨架是主会话的；让骨架提交本身全绿（除收集数），各轨从同一个绿基线出发 |
+
+## task-t172（外部端口：查单与退款预检，2026-09-24）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-24 | p13 | 查单端口在工具侧全局登记表里用什么名字（run_payload 每跑一次都清表） | 登记名 = "cs:" + Binding.system_name；每次查单前把注入的全部 systems 重新登记一遍；ToolInvoked 的 params.system_name 是带前缀的登记名，LookupResult.system_name 仍是绑定里的原名 | 带前缀不顶掉退款链路登记的同名系统（demo-orders），也不被它顶掉；每次重登记，清表之后下一次查单照样成功。测试钉住：清表后查单成功、裸名那一侧原样不动 |
+| 2026-09-24 | p13 | 契约的异常顺序没点名的几类：CredentialMissing、CommerceError、TransportError（都是 RuntimeError）、FakeTransport 没预置的 URL（KeyError） | 照契约字面：前三类落「其它异常 → platform_error」，error_kind 是类名，靠类名区分「没配凭据」与「平台报错」；FakeTransport 的 KeyError 落 not_found | 契约顺序是冻结口径，本轨不改；把 CredentialMissing 改归 system_misconfigured 要改契约，记 BACKLOG。FakeTransport 只在测试里出现 |
+| 2026-09-24 | p13 | order.query 正常返回、但形状不对（不是对象、状态不在四态、版本不是整数） | 归 platform_error，error_kind = OrderReplyInvalid（本模块自己的 ValueError 子类）；amended 保留 version / updated_at，status 置空 | 自己判出来的形状错也要有一个能按名字认的归类，而不是空串；amended 的版本与修改时刻是平台说的话，内部卡片用得上，前台只看 outcome |
+| 2026-09-24 | p13 | 查单日志打什么 | 只打 outcome、异常类名、系统名、打码后的查单键（末 4 位前加省略号，不足 5 位整段打星）；不打异常消息、不带 exc_info | MockOrderSystem 的 KeyError 原文里列着账本上别的订单号；traceback 也会带出原文。测试用 caplog 钉住 |
+| 2026-09-24 | p13 | invoke_tool 自己把「类名: 原文」写进 ToolInvoked.detail.error（存量行为） | 不改 maos/tools/port.py（不在本轨白名单）；LookupResult 与日志里没有原文由测试钉住；event_log 里仍有原文，记 BACKLOG，p14 处理 | 本轨只管 cs_ports 这一层不外漏；改 invoke_tool 牵动全仓 ToolInvoked 的形状，是另一件事 |
+| 2026-09-24 | p13 | 构造参数 transport_timeout_s 怎么落地（注入的 systems 已经带着各自的传输层） | CommerceOrderLookup 只校验（正数）并留存这个预算，不改注入进来的对象；build_order_lookup_from_env 用同一个数（5 秒）造 UrllibTransport，总尝试次数 2 | 改注入对象的内部字段是副作用；存量缺省 20 秒 × 3 次对一轮客户对话太长，2 次 × 5 秒 + 1 秒退避是一轮对话能等的上限 |
+| 2026-09-24 | p13 | 预检的原因码怎么「恰好命中一个」 | 词表借存量 run_requests.REASONS（中文说法 + 英文 code），按词长从长到短扫、命中的词从正文抹掉再扫短的；命中的**原因码**集合恰好一个才 ok，零个 reason_missing、多个 reason_ambiguous；大小写敏感同 _reason_in | 与 router 的 _reason_in 同一张词表、同一个扫描顺序；抹掉是为了「七天无理由退货」这种长词含短词的说法只算一次 |
+| 2026-09-24 | p13 | 预检的判定顺序与「订单在台账里」的口径 | 顺序：tenant_mismatch → order_not_in_ledger → reason_missing / reason_ambiguous → clock_missing → preflight；订单在台账里 = order_snapshot 里有这一单且该行 tenant_id 等于台账租户；单号带空白也算不在台账里 | 契约只列了条件没列顺序，按契约行文顺序排；租户逐行对是失败即关；带空白的单号拼进 /refund 会被 Command.parse 拆成两个参数 |
+| 2026-09-24 | p13 | 预检的台账怎么读、时钟怎么用 | 第一次用到时直接读 JSON 并缓存（口径同 IngressRouter.ledger()：换台账要重启），读不出来按 preflight_error 拒且不缓存失败；now 经 run_requests._iso 归一后作 requested_at，解析不了按 preflight_error；ok 与裁定无关（驳回也是一次成功的预检），deciding_rule 为空时 rule_ref 给空串 | 不 import custom_case.load 只为读一个 JSON；缺表时 preflight 自己会炸，落 preflight_error，结果一样 |
+| 2026-09-24 | p13 | MAOS_CS_ORDER_SYSTEMS=demo 的订单从哪来、叫什么名 | 注入名 demo-orders（maos.tools.order.DEFAULT_ORDER_SYSTEM）；台账 order_snapshot 每单取最高版本；状态取行里的 status 字段、没有这一列就 paid（存量台账就没有）；金额两位小数串；修改时刻取 updated_at、没有取 paid_at；坏行抛 ValueError 只带行号与列名 | 契约评测集示例的 system_name 就是 demo-orders；「没有状态就 paid」与 custom_case 按快照造订单系统同一口径 |
+| 2026-09-24 | p13 | JSON 配置怎么按 p11 的适配器「动态发现」构造 | cs_ports 自己扫 maos.tools.commerce 包目录（跳过 base / mapping / transport），逐模块 import、收集 CommerceAdapter 子类按 platform 建表，导入失败的模块跳过并记类名；不 import 测试文件里的 discover_adapters；配置只认 platform / account 两个字段，多出来的字段、未发现的平台、非字符串 account 一律 ValueError（只带键名，不回显取值，不链原异常） | 测试模块不该被产品代码 import；多余字段拒收是失败即关（拼错 account 不该被静默丢掉） |
+| 2026-09-24 | p13 | 凭据什么时候读、从哪读 | 本模块构造时一个都不读；适配器在发请求那一刻经 read_credential 从进程环境变量读（不是 build_order_lookup_from_env 的 env 参数） | 铁律 6 与 p11 的「导入期 / 构造期不读凭据」同一口径；env 参数只管 MAOS_CS_ORDER_SYSTEMS 这一个装配开关 |

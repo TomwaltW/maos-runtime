@@ -3145,3 +3145,14 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-24 | p12 | 转人工卡片怎么送 | MAOS_CS_HANDOFF_TARGET = 渠道:chat_id，同进程 adapter 发；没配就 delivery = unconfigured 只落库；cs_handoff 行是持久事实；人工接手走企微客服工作台 | router 只有 _reply 一条出口、只回原会话；Matrix 房间在另一个进程；会话转接 API 没封装，记 BACKLOG |
 | 2026-09-24 | p12 | 机器人会不会回自己 | wecom 的 _sync 丢掉带 origin 且不等于 3（不是客户发的）的行，T169 做 | 回话器一装上，sync_msg 若把人工或我方的消息也带回来就成了自问自答；字段缺省时照旧收，存量夹具不受影响 |
 | 2026-09-24 | p12 | 骨架怎么冻 | 冻结类型与常量放 `maos/domain/cs/types.py`（只用标准库），由 `maos/tests/test_cs_contract_p12.py` 逐字段钉住；四轨只 import 不改 | 并行轨各自写对、合起来字段名对不上，症状是整合期才红；机器钉让改的那一轨当场红 |
+
+## task-t167（会话对象与新表，2026-09-24）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-24 | p12 | 派单要 record_turn「在一个事务里」插 cs_turn、改 fallback_streak 与 updated_at 并落 CsTurnRecorded；但 event_log 是核心 Store 的冻结表，append_event_log 自己 commit，PG 后端时会话表与 event_log 不在同一个库 | 会话表的插入与更新在一个 SAVEPOINT 事务里（maos/domain/cs/objects.py 的 transaction），Cs* 事件在事务提交之后再经 store.append_event_log 落；四种事件都是这个顺序 | 照 refund/guard.py 写 RefundBizStatusChanged 的先例；把 append_event_log 塞进保存点会被它的 commit 提前提交（同类现象本轨实测，见 BACKLOG 本节第 1 条）；先落事实后落审计，不会出现审计有、事实无 |
+| 2026-09-24 | p12 | 派单说 ensure_schema「幂等并记 cs_schema_version」，而 _MIGRATIONS 当前为空 | 照退款 / rtv 的机制：新库的 cs_schema_version 为空、当前版本 0；有迁移步骤时每步记一行。测试临时追加一步，钉住「连跑两次只跑一次、只记一行」 | 凭空记一行会让记账表不再等于「已应用的迁移」，与其它域口径分叉 |
+| 2026-09-24 | p12 | Cs* 事件 detail 的白名单（摘要、枚举值、doc_id、计数、违例种类）没说 tenant_id、msg_dedup_key、打码后的 customer_ref、Violation.detail 怎么办 | 按字面从严：这四样都不进 detail；Violation.detail 只落 text_digest；不在 VIOLATION_KINDS 里的种类也只落摘要；change_stage 的 reason 原样落（docstring 写明调用方只传枚举值） | 白名单是「只许」；租户可由 plan_id 里的会话 id 追溯；Violation.detail 是自由文本，可能引着被拦的回复原文 |
+| 2026-09-24 | p12 | 契约只冻签名，没说非法入参怎么处理 | 进库前先在 Python 侧校验、抛 ValueError：record_turn 校 route、handoff_reason（空串或 HANDOFF_REASONS）、intent（空串或 INTENTS），且 turn_id 必须等于 turn_id_for(会话, seq)；record_handoff 校 delivery、reason、intent，且 handoff_id 必须等于 turn_id；record_reply_rejected 遇 check.ok 为真抛 ValueError；会话或卡片不存在抛 LookupError。不强制「route=handoff 当且仅当 handoff_reason 非空」这类跨字段约束 | 枚举要进审计行，先校验才保证 detail 里只有枚举；库上的 CHECK 是最后一道不是第一道；跨字段约束契约没写，留给 T169 的判定顺序，免得卡住它 |
+| 2026-09-24 | p12 | 传进来的 Conversation 可能是旧快照 | allocate_turn / record_turn / change_stage 一律以库里的 turn_count / fallback_streak / stage 为准，在持锁事务里读改写；allocate_turn 只改 turn_count、不动 updated_at；open_conversation 不落事件 | 并发取号不重不漏（测试 8 线程共 240 次取号，序号恰为 1..240）；契约的四种事件里没有「开会话」；updated_at 由 record_turn / change_stage 推进 |
+| 2026-09-24 | p12 | 契约 §1.4 列的 objects.py 面是 ensure_schema / execute / query / _migrate | 另加 transaction(store) 上下文、applied_schema_version、CS_SCHEMA_VERSION；execute 不设写入拦截；cs_schema_version 按契约逐字写 version INTEGER PRIMARY KEY（退款 / rtv 写的是表级 PRIMARY KEY (version)，SQLite 下同为 rowid 别名） | 会话写入要事务，且块内必须复用同一个 DomainConn；本域没有「只许守卫写」的权威表；契约要求列与主键逐字一致 |

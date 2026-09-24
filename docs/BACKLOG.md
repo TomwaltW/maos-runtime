@@ -2953,3 +2953,10 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-24 | p12 | **IngressServer 只有一个工作线程；企微客服 sync_msg 在 HTTP 线程里拉、不按 has_more 翻页** | 前台慢会拖住内部 /approve；积压超过一页的消息会漏 | p13 |
 | 2026-09-24 | p12 | **WhatsApp 没有 adapter**（方案 §9-2 的跨境候选） | 跨境方向的首发渠道缺位 | 用户定跨境渠道时 |
 | 2026-09-24 | p12 | **docs/ops/ORCHESTRATION.md 停在 2026-08-29**，p10 起没更新 | 编排现状要去 phase 文档与两本账里拼 | 编排总管有空时（本会话无权写它） |
+
+## task-t167（会话对象与新表，2026-09-24）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-24 | p12 | **_dbport.DomainConn 的 sqlite 事务深度记在实例上**：atomic 块里再 DomainConn.open 一个新实例执行写入（例如块内调某域 objects.execute），新实例不知道自己在事务里、当场 commit，保存点被提前提交；块内随后抛错时 ROLLBACK TO 报 no such savepoint，已写的行全部留下（本轨 scratchpad 探针实测：块内两行、抛错后两行都在） | 在事务块里调各域 execute / query 薄壳的代码会静默失去原子性；cs 的 transaction 目前靠 docstring 约束「块内只用 yield 出来的那个连接」 | 下一次有域需要嵌套事务之前；_dbport 是共享底座，改之前先问 |
+| 2026-09-24 | p12 | **cs 会话事实与 Cs* 审计行不同事务**（见 DECISIONS 本节第 1 条）：进程在「会话表已提交、append_event_log 还没落」之间崩掉，会留下一轮没有 CsTurnRecorded 的 cs_turn | event_log 条数与 cs_turn 行数可能差一，审计对账会差 | p14 做 cs 树族与 verify 新项时加一条「cs_turn 行数 = CsTurnRecorded 条数」的对账 |

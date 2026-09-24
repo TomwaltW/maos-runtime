@@ -64,9 +64,16 @@
     "maos/tests/test_commerce_*.py（六个平台适配器 + 跨平台一致性守卫），一条 PG 门控都没有。",
     "新增的 3 条 skip 与 PG 无关、有库无库两档都 skip：test_commerce_ebay.py 2 条（未装 cryptography，",
     "真 ECDSA 验签跑不了）+ test_commerce_shopify.py 1 条（没有 Shopify dev store 凭据）——",
-    "所以 skipped 涨 3 而 pg_gated 不变。Lazada 与 Shopee 推送验签用户 09-23 拍板延后，不在本数里。"
+    "所以 skipped 涨 3 而 pg_gated 不变。Lazada 与 Shopee 推送验签用户 09-23 拍板延后，不在本数里。",
+    "",
+    "2026-09-24 整合期 p12（客服前台四轨 T167–T170 + 整合期开发集补法与盲写留出集，合入 integrate/p12）：",
+    "收集 4379 -> 5002（+623），passed 4273 -> 4896、skipped 仍 106、pg_gated 仍 90。+623 条全在",
+    "maos/tests/test_cs_*.py（契约钉 9、会话表、话术库、后置校验 / 守卫 / 评测跑批、前台与挂钩、开发集与",
+    "留出集判据），一条 PG 门控、一条 skip 都没有。本数取自云端容器实跑（收集数与各新文件零 skip 实测），",
+    "passed 按「作者主仓旧值 + 新增条数」推算；容器里另有 7 条环境性红（docker / review 目录 / macOS 路径），",
+    "与本数无关，见 DECISIONS p12-contracts。"
   ],
-  "pytest_passed_nopg": 4273,
+  "pytest_passed_nopg": 4896,
   "pytest_skipped_nopg": 106,
   "pg_gated_tests": 90,
   "evidence_bundles": 8,

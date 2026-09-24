@@ -230,9 +230,13 @@ def test_full_corpus_loads_and_the_retrieval_funnel_holds(store):
         "七维预过滤后的候选集大小变了。变大可能是某一维失效了（跨维召回），"
         "变小可能是语料的维度值改了 —— 两种都要有人看一眼")
     kinds = {c["kind"] for c in candidates}
-    assert kinds == set(kb.VALID_KINDS), (
-        "候选集没盖住全部八类知识 —— 评委点名的九类里有一类事实上检不到，"
-        f"少的是 {sorted(set(kb.VALID_KINDS) - kinds)}")
+    refund_kinds = set(kb.VALID_KINDS) - {kb.KIND_CS_SCRIPT}
+    assert kinds == refund_kinds, (
+        "候选集没盖住退款域的全部八类知识（VALID_KINDS 除客服话术 cs_script 外）—— "
+        f"评委点名的九类里有一类事实上检不到，少的是 {sorted(refund_kinds - kinds)}，"
+        f"多的是 {sorted(kinds - refund_kinds)}")
+    assert kb.KIND_CS_SCRIPT not in kinds, \
+        "退款 R5 的候选集里混进了客服话术（cs_script）—— biz_type 隔离失效"
 
 
 def test_prefilter_wildcards_let_unscoped_policy_through(store):

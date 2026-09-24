@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS kb_doc (
     -- 都是 IF NOT EXISTS，老库要认新 kind 得走一条重建表的迁移，账记在
     -- BACKLOG `## task-t118`。演示期的库都是 :memory: 或每次新建，所以看不出区别。
     CHECK (kind IN ('policy', 'history_case', 'failure_hint', 'error_code_playbook',
-                    'task_pattern', 'rejection', 'comms_result', 'arrival_result')),
+                    'task_pattern', 'rejection', 'comms_result', 'arrival_result',
+                    'cs_script')),
     CHECK (outcome IS NULL OR outcome IN ('success', 'failed'))
 );
 

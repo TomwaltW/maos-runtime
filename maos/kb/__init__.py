@@ -88,8 +88,17 @@ KIND_COMMS_RESULT = "comms_result"
 #: 真实到账结果：观察行的终态与耗时。**记的是观察，不是我们写定的状态**（铁律 8）。
 KIND_ARRIVAL_RESULT = "arrival_result"
 
+# p12（T168）补的一类，与上面九类流程知识不是一回事：它不服务 workflow 规划。
+#: 客服话术：外部渠道前台照着回客户的标准话术（问答对 + 同义词 + 例句）。
+#: 值与 `maos.domain.cs.types.CS_KB_KIND` 逐字相等（有测试钉）；这里**抄字面量、不 import**
+#: —— `maos/kb/**` 整片不许在模块级 import 业务域（见模块头）。
+#: 话术恒带 `biz_type='cs'`，退款检索恒带 `biz_type='refund'`，两边的候选集互不相交。
+#: **不进 `POSITIVE_KINDS`**：话术不是可照做的流程，没有改 DAG 形状的权力。
+KIND_CS_SCRIPT = "cs_script"
+
 VALID_KINDS = (KIND_POLICY, KIND_HISTORY_CASE, KIND_FAILURE_HINT, KIND_ERROR_CODE_PLAYBOOK,
-               KIND_TASK_PATTERN, KIND_REJECTION, KIND_COMMS_RESULT, KIND_ARRIVAL_RESULT)
+               KIND_TASK_PATTERN, KIND_REJECTION, KIND_COMMS_RESULT, KIND_ARRIVAL_RESULT,
+               KIND_CS_SCRIPT)
 
 OUTCOME_SUCCESS = "success"
 OUTCOME_FAILED = "failed"

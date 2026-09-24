@@ -1,12 +1,12 @@
 {
-  "_note": "p12 客服前台的留出评测集（盲写）。形状同 p12_cases.json（契约 §1.6，maos.domain.cs.evaluate.load_cases 能读）。每个 case 是一段新会话，expect 与 turns 等长，期望值严格按契约 §1.4 的判定顺序与 §6 修订推出：已转人工 → silent；租户映射不到 → tenant_unmapped；触发词 privacy > compensation > anger > complaint > requested；再检索话术（带 needs_order_lookup 标记的走 handoff，其余 answer）；没命中 fallback，连续第 2 次兜底改走 repeated_fallback。silent 与 tenant_unmapped 的 intent 一律 unknown（§6.3）；fallback 与 repeated_fallback 的 intent 取 unknown。expect 不写 cite：evaluate.shortfalls 对门槛里没登记的 cite_accuracy 按 1.0 要求，写 cite 等于在预登记门槛之外多加一条；方案编号改记在 tags 的 scheme:<编号>@<轮>（该 case 第几轮对应哪个编号，1 起）。",
+  "_note": "p12 客服前台的留出评测集（盲写）。形状同 p12_cases.json（契约 §1.6，maos.domain.cs.evaluate.load_cases 能读）。每个 case 是一段新会话，expect 与 turns 等长，期望值严格按契约 §1.4 的判定顺序与 §6 修订推出：已转人工 → silent；租户映射不到 → tenant_unmapped；触发词 privacy > compensation > anger > complaint > requested；再检索话术（带 needs_order_lookup 标记的走 handoff，其余 answer）；没命中 fallback，连续第 2 次兜底改走 repeated_fallback。silent 与 tenant_unmapped 的 intent 一律 unknown（§6.3）；fallback 与 repeated_fallback 的 intent 取 unknown。expect 不写 cite：evaluate.shortfalls 对门槛里没登记的 cite_accuracy 按 1.0 要求，写 cite 等于在预登记门槛之外多加一条；方案编号改记在 tags 的 scheme:<编号>@<轮>（该 case 第几轮对应哪个编号，1 起），被更高优先级的触发词压住的业务问题记成 also:<编号>@<轮>。与开发集、话术库的不重合由 maos/tests/test_cs_eval_p12_holdout.py 的棘轮判（去标点后不许共享 ≥6 字连续片段、不许整句一字之差）。",
   "_provenance": {
     "synthetic": true,
     "blind": true,
     "written_by": "integrate-p12-holdout",
     "written_at": "2026-09-24",
     "purpose": "p12 留出评测集：量客服前台对没见过的说法的泛化，不参与调话术、同义词或触发词表",
-    "basis": "合成、盲写：写者只读了 review/p12-cs-contracts.md（含 §6 修订）、maos/domain/cs/types.py、maos/domain/cs/evaluate.py（只对形状）与 CLAUDE.md；没看过话术库（scenarios/cs/kb/**、scripts/gen_cs_kb.py）、前台与检索及校验的实现（desk.py、triggers.py、scripts.py、claims.py）、p12_cases.json 与任何 test_cs_* 测试，也没拿真前台跑过本文件。句子全部自拟：口语、错别字、语气词、带上下文。"
+    "basis": "合成、盲写：写者只读了 review/p12-cs-contracts.md（含 §6 修订）、maos/domain/cs/types.py、maos/domain/cs/evaluate.py（只对形状）与 CLAUDE.md；没看过话术库（scenarios/cs/kb/**、scripts/gen_cs_kb.py）、前台与检索及校验的实现（desk.py、triggers.py、scripts.py、claims.py）、p12_cases.json 与任何 test_cs_* 测试，也没拿真前台跑过本文件。句子全部自拟：口语、错别字、语气词、带上下文。复核轮（同日）：初版约四分之一的轮与开发集共享 ≥6 字片段，同一写者照不重合棘轮重写了撞线的 23 轮（其中兜底清零那组整组换成另一种结构）；棘轮只报留出 case id 与来源、不回显对面的句子，写者仍没读过开发集与话术库（复核意见里引了几段共享片段，那些本来就是留出句自己的字）。"
   },
   "_thresholds": {"intent_accuracy": 0.85, "route_accuracy": 0.80, "handoff_recall": 0.90, "status_fabrication_max": 0},
   "cases": [
@@ -28,7 +28,7 @@
 
     {"id": "CS12H-003", "synthetic": true,
      "tags": ["order_lookup", "colloquial", "scheme:LOG-004@1"],
-     "turns": ["订单号 20260917088341，拍下都四天了还显示待发货，麻烦帮我催催"],
+     "turns": ["礼拜一拍的电饭煲到今天都没发出来，单号尾数 4417，给加个急呗"],
      "expect": [{"route": "handoff", "intent": "logistics", "reason": "needs_order_lookup"}]},
 
     {"id": "CS12H-004", "synthetic": true,
@@ -38,17 +38,17 @@
 
     {"id": "CS12H-005", "synthetic": true,
      "tags": ["order_lookup", "colloquial", "scheme:LOG-005@1"],
-     "turns": ["刚下的单收货地址写成老家的了，能帮我改成单位的地址吗，应该还没发出去吧"],
+     "turns": ["下单时手滑把门牌号填错了，1203 写成了 1302，这单还来得及改不"],
      "expect": [{"route": "handoff", "intent": "logistics", "reason": "needs_order_lookup"}]},
 
     {"id": "CS12H-006", "synthetic": true,
      "tags": ["order_lookup", "colloquial", "scheme:LOG-006@1"],
-     "turns": ["物流上显示已签收，可我家里压根没人收到过啊，门口快递柜也没有"],
+     "turns": ["跟踪信息说今天中午已经给签了，我人一直在家，门都没人敲过"],
      "expect": [{"route": "handoff", "intent": "logistics", "reason": "needs_order_lookup"}]},
 
     {"id": "CS12H-007", "synthetic": true,
      "tags": ["order_lookup", "colloquial", "scheme:LOG-006@1"],
-     "turns": ["快递到了箱子都压扁了，里面的碗碎了两个"],
+     "turns": ["拆开一看，玻璃杯裂了一道口子，外包装也瘪了一大块"],
      "expect": [{"route": "handoff", "intent": "logistics", "reason": "needs_order_lookup"}]},
 
     {"id": "CS12H-008", "synthetic": true,
@@ -58,12 +58,12 @@
 
     {"id": "CS12H-009", "synthetic": true,
      "tags": ["policy", "colloquial", "scheme:PAY-001@1"],
-     "turns": ["退款一般多久能退回来啊？我当时是用微信付的"],
+     "turns": ["东西退了之后，那笔钱走哪儿回来？我是拿微信零钱付的，要等上多久"],
      "expect": [{"route": "answer", "intent": "refund_payment"}]},
 
     {"id": "CS12H-010", "synthetic": true,
      "tags": ["policy", "colloquial", "scheme:PAY-002@1"],
-     "turns": ["你们这能用花呗分期付款不，信用卡行不行"],
+     "turns": ["结账的时候能用云闪付吗，还是只能支付宝微信二选一"],
      "expect": [{"route": "answer", "intent": "refund_payment"}]},
 
     {"id": "CS12H-011", "synthetic": true,
@@ -73,7 +73,7 @@
 
     {"id": "CS12H-012", "synthetic": true,
      "tags": ["order_lookup", "colloquial", "scheme:PAY-004@1"],
-     "turns": ["付款的时候页面卡住了显示支付失败，结果银行卡被扣了两次钱，这咋整"],
+     "turns": ["刚才页面转圈转了半天提示没付成功，我又点了一遍，结果收到两条扣款短信"],
      "expect": [{"route": "handoff", "intent": "refund_payment", "reason": "needs_order_lookup"}]},
 
     {"id": "CS12H-013", "synthetic": true,
@@ -83,8 +83,8 @@
 
     {"id": "CS12H-014", "synthetic": true,
      "tags": ["policy", "order_lookup", "multi_turn", "colloquial", "scheme:GEN-001@1", "scheme:PAY-001@2", "scheme:PAY-003@3"],
-     "turns": ["你好",
-               "退款一般几天到账啊",
+     "turns": ["嗨嗨，打扰一下～",
+               "要是退款的话，钱在路上得走几天呀",
                "我那笔是上个月28号申请的，到现在一个多月了还没到，帮我查查"],
      "expect": [{"route": "answer", "intent": "general"},
                 {"route": "answer", "intent": "refund_payment"},
@@ -101,12 +101,12 @@
 
     {"id": "CS12H-016", "synthetic": true,
      "tags": ["policy", "typo", "colloquial", "scheme:RET-001@1"],
-     "turns": ["我在你们家买的毛衣还没拆吊牌，七天无理由退或可以吗"],
+     "turns": ["毛衣买回来吊牌都还在，收到才第三天，不太喜欢能无里由退不"],
      "expect": [{"route": "answer", "intent": "return_exchange"}]},
 
     {"id": "CS12H-017", "synthetic": true,
      "tags": ["policy", "order_lookup", "multi_turn", "colloquial", "scheme:RET-002@1", "scheme:RET-005@2"],
-     "turns": ["想问下退货的话步骤是啥样的，要我自己寄回去吗",
+     "turns": ["退货到底咋弄，先在订单里点申请还是先找你们，寄件要我自己约快递吗",
                "那行，订单尾号 6630 那双运动鞋直接帮我退了吧"],
      "expect": [{"route": "answer", "intent": "return_exchange"},
                 {"route": "handoff", "intent": "return_exchange", "reason": "needs_order_lookup"}]},
@@ -118,7 +118,7 @@
 
     {"id": "CS12H-019", "synthetic": true,
      "tags": ["policy", "colloquial", "scheme:RET-004@1"],
-     "turns": ["要是退回去的话，这个来回运费是我出还是你们出啊"],
+     "turns": ["退回去寄件那十几块钱谁掏？东西本身没毛病，就是尺码不合适"],
      "expect": [{"route": "answer", "intent": "return_exchange"}]},
 
     {"id": "CS12H-020", "synthetic": true,
@@ -148,7 +148,7 @@
 
     {"id": "CS12H-025", "synthetic": true,
      "tags": ["trigger", "trigger:complaint", "colloquial"],
-     "turns": ["你们这样处理我不接受，我要打12315反映"],
+     "turns": ["这个处理结果我没法接受，材料都准备好了，明天就去12315登记"],
      "expect": [{"route": "handoff", "intent": "complaint", "reason": "complaint"}]},
 
     {"id": "CS12H-026", "synthetic": true,
@@ -177,17 +177,17 @@
      "expect": [{"route": "handoff", "intent": "complaint", "reason": "anger"}]},
 
     {"id": "CS12H-031", "synthetic": true,
-     "tags": ["trigger", "trigger:anger", "priority", "colloquial"],
+     "tags": ["trigger", "trigger:anger", "priority", "colloquial", "also:LOG-004@1"],
      "turns": ["都一个星期了还不发货！！！"],
      "expect": [{"route": "handoff", "intent": "complaint", "reason": "anger"}]},
 
     {"id": "CS12H-032", "synthetic": true,
-     "tags": ["trigger", "trigger:anger", "priority", "colloquial"],
+     "tags": ["trigger", "trigger:anger", "priority", "colloquial", "also:LOG-004@1"],
      "turns": ["你们是不是骗子啊，钱收了东西一直不发"],
      "expect": [{"route": "handoff", "intent": "complaint", "reason": "anger"}]},
 
     {"id": "CS12H-033", "synthetic": true,
-     "tags": ["trigger", "trigger:compensation", "priority", "colloquial"],
+     "tags": ["trigger", "trigger:compensation", "priority", "colloquial", "also:LOG-006@1"],
      "turns": ["快递给我摔坏了，这损失得你们补偿吧"],
      "expect": [{"route": "handoff", "intent": "compensation", "reason": "compensation"}]},
 
@@ -232,13 +232,13 @@
      "expect": [{"route": "handoff", "intent": "complaint", "reason": "anger"}]},
 
     {"id": "CS12H-042", "synthetic": true,
-     "tags": ["trigger", "priority", "trigger:complaint"],
-     "turns": ["我要投诉你们的配送员，马上给我找人工"],
+     "tags": ["trigger", "priority", "trigger:complaint", "colloquial"],
+     "turns": ["配送员态度恶劣还把东西扔门口，这事必须投诉，找人工来处理"],
      "expect": [{"route": "handoff", "intent": "complaint", "reason": "complaint"}]},
 
     {"id": "CS12H-043", "synthetic": true,
-     "tags": ["trigger", "priority", "trigger:requested", "colloquial"],
-     "turns": ["人工客服几点上班？我想找人工问退货的事"],
+     "tags": ["trigger", "priority", "trigger:requested", "colloquial", "also:GEN-003@1"],
+     "turns": ["现在能转人工吗，还是得等明早你们上班了"],
      "expect": [{"route": "handoff", "intent": "handoff_request", "reason": "requested"}]},
 
     {"id": "CS12H-044", "synthetic": true,
@@ -248,9 +248,9 @@
 
     {"id": "CS12H-045", "synthetic": true,
      "tags": ["silent", "trigger", "trigger:requested", "priority", "multi_turn", "colloquial"],
-     "turns": ["不想跟机器人聊了，转人工",
+     "turns": ["绕来绕去的，给我换真人来",
                "人呢？怎么还没人理我",
-               "那我先问一下，退货运费谁出",
+               "趁这会儿问一句，要是换个颜色，来回快递钱算谁的",
                "气死了，等了十分钟了！！！"],
      "expect": [{"route": "handoff", "intent": "handoff_request", "reason": "requested"},
                 {"route": "silent", "intent": "unknown"},
@@ -259,9 +259,9 @@
 
     {"id": "CS12H-046", "synthetic": true,
      "tags": ["silent", "policy", "trigger", "trigger:complaint", "multi_turn", "colloquial", "scheme:RET-001@1"],
-     "turns": ["请问七天无理由退货要满足啥条件",
-               "这规定也太坑人了吧，我要去消协投诉",
-               "在吗？"],
+     "turns": ["外面那层塑料膜我撕掉了，现在不想要还能直接退不",
+               "这种霸王条款谁定的，我去消协那边反映",
+               "喂，还有人没"],
      "expect": [{"route": "answer", "intent": "return_exchange"},
                 {"route": "handoff", "intent": "complaint", "reason": "complaint"},
                 {"route": "silent", "intent": "unknown"}]},
@@ -276,24 +276,26 @@
                 {"route": "silent", "intent": "unknown"}]},
 
     {"id": "CS12H-048", "synthetic": true,
-     "tags": ["repeated_fallback", "streak_reset", "policy", "multi_turn", "colloquial", "scheme:LOG-001@2"],
-     "turns": ["你们这款空气炸锅是几升的",
-               "哦对了，你们一般几天能发货",
-               "空气炸锅能烤红薯不",
-               "那锅里的涂层安全吗，有没有味道"],
-     "expect": [{"route": "fallback", "intent": "unknown"},
+     "tags": ["repeated_fallback", "streak_reset", "policy", "multi_turn", "colloquial", "scheme:LOG-002@1", "scheme:LOG-001@3"],
+     "turns": ["空气炸锅个头挺大的，走什么快递发过来",
+               "内胆涂层是什么材质的，高温会不会有异味",
+               "今天拍下的话，最快哪天能从仓库发出",
+               "它跟烤箱比哪个更省电",
+               "能烤一整只鸡吗"],
+     "expect": [{"route": "answer", "intent": "logistics"},
+                {"route": "fallback", "intent": "unknown"},
                 {"route": "answer", "intent": "logistics"},
                 {"route": "fallback", "intent": "unknown"},
                 {"route": "handoff", "intent": "unknown", "reason": "repeated_fallback"}]},
 
     {"id": "CS12H-049", "synthetic": true, "open_kfid": "wk_unmapped_holdout",
      "tags": ["tenant_unmapped", "colloquial"],
-     "turns": ["你好，想问下七天无理由退货怎么弄"],
+     "turns": ["老板，我上周买的台灯能不能退"],
      "expect": [{"route": "handoff", "intent": "unknown", "reason": "tenant_unmapped"}]},
 
     {"id": "CS12H-050", "synthetic": true, "open_kfid": "wk_nobody_42",
      "tags": ["tenant_unmapped", "priority"],
-     "turns": ["我要投诉，你们把我手机号泄露了"],
+     "turns": ["谁把我的手机号卖出去了？天天有推销电话打进来，我要去投诉"],
      "expect": [{"route": "handoff", "intent": "unknown", "reason": "tenant_unmapped"}]},
 
     {"id": "CS12H-051", "synthetic": true,

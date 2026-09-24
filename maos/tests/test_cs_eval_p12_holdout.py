@@ -5,28 +5,37 @@ review/p12-cs-contracts.md（含 §6 修订）、``maos/domain/cs/types.py`` 与
 ``maos/domain/cs/evaluate.py``（只对形状），没看过话术库、前台实现与 p12_cases.json，
 也没拿真前台跑过它。门槛由主会话预先登记，文件里原样写着，本测试逐字钉住。
 
-两条：
+三条：
 
-* 形状与覆盖下限 —— 只用 :func:`load_cases`，不碰前台；
+* 形状与覆盖下限 —— 只用 :func:`load_cases`，不碰前台；触发词、多意图两项按契约 §1.4
+  「触发词最低覆盖」表的**原文**判，不信出题人自己打的标签；
+* 不重合棘轮 —— 留出句与开发集（p12_cases.json）各轮、话术库 examples / synonyms
+  去标点后不许共享 ≥6 字的连续片段，也不许整句一字之差。失败消息**只报留出 case id
+  与来源**，不回显开发集或话术库的句子：改写者看不到对面，改写才仍然是盲的；
 * 真前台跑留出集、断言达到预登记门槛 —— 合流前 skip（``MAOS_CS_HOLDOUT_RUN=1`` 才跑），
   主会话合流后删掉 skipif 启用。
 
-scheme 标注：expect 不写 cite（evaluate 对门槛里没登记的 cite_accuracy 按 1.0 要求），
-方案编号记在 case 的 tags 里，形如 ``scheme:LOG-001@2``（第 2 轮对应 LOG-001）。
+标签约定：expect 不写 cite（evaluate 对门槛里没登记的 cite_accuracy 按 1.0 要求），
+方案编号记在 case 的 tags 里，形如 ``scheme:LOG-001@2``（第 2 轮对应 LOG-001）；
+被更高优先级的触发词压住的业务问题记成 ``also:LOG-004@1``（第 1 轮里还带着 LOG-004 的问题）。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
+import unicodedata
 from collections import Counter
 
 import pytest
 
+from maos.domain.cs.corpus import load_corpus
 from maos.domain.cs.evaluate import (
     DEFAULT_OPEN_KFID,
     DEFAULT_TENANT_MAP,
+    EVAL_PATH,
     load_cases,
     load_document,
     run_eval,
@@ -94,9 +103,27 @@ TRIGGER_INTENT_HOLDOUT = {
     HANDOFF_REQUESTED: INTENT_HANDOFF_REQUEST,
 }
 
+#: 契约 §1.4 第 3 步的优先级，从高到低。
+TRIGGER_PRIORITY_HOLDOUT = (HANDOFF_PRIVACY, HANDOFF_COMPENSATION, HANDOFF_ANGER,
+                            HANDOFF_COMPLAINT, HANDOFF_REQUESTED)
+
+#: 契约 §1.4「触发词最低覆盖」表，逐字抄；anger 的「连续三个及以上感叹号」见 _BANGS_HOLDOUT。
+TRIGGER_TABLE_HOLDOUT: dict[str, tuple[str, ...]] = {
+    HANDOFF_REQUESTED: ("转人工", "人工客服", "找人工", "真人"),
+    HANDOFF_COMPLAINT: ("投诉", "12315", "消协", "曝光", "起诉", "律师"),
+    HANDOFF_ANGER: ("垃圾", "骗子", "气死", "滚"),
+    HANDOFF_COMPENSATION: ("赔偿", "补偿", "赔钱", "赔我"),
+    HANDOFF_PRIVACY: ("手机号", "身份证", "住址", "个人信息", "隐私"),
+}
+_BANGS_HOLDOUT = re.compile(r"[!！]{3,}")
+
+#: 不重合棘轮：去标点后与参照句共享的连续片段不许达到这个长度。
+MIN_SHARED_RUN_HOLDOUT = 6
+
 _DOMAIN_INTENTS_HOLDOUT = frozenset({INTENT_LOGISTICS, INTENT_REFUND_PAYMENT,
                                      INTENT_RETURN_EXCHANGE, INTENT_GENERAL})
 _SCHEME_TAG_HOLDOUT = re.compile(r"^scheme:([A-Z]{3}-\d{3})@(\d+)$")
+_ALSO_TAG_HOLDOUT = re.compile(r"^also:([A-Z]{3}-\d{3})@(\d+)$")
 _CJK_HOLDOUT = re.compile(r"[一-鿿]")
 
 
@@ -104,6 +131,46 @@ def _flat_holdout(cases):
     """[(case, 轮号 1 起, 原文, 期望)]。"""
     return [(c, i, t, e) for c in cases
             for i, (t, e) in enumerate(zip(c.turns, c.expect), start=1)]
+
+
+def _table_hits_holdout(text: str) -> set[str]:
+    """按 §1.4 表的原文，这句话命中了哪几类触发词。"""
+    hits = {r for r, words in TRIGGER_TABLE_HOLDOUT.items() if any(w in text for w in words)}
+    if _BANGS_HOLDOUT.search(text):
+        hits.add(HANDOFF_ANGER)
+    return hits
+
+
+def _tagged_turns_holdout(case, pattern: re.Pattern[str]) -> list[tuple[str, int]]:
+    """case 里按 ``pattern`` 写的 (编号, 轮号) 标注；写法不对直接判红。"""
+    out = []
+    prefix = "scheme:" if pattern is _SCHEME_TAG_HOLDOUT else "also:"
+    for tag in case.tags:
+        if not tag.startswith(prefix):
+            continue
+        m = pattern.match(tag)
+        assert m, f"{case.id} 的标注写法不对：{tag!r}"
+        scheme, turn = m.group(1), int(m.group(2))
+        assert scheme in SCHEMES_HOLDOUT, f"{case.id}: 未知编号 {scheme}"
+        assert 1 <= turn <= len(case.turns), f"{case.id}: {tag} 越界"
+        out.append((scheme, turn))
+    return out
+
+
+def _priority_kind_holdout(case, i: int, text: str, exp) -> str:
+    """这一轮是不是「多意图按优先级」的一轮，是哪一种；不是返回空串。全部按 §1.4 表的原文判。"""
+    hits = _table_hits_holdout(text)
+    if not hits:
+        return ""
+    if exp.route == ROUTE_SILENT:
+        return "silent_over_trigger"            # 第 1 步压第 3 步
+    if exp.reason == HANDOFF_TENANT_UNMAPPED:
+        return "unmapped_over_trigger"          # 第 2 步压第 3 步
+    if len(hits) >= 2:
+        return "multi_trigger"                  # 第 3 步内部的优先级
+    if any(turn == i for _, turn in _tagged_turns_holdout(case, _ALSO_TAG_HOLDOUT)):
+        return "trigger_over_business"          # 第 3 步压第 4 步
+    return ""
 
 
 def test_holdout_shape_and_coverage_floors_holdout():
@@ -129,14 +196,7 @@ def test_holdout_shape_and_coverage_floors_holdout():
     # 19 个编号每个至少一轮，且标注的那一轮期望与编号目录一致。
     covered: set[str] = set()
     for case in cases:
-        for tag in case.tags:
-            if not tag.startswith("scheme:"):
-                continue
-            m = _SCHEME_TAG_HOLDOUT.match(tag)
-            assert m, f"{case.id} 的 scheme 标注写法不对：{tag!r}"
-            scheme, turn = m.group(1), int(m.group(2))
-            assert scheme in SCHEMES_HOLDOUT, f"{case.id}: 未知编号 {scheme}"
-            assert 1 <= turn <= len(case.turns), f"{case.id}: {tag} 越界"
+        for scheme, turn in _tagged_turns_holdout(case, _SCHEME_TAG_HOLDOUT):
             intent, marker = SCHEMES_HOLDOUT[scheme]
             exp = case.expect[turn - 1]
             assert exp.intent == intent, f"{case.id}#{turn} {scheme} 期望意图应为 {intent}"
@@ -154,10 +214,25 @@ def test_holdout_shape_and_coverage_floors_holdout():
         for c, i, _, e in flat:
             if e.reason == reason:
                 assert e.intent == intent, f"{c.id}#{i}: {reason} 的意图应为 {intent}"
-    # 每类至少一句不含原词的自然变体（标 variant）。
-    variant_reasons = {e.reason for c, _, _, e in flat
-                       if "variant" in c.tags and e.reason in TRIGGER_INTENT_HOLDOUT}
-    assert variant_reasons == set(TRIGGER_INTENT_HOLDOUT), variant_reasons
+
+    # 按表的原文判：句子里有表中原词、又没被第 1、2 步截走的轮，必须在第 3 步转人工，
+    # 且期望原因的优先级不低于句中命中的最高一类（更高一类可以是不含原词的自然变体）。
+    for c, i, t, e in flat:
+        hits = _table_hits_holdout(t)
+        if not hits or e.route == ROUTE_SILENT or e.reason == HANDOFF_TENANT_UNMAPPED:
+            continue
+        top = min(hits, key=TRIGGER_PRIORITY_HOLDOUT.index)
+        assert e.route == ROUTE_HANDOFF and e.reason in TRIGGER_TABLE_HOLDOUT, (
+            f"{c.id}#{i}: 句中有 {sorted(hits)} 的表中原词，应在第 3 步转人工")
+        assert TRIGGER_PRIORITY_HOLDOUT.index(e.reason) <= TRIGGER_PRIORITY_HOLDOUT.index(top), (
+            f"{c.id}#{i}: 期望 {e.reason}，低于句中命中的 {top}")
+
+    # 每类至少一句自然变体：期望该原因、句子里却不含该原因任何表中原词。
+    for reason in TRIGGER_TABLE_HOLDOUT:
+        variants = [(c.id, i) for c, i, t, e in flat
+                    if e.route == ROUTE_HANDOFF and e.reason == reason
+                    and reason not in _table_hits_holdout(t)]
+        assert variants, f"{reason} 没有不含表中原词的自然变体"
 
     # needs_order_lookup 至少四轮，意图落在三个业务意图上。
     assert reasons[HANDOFF_NEEDS_ORDER_LOOKUP] >= 4
@@ -198,7 +273,7 @@ def test_holdout_shape_and_coverage_floors_holdout():
             if reason == HANDOFF_REPEATED_FALLBACK:
                 assert k >= 1 and routes[k - 1][0] == ROUTE_FALLBACK, f"{case.id}#{k + 1}"
                 rf_cases += 1
-                # 兜底计数被 answer 清零过的一组：fallback, answer, fallback, repeated_fallback。
+                # 兜底计数被 answer 清零过的一组：… fallback, answer, fallback, repeated_fallback。
                 if k >= 3 and [r for r, _ in routes[k - 3:k]] == [
                         ROUTE_FALLBACK, ROUTE_ANSWER, ROUTE_FALLBACK]:
                     reset_cases += 1
@@ -222,16 +297,107 @@ def test_holdout_shape_and_coverage_floors_holdout():
     for c, i, e in english:
         assert (e.route, e.intent) == (ROUTE_FALLBACK, INTENT_UNKNOWN), f"{c.id}#{i}"
 
-    # 多意图按优先级：标 priority 的 case 至少五个，覆盖至少四种期望原因。
-    prio = [c for c in cases if "priority" in c.tags]
-    assert len(prio) >= 5
-    assert len({e.reason for c in prio for e in c.expect if e.reason}) >= 4
+    # 多意图按优先级（按表的原文判，不信 priority 标签本身）：
+    # also: 标注的那一轮必须真带触发词、期望在第 3 步转人工；
+    for case in cases:
+        for scheme, turn in _tagged_turns_holdout(case, _ALSO_TAG_HOLDOUT):
+            exp = case.expect[turn - 1]
+            assert _table_hits_holdout(case.turns[turn - 1]), f"{case.id}#{turn} 不含表中触发词"
+            assert exp.route == ROUTE_HANDOFF and exp.reason in TRIGGER_TABLE_HOLDOUT, (
+                f"{case.id}#{turn}: 触发词应压住 {scheme}")
+    # 标 priority 的 case 每个至少有一轮真是多意图；四种压法各有、第 3 步内部的够多够杂。
+    kinds: dict[str, list[tuple[str, int, str]]] = {}
+    for c, i, t, e in flat:
+        kind = _priority_kind_holdout(c, i, t, e)
+        if kind:
+            kinds.setdefault(kind, []).append((c.id, i, e.reason))
+    for case in cases:
+        if "priority" in case.tags:
+            assert any(_priority_kind_holdout(case, i, t, e)
+                       for i, (t, e) in enumerate(zip(case.turns, case.expect), start=1)), case.id
+    assert set(kinds) == {"silent_over_trigger", "unmapped_over_trigger",
+                          "multi_trigger", "trigger_over_business"}, sorted(kinds)
+    assert len(kinds["multi_trigger"]) >= 4
+    assert len({r for _, _, r in kinds["multi_trigger"]}) >= 3
+    assert len(kinds["trigger_over_business"]) >= 2
 
-    # 口语化与错别字。
+    # 口语化与错别字（标签即可）。
     assert any("typo" in c.tags for c in cases)
     assert sum("colloquial" in c.tags for c in cases) >= 10
 
 
+# ---------------------------------------------------------------------------
+# 不重合棘轮
+# ---------------------------------------------------------------------------
+def _norm_holdout(text: str) -> str:
+    """去标点与空白（只留字母、数字、汉字），全角转半角，英文转小写。"""
+    return "".join(ch for ch in unicodedata.normalize("NFKC", text).lower() if ch.isalnum())
+
+
+def _one_edit_apart_holdout(a: str, b: str) -> bool:
+    """相等，或恰好一字之差（替换 / 增 / 删一个字）。"""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    k = 0
+    while k < len(a) and a[k] == b[k]:
+        k += 1
+    if len(a) == len(b):
+        return a[k + 1:] == b[k + 1:]
+    return a[k:] == b[k + 1:]
+
+
+def _reference_texts_holdout() -> dict[str, list[str]]:
+    """{来源: [去标点后的参照句]}：开发集各轮、话术库每篇的 examples 与 synonyms。只在内存里比。"""
+    dev = [_norm_holdout(t) for c in load_cases(EVAL_PATH) for t in c.turns]
+    kb: list[str] = []
+    for row in load_corpus():
+        body = row.get("body")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except ValueError:
+                continue
+        if not isinstance(body, dict):
+            continue
+        for key in ("examples", "synonyms"):
+            kb.extend(_norm_holdout(str(x)) for x in body.get(key) or ())
+    return {"开发集": [s for s in dev if s], "话术库": [s for s in kb if s]}
+
+
+def _overlap_flags_holdout(cases) -> list[str]:
+    """撞了棘轮的留出轮，形如 ``CS12H-003#1(话术库)``。只报留出这边的 id 与来源，不带任何参照句。"""
+    refs = _reference_texts_holdout()
+    n = MIN_SHARED_RUN_HOLDOUT
+    flags: list[str] = []
+    for source, texts in refs.items():
+        grams = {s[k:k + n] for s in texts for k in range(len(s) - n + 1)}
+        for c, i, t, _ in _flat_holdout(cases):
+            h = _norm_holdout(t)
+            if (any(h[k:k + n] in grams for k in range(len(h) - n + 1))
+                    or any(_one_edit_apart_holdout(h, s) for s in texts)):
+                flags.append(f"{c.id}#{i}({source})")
+    return flags
+
+
+def test_holdout_does_not_overlap_dev_set_or_scripts_holdout():
+    # 参照不许空转（只比条数，不让断言回显参照句）。
+    refs = _reference_texts_holdout()
+    n_dev, n_kb = len(refs["开发集"]), len(refs["话术库"])
+    assert n_dev >= 40 and n_kb >= 19, (n_dev, n_kb)
+
+    flags = _overlap_flags_holdout(load_cases(HOLDOUT_PATH_HOLDOUT))
+    assert not flags, (
+        f"这些留出轮与开发集或话术库共享 ≥{MIN_SHARED_RUN_HOLDOUT} 字连续片段、或整句一字之差，"
+        "请没看过开发集与话术库的人重写（本消息故意不回显对面的句子）：" + "、".join(flags))
+
+
+# ---------------------------------------------------------------------------
+# 真前台（合流后启用）
+# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.environ.get("MAOS_CS_HOLDOUT_RUN") != "1",
                     reason="留出集由主会话在合流后启用")
 def test_real_desk_meets_preregistered_thresholds_holdout():

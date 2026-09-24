@@ -235,7 +235,12 @@ def test_record_turn_rejects_bad_values_and_writes_nothing_t167(field, value):
     assert _events_t167(s, conv) == []
 
 
-def test_record_turn_twice_for_same_turn_rolls_back_t167():
+def test_record_turn_twice_for_same_turn_raises_without_second_event_t167():
+    """同一轮落两次：第二次撞 cs_turn 主键抛错，不重复 +1、不重复落 CsTurnRecorded。
+
+    这条只钉「撞主键不重复记账」。插入在更新之前，撞主键时更新根本没执行，所以它
+    测不出有没有事务 —— 事务由下一条（更新失败时插入也要回滚）钉。
+    """
     s = _store_t167()
     conv = _open_t167(s)
     turn_id, seq = C.allocate_turn(s, conv)
@@ -245,9 +250,61 @@ def test_record_turn_twice_for_same_turn_rolls_back_t167():
     C.record_turn(s, conv, **args)
     with pytest.raises(sqlite3.IntegrityError):
         C.record_turn(s, conv, **args)
-    # 插入撞主键 → 整组回滚：streak 没有被第二次 +1，事件也只有一条。
     assert C.get_conversation(s, conv.tenant_id, conv.conversation_id).fallback_streak == 1
+    assert objects.query(s, "SELECT COUNT(*) AS n FROM cs_turn") == [{"n": 1}]
     assert len(_events_t167(s, conv, T.EVENT_TURN_RECORDED)) == 1
+
+
+def test_record_turn_is_atomic_when_conversation_update_fails_t167():
+    """插 cs_turn 与改 cs_conversation 同生共死：更新失败时，已插的那一行也要回滚。
+
+    用一个 ``BEFORE UPDATE OF fallback_streak`` 触发器让更新那一句必失败（插入已经
+    执行过了）。没有事务、每句自动提交的实现在这里会留下一行孤儿 cs_turn。
+    """
+    s = _store_t167()
+    conv = _open_t167(s)
+    _tid, conv = _turn_t167(s, conv, T.ROUTE_FALLBACK, now=NOW_T167)   # streak = 1、一行
+    turn_id, seq = C.allocate_turn(s, conv)
+    objects.execute(s, "CREATE TRIGGER cs_probe_block_streak_t167"
+                       " BEFORE UPDATE OF fallback_streak ON cs_conversation"
+                       " BEGIN SELECT RAISE(ABORT, 'probe_t167: update blocked'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="probe_t167"):
+        C.record_turn(s, conv, turn_id=turn_id, seq=seq, msg_dedup_key="", inbound_text="x",
+                      reply_text="y", route=T.ROUTE_FALLBACK, intent=T.INTENT_UNKNOWN,
+                      handoff_reason="", draft=T.ReplyDraft(text="y"),
+                      check=T.CheckResult(ok=True), now=LATER_T167)
+    rows = objects.query(s, "SELECT turn_id FROM cs_turn ORDER BY seq")
+    assert [r["turn_id"] for r in rows] == [_tid]                 # 没有孤儿行
+    stored = C.get_conversation(s, conv.tenant_id, conv.conversation_id)
+    assert (stored.fallback_streak, stored.updated_at) == (1, NOW_T167)
+    assert [r["task_id"] for r in _events_t167(s, conv, T.EVENT_TURN_RECORDED)] == [_tid]
+
+    # 连接没有被留在半截事务里：撤掉触发器，同一轮照常落得进去。
+    objects.execute(s, "DROP TRIGGER cs_probe_block_streak_t167")
+    conv = C.record_turn(s, conv, turn_id=turn_id, seq=seq, msg_dedup_key="", inbound_text="x",
+                         reply_text="y", route=T.ROUTE_FALLBACK, intent=T.INTENT_UNKNOWN,
+                         handoff_reason="", draft=T.ReplyDraft(text="y"),
+                         check=T.CheckResult(ok=True), now=LATER_T167)
+    assert (conv.fallback_streak, conv.updated_at) == (2, LATER_T167)
+    assert objects.query(s, "SELECT COUNT(*) AS n FROM cs_turn") == [{"n": 2}]
+
+
+def test_record_turn_streak_uses_db_value_not_stale_snapshot_t167():
+    """拿同一个旧快照（streak=0）连落两轮兜底，库里的 streak 必须是 2 —— 否则
+    FALLBACK_STREAK_HANDOFF=2 的转人工阈值会被漏掉。"""
+    s = _store_t167()
+    stale = _open_t167(s)
+    for _ in range(2):
+        turn_id, seq = C.allocate_turn(s, stale)
+        out = C.record_turn(s, stale, turn_id=turn_id, seq=seq, msg_dedup_key="",
+                            inbound_text="？", reply_text="兜底", route=T.ROUTE_FALLBACK,
+                            intent=T.INTENT_UNKNOWN, handoff_reason="",
+                            draft=T.ReplyDraft(text="兜底"), check=T.CheckResult(ok=True))
+    assert stale.fallback_streak == 0
+    assert out.fallback_streak == 2 == T.FALLBACK_STREAK_HANDOFF
+    assert C.get_conversation(s, stale.tenant_id, stale.conversation_id).fallback_streak == 2
+    details = [r["detail"] for r in _events_t167(s, stale, T.EVENT_TURN_RECORDED)]
+    assert [d["fallback_streak"] for d in details] == [1, 2]
 
 
 # ------------------------------------------------------------------ 阶段迁移
@@ -307,6 +364,30 @@ def test_change_stage_checks_the_db_stage_not_the_snapshot_t167():
     assert back.stage == T.STAGE_ACTIVE
 
 
+SENTINEL_STAGE_REASON_T167 = "客户说：我家住在梧桐路七号 SNTL-STAGE-REASON-K4"
+
+
+def test_change_stage_reason_enum_verbatim_free_text_digested_t167():
+    """reason 在 HANDOFF_REASONS / STAGE_EXTRA_REASONS 里原样落；其余（比如误传的客户原话）
+    在 event_log.reason 与 detail.reason 里都只剩摘要。"""
+    s = _store_t167()
+    conv = _open_t167(s)
+    conv = C.change_stage(s, conv, T.STAGE_HANDED_OFF, turn_id="t1", reason=T.HANDOFF_ANGER)
+    conv = C.change_stage(s, conv, T.STAGE_ACTIVE, turn_id="t2", reason="human_released")
+    conv = C.change_stage(s, conv, T.STAGE_HANDED_OFF, turn_id="t3",
+                          reason=SENTINEL_STAGE_REASON_T167)
+    assert conv.stage == T.STAGE_HANDED_OFF                         # 迁移本身照做
+    rows = _events_t167(s, conv, T.EVENT_STAGE_CHANGED)
+    expected = [T.HANDOFF_ANGER, "human_released", T.text_digest(SENTINEL_STAGE_REASON_T167)]
+    assert [r["reason"] for r in rows] == expected
+    assert [r["detail"]["reason"] for r in rows] == expected
+    assert C.STAGE_EXTRA_REASONS == ("human_released",)
+    raw = objects.query(s, "SELECT * FROM event_log ORDER BY seq")
+    dump = json.dumps(raw, ensure_ascii=False) + json.dumps(rows, ensure_ascii=False)
+    for needle in (SENTINEL_STAGE_REASON_T167, "梧桐路", "SNTL-STAGE-REASON-K4"):
+        assert needle not in dump, needle
+
+
 # ------------------------------------------------------------------ 转人工卡片
 def test_handoff_cards_persist_roundtrip_and_delivery_writeback_t167():
     s = _store_t167()
@@ -362,7 +443,11 @@ def test_handoff_rejects_bad_values_t167():
         C.record_handoff(s, dataclasses.replace(card, reason="bogus"))
     with pytest.raises(ValueError):
         C.record_handoff(s, dataclasses.replace(card, handoff_id="h-other"))
+    with pytest.raises(ValueError):
+        C.record_handoff(s, dataclasses.replace(card, intent="shopping"))
     assert C.list_handoffs(s, conv.tenant_id) == []
+    assert objects.query(s, "SELECT COUNT(*) AS n FROM cs_handoff") == [{"n": 0}]
+    assert _events_t167(s, conv, T.EVENT_HANDOFF_RAISED) == []
     C.record_handoff(s, card)
     with pytest.raises(sqlite3.IntegrityError):                   # 一轮至多一张卡
         C.record_handoff(s, card)
@@ -377,6 +462,20 @@ def test_handoff_rejects_bad_values_t167():
 
 
 # ------------------------------------------------------------------ 事件条数与归属
+#: 四种事件 detail 的键集，写死（不从实现里读）。加键要先过契约 §1.4 的白名单。
+DETAIL_KEYS_T167 = {
+    T.EVENT_TURN_RECORDED: {"seq", "route", "intent", "handoff_reason", "stage",
+                            "inbound_digest", "reply_digest", "citations", "claim_count",
+                            "check_ok", "violation_kinds", "fallback_streak"},
+    T.EVENT_STAGE_CHANGED: {"from_stage", "to_stage", "reason", "fallback_streak",
+                            "turn_count"},
+    T.EVENT_HANDOFF_RAISED: {"reason", "intent", "channel", "delivery", "citations",
+                             "recent_turn_count", "slot_count", "customer_text_digest",
+                             "suggestion_digest"},
+    T.EVENT_REPLY_REJECTED: {"violation_kinds", "violation_count", "violation_digests"},
+}
+
+
 def _script_t167(store, *, inbound, reply, open_kfid, external_userid):
     """一段完整会话：答上 → 兜底 → 被拦 + 转人工出卡 + 转阶段 → 静默。返回 (conv, 轮次 id)。"""
     conv = _open_t167(store, open_kfid=open_kfid, external_userid=external_userid)
@@ -442,6 +541,10 @@ def test_event_counts_and_attribution_t167():
     assert raised["detail"]["reason"] == "unverified_claim"
     assert raised["detail"]["citations"] == ["kb-cs-tnt-demo-LOG-001"]
     assert raised["detail"]["recent_turn_count"] == 3
+    # detail 的键集按事件类型写死（契约 §1.4「只许」）：多一个键就红。
+    for r in rows:
+        assert set(r["detail"]) == DETAIL_KEYS_T167[r["event_type"]], r["event_type"]
+    assert set(DETAIL_KEYS_T167) == set(T.CS_EVENT_TYPES)
     # 别的会话的行不串进来：另开一段，本会话的条数不变。
     _open_t167(s, external_userid="wm_customer_2")
     assert len(_events_t167(s, conv)) == 7
@@ -497,6 +600,81 @@ def test_sentinels_never_reach_event_log_t167():
     turn_details = [json.loads(r["detail"]) for r in raw if r["event_type"] == T.EVENT_TURN_RECORDED]
     assert turn_details[0]["inbound_digest"] == T.text_digest(SENTINEL_INBOUND_T167)
     assert turn_details[0]["reply_digest"] == T.text_digest(SENTINEL_REPLY_T167)
+
+
+SENTINEL_KIND_T167 = "哨兵违例种类·梧桐路 SNTL-KIND-W3"
+
+
+def test_unknown_violation_kind_is_digested_everywhere_t167():
+    """不在 VIOLATION_KINDS 里的种类（可能是一句自由文本）在 CsTurnRecorded 与
+    CsReplyRejected 里都只落摘要；已知种类原样落。"""
+    s = _store_t167()
+    conv = _open_t167(s)
+    check = T.CheckResult(ok=False, violations=(
+        T.Violation(kind=T.VIOLATION_DANGLING_BASIS, detail="d1"),
+        T.Violation(kind=SENTINEL_KIND_T167, detail="d2")))
+    turn_id, seq = C.allocate_turn(s, conv)
+    C.record_reply_rejected(s, conv, turn_id=turn_id, check=check)
+    C.record_turn(s, conv, turn_id=turn_id, seq=seq, msg_dedup_key="", inbound_text="x",
+                  reply_text="y", route=T.ROUTE_HANDOFF, intent=T.INTENT_UNKNOWN,
+                  handoff_reason=T.HANDOFF_UNVERIFIED_CLAIM, draft=T.ReplyDraft(text="y"),
+                  check=check)
+    # 判据不空转：种类原文确实在 cs_turn.check_json 里。
+    assert SENTINEL_KIND_T167 in json.dumps(objects.query(s, "SELECT check_json FROM cs_turn"),
+                                            ensure_ascii=False)
+    expected = [T.VIOLATION_DANGLING_BASIS, T.text_digest(SENTINEL_KIND_T167)]
+    (rej,) = _events_t167(s, conv, T.EVENT_REPLY_REJECTED)
+    (rec,) = _events_t167(s, conv, T.EVENT_TURN_RECORDED)
+    assert rej["detail"]["violation_kinds"] == expected == rec["detail"]["violation_kinds"]
+    assert rej["reason"] == ",".join(expected)
+    raw = objects.query(s, "SELECT * FROM event_log ORDER BY seq")
+    for dump in (json.dumps(raw, ensure_ascii=False), json.dumps(raw, ensure_ascii=True)):
+        for needle in (SENTINEL_KIND_T167, "SNTL-KIND-W3", "梧桐路"):
+            assert needle not in dump, needle
+
+
+# ------------------------------------------------------------------ 空库直调
+def test_every_entry_works_on_an_empty_db_without_prior_ensure_schema_t167():
+    """契约「每个写入口先调 ensure_schema」：空库上（cs 表一张都没有）直接调卡片与
+    最近几轮这几条路径，不报 no such table。"""
+    def fresh_t167():
+        s = _store_t167()
+        assert objects.query(s, "SELECT name FROM sqlite_master WHERE name LIKE 'cs_%'") == []
+        return s
+
+    assert C.list_handoffs(fresh_t167(), "tnt-demo") == []
+    assert C.list_handoffs(fresh_t167(), "tnt-demo", delivery=T.DELIVERY_PENDING) == []
+    assert C.recent_turns(fresh_t167(), "tnt-demo", "csc-0000000000000000") == []
+    assert C.get_conversation(fresh_t167(), "tnt-demo", "csc-0000000000000000") is None
+    with pytest.raises(LookupError):
+        C.mark_handoff_delivery(fresh_t167(), "tnt-demo", "no-such", T.DELIVERY_DELIVERED)
+
+    s = fresh_t167()
+    cid = T.conversation_id_for("tnt-demo", T.CHANNEL_WECHAT_KF, "wk_1", "wm_customer_1")
+    tid = T.turn_id_for(cid, 1)
+    card = T.HandoffCard(
+        handoff_id=tid, tenant_id="tnt-demo", conversation_id=cid, turn_id=tid,
+        channel=T.CHANNEL_WECHAT_KF, reason=T.HANDOFF_REQUESTED, intent=T.INTENT_HANDOFF_REQUEST,
+        customer_ref=T.mask_customer("wm_customer_1"), customer_text="我要人工",
+        recent_turns=(), suggestion="请接手", citations=(), created_at=NOW_T167)
+    C.record_handoff(s, card)
+    assert C.list_handoffs(s, "tnt-demo") == [(card, T.DELIVERY_PENDING)]
+
+    s = fresh_t167()
+    conv = C.Conversation(tenant_id="tnt-demo", conversation_id=cid, channel=T.CHANNEL_WECHAT_KF,
+                          open_kfid="wk_1", external_userid="wm_customer_1",
+                          stage=T.STAGE_ACTIVE, fallback_streak=0, turn_count=0,
+                          opened_at=NOW_T167, updated_at=NOW_T167)
+    for call in (lambda: C.allocate_turn(s, conv),
+                 lambda: C.change_stage(s, conv, T.STAGE_CLOSED, turn_id=tid,
+                                        reason=T.HANDOFF_REQUESTED),
+                 lambda: C.record_turn(s, conv, turn_id=tid, seq=1, msg_dedup_key="",
+                                       inbound_text="x", reply_text="y",
+                                       route=T.ROUTE_ANSWER, intent=T.INTENT_GENERAL,
+                                       handoff_reason="", draft=T.ReplyDraft(text="y"),
+                                       check=T.CheckResult(ok=True))):
+        with pytest.raises(LookupError):                  # 会话不存在，不是 no such table
+            call()
 
 
 # ------------------------------------------------------------------ 最近几轮

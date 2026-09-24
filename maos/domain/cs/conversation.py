@@ -123,6 +123,22 @@ def _violation_kinds(check: CheckResult) -> list[str]:
             for v in check.violations]
 
 
+#: 阶段迁移原因里、除 ``HANDOFF_REASONS`` 之外允许原样进审计行的字眼（写死、只许追加）。
+#: ``human_released`` = 人工把会话交还机器人（handed_off → active）。
+STAGE_EXTRA_REASONS = ("human_released",)
+
+
+def _stage_reason(reason: str) -> str:
+    """``change_stage`` 的 reason 进审计行前的口径：枚举原样落，其余一律只落摘要。
+
+    与 ``_violation_kinds`` 同一个做法：白名单是「只许」，不靠调用方自觉 ——
+    调用方误把客户原话当 reason 传进来，审计行里也只有 ``sha256:…``。
+    """
+    if reason in HANDOFF_REASONS or reason in STAGE_EXTRA_REASONS:
+        return reason
+    return text_digest(reason)
+
+
 # ------------------------------------------------------------------ 会话
 def open_conversation(store: Any, *, tenant_id: str, channel: str, open_kfid: str,
                       external_userid: str, now: str | None = None) -> Conversation:
@@ -255,8 +271,9 @@ def change_stage(store: Any, conv: Conversation, to_stage: str, *, turn_id: str,
     """按 ``types.STAGE_FLOW`` 迁移会话阶段；非法迁移（含自迁移、未知阶段）抛 ``ValueError``。
 
     起点以**库里**的阶段为准。成功时落恰好一条 ``CsConversationStageChanged``
-    （from_state / to_state 是会话阶段，不是 Task 状态）。``reason`` 进审计行，
-    调用方只传枚举值（通常取 ``HANDOFF_REASONS``），不传原文。
+    （from_state / to_state 是会话阶段，不是 Task 状态）。``reason`` 在
+    ``HANDOFF_REASONS`` 或 ``STAGE_EXTRA_REASONS`` 里就原样进审计行（event_log.reason
+    与 detail.reason），否则只落 ``text_digest(reason)`` —— 原文不进审计行（契约 §2 R5）。
     """
     if to_stage not in STAGES:
         raise ValueError(f"未知的会话阶段 {to_stage!r}，只认 {STAGES}")
@@ -278,10 +295,11 @@ def change_stage(store: Any, conv: Conversation, to_stage: str, *, turn_id: str,
                    (to_stage, ts, conv.tenant_id, conv.conversation_id, cur))
         streak, turns = int(rows[0]["fallback_streak"]), int(rows[0]["turn_count"])
 
+    audit_reason = _stage_reason(reason)
     _emit(store, conversation_id=conv.conversation_id, turn_id=turn_id,
-          event_type=EVENT_STAGE_CHANGED, reason=reason,
+          event_type=EVENT_STAGE_CHANGED, reason=audit_reason,
           from_state=cur, to_state=to_stage,
-          detail={"from_stage": cur, "to_stage": to_stage, "reason": reason,
+          detail={"from_stage": cur, "to_stage": to_stage, "reason": audit_reason,
                   "fallback_streak": streak, "turn_count": turns})
     updated = get_conversation(store, conv.tenant_id, conv.conversation_id)
     assert updated is not None

@@ -60,7 +60,8 @@ class CsAnswerSkill(Skill):
             "tenant_id": "str —— 租户（客服账号映射得到，非空）",
             "conversation_id": "str —— 会话 id（csc-…）",
             "turn_id": "str —— 本轮 id（<会话>-tNNNN）",
-            "text": "str —— 客户本轮原文（只用于检索，审计行里只落摘要）",
+            "text": "str —— 客户本轮原文的检索用形态（前台去掉长数字串、截短后给；"
+                    "只用于检索，审计行里只落摘要）",
         },
         output_schema={
             "draft": "ReplyDraft.to_json() —— 这一版回复（text / claims / citations）",

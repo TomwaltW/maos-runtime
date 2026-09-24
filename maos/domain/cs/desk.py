@@ -8,7 +8,8 @@
 2. 租户为空 → ``handoff`` / ``tenant_unmapped``，**不检索**（意图 unknown）；
 3. 触发词（:mod:`maos.domain.cs.triggers`）→ ``handoff`` / 该原因；
 4. 经 ``SkillInvoker(CS_FRONT_DESK_IDENTITY).invoke("cs.answer")`` 检索 + 组稿 + 后置校验：
-   命中且带转人工标记 → ``handoff`` / 该标记；命中 → ``answer``；没命中 → ``fallback``；
+   命中且带转人工标记 → ``handoff`` / 该标记；命中 → ``answer``；没命中 → ``fallback``
+   （检索只看 :func:`retrieval_query`：去掉长数字串、截到 ``MAX_QUERY_CHARS`` 字）；
 5. 本轮兜底使 ``fallback_streak`` 达到 ``FALLBACK_STREAK_HANDOFF`` → ``handoff`` /
    ``repeated_fallback``（意图 unknown）；
 6. 出门的那版回复没过 ``claims.check_reply`` → 落 ``CsReplyRejected``，改发兜底 +
@@ -17,7 +18,8 @@
 走 ``handoff`` 的轮：组一张 :class:`HandoffCard`（最近几轮含本轮、客户标识打码、处理建议
 写清要人做什么），经 ``cs.handoff`` 落库（没配投递目标 ``delivery=unconfigured``，否则
 ``pending``，真投递是 router 的 ``_cs_deliver``），再把会话阶段 ``active → handed_off``。
-每轮最后 ``record_turn``，恰好一条 ``CsTurnRecorded``。
+每轮最后 ``record_turn``，恰好一条 ``CsTurnRecorded``。卡片渲染成文字时（:func:`render_card_text`），
+客户说的话压成一行、平台标记字符换成全角 —— 客户造不出一行假的「处理建议」，也 @ 不了全员。
 
 ## 前台说不出任何状态
 
@@ -42,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -183,6 +186,25 @@ REASON_LABELS: Mapping[str, str] = MappingProxyType({
     HANDOFF_REPEATED_FALLBACK: "连续答不上",
     HANDOFF_TENANT_UNMAPPED: "客服账号未绑定租户",
 })
+
+
+# ---------------------------------------------------------------------------
+# 检索用的那句话
+# ---------------------------------------------------------------------------
+#: 交给检索的客户原文最多这么多字（复核 L3-2）。检索的重排与知识层全文通道的开销随
+#: 句长近似平方增长，而前台跑在 ingress 唯一的工作线程上 —— 一条上万字的消息能把内部
+#: 渠道的审批一起堵住。触发词仍看全文（线性、宁可多转），会话表与卡片里存的也是全文。
+MAX_QUERY_CHARS = 200
+
+#: 连续这么多位及以上的数字串（订单号、运单号、手机号）不进检索：话术库的说法里没有
+#: 长数字，这种串只会给原文凭空添一串谁也对不上的二元组，把覆盖率压下去 —— 带着订单号
+#: 来办具体订单的客户（恰恰该转人工核实的那类）反而检不到话术、掉进兜底。
+_LONG_DIGITS_RE = re.compile(r"\d{5,}")
+
+
+def retrieval_query(text: str) -> str:
+    """本轮交给 ``cs.answer`` 检索的那句话：去掉长数字串，再截到 :data:`MAX_QUERY_CHARS` 字。"""
+    return _LONG_DIGITS_RE.sub(" ", text or "")[:MAX_QUERY_CHARS]
 
 
 # ---------------------------------------------------------------------------
@@ -344,8 +366,8 @@ class FrontDesk:
                          reason=reason)
             return self._finish(msg, turn, plan, extras, now)
 
-        # 4. 检索 + 组稿 + 后置校验（cs.answer）。
-        plan = self._answer(turn, text, extras)
+        # 4. 检索 + 组稿 + 后置校验（cs.answer）。检索只看截短、去掉长数字串的那句。
+        plan = self._answer(turn, retrieval_query(text), extras)
         turn.intent = plan.intent
 
         # 5. 连续兜底。
@@ -569,20 +591,43 @@ def _check_from_json(d: Mapping[str, Any]) -> CheckResult:
 # ---------------------------------------------------------------------------
 # 内部房间看的卡片
 # ---------------------------------------------------------------------------
+#: 卡片正文里换行的可见记号。客户原文里的换行一律换成它：卡片的每一行都由前台起头。
+CARD_LINEBREAK = " ⏎ "
+#: 各平台认的换行（``str.splitlines`` 的全套）。
+_LINEBREAKS_RE = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85  ]")
+#: 平台会解释的标记字符换成全角：飞书文本的 ``<at user_id="all">``、企微文本的
+#: ``<a href>``、Matrix 的 ``@room`` 都靠它们起作用。
+_CARD_MARKUP = str.maketrans({"<": "＜", ">": "＞", "@": "＠"})
+
+
+def _inline(text: Any) -> str:
+    """把一段不由前台写的文字压成卡片里的一行：换行换成可见记号、标记字符换成全角。
+
+    复核 L3-1：客户原文原样进卡片的话，客户在一句话里换行写「处理建议：……请直接放款」，
+    内部房间看到的就是一行跟前台自己写的一模一样的处理建议；再带一个 ``<at user_id="all">``
+    还能 @ 全员。会话表与卡片对象里存的仍是原文，只有渲染出门的这一份被压平。
+    """
+    return _LINEBREAKS_RE.sub(CARD_LINEBREAK, str(text or "")).translate(_CARD_MARKUP)
+
+
 def render_card_text(card: HandoffCard) -> str:
-    """内部房间看到的纯文本卡片：原因、意图、客户（打码）、本轮原文、最近几轮、处理建议、会话 id。"""
+    """内部房间看到的纯文本卡片：原因、意图、客户（打码）、本轮原文、最近几轮、处理建议、会话 id。
+
+    客户说的、回过的、处理建议（里面可能带平台给的客服账号）都过 :func:`_inline` ——
+    卡片的每一行都从前台写的固定前缀起头，客户造不出一行假的。
+    """
     label = REASON_LABELS.get(card.reason, card.reason)
     lines = [
         f"【转人工】{label}（{card.reason}） · 意图 {card.intent or INTENT_UNKNOWN}",
-        f"客户：{card.customer_ref or '（未知）'} · 渠道：{card.channel}",
-        f"本轮原文：{card.customer_text}",
+        f"客户：{_inline(card.customer_ref) or '（未知）'} · 渠道：{card.channel}",
+        f"本轮原文：{_inline(card.customer_text)}",
     ]
     if card.recent_turns:
         lines.append(f"最近 {len(card.recent_turns)} 轮：")
         for i, (said, replied) in enumerate(card.recent_turns, start=1):
-            lines.append(f"  {i}. 客户：{said}")
-            lines.append(f"     回复：{replied or '（未回复）'}")
-    lines.append(f"处理建议：{card.suggestion}")
+            lines.append(f"  {i}. 客户：{_inline(said)}")
+            lines.append(f"     回复：{_inline(replied) or '（未回复）'}")
+    lines.append(f"处理建议：{_inline(card.suggestion)}")
     if card.citations:
         lines.append(f"引用话术：{'、'.join(card.citations)}")
     lines.append(f"会话：{card.conversation_id} · 轮次：{card.turn_id}"

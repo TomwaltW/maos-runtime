@@ -21,6 +21,7 @@ requested      转人工、人工客服、找人工、真人                hand
 逐字 NFKC（全角 → 半角：「！」→「!」、全角数字 → 半角，于是「１２３１５」就是「12315」），
 去掉空白与格式字符（零宽空格一类），英文转小写。感叹号认「!」与「❗❕」（「‼」经 NFKC
 本来就是两个「!」），连续三个及以上判 anger —— 中英文混着打的「！!！」同样算。
+「12315」按数字边界认：嵌在更长的数字串里（订单号、手机号）不算。
 
 ## 纯函数、零模型
 
@@ -96,6 +97,14 @@ _EXTRA_PATTERNS: dict[str, tuple[str, ...]] = {
 #: 「滚」单字：排除「滚筒 / 滚动 / 滚轮 / 滚烫 / 翻滚 / 打滚」这类与情绪无关的词。
 _GUN_RE = r"(?<![翻打])滚(?![筒动轮珠烫雪梯刀])"
 
+#: 「12315」要前后都不挨着数字（复核 L2-3）：订单号、流水号、手机号里碰巧含这五位的
+#: （「20261231500」）不是投诉。规范化后全角数字已是半角，空白已去掉 ——
+#: 「2026 12315 0」规整成一串数字，同样不算。
+_HOTLINE_RE = r"(?<!\d)12315(?!\d)"
+
+#: 契约词里不按字面匹配、改用上面专门写法的几个。
+_SPECIAL_WORDS: dict[str, str] = {"滚": _GUN_RE, "12315": _HOTLINE_RE}
+
 #: 感叹号：规范化后的「!」与 NFKC 不改写的两个 emoji 感叹号。
 EXCLAMATIONS = "!❗❕"
 #: 连续几个感叹号判 anger（契约：三个及以上）。
@@ -104,10 +113,8 @@ _EXCLAIM_RE = re.compile(f"[{re.escape(EXCLAMATIONS)}]{{{EXCLAMATION_RUN},}}")
 
 
 def _pattern_for(reason: str) -> re.Pattern[str]:
-    parts = [re.escape(w) for w in CONTRACT_WORDS[reason] if w != "滚"]
+    parts = [_SPECIAL_WORDS.get(w) or re.escape(w) for w in CONTRACT_WORDS[reason]]
     parts.extend(_EXTRA_PATTERNS.get(reason, ()))
-    if reason == HANDOFF_ANGER:
-        parts.append(_GUN_RE)
     return re.compile("|".join(f"(?:{p})" for p in parts))
 
 

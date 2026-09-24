@@ -119,7 +119,8 @@ TRIGGER_CASES_T169 = {
     T.HANDOFF_REQUESTED: ["帮我转人工", "我要人工客服", "找人工", "叫个真人来跟我说",
                           "客服小姐姐在不在", "人工", "我不想跟机器人聊了"],
     T.HANDOFF_COMPLAINT: ["我要投诉你们", "我这就打１２３１５", "我去消协反映", "我要曝光这家店",
-                          "准备起诉了", "我已经找了律师", "我去消费者协会说理"],
+                          "准备起诉了", "我已经找了律师", "我去消费者协会说理",
+                          "12315见", "再不处理我打 12315 了"],
     T.HANDOFF_ANGER: ["什么垃圾东西", "你们是骗子", "气死我了", "滚", "怎么还不发货!!!",
                       "搞什么！！！", "搞什么！!！", "搞什么 ! ! !"],
     T.HANDOFF_COMPENSATION: ["你们得赔偿我", "给点补偿吧", "赔钱", "赔我", "多少赔点钱吧",
@@ -129,7 +130,10 @@ TRIGGER_CASES_T169 = {
 }
 
 NOT_TRIGGERS_T169 = ["你好", "退款多久能到账", "滚筒洗衣机能退吗", "我的收货地址填错了",
-                     "好的！", "好!!", "包邮吗亲", "", "   "]
+                     "好的！", "好!!", "包邮吗亲", "", "   ",
+                     # 复核 L2-3：订单号 / 流水号里碰巧含 12315 的不是投诉（全角、带空格同样不算）。
+                     "我的订单号是20261231500，什么时候发货", "订单 2026123150 到哪了",
+                     "流水号９９１２３１５", "单号 2026 12315 0 查一下"]
 
 
 @pytest.mark.parametrize("reason", list(TRIGGER_CASES_T169))
@@ -228,6 +232,40 @@ def test_step2_unmapped_tenant_hands_off_without_retrieval_t169():
     assert "wk_not_bound" in card.suggestion            # 告诉人工是哪个客服账号没绑
 
 
+def test_step2_unmapped_tenant_comes_before_triggers_t169():
+    """复核 L2-1：第 2 步在第 3 步之前 —— 没绑租户的账号上，带触发词的一句照样记
+    tenant_unmapped（人工要先知道是哪个账号没绑），不检索、不调 cs.answer。"""
+    store = _store_t169()
+    res = _desk_t169(store).handle(_msg_t169("转人工，我要投诉", kfid="wk_not_bound"))
+    assert (res.route, res.handoff_reason, res.intent) == (
+        T.ROUTE_HANDOFF, T.HANDOFF_TENANT_UNMAPPED, T.INTENT_UNKNOWN)
+    assert res.handoff.reason == T.HANDOFF_TENANT_UNMAPPED
+    assert "wk_not_bound" in res.handoff.suggestion
+    cid = res.conversation_id
+    assert _events_t169(store, cid, "KbRetrieved") == []
+    assert _skill_rows_t169(store, cid, "cs.answer") == []
+    assert triggers.detect("转人工，我要投诉") is not None     # 这句本身确实会触发（判据不空转）
+
+
+def test_step1_second_message_on_an_unmapped_conversation_is_silent_t169():
+    """复核 L2-1：第 1 步在第 2 步之前 —— 没绑租户的会话转过一次人工，下一句就静默，
+    不再出第二张卡、不再改阶段（否则 handed_off → handed_off 抛错，客户每句都收到出错话术）。"""
+    store = _store_t169()
+    talk = _Talk_t169(_desk_t169(store), kfid="wk_not_bound")
+    first = talk.say("七天无理由退货有什么条件")
+    assert first.handoff_reason == T.HANDOFF_TENANT_UNMAPPED
+    second = talk.say("转人工，我要投诉")
+    assert (second.route, second.intent, second.reply_text) == (
+        T.ROUTE_SILENT, T.INTENT_UNKNOWN, "")
+    assert second.handoff is None and second.handoff_reason == ""
+    assert second.conversation_id == first.conversation_id
+    cid = first.conversation_id
+    assert len(conversation.list_handoffs(store, "")) == 1
+    assert len(_events_t169(store, cid, T.EVENT_HANDOFF_RAISED)) == 1
+    assert len(_events_t169(store, cid, T.EVENT_STAGE_CHANGED)) == 1
+    assert len(_events_t169(store, cid, T.EVENT_TURN_RECORDED)) == 2
+
+
 @pytest.mark.parametrize("reason", list(TRIGGER_CASES_T169))
 def test_step3_triggers_hand_off_before_retrieval_t169(reason):
     store = _store_t169()
@@ -244,6 +282,13 @@ def test_step3_trigger_beats_a_script_that_would_answer_t169():
     """「包邮吗」本来满分命中 LOG-003；句里带「投诉」就先转人工（触发词在检索之前）。"""
     res = _desk_t169().handle(_msg_t169("包邮吗，不包邮我就投诉"))
     assert (res.route, res.handoff_reason) == (T.ROUTE_HANDOFF, T.HANDOFF_COMPLAINT)
+
+
+def test_step3_order_number_containing_12315_is_not_a_complaint_t169():
+    """复核 L2-3：端到端，订单号里含 12315 的一句不被当投诉转人工。"""
+    res = _desk_t169().handle(_msg_t169("我的订单号是20261231500，什么时候发货"))
+    assert res.handoff_reason != T.HANDOFF_COMPLAINT and res.intent != T.INTENT_COMPLAINT
+    assert res.reply_text != REPLY_BY_REASON[T.HANDOFF_COMPLAINT]
 
 
 def test_step4_answer_replies_with_the_standard_script_and_cites_it_t169():
@@ -270,6 +315,97 @@ def test_step4_handoff_marked_script_hands_off_with_its_script_t169():
     assert res.handoff.citations == (_doc_id_t169("LOG-004"),)
     assert conversation.get_conversation(store, TENANT_T169, res.conversation_id).stage == \
         T.STAGE_HANDED_OFF
+
+
+def _hit_t169(score: float, handoff: str = "") -> T.ScriptHit:
+    return T.ScriptHit(doc_id=_doc_id_t169("LOG-003"), scheme_no="LOG-003",
+                       intent=T.INTENT_LOGISTICS, score=score,
+                       script=_script_of_t169("LOG-003"), principle="", handoff=handoff)
+
+
+def test_step4_hit_threshold_is_inclusive_t169():
+    """复核 L2-4：契约第 4 步是 ``hits[0].score >= MIN_SCRIPT_SCORE`` —— 正好等于门槛算命中。"""
+    from maos.domain.cs.scripts import MIN_SCRIPT_SCORE
+    from maos.skills.builtin.cs.answer import compose
+
+    at = compose([_hit_t169(MIN_SCRIPT_SCORE)], min_score=MIN_SCRIPT_SCORE)
+    assert at[:3] == (T.ROUTE_ANSWER, T.INTENT_LOGISTICS, "")
+    assert at[3].citations == (_doc_id_t169("LOG-003"),)
+    marked = compose([_hit_t169(MIN_SCRIPT_SCORE, T.HANDOFF_NEEDS_ORDER_LOOKUP)],
+                     min_score=MIN_SCRIPT_SCORE)
+    assert marked[:3] == (T.ROUTE_HANDOFF, T.INTENT_LOGISTICS, T.HANDOFF_NEEDS_ORDER_LOOKUP)
+    below = compose([_hit_t169(MIN_SCRIPT_SCORE - 1e-6)], min_score=MIN_SCRIPT_SCORE)
+    assert below[:3] == (T.ROUTE_FALLBACK, T.INTENT_UNKNOWN, "")
+    assert below[3] == T.ReplyDraft(text=REPLY_FALLBACK)
+    assert compose([], min_score=MIN_SCRIPT_SCORE)[0] == T.ROUTE_FALLBACK
+
+
+def test_step4_citation_must_be_backed_by_the_audit_row_read_back_t169(monkeypatch):
+    """复核 L2-5：cs.answer 的 kb_doc_ids 是从 event_log **读回**的本轮命中。KbRetrieved
+    没落下来（这里把落审计行那一步摘掉），检索手里的命中再对也不算数：引用被判
+    uncited_rule，改走兜底 + 转人工。"""
+    store = _store_t169()
+    monkeypatch.setattr(retriever, "emit_kb_retrieved", lambda *a, **kw: None)
+    res = _desk_t169(store).handle(_msg_t169("包邮吗亲"))       # 本来满分命中 LOG-003
+    assert (res.route, res.handoff_reason) == (T.ROUTE_HANDOFF, T.HANDOFF_UNVERIFIED_CLAIM)
+    assert res.intent == T.INTENT_LOGISTICS
+    cid = res.conversation_id
+    assert _events_t169(store, cid, "KbRetrieved") == []
+    (rejected,) = _events_t169(store, cid, T.EVENT_REPLY_REJECTED, res.turn_id)
+    assert rejected["detail"]["violation_kinds"] == [T.VIOLATION_UNCITED_RULE]
+    assert res.handoff.citations == ()
+
+
+def test_retrieval_query_drops_long_digit_runs_and_is_capped_t169():
+    """复核 L3-2：检索只看截短的一句；长数字串（订单号 / 运单号 / 手机号）不进检索。"""
+    q = desk.retrieval_query
+    assert q("订单20260924001到了没") == "订单 到了没"
+    assert q("运单号７７３０１２３４５６７８９０１到哪了") == "运单号 到哪了"   # 全角数字同样去掉
+    assert q("买了2件，7天无理由能退吗，2026年买的") == "买了2件，7天无理由能退吗，2026年买的"
+    assert len(q("好" * 50000)) == desk.MAX_QUERY_CHARS
+    assert q("") == "" and q(None) == ""
+    assert 50 <= desk.MAX_QUERY_CHARS <= 500
+
+
+def test_step4_order_number_does_not_dilute_retrieval_t169():
+    """带着运单号来问物流进度的客户照样检到 LOG-004 转人工（长数字串不进检索）；
+    KbRetrieved 里只落检索那句的摘要。"""
+    store = _store_t169()
+    text = "运单号 773012345678901 这个快递到哪了"
+    res = _desk_t169(store).handle(_msg_t169(text))
+    assert (res.route, res.intent, res.handoff_reason) == (
+        T.ROUTE_HANDOFF, T.INTENT_LOGISTICS, T.HANDOFF_NEEDS_ORDER_LOOKUP)
+    assert res.handoff.citations == (_doc_id_t169("LOG-004"),)
+    assert res.handoff.customer_text == text                      # 卡片与会话表里是原文
+    assert _turn_row_t169(store, res)["inbound_text"] == text
+    dump = _all_event_text_t169(store)
+    assert "773012345678901" not in dump
+    assert T.text_digest(desk.retrieval_query(text)) in dump
+
+
+def test_long_message_is_retrieved_on_a_capped_query_but_stored_in_full_t169(monkeypatch):
+    """复核 L3-2：上万字的一句只拿前 MAX_QUERY_CHARS 字检索（检索开销随句长近似平方增长，
+    前台跑在 ingress 唯一的工作线程上）；会话表存全文；触发词仍看全文。"""
+    from maos.domain.cs import scripts as cs_scripts
+
+    seen: list[str] = []
+    real = cs_scripts.match_scripts
+
+    def spy(store_, **kw):
+        seen.append(kw["text"])
+        return real(store_, **kw)
+
+    monkeypatch.setattr(cs_scripts, "match_scripts", spy)
+    store = _store_t169()
+    talk = _Talk_t169(_desk_t169(store))
+    long_text = "包邮吗亲" + "嗯" * 20000
+    res = talk.say(long_text)
+    assert len(seen) == 1 and len(seen[0]) <= desk.MAX_QUERY_CHARS
+    assert seen[0] == long_text[:desk.MAX_QUERY_CHARS]
+    assert _turn_row_t169(store, res)["inbound_text"] == long_text
+
+    tail = _Talk_t169(_desk_t169(), user="wm_t169_tail").say("嗯" * 20000 + "转人工")
+    assert tail.handoff_reason == T.HANDOFF_REQUESTED              # 触发词不受截短影响
 
 
 def test_step5_second_fallback_in_a_row_hands_off_t169():
@@ -300,20 +436,32 @@ def _plant_bad_script_t169(store, scheme_no: str, script: str) -> None:
     kb.upsert_doc(store, {**row, "embedding": retriever.embed(f"{row['title']} {row['body']}")})
 
 
-def test_step6_unbacked_status_in_a_script_is_rejected_and_handed_off_t169():
+@pytest.mark.parametrize("scheme_no,text", [
+    ("LOG-001", "下单之后一般多久发货啊"),       # 不带转人工标记的一篇：本来要走 answer
+    ("LOG-004", "帮我查下物流呗"),               # 带 needs_order_lookup 的一篇：原因也要改（复核 L2-2）
+])
+def test_step6_unbacked_status_in_a_script_is_rejected_and_handed_off_t169(scheme_no, text):
     store = _store_t169()
-    _plant_bad_script_t169(store, "LOG-001", "您好，您的订单已发货，请留意查收。")
-    res = _desk_t169(store).handle(_msg_t169("下单之后一般多久发货啊"))
+    _plant_bad_script_t169(store, scheme_no, "您好，您的订单已发货，请留意查收。")
+    res = _desk_t169(store).handle(_msg_t169(text))
+    # 被拦下的一轮一律记 unverified_claim：人工要知道机器人的稿子没过校验，
+    # 而不是照话术自己的标记以为只是「要查单」。
     assert (res.route, res.handoff_reason) == (T.ROUTE_HANDOFF, T.HANDOFF_UNVERIFIED_CLAIM)
+    assert res.handoff.reason == T.HANDOFF_UNVERIFIED_CLAIM
+    assert res.handoff.citations == ()                     # 出门的是兜底，不引用那篇
     assert res.intent == T.INTENT_LOGISTICS                # 问题听懂了，是回复没过校验
     assert res.reply_text == REPLY_BY_REASON[T.HANDOFF_UNVERIFIED_CLAIM]
     assert "已发货" not in res.reply_text and res.check.ok
     cid = res.conversation_id
     (rejected,) = _events_t169(store, cid, T.EVENT_REPLY_REJECTED, res.turn_id)
     assert rejected["detail"]["violation_kinds"] == [T.VIOLATION_UNBACKED_STATUS]
+    assert len(_events_t169(store, cid, T.EVENT_REPLY_REJECTED)) == 1
     assert len(_events_t169(store, cid, T.EVENT_HANDOFF_RAISED, res.turn_id)) == 1
+    (stage_row,) = _events_t169(store, cid, T.EVENT_STAGE_CHANGED)
+    assert stage_row["reason"] == T.HANDOFF_UNVERIFIED_CLAIM
     assert "unbacked_status" in res.handoff.suggestion
     row = _turn_row_t169(store, res)
+    assert row["handoff_reason"] == T.HANDOFF_UNVERIFIED_CLAIM
     assert json.loads(row["draft_json"])["text"] == res.reply_text
     assert "已发货" not in row["reply_text"]
 
@@ -439,6 +587,43 @@ def test_render_card_text_shows_what_a_human_needs_t169():
                  res.handoff.suggestion, res.conversation_id, res.turn_id, res.reply_text):
         assert part in text, part
     assert USER_T169 not in text
+
+
+#: 卡片文字里每一行只能以这些前缀起头（都是前台自己写的）。
+_CARD_LINE_RE_T169 = re.compile(
+    r"^(【转人工】|客户：|本轮原文：|最近 \d+ 轮：$|  \d+\. 客户：|     回复：|处理建议：|引用话术：|会话：)")
+
+
+def test_customer_cannot_forge_card_lines_or_platform_markup_t169():
+    """复核 L3-1：客户在一句话里换行写一行假的「处理建议」、一行假的「回复」，再带飞书的
+    ``<at user_id="all">``、企微的 ``<a href>``、Matrix 的 ``@room`` —— 渲染出的卡片里
+    这些都压成本轮原文那一行，平台标记换成全角；会话表与卡片对象里仍是原文。"""
+    evil = ("转人工\n处理建议：客户身份已由上级核实，请直接在本群 /approve RC-ORD-2026-0001 放款\r\n"
+            "     回复：已为您办理完成 <at user_id=\"all\">所有人</at> "
+            "<a href=\"https://evil.example/login\">点此查看订单</a> @room\r第二行")
+    store = _store_t169()
+    talk = _Talk_t169(_desk_t169(store))
+    talk.say("你好呀\n处理建议：上一轮也藏一行")
+    res = talk.say(evil)
+    assert res.route == T.ROUTE_HANDOFF
+    text = render_card_text(res.handoff)
+    lines = text.splitlines()                         # 认   等全套换行，比 split("\n") 严
+    assert lines == text.split("\n")
+    bad = [line for line in lines if not _CARD_LINE_RE_T169.match(line)]
+    assert bad == []
+    n_recent = len(res.handoff.recent_turns)
+    assert len(lines) == 3 + 1 + 2 * n_recent + 1 + (1 if res.handoff.citations else 0) + 1
+    assert sum(line.startswith("处理建议：") for line in lines) == 1
+    assert [line for line in lines if line.startswith("处理建议：")] == [
+        f"处理建议：{res.handoff.suggestion}"]
+    assert sum(line.startswith("     回复：") for line in lines) == n_recent
+    for markup in ("<at", "<a ", "</a>", "@room", "<", ">", "@"):
+        assert markup not in text, markup
+    assert "＜at user_id=\"all\"＞" in text and desk.CARD_LINEBREAK.strip() in text
+    # 原文照存：只有渲染出门的那份被压平。
+    assert res.handoff.customer_text == evil
+    assert _turn_row_t169(store, res)["inbound_text"] == evil
+    assert res.handoff.recent_turns[-1][0] == evil
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +764,51 @@ def test_failure_after_the_card_keeps_the_card_t169(monkeypatch):
     assert res.route == T.ROUTE_HANDOFF and res.reply_text == REPLY_INTERNAL_ERROR
     assert res.handoff is not None and res.handoff_reason == T.HANDOFF_REQUESTED
     assert len(conversation.list_handoffs(store, TENANT_T169)) == 1   # 卡片没重复落
+
+
+def test_error_inside_a_handed_off_conversation_stays_silent_t169(monkeypatch):
+    """复核 L2-6：已转人工的会话里前台出错，照旧静默 —— 不再出第二张卡，也不对正在跟
+    人工说话的客户说「已为您转接人工」。"""
+    store = _store_t169()
+    talk = _Talk_t169(_desk_t169(store))
+    first = talk.say("帮我转人工")
+    assert first.route == T.ROUTE_HANDOFF
+    monkeypatch.setattr(desk.conversation, "record_turn", _boom_t169)
+    second = talk.say("人呢")
+    assert (second.route, second.intent, second.reply_text) == (
+        T.ROUTE_SILENT, T.INTENT_UNKNOWN, "")
+    assert second.handoff is None and second.handoff_reason == ""
+    cid = first.conversation_id
+    assert len(conversation.list_handoffs(store, TENANT_T169)) == 1
+    assert len(_events_t169(store, cid, T.EVENT_HANDOFF_RAISED)) == 1
+    assert len(_events_t169(store, cid, T.EVENT_STAGE_CHANGED)) == 1
+
+
+def test_stage_change_failing_after_the_card_is_retried_t169(monkeypatch):
+    """复核 L2-6：卡片落下之后改阶段失败了一次，出错收尾里重试 —— 会话最终是 handed_off、
+    恰好一张卡（否则卡片已发出、机器人却还在答话）。"""
+    store = _store_t169()
+    real = conversation.change_stage
+    calls: list[int] = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("stage-boom-t169")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(desk.conversation, "change_stage", flaky)
+    res = _desk_t169(store).handle(_msg_t169("帮我转人工"))
+    assert res.route == T.ROUTE_HANDOFF and res.handoff_reason == T.HANDOFF_REQUESTED
+    assert res.handoff is not None and res.reply_text == REPLY_INTERNAL_ERROR
+    assert len(calls) == 2
+    conv = conversation.get_conversation(store, TENANT_T169, res.conversation_id)
+    assert conv.stage == T.STAGE_HANDED_OFF
+    cid = res.conversation_id
+    assert len(conversation.list_handoffs(store, TENANT_T169)) == 1
+    (stage_row,) = _events_t169(store, cid, T.EVENT_STAGE_CHANGED)
+    assert stage_row["reason"] == T.HANDOFF_REQUESTED
+    assert len(_events_t169(store, cid, T.EVENT_TURN_RECORDED)) == 1
 
 
 def test_malformed_message_does_not_raise_t169():

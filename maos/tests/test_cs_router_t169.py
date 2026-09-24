@@ -155,6 +155,18 @@ def test_wechat_kf_mention_also_goes_to_the_front_desk_t169():
     assert out == spy.reply
 
 
+@pytest.mark.parametrize("text", ["   ", "\n\t", "　", ""])
+def test_blank_wechat_kf_text_does_not_reach_the_desk_t169(text):
+    """复核 L2-7：挂钩的「有字」条件 —— 只有空白的一条不进前台（否则前台拿空白去检索、
+    回一句兜底，还把连续兜底计数加一），与不装前台逐字节一致：什么都不发。"""
+    spy = _SpyDesk_t169()
+    wired, bare = _router_t169(cs=spy), _router_t169()
+    msg = _msg_t169(CHANNEL_WECHAT_KF, text)
+    assert wired.handle(msg) == bare.handle(msg) == ""
+    assert spy.calls == []
+    assert _sent_t169(wired) == _sent_t169(bare) == []
+
+
 def test_wechat_kf_duplicate_delivery_reaches_the_desk_once_t169():
     spy = _SpyDesk_t169()
     router = _router_t169(cs=spy)

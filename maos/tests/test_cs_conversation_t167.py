@@ -331,6 +331,7 @@ def test_stage_flow_every_pair_t167(src, dst):
         assert len(after) == len(before) + 1
         ev = after[-1]
         assert (ev["from_state"], ev["to_state"], ev["task_id"]) == (src, dst, turn_id)
+        assert (ev["detail"]["from_stage"], ev["detail"]["to_stage"]) == (src, dst)
         assert ev["detail"]["reason"] == T.HANDOFF_REQUESTED
     else:
         with pytest.raises(ValueError):
@@ -429,7 +430,51 @@ def test_handoff_cards_persist_roundtrip_and_delivery_writeback_t167():
     assert by == {"pending": [], "delivered": [cards[0].handoff_id],
                   "failed": [cards[1].handoff_id], "unconfigured": [cards[2].handoff_id]}
     assert C.list_handoffs(s, "tnt-other") == []
-    assert len(_events_t167(s, conv, T.EVENT_HANDOFF_RAISED)) == 3   # 回写投递不落事件
+    raised = _events_t167(s, conv, T.EVENT_HANDOFF_RAISED)
+    assert len(raised) == 3                                   # 回写投递不落事件
+    # CsHandoffRaised 记的是**落库那一刻**的投递状态（含 unconfigured），不被后来的回写改。
+    assert [(r["task_id"], r["detail"]["delivery"], r["detail"]["intent"],
+             r["detail"]["channel"]) for r in raised] == [
+        (cards[0].handoff_id, "pending", "handoff_request", "wechat_kf"),
+        (cards[1].handoff_id, "pending", "handoff_request", "wechat_kf"),
+        (cards[2].handoff_id, "unconfigured", "handoff_request", "wechat_kf")]
+
+
+def test_handoff_timestamps_follow_injected_now_t167():
+    """``record_handoff`` 的 created_at / updated_at 取注入的 ``now``；``list_handoffs`` 按
+    created_at 排（同刻再按 handoff_id）。
+
+    注入的时刻故意**倒着走**、且远早于真实时钟：实现若忽略 now 改取真实时钟，时间戳
+    对不上，列表顺序也会退回落库先后（= handoff_id 升序），两处都红。
+    """
+    s = _store_t167()
+    conv = _open_t167(s)
+    stamps = ("2001-01-01T00:00:03+00:00", "2001-01-01T00:00:02+00:00",
+              "2001-01-01T00:00:01+00:00")
+    cards = []
+    for ts in stamps:
+        turn_id, conv = _turn_t167(s, conv, T.ROUTE_HANDOFF, intent=T.INTENT_HANDOFF_REQUEST,
+                                   handoff_reason=T.HANDOFF_REQUESTED)
+        card = _card_t167(conv, turn_id)
+        C.record_handoff(s, card, now=ts)
+        cards.append(card)
+
+    rows = objects.query(s, "SELECT handoff_id, created_at, updated_at FROM cs_handoff"
+                            " WHERE tenant_id=? ORDER BY handoff_id", (conv.tenant_id,))
+    assert [(r["handoff_id"], r["created_at"], r["updated_at"]) for r in rows] == [
+        (c.handoff_id, ts, ts) for c, ts in zip(cards, stamps)]
+    assert [c for c, _d in C.list_handoffs(s, conv.tenant_id)] == cards[::-1]
+    assert [c for c, _d in C.list_handoffs(s, conv.tenant_id,
+                                           delivery=T.DELIVERY_PENDING)] == cards[::-1]
+
+    # 回写投递：updated_at 取注入的 now，created_at（排序键）不动，顺序不变。
+    C.mark_handoff_delivery(s, conv.tenant_id, cards[2].handoff_id, T.DELIVERY_DELIVERED,
+                            now="2001-01-01T00:00:09+00:00")
+    (row,) = objects.query(s, "SELECT created_at, updated_at FROM cs_handoff"
+                              " WHERE tenant_id=? AND handoff_id=?",
+                           (conv.tenant_id, cards[2].handoff_id))
+    assert (row["created_at"], row["updated_at"]) == (stamps[2], "2001-01-01T00:00:09+00:00")
+    assert [c for c, _d in C.list_handoffs(s, conv.tenant_id)] == cards[::-1]
 
 
 def test_handoff_rejects_bad_values_t167():
@@ -480,7 +525,9 @@ def _script_t167(store, *, inbound, reply, open_kfid, external_userid):
     """一段完整会话：答上 → 兜底 → 被拦 + 转人工出卡 + 转阶段 → 静默。返回 (conv, 轮次 id)。"""
     conv = _open_t167(store, open_kfid=open_kfid, external_userid=external_userid)
     t1, conv = _turn_t167(store, conv, T.ROUTE_ANSWER, inbound=inbound, reply=reply,
-                          draft=T.ReplyDraft(text=reply, citations=("kb-cs-tnt-demo-LOG-001",)))
+                          draft=T.ReplyDraft(text=reply, citations=("kb-cs-tnt-demo-LOG-001",),
+                                             claims=(T.Claim(literal=reply,
+                                                             basis_ref="kb:kb-cs-tnt-demo-LOG-001"),)))
     t2, conv = _turn_t167(store, conv, T.ROUTE_FALLBACK, inbound=inbound + "？", reply=reply,
                           intent=T.INTENT_UNKNOWN)
     t3, seq3 = C.allocate_turn(store, conv)
@@ -545,9 +592,76 @@ def test_event_counts_and_attribution_t167():
     for r in rows:
         assert set(r["detail"]) == DETAIL_KEYS_T167[r["event_type"]], r["event_type"]
     assert set(DETAIL_KEYS_T167) == set(T.CS_EVENT_TYPES)
+    # 七行逐行逐值写死（不只键集）：枚举值、计数、摘要写错一个就红。
+    assert [_audit_t167(r) for r in rows] == _expected_audit_t167(
+        inbound="我的耳机什么时候发货", reply="一般 48 小时内发出", turns=(t1, t2, t3, t4))
     # 别的会话的行不串进来：另开一段，本会话的条数不变。
     _open_t167(s, external_userid="wm_customer_2")
     assert len(_events_t167(s, conv)) == 7
+
+
+def _audit_t167(row: dict) -> tuple:
+    return (row["event_type"], row["task_id"], row["from_state"], row["to_state"],
+            row["reason"], row["detail"])
+
+
+def _expected_audit_t167(*, inbound: str, reply: str, turns: tuple) -> list[tuple]:
+    """``_script_t167`` 那段会话应落的七行审计，按落库顺序、逐值写死。
+
+    摘要用冻结的 ``types.text_digest`` 现算（它本身由契约测试钉）；其余全是字面量。
+    """
+    t1, t2, t3, t4 = turns
+    d = T.text_digest
+    log = "kb-cs-tnt-demo-LOG-001"
+    kinds = ["unbacked_status", "uncited_rule"]
+
+    def turn(tid, seq, route, intent, reason, stage, inb, rep, cites, claims, ok, vk, streak):
+        return ("CsTurnRecorded", tid, None, None, route, {
+            "seq": seq, "route": route, "intent": intent, "handoff_reason": reason,
+            "stage": stage, "inbound_digest": d(inb), "reply_digest": d(rep),
+            "citations": cites, "claim_count": claims, "check_ok": ok,
+            "violation_kinds": vk, "fallback_streak": streak})
+
+    return [
+        turn(t1, 1, "answer", "general", "", "active", inbound, reply, [log], 1, True, [], 0),
+        turn(t2, 2, "fallback", "unknown", "", "active", inbound + "？", reply, [], 0, True,
+             [], 1),
+        ("CsReplyRejected", t3, None, None, "unbacked_status,uncited_rule", {
+            "violation_kinds": kinds, "violation_count": 2,
+            "violation_digests": [d(f"「{reply}」里的状态字眼没有观察"),
+                                  d(f"{inbound} 引了没检出的话术")]}),
+        turn(t3, 3, "handoff", "logistics", "unverified_claim", "active", inbound, reply, [], 0,
+             False, kinds, 0),
+        ("CsHandoffRaised", t3, None, None, "unverified_claim", {
+            "reason": "unverified_claim", "intent": "logistics", "channel": "wechat_kf",
+            "delivery": "pending", "citations": [log], "recent_turn_count": 3,
+            "slot_count": 0, "customer_text_digest": d(inbound),
+            "suggestion_digest": d(f"客户原话：{inbound}；机器人拟回：{reply}")}),
+        ("CsConversationStageChanged", t3, "active", "handed_off", "unverified_claim", {
+            "from_stage": "active", "to_stage": "handed_off", "reason": "unverified_claim",
+            "fallback_streak": 0, "turn_count": 3}),
+        # 已转人工后的静默轮：stage 是库里的 handed_off，回复原文是空串。
+        turn(t4, 4, "silent", "", "", "handed_off", inbound + "！", "", [], 0, True, [], 0),
+    ]
+
+
+def test_stage_changed_detail_snapshots_counters_from_db_t167():
+    """CsConversationStageChanged 的 detail 带迁移那一刻库里的 fallback_streak / turn_count
+    （非零），from_stage / to_stage 与 event_log 的 from_state / to_state 一致。"""
+    s = _store_t167()
+    stale = _open_t167(s)
+    conv = stale
+    for _ in range(2):
+        _tid, conv = _turn_t167(s, conv, T.ROUTE_FALLBACK, intent=T.INTENT_UNKNOWN)
+    C.allocate_turn(s, conv)                                  # 取了号还没落：turn_count=3
+    out = C.change_stage(s, stale, T.STAGE_CLOSED, turn_id="t-close",
+                         reason=T.HANDOFF_REPEATED_FALLBACK)  # 故意传旧快照
+    assert (out.stage, out.fallback_streak, out.turn_count) == ("closed", 2, 3)
+    (ev,) = _events_t167(s, conv, T.EVENT_STAGE_CHANGED)
+    assert _audit_t167(ev) == (
+        "CsConversationStageChanged", "t-close", "active", "closed", "repeated_fallback",
+        {"from_stage": "active", "to_stage": "closed", "reason": "repeated_fallback",
+         "fallback_streak": 2, "turn_count": 3})
 
 
 def test_record_reply_rejected_requires_a_failed_check_t167():

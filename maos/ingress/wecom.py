@@ -293,6 +293,13 @@ class WeChatKfAdapter(_WeComBase):
         for row in out.get("msg_list") or []:
             if row.get("msgtype") != "text":
                 continue
+            # 防自问自答：sync_msg 会把会话里**所有**消息都吐回来 —— origin 3 是客户发的，
+            # 4 是系统推送，5 是接待人员（人工客服、以及本机器人经 send_msg 发出去的那句）。
+            # 不丢的话，前台会把自己刚回的话、人工刚说的话当成客户的下一句再答一遍。
+            # 字段缺省照旧收（老接口 / 测试夹具不带 origin）。
+            origin = row.get("origin")
+            if origin is not None and str(origin).strip() != "3":
+                continue
             send_time = float(row.get("send_time") or 0)
             if send_time and now - send_time > self.max_age:
                 stale += 1                     # 见 KF_MAX_AGE：这是防翻旧账的兜底闸

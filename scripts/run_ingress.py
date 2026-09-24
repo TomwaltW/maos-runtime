@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -71,6 +72,27 @@ def _store() -> SqliteStore:
     store = SqliteStore(":memory:")
     ensure_room_schema(store)
     return store
+
+
+def _front_desk(store: SqliteStore, env=None):
+    """客服前台（p12）：``MAOS_CS_TENANTS`` 非空才装，装之前把话术库灌进这个库。
+
+    不配就返回 None —— router 与今天逐字节一致。配了但格式不对，``CsConfig.from_env``
+    抛 ``ValueError``（由 `cmd_serve` 报出来、不起服务：带着一份读错的租户映射起来，
+    客户会被算到别的租户名下）。只在 serve 装配；``--simulate`` 不动。
+    """
+    env = os.environ if env is None else env
+    if not str(env.get("MAOS_CS_TENANTS") or "").strip():
+        return None
+    from maos.domain.cs.corpus import seed_cs_kb
+    from maos.domain.cs.desk import CsConfig, FrontDesk
+
+    config = CsConfig.from_env(env)
+    seeded = seed_cs_kb(store)
+    target = config.handoff_target[0] if config.handoff_target else "未配置（卡片只落库）"
+    print(f"客服前台：已装 · 客服账号 {len(config.tenants)} 个 · 话术 {seeded} 篇 · "
+          f"转人工卡片投到 {target}")
+    return FrontDesk(store, config)
 
 
 def cmd_status(args) -> int:
@@ -125,7 +147,13 @@ def cmd_serve(args) -> int:
               '  python3 scripts/run_ingress.py --simulate "/help"', file=sys.stderr)
         return 2
 
-    router = IngressRouter(adapters, store=_store(), ledger_path=args.ledger)
+    store = _store()
+    try:
+        desk = _front_desk(store)
+    except ValueError as exc:
+        print(f"客服前台配置有误，不起服务：{exc}", file=sys.stderr)
+        return 2
+    router = IngressRouter(adapters, store=store, ledger_path=args.ledger, cs=desk)
     server = IngressServer(adapters, router, host=args.host, port=args.port)
     print(f"{BAR}\n渠道：{describe_config(adapters)}")
     print(f"监听 http://{args.host}:{args.port}，路径 {', '.join(ROUTES)}")

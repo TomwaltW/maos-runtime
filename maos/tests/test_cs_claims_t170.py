@@ -79,11 +79,23 @@ def test_rule1_literal_must_be_nonempty_substring_t170():
 
 
 # ---------------------------------------------------------------- 规则 2
-@pytest.mark.parametrize("basis", ["obs:o-missing", "kb:d-missing", "obs:", "kb:", "o1", "", "doc:d1"])
+@pytest.mark.parametrize("basis", ["obs:o-missing", "kb:d-missing", "obs:", "kb:", "o1", "", "doc:d1",
+                                   # 前缀与集合错配：obs: 只查观察、kb: 只查命中，不许并起来查
+                                   "obs:d1", "kb:o1"])
 def test_rule2_dangling_basis_blocked_t170(basis):
     result = check_reply(_draft_t170("请按页面指引提交申请", ("页面指引", basis)),
                          observations=frozenset({"o1"}), kb_doc_ids=frozenset({"d1"}))
     assert _kinds_t170(result) == [T.VIOLATION_DANGLING_BASIS]
+
+
+def test_rule2_kb_doc_filed_under_obs_cannot_back_status_t170():
+    """一篇话术的 doc_id 挂在 obs: 前缀下也撑不起状态（铁律 8：kb: 撑不起状态，换前缀也不行）。"""
+    doc = "kb-cs-tnt-demo-PAY-001"
+    result = check_reply(_draft_t170(projection.PUBLIC_SETTLED,
+                                     (projection.PUBLIC_SETTLED, f"obs:{doc}")),
+                         kb_doc_ids=frozenset({doc}))
+    assert result.ok is False
+    assert _kinds_t170(result) == [T.VIOLATION_DANGLING_BASIS, T.VIOLATION_UNBACKED_STATUS]
 
 
 @pytest.mark.parametrize("basis", ["obs:o1", "kb:d1"])
@@ -152,6 +164,100 @@ def test_rule3_each_status_form_blocked_without_obs_t170(text):
     assert T.VIOLATION_UNBACKED_STATUS in _kinds_t170(check_reply(T.ReplyDraft(text=text)))
 
 
+def test_adjacent_status_words_are_two_places_t170():
+    """「同一处只报一次」的边界：重叠才合并，紧挨着的两处各算一处、各自可被撑住。"""
+    text = "已发货已签收"
+    assert status_spans(text) == [(0, 3, "已发货"), (3, 6, "已签收")]
+    both = check_reply(_draft_t170(text, ("已发货", "obs:a"), ("已签收", "obs:b")),
+                       observations=frozenset({"a", "b"}))
+    assert both.ok, both
+    one = check_reply(_draft_t170(text, ("已发货", "obs:a")), observations=frozenset({"a"}))
+    assert _kinds_t170(one) == [T.VIOLATION_UNBACKED_STATUS]
+    assert "已签收" in one.violations[0].detail
+
+
+#: 冻结词表之外的自然说法（DECISIONS task-t170：补充模式）。空观察、零 claim 一律要拦。
+NATURAL_FABRICATIONS_T170 = (
+    "您的退款已经到账了",
+    "您的退款已到帐",
+    "您的申请被驳回了",
+    "款项已原路退回您的账户",
+    "我们已打款给您",
+    "您的包裹已发出",
+    "您的包裹已寄出",
+    "您的包裹已送达",
+    "快递显示已经签收",
+    "订单已经取消",
+    "已为您取消订单",
+    "预计3-5个工作日到账",
+    "预计三到五个工作日到账",
+    "预计1~3天到账",
+    "退款一般1-3个工作日原路退回",
+    "3天内到账",
+    "下单后48小时内发货",
+    "预计明天送达",
+)
+
+
+@pytest.mark.parametrize("text", NATURAL_FABRICATIONS_T170)
+def test_rule3_natural_status_variants_blocked_t170(text):
+    result = check_reply(T.ReplyDraft(text=text))
+    assert result.ok is False, text
+    assert _kinds_t170(result) == [T.VIOLATION_UNBACKED_STATUS], result
+
+
+#: 看不见或不改变读法的字符拆不开状态字眼（零宽、软连字符、空白、间隔号、数字等价形）。
+OBFUSCATED_FABRICATIONS_T170 = (
+    "您的退款已​到账",          # 零宽空格
+    "您的退款已‍到账",          # 零宽连接符
+    "您的退款已­到账",          # 软连字符
+    "您的退款支付​处理中",       # 对外字面值中间插零宽
+    "您的申请已​驳回",
+    "预计​3天到账",
+    "您的退款已 到账",
+    "您的退款已·到账",
+    "预计③天到账",              # ③
+    "预计\U0001d7d1天到账",          # 数学粗体 3
+    "预计٣天到账",              # 阿拉伯-印度数字 3
+    "预计３天",                  # 全角 3
+)
+
+
+@pytest.mark.parametrize("text", OBFUSCATED_FABRICATIONS_T170)
+def test_rule3_obfuscated_status_words_blocked_t170(text):
+    result = check_reply(T.ReplyDraft(text=text))
+    assert result.ok is False, repr(text)
+    assert _kinds_t170(result) == [T.VIOLATION_UNBACKED_STATUS], result
+
+
+def test_obfuscated_span_maps_back_to_original_offsets_t170():
+    text = "您的退款已​到账"
+    assert status_spans(text) == [(4, 8, "已​到账")]
+    # 原文里的整段（含零宽字符）被一条有效 obs claim 盖住时放行 —— 但措辞不是对外字面值
+    backed = check_reply(_draft_t170(text, ("退款已​到账", "obs:o1")),
+                         observations=frozenset({"o1"}))
+    assert _kinds_t170(backed) == [T.VIOLATION_FOREIGN_LITERAL]
+
+
+@pytest.mark.parametrize("text", [
+    "退款会按原支付方式原路退回，到账时间以支付渠道为准",
+    "签收后7天内，商品不影响二次销售可申请无理由退货",
+    "签收后七天内可以申请退货",
+    "15天内可换货",
+    "人工客服服务时间为每天9:00-21:00",
+    "周一至周五人工在线",
+    "7×24小时在线",
+    "满99元包邮，偏远地区除外",
+    "退货寄回后请在订单页填写快递单号",
+    "发货时效以商品页面标注为准",
+    "已为您转接人工客服，请稍候",
+    "您的问题已记录，人工客服会尽快联系您",
+])
+def test_supplementary_patterns_leave_policy_text_alone_t170(text):
+    """补充模式只收完成态断言与时限承诺；政策说法、服务时间、转人工过渡语不误拦。"""
+    assert check_reply(T.ReplyDraft(text=text)).ok, text
+
+
 # ---------------------------------------------------------------- 规则 4
 def test_rule4_citations_must_be_retrieved_this_turn_t170():
     hit = "kb-cs-tnt-demo-RET-001"
@@ -172,10 +278,20 @@ def test_rule5_non_public_refund_wording_with_obs_is_foreign_t170():
     assert _kinds_t170(result) == [T.VIOLATION_FOREIGN_LITERAL]
 
 
-@pytest.mark.parametrize("literal", ["赔偿已到账", "已补偿", "补偿金", "款项已到账"])
+@pytest.mark.parametrize("literal", [
+    "赔偿已到账", "已补偿", "补偿金", "款项已到账",
+    # 「逐字等于」不是「包含」：对外字面值外面多一个字也不行
+    "您的退款已到账啦", f"{projection.PUBLIC_SETTLED}，请查收", f"您的申请{projection.PUBLIC_REJECTED}了",
+    # 契约四个触发词里「赔偿」单独出现（不夹带别的触发词）
+    "我们将为您赔偿",
+    # 退款到账类的自然变体（补充模式）：带 obs 也必须用对外字面值
+    "退款已经到账", "款项已原路退回", "已打款给您", "退款已到帐",
+    # 半角括号的「已补偿(未到账)」不是那一句
+    "已补偿(未到账)",
+])
 def test_rule5_other_refund_literals_are_foreign_t170(literal):
     result = check_reply(_draft_t170(literal, (literal, "obs:o1")), observations=frozenset({"o1"}))
-    assert T.VIOLATION_FOREIGN_LITERAL in _kinds_t170(result)
+    assert T.VIOLATION_FOREIGN_LITERAL in _kinds_t170(result), (literal, result)
 
 
 @pytest.mark.parametrize("literal", projection.PUBLIC_STATUSES)

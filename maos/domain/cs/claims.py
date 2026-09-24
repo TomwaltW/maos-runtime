@@ -12,18 +12,31 @@
 4. ``uncited_rule`` —— citations 每一项都在本轮检索命中里；
 5. ``foreign_literal`` —— literal 里说到退款 / 补偿的 claim，必须**逐字**等于
    ``maos.domain.refund.projection`` 的五个对外字面值之一（对外措辞的唯一产出处）。
+   「说到」= 含契约四个触发词（已到账 / 已退款 / 补偿 / 赔偿）、或含某个对外字面值、
+   或是「已经到账 / 已原路退回 / 已打款」一类退款完成态（均在规范化后判）。
 
 ## 「状态字眼」是哪些
 
-``types.STATUS_PATTERNS``（已到账 / 已退款 / 已发货 …… 与「预计 N 天」）**加上**
-projection 的五个对外字面值本身。后者里有三句（已提出退款 / 支付处理中 / 已驳回）
-不含任何 STATUS_WORDS，只按 STATUS_PATTERNS 扫的话，「您的退款支付处理中」在没有任何
-观察的情况下原样放行 —— 可它恰恰是退款状态。所以 :func:`check_reply` 把两者合起来扫；
-:func:`status_spans` 仍只按 STATUS_PATTERNS（签名注释的口径），合并在
-:func:`_status_places` 里做。
+三组合起来扫（:func:`_status_places`）：
+
+1. ``types.STATUS_PATTERNS``（已到账 / 已退款 / 已发货 …… 与「预计 N 天」）；
+2. projection 的五个对外字面值本身。其中三句（已提出退款 / 支付处理中 / 已驳回）
+   不含任何 STATUS_WORDS，只按 STATUS_PATTERNS 扫的话，「您的退款支付处理中」在没有任何
+   观察的情况下原样放行 —— 可它恰恰是退款状态；
+3. :data:`SUPPLEMENTARY_STATUS_PATTERNS`：冻结词表的自然变体 —— 「已经到账」「已到帐」
+   「已原路退回」「已打款」「已寄出 / 已送达」「被驳回了」，以及时限承诺「预计 3-5 个工作日」
+   「1-3 个工作日原路退回」「3 天内到账」。冻结的「预计」正则只认单个数字紧跟单位，区间
+   与不带「预计」的写法一律漏；契约要求话术「不许承诺时限」、并以 check_reply 为唯一口径，
+   机器口径看不到最常见的写法就等于没有口径。
+
+:func:`status_spans` 仍只按 STATUS_PATTERNS（签名注释的口径）。
+
+**先规范化再扫**：NFKC（③ / 𝟑 / 全角 → 3），并去掉格式字符（零宽空格、零宽连接符、
+软连字符）、组合附加符、空白与间隔号 —— 这些在客户端上看不见或不改变读法，却能把
+「已​到账」从字面匹配里拆开。扫到的位置映射回原文偏移，规则 3 在原文偏移上比覆盖。
 
 **同一处只报一次**：「退款已到账」既是对外字面值、里面又含「已到账」，两段区间重叠，
-合成一处；否则同一句话会报两条 unbacked_status。
+合成一处；否则同一句话会报两条 unbacked_status。紧挨着的两处（「已发货已签收」）不合并。
 
 ## 这里不做的事
 
@@ -35,6 +48,8 @@ projection 的五个对外字面值本身。后者里有三句（已提出退款
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from typing import Any, Iterable
 
 from maos.domain.cs.types import (
@@ -62,6 +77,84 @@ REFUND_STATUS_MARKERS: tuple[str, ...] = ("已到账", "已退款", "补偿", "�
 #: 本轮检索命中落在 event_log 里的事件名（``maos.kb.retriever.emit_kb_retrieved``）。
 KB_RETRIEVED_EVENT = "KbRetrieved"
 
+# ---------------------------------------------------------------------------
+# 冻结词表的补充模式（在规范化后的正文上匹配：没有空白、没有零宽字符、数字已 NFKC）
+# ---------------------------------------------------------------------------
+#: 数量：阿拉伯数字（``\d`` 认一切 Unicode 十进制数字，含全角与阿拉伯-印度数字）与中文数字。
+_NUM = r"(?:\d|[〇零一二三四五六七八九十两半百])+"
+#: 区间连接：3-5、3~5、三到五、三至五。
+_RANGE = rf"{_NUM}(?:(?:[-~～—–−]|至|到){_NUM})?"
+#: 时长单位。
+_UNIT = r"个?(?:工作日|自然日|天|日|小时|周|星期)"
+#: 退款 / 到账一类的完成态动词（规则 3 与规则 5 共用）。
+_REFUND_DONE_VERBS = r"到[账帐]|退款|退回|退还|打款|汇款"
+#: 物流 / 订单一类的完成态动词。
+_ORDER_DONE_VERBS = r"发货|发出|寄出|送达|到货|签收|揽收|出库|取消|驳回|补偿|赔偿"
+#: 「已 / 已经 [为您] [原路] 动词」。
+_DONE_PREFIX = r"已经?(?:(?:为|给|帮|替)您)?(?:原路)?"
+
+#: 退款到账类的完成态说法（规则 5 用它补契约四个触发词：「退款已经到账」带 obs 也必须用对外字面值）。
+_REFUND_DONE_RE = re.compile(rf"{_DONE_PREFIX}(?:{_REFUND_DONE_VERBS})")
+
+#: 冻结 ``STATUS_PATTERNS`` 之外、check_reply 规则 3 还要认的状态字眼（DECISIONS task-t170）。
+#: 只收**完成态断言**与**时限承诺**；政策说法（「原路退回」「七天无理由退货」「签收后 7 天内
+#: 可申请退货」）不带「已」、不接到账 / 发货类动词，不命中。
+SUPPLEMENTARY_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
+    _REFUND_DONE_RE,
+    re.compile(rf"{_DONE_PREFIX}(?:{_ORDER_DONE_VERBS})"),
+    re.compile(r"被(?:驳回|拒绝)了"),
+    # 「预计」+ 区间 / 周：冻结正则只认单个数字
+    re.compile(rf"预计{_RANGE}{_UNIT}"),
+    re.compile(r"预计(?:今天|今日|明天|明日|后天|本周|下周|月底)"),
+    # 不带「预计」的时限承诺：时长紧接到账 / 退回 / 发货类动词
+    re.compile(rf"{_RANGE}{_UNIT}(?:之内|以内|内|左右)?(?:就|即可|即|会|能|可以|可|便)?"
+               r"(?:到[账帐]|原路(?:退回|返回|退还)|退还到|退到|发货|送达|送到|到货)"),
+)
+
+#: 规范化时直接丢掉的可见分隔符（间隔号一类）。空白、格式字符（Cf）、组合附加符（Mn / Me）
+#: 按类别丢，不在这里列。
+_DROP_CHARS = frozenset("·・‧•∙⋅")
+
+
+def _normalize(text: str) -> tuple[str, list[int]]:
+    """规范化正文：``(规范化后的串, 每个字符在原文里的下标)``。
+
+    逐字 NFKC（③ / 𝟑 / 全角数字 → 3，全角括号 → 半角），丢掉空白、格式字符（零宽空格、
+    零宽连接符、软连字符）、组合附加符与间隔号。只用来**找**状态字眼，回报的位置与片段
+    一律是原文的。
+    """
+    out: list[str] = []
+    index: list[int] = []
+    for i, ch in enumerate(text or ""):
+        for c in unicodedata.normalize("NFKC", ch):
+            if (c.isspace() or c in _DROP_CHARS
+                    or unicodedata.category(c) in ("Cf", "Mn", "Me")):
+                continue
+            out.append(c)
+            index.append(i)
+    return "".join(out), index
+
+
+def _norm_only(text: str) -> str:
+    return _normalize(text)[0]
+
+
+def _find_places(text: str, patterns: Iterable[re.Pattern[str]],
+                 literals: Iterable[str] = ()) -> list[tuple[int, int, str]]:
+    """在规范化后的正文上找 ``patterns`` 与 ``literals`` 的出现处，合并后映射回原文偏移。"""
+    norm, index = _normalize(text)
+    raw: list[tuple[int, int]] = []
+    for pattern in patterns:
+        raw.extend((m.start(), m.end()) for m in pattern.finditer(norm))
+    for literal in literals:
+        needle = _norm_only(literal)
+        raw.extend((s, s + len(needle)) for s in _occurrences(norm, needle))
+    out: list[tuple[int, int, str]] = []
+    for start, end, _ in _merge_spans(norm, raw):
+        o_start, o_end = index[start], index[end - 1] + 1
+        out.append((o_start, o_end, text[o_start:o_end]))
+    return out
+
 
 # ---------------------------------------------------------------------------
 # 状态字眼定位
@@ -69,20 +162,17 @@ KB_RETRIEVED_EVENT = "KbRetrieved"
 def status_spans(text: str) -> list[tuple[int, int, str]]:
     """按 ``STATUS_PATTERNS`` 找出正文里的状态字眼：``[(起, 止, 原文)]``，按起点升序。
 
-    重叠的命中合成一处（同一处只算一次）；否定式（尚未发货、还没到账）本来就不命中。
+    在规范化后的正文上找（零宽字符、空白拆不开状态字眼），位置与片段是原文的。
+    重叠的命中合成一处（同一处只算一次），紧挨着的两处不合并；否定式（尚未发货、
+    还没到账）本来就不命中。
     """
-    raw: list[tuple[int, int]] = []
-    for pattern in STATUS_PATTERNS:
-        raw.extend((m.start(), m.end()) for m in pattern.finditer(text or ""))
-    return _merge_spans(text or "", raw)
+    return _find_places(text or "", STATUS_PATTERNS)
 
 
 def _status_places(text: str) -> list[tuple[int, int, str]]:
-    """check_reply 要扫的全部「状态字眼」：STATUS_PATTERNS ∪ 五个对外字面值的出现处。"""
-    raw = [(s, e) for s, e, _ in status_spans(text)]
-    for literal in PUBLIC_STATUSES:
-        raw.extend((s, s + len(literal)) for s in _occurrences(text, literal))
-    return _merge_spans(text, raw)
+    """check_reply 要扫的全部「状态字眼」：STATUS_PATTERNS ∪ 补充模式 ∪ 五个对外字面值。"""
+    return _find_places(text or "", STATUS_PATTERNS + SUPPLEMENTARY_STATUS_PATTERNS,
+                        PUBLIC_STATUSES)
 
 
 def _merge_spans(text: str, raw: Iterable[tuple[int, int]]) -> list[tuple[int, int, str]]:
@@ -95,6 +185,15 @@ def _merge_spans(text: str, raw: Iterable[tuple[int, int]]) -> list[tuple[int, i
         else:
             merged.append([start, end])
     return [(s, e, text[s:e]) for s, e in merged]
+
+
+def _speaks_refund_status(literal: str) -> bool:
+    """规则 5 的触发：literal（规范化后）含契约四个触发词之一、含某个对外字面值
+    （「退款已到账啦」是在说那一句，就得逐字是那一句），或是退款到账类的完成态说法。"""
+    norm = _norm_only(literal)
+    return (any(m in norm for m in REFUND_STATUS_MARKERS)
+            or any(_norm_only(p) in norm for p in PUBLIC_STATUSES)
+            or bool(_REFUND_DONE_RE.search(norm)))
 
 
 def _occurrences(text: str, literal: str) -> list[int]:
@@ -178,8 +277,7 @@ def check_reply(draft: ReplyDraft, *, observations: frozenset[str] = frozenset()
     # 规则 5：说退款 / 补偿状态的 literal 必须逐字是对外五句之一。
     for idx, claim in enumerate(claims):
         literal = claim.literal or ""
-        if (any(m in literal for m in REFUND_STATUS_MARKERS)
-                and literal not in PUBLIC_STATUSES):
+        if _speaks_refund_status(literal) and literal not in PUBLIC_STATUSES:
             violations.append(Violation(
                 VIOLATION_FOREIGN_LITERAL,
                 f"claim[{idx}] literal={literal!r} 不是 projection 的对外字面值"))

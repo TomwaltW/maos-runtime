@@ -148,8 +148,14 @@ class EvalReport:
                 "cite_accuracy": self.cite_accuracy}
 
     def shortfalls(self, thresholds: Mapping[str, Any]) -> list[str]:
-        """没达标的指标，一条一句；空列表 = 全部达标。"""
+        """没达标的指标，一条一句；空列表 = 全部达标。
+
+        一轮都没跑（case 被筛空、传进来的是耗尽的生成器）本身就是一条 shortfall：
+        各比例在分母为 0 时取 1.0，不拦的话空跑会报满分。
+        """
         out: list[str] = []
+        if self.turns == 0:
+            out.append(f"turns=0（cases={self.cases}）：评测空转，一轮都没跑")
         for key in ("intent_accuracy", "route_accuracy", "handoff_recall"):
             want = float(thresholds.get(key, 1.0))
             got = getattr(self, key)

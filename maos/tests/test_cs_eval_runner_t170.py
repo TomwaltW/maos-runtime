@@ -572,6 +572,20 @@ def test_desk_exception_is_recorded_not_raised_t170(cases_t170):
     assert report.meets(load_thresholds()) is False
 
 
+def test_empty_run_does_not_meet_thresholds_t170(cases_t170):
+    """空跑不是满分：一轮都没跑（筛空、耗尽的生成器）时 meets 必须为 False。"""
+    factory, desks = _factory_t170(cases_t170)
+    for empty in ([], (), (c for c in cases_t170 if "no-such-tag" in c.tags)):
+        report = run_eval(factory, empty)
+        assert report.turns == 0 and report.cases == 0
+        assert report.meets(load_thresholds()) is False
+        assert any("turns=0" in s for s in report.shortfalls(load_thresholds()))
+    exhausted = iter(cases_t170)
+    list(exhausted)
+    assert run_eval(factory, exhausted).meets(load_thresholds()) is False
+    assert desks == []                                  # 空跑一个前台都没造
+
+
 def test_meets_honours_given_thresholds_t170(cases_t170):
     def tweak(msg, exp):
         return {"intent": T.INTENT_UNKNOWN} if msg.msg_id == f"{cases_t170[0].id}-1" else None

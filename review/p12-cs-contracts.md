@@ -415,3 +415,20 @@ maos/tests/test_cs_contract_p12.py、本文件。
 - p12 整合收尾：刷 docs/expected-metrics.json 与 docs/submission-checklist.md 锚点、
   两本账记 `## integrate-p12`、证据重产作为最后一个提交。
 - 整合点 grep：`INTEGRATION-POINT: p12`。
+
+---
+
+## 6. W-A 合流后的修订（2026-09-24，主会话裁定；T169 照此写）
+
+1. **§2.3 以守卫代码为准**：`maos/tests/test_cs_guard_t170.py` 已比 §2.3 原文严（复核两轮补的）。
+   T169 写 cs 代码时额外遵守：只用静态 import；identity 的 `allowed_skills` / `allowed_tools`
+   写成字面量集合；扫描范围里不出现 `compile` / `exec` / `eval` 这三个名字、不对导入的模块或对象
+   做 `getattr` / `vars` / `setattr` / `__dict__`、不写等于 `allowed_skills` 之类字段名的字符串、
+   不 import `importlib` / `subprocess` 等动态加载入口。提交前跑这个守卫测试。
+2. 守卫是**纵深防御，不追求完备**：鸭子类型的伪身份、运行时拼出来的字符串这类绕法判不到，
+   记 BACKLOG（task-t170 已记）。把 cs 范围内的 `maos.*` import 改成失败即关的白名单，放 p13 的校验轨做。
+3. `silent` 轮与 `tenant_unmapped` 轮的 `DeskResult.intent` 一律是 `unknown`（评测集已按此出题）。
+4. 后置校验规则 3 的口径：一条有效的 `obs:` claim 撑住它的 literal 在正文里的**每一处**（现行，测试钉住）。
+   p13 加「措辞与观察内容对得上」的规则时一并收紧。
+5. `claims.py` 里比 `types.STATUS_PATTERNS` 更宽的补充模式留在校验器里，不升进冻结的 types；
+   话术自查以**真的** `claims.check_reply` 为准 —— T169 加一条测试：每篇话术的 script 在空观察下过 check_reply。

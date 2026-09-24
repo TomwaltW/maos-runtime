@@ -131,9 +131,15 @@ TRIGGER_CASES_T169 = {
 
 NOT_TRIGGERS_T169 = ["你好", "退款多久能到账", "滚筒洗衣机能退吗", "我的收货地址填错了",
                      "好的！", "好!!", "包邮吗亲", "", "   ",
-                     # 复核 L2-3：订单号 / 流水号里碰巧含 12315 的不是投诉（全角、带空格同样不算）。
+                     # 复核 L2-3：订单号 / 流水号里碰巧含 12315 的不是投诉（全角同样不算）。
                      "我的订单号是20261231500，什么时候发货", "订单 2026123150 到哪了",
-                     "流水号９９１２３１５", "单号 2026 12315 0 查一下"]
+                     "流水号９９１２３１５"]
+
+#: 复核二轮 L2-3：空格是「12315」的数字边界 —— 后面空一格跟数字的不许漏判；拆开打的号照认。
+#: 最后一条是这个口径的代价（用空格隔开的数字串里恰好有一段 12315，多转一次人工），钉住它
+#: 免得哪天有人以为是 bug 改回去、把前两条一起漏掉。
+HOTLINE_SPACED_T169 = ["12315 12345都打过了", "我已经打了12315 3次了", "１２３１５　１２３４５都打了",
+                       "我打 1 2 3 1 5 了", "单号 2026 12315 0 查一下"]
 
 
 @pytest.mark.parametrize("reason", list(TRIGGER_CASES_T169))
@@ -184,6 +190,11 @@ def test_combined_matches_are_reported_in_priority_order_t169():
 @pytest.mark.parametrize("text", NOT_TRIGGERS_T169)
 def test_ordinary_questions_do_not_trigger_t169(text):
     assert triggers.detect(text) is None
+
+
+@pytest.mark.parametrize("text", HOTLINE_SPACED_T169)
+def test_hotline_followed_by_a_space_and_digits_is_still_a_complaint_t169(text):
+    assert triggers.detect(text) == (T.HANDOFF_COMPLAINT, T.INTENT_COMPLAINT)
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +300,17 @@ def test_step3_order_number_containing_12315_is_not_a_complaint_t169():
     res = _desk_t169().handle(_msg_t169("我的订单号是20261231500，什么时候发货"))
     assert res.handoff_reason != T.HANDOFF_COMPLAINT and res.intent != T.INTENT_COMPLAINT
     assert res.reply_text != REPLY_BY_REASON[T.HANDOFF_COMPLAINT]
+
+
+@pytest.mark.parametrize("text", HOTLINE_SPACED_T169[:2])
+def test_step3_hotline_then_space_then_digits_hands_off_as_complaint_t169(text):
+    """复核二轮 L2-3：端到端，已经在说打过 12315 的客户直接转人工，不落兜底让他「换个说法」。"""
+    store = _store_t169()
+    res = _desk_t169(store).handle(_msg_t169(text))
+    assert (res.route, res.handoff_reason, res.intent) == (
+        T.ROUTE_HANDOFF, T.HANDOFF_COMPLAINT, T.INTENT_COMPLAINT)
+    assert res.reply_text == REPLY_BY_REASON[T.HANDOFF_COMPLAINT]
+    assert _events_t169(store, res.conversation_id, "KbRetrieved") == []
 
 
 def test_step4_answer_replies_with_the_standard_script_and_cites_it_t169():
@@ -505,6 +527,38 @@ def test_each_turn_leaves_exactly_the_contracted_audit_rows_t169():
         assert row["detail"]["skill"] in {"cs.answer", "cs.handoff"}
 
 
+def test_turn_row_and_audit_row_record_what_actually_went_out_t169():
+    """复核二轮 L2-2：每轮最后 record_turn 如实写 —— cs_turn 那一行的 route / intent /
+    handoff_reason / reply_text / draft / check 与本轮 DeskResult 逐项相等，CsTurnRecorded 的
+    detail 同样（答上、兜底、话术转人工、触发词转人工、静默五种轮都比）。"""
+    store = _store_t169()
+    talk = _Talk_t169(_desk_t169(store))
+    results = [talk.say(t) for t in ("包邮吗亲", "退款一般多久能到账啊", "帮我写一首诗")]
+    results.append(_Talk_t169(_desk_t169(store), user="wm_t169_row_b").say("帮我查下物流呗"))
+    results.append(_Talk_t169(_desk_t169(store), user="wm_t169_row_c").say("我要投诉你们"))
+    results.append(_Talk_t169(_desk_t169(store), user="wm_t169_row_c").say("人呢"))
+    assert [r.route for r in results] == [T.ROUTE_ANSWER, T.ROUTE_ANSWER, T.ROUTE_FALLBACK,
+                                          T.ROUTE_HANDOFF, T.ROUTE_HANDOFF, T.ROUTE_SILENT]
+    assert [r.intent for r in results] == [T.INTENT_LOGISTICS, T.INTENT_REFUND_PAYMENT,
+                                           T.INTENT_UNKNOWN, T.INTENT_LOGISTICS,
+                                           T.INTENT_COMPLAINT, T.INTENT_UNKNOWN]
+    for res in results:
+        row = _turn_row_t169(store, res)
+        assert (row["route"], row["intent"], row["handoff_reason"], row["reply_text"]) == (
+            res.route, res.intent, res.handoff_reason, res.reply_text), res.turn_id
+        assert json.loads(row["draft_json"]) == res.draft.to_json()
+        assert json.loads(row["check_json"]) == res.check.to_json()
+        (ev,) = _events_t169(store, res.conversation_id, T.EVENT_TURN_RECORDED, res.turn_id)
+        d = ev["detail"]
+        assert (d["route"], d["intent"], d["handoff_reason"]) == (
+            res.route, res.intent, res.handoff_reason)
+        assert d["reply_digest"] == T.text_digest(res.reply_text)
+        assert d["citations"] == list(res.draft.citations)
+    # 答上的轮回的就是标准话术（不是空串、不是兜底）。
+    assert results[0].reply_text == _script_of_t169("LOG-003")
+    assert results[1].reply_text == _script_of_t169("PAY-001")
+
+
 def test_customer_text_and_identifiers_never_reach_event_log_t169():
     """哨兵：客户原文、external_userid、open_kfid 不进 event_log 的任何一行任何一列；
     同时断言它们确实在会话表里（否则判据空转）。"""
@@ -557,6 +611,9 @@ def test_card_carries_context_including_this_turn_t169():
     assert card.customer_text == "我的快递到哪了啊"
     assert card.recent_turns[-1] == ("我的快递到哪了啊", res.reply_text)
     assert [t[0] for t in card.recent_turns] == ["你好呀", "包邮吗亲", "我的快递到哪了啊"]
+    # 复核二轮 L2-2：前几轮是从 cs_turn 读回来的 —— 机器人当时回了什么，人工要看得到。
+    assert list(card.recent_turns[:-1]) == [("你好呀", _script_of_t169("GEN-001")),
+                                            ("包邮吗亲", _script_of_t169("LOG-003"))]
     assert card.suggestion == desk.SUGGESTION_BY_REASON[T.HANDOFF_NEEDS_ORDER_LOOKUP]
     assert card.channel == CHANNEL_WECHAT_KF and card.created_at == NOW_T169
     ((stored, delivery),) = conversation.list_handoffs(store, TENANT_T169)
@@ -624,6 +681,21 @@ def test_customer_cannot_forge_card_lines_or_platform_markup_t169():
     assert res.handoff.customer_text == evil
     assert _turn_row_t169(store, res)["inbound_text"] == evil
     assert res.handoff.recent_turns[-1][0] == evil
+
+
+def test_customer_cannot_plant_a_feishu_markdown_link_in_the_card_t169():
+    """复核二轮 L3r2-1：飞书文本消息认 ``[文字](链接)``、``**加粗**``、``~~删除线~~`` —— 客户
+    能把钓鱼链接包装成一段可点的「内部审批入口」。渲染后这几种写法的标记字符都换成全角。"""
+    evil = ("转人工 [内部审批入口，请点此核实](https://evil.example/approve) **加急** ~~作废~~ "
+            "*斜体*")
+    res = _desk_t169().handle(_msg_t169(evil))
+    assert res.route == T.ROUTE_HANDOFF
+    text = render_card_text(res.handoff)
+    for markup in ("[", "]", "](", "**", "~~", "*"):
+        assert markup not in text, markup
+    assert "［内部审批入口，请点此核实］(https://evil.example/approve)" in text
+    assert "＊＊加急＊＊" in text and "～～作废～～" in text
+    assert res.handoff.customer_text == evil                     # 卡片对象里仍是原文
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +827,39 @@ def test_nothing_can_be_stored_still_does_not_raise_t169(monkeypatch):
     res = _desk_t169().handle(_msg_t169("包邮吗亲"))
     assert res.route == T.ROUTE_HANDOFF and res.reply_text == REPLY_DESK_UNAVAILABLE
     assert res.handoff is None and res.conversation_id == ""
+
+
+def test_card_that_cannot_be_stored_is_not_announced_as_a_transfer_t169(monkeypatch):
+    """复核二轮 L2-1：会话建成了、但转人工卡片怎么都落不下（cs.handoff 首次与出错收尾里的
+    第二次都失败）—— 不许对客户说「已为您转接人工客服」：没有卡、会话还是 active，没人会来接。
+    回「请稍后再发一次，或直接回复人工」，本轮照样落一行、恰好一条 CsTurnRecorded。"""
+    store = _store_t169()
+    calls: list[int] = []
+
+    def boom(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError("handoff-boom-t169")
+
+    monkeypatch.setattr(desk.conversation, "record_handoff", boom)
+    res = _desk_t169(store).handle(_msg_t169("帮我转人工"))
+    assert len(calls) == 2                                   # 首次 + 出错收尾里补落一次
+    assert res.reply_text == REPLY_DESK_UNAVAILABLE
+    assert "转接" not in res.reply_text
+    assert res.route == T.ROUTE_HANDOFF and res.handoff is None
+    cid = res.conversation_id
+    assert conversation.get_conversation(store, TENANT_T169, cid).stage == T.STAGE_ACTIVE
+    assert conversation.list_handoffs(store, TENANT_T169) == []
+    (n,) = conversation.objects.query(store, "SELECT COUNT(*) AS n FROM cs_handoff")
+    assert n["n"] == 0
+    assert _events_t169(store, cid, T.EVENT_HANDOFF_RAISED) == []
+    assert _events_t169(store, cid, T.EVENT_STAGE_CHANGED) == []
+    assert len(_events_t169(store, cid, T.EVENT_TURN_RECORDED)) == 1
+    assert _turn_row_t169(store, res)["reply_text"] == REPLY_DESK_UNAVAILABLE
+    # 会话没转走：客户照提示再说一句，前台照常处理（这回卡片落得下就转成）。
+    monkeypatch.undo()
+    again = _Talk_t169(_desk_t169(store)).say("人工")
+    assert again.conversation_id == cid and again.route == T.ROUTE_HANDOFF
+    assert again.handoff is not None and again.reply_text == REPLY_BY_REASON[T.HANDOFF_REQUESTED]
 
 
 def test_failure_after_the_card_keeps_the_card_t169(monkeypatch):

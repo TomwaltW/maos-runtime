@@ -596,8 +596,11 @@ CARD_LINEBREAK = " ⏎ "
 #: 各平台认的换行（``str.splitlines`` 的全套）。
 _LINEBREAKS_RE = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85  ]")
 #: 平台会解释的标记字符换成全角：飞书文本的 ``<at user_id="all">``、企微文本的
-#: ``<a href>``、Matrix 的 ``@room`` 都靠它们起作用。
-_CARD_MARKUP = str.maketrans({"<": "＜", ">": "＞", "@": "＠"})
+#: ``<a href>``、Matrix 的 ``@room`` 靠 ``< > @``；飞书文本消息还认 markdown 式的
+#: ``[文字](链接)``、``**加粗**``、``~~删除线~~``（复核二轮 L3r2-1：客户能把一个钓鱼链接包装成
+#: 「内部审批入口」的可点文字），所以 ``[ ] * ~`` 也换。只挡这几种已知写法，不是完备的转义。
+_CARD_MARKUP = str.maketrans({"<": "＜", ">": "＞", "@": "＠",
+                              "[": "［", "]": "］", "*": "＊", "~": "～"})
 
 
 def _inline(text: Any) -> str:

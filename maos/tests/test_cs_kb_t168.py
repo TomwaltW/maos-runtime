@@ -10,9 +10,10 @@
    所以每篇话术在空观察下必须说不出任何状态字眼，也不许承诺时限 / 金额 / 结果、
    不许露内部口径。
 4. **检索质量**：自检索（每条例句检出时本篇排第一）与泛化（holdout 改写 top-1、
-   无关句全部低于门槛）。
+   无关句全部低于门槛）；短句两面（常见二元组撞上例句的闲聊不过门槛、登记过的短说法照样命中）。
 5. **审计与隔离**：一次检索恰好一条 KbRetrieved、客户原文不进 event_log；KB 关着零事件；
-   话术与退款语料同库时互相检不到；别的租户检不到 tnt-demo 的话术。
+   话术与退款语料同库时互相检不到；别的租户检不到 tnt-demo 的话术；biz_type='cs' 但
+   kind 不是 cs_script、或 kind 对但 biz_type 缺的文档都不许作为话术返回。
 """
 
 from __future__ import annotations
@@ -73,6 +74,17 @@ PROMISE_RE_T168 = re.compile(
     r"|元|块钱|全额|包退|包换|补发|赔")
 #: 语气词：每篇至少一条例句带它（客户不会用书面语问）。
 PARTICLES_T168 = "啊呀吗嘛呢吧哦哈不么啦拉呗亲哇"
+#: 每篇至少一条错别字例句（拼音输入法同音错字）：编号 → (错写, 本字)。写死在本文件，
+#: 与生成器里的 typos 登记各一份（复核 L2-3：首版有 10 篇一条错别字例句都没有）。
+TYPOS_T168 = {
+    "LOG-001": ("发获", "发货"), "LOG-002": ("快第", "快递"), "LOG-003": ("包油", "包邮"),
+    "LOG-004": ("跟新", "更新"), "LOG-005": ("地止", "地址"), "LOG-006": ("钱收", "签收"),
+    "PAY-001": ("到帐", "到账"), "PAY-002": ("支付包", "支付宝"), "PAY-003": ("退宽", "退款"),
+    "PAY-004": ("失拜", "失败"), "PAY-005": ("发漂", "发票"), "RET-001": ("无理有", "无理由"),
+    "RET-002": ("退或", "退货"), "RET-003": ("换获", "换货"), "RET-004": ("运废", "运费"),
+    "RET-005": ("申情", "申请"), "GEN-001": ("你嚎", "你好"), "GEN-002": ("谢谢拉", "谢谢啦"),
+    "GEN-003": ("课服", "客服"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +231,20 @@ def test_every_script_is_speakable_under_empty_observations():
         assert not found, f"{no} 的话术有承诺字样 {found.group(0) if found else ''!r}"
 
 
+def test_every_script_has_a_misspelled_example():
+    """派单「口语化、带错别字、带语气词都要有」里的错别字那一样：每篇至少一条例句带同音错字，
+    错写不出现在该篇的正式说法里（否则就不是错字），本字是该篇自己的说法。"""
+    bodies = _bodies_t168()
+    assert set(TYPOS_T168) == set(CATALOG_T168)
+    for no, (wrong, right) in TYPOS_T168.items():
+        body = bodies[no]
+        assert any(wrong in ex for ex in body["examples"]), f"{no} 没有带错写 {wrong!r} 的例句"
+        formal = " ".join([body["scene"], body["script"], body["principle"], *body["synonyms"]])
+        assert wrong not in formal, f"{no} 的错写 {wrong!r} 出现在正式说法里"
+        own = " ".join([body["scene"], body["script"], *body["synonyms"], *body["examples"]])
+        assert right in own, f"{no} 的本字 {right!r} 不是本篇的说法"
+
+
 def test_handoff_scripts_are_transitions_and_others_do_not_claim_a_handoff():
     for no, body in _bodies_t168().items():
         script = body["script"]
@@ -257,10 +283,12 @@ def test_holdout_file_is_well_formed_and_disjoint_from_the_corpus():
 
 
 def test_holdout_rewrites_generalise_and_unrelated_text_stays_below_the_threshold(seeded_t168):
-    """泛化。实测（task-t168，2026-09-24，57 条改写 = 19 篇 x 3 条）：
-    top-1 正确 55/57 = 0.965（错的两条：「偏远地区邮费另算吗」→ LOG-002、
-    「发票在哪里开呀」→ RET-002）；top-1 正确且分数 ≥ MIN_SCRIPT_SCORE(0.25) 的 49/57 = 0.860；
-    无关句 18 条 + 英文售后 4 条的最高分 0.194（「给我讲个笑话吧」）。
+    """泛化。复核轮实测（task-t168，2026-09-24，76 条改写 = 19 篇 x (3 条首版 + 1 条短口语)）：
+    top-1 正确 74/76 = 0.974（错的两条：「偏远地区邮费另算吗」→ LOG-002、「谢了哈」一篇都没检出）；
+    top-1 正确且分数 ≥ MIN_SCRIPT_SCORE(0.25) 的 63/76 = 0.829（首版 57 条里 56 / 49）；
+    无关句 79 条（远域 18 + 复核轮补的短对话轮与近域句 61）+ 英文售后 4 条，最高分 0.208
+    （「好的」→ GEN-002），其次 0.200（「这个多少钱」→ LOG-003）。
+    首版重排口径在同一份无关句上有 24 条 ≥ 0.25（最高 0.75）—— 那一版的 holdout 只有远域句，看不出来。
     """
     holdout = json.loads(HOLDOUT_PATH.read_text(encoding="utf-8"))
     total = correct = answerable = 0
@@ -280,6 +308,38 @@ def test_holdout_rewrites_generalise_and_unrelated_text_stays_below_the_threshol
         if hits and hits[0].score >= scripts.MIN_SCRIPT_SCORE:
             over.append((text, hits[0].scheme_no, hits[0].score))
     assert not over, f"无关句过了门槛：{over}"
+
+
+#: 复核 L2-1 点名的误命中（首版口径下全部 ≥ 0.25：没有了 → PAY-003 0.361、密码忘了怎么办 →
+#: LOG-006 0.5、这个多少钱 → LOG-003 0.575、质量不错 → RET-003 0.310、什么 → LOG-002 0.7、
+#: 可以 → PAY-002 0.643、我不想活了 → RET-005 0.417），外加光秃秃的应答与疑问词。
+#: 写死在本文件，不从 holdout 取 —— holdout 被人删了这几条，这条照样红。
+SHORT_GENERIC_TURNS_T168 = ("没有了", "密码忘了怎么办", "这个多少钱", "质量不错", "什么", "可以",
+                            "我不想活了", "好的", "知道了", "怎么办", "为什么")
+#: 另一面：登记过的短说法、以及它们带句尾语气词的样子，照样要满分（1.0）命中对的那篇。
+#: 「你好啊」「谢谢哈」「拜拜啦」「换货呀」若不按去句尾语气词算原样命中，分数恰好落在 0.25 上，
+#: 「在吗亲」是 0 —— 所以这里钉 1.0，不钉「过门槛」。
+SHORT_REGISTERED_TURNS_T168 = {"你好": "GEN-001", "你好啊": "GEN-001", "您好呀": "GEN-001",
+                               "在吗": "GEN-001", "在吗亲": "GEN-001", "哈喽啊": "GEN-001",
+                               "谢谢": "GEN-002", "谢谢哈": "GEN-002", "拜拜啦": "GEN-002",
+                               "包邮吗亲": "LOG-003", "开发票呀": "PAY-005", "怎么退货呢": "RET-002",
+                               "换货呀": "RET-003"}
+
+
+def test_short_generic_turns_stay_below_the_threshold_but_registered_ones_hit(seeded_t168):
+    """短句的两面：一个常见二元组撞上某篇例句不许过门槛；登记过的短说法（含句尾语气词）要命中。"""
+    over = []
+    for text in SHORT_GENERIC_TURNS_T168:
+        hits = _match_t168(seeded_t168, text)
+        if hits and hits[0].score >= scripts.MIN_SCRIPT_SCORE:
+            over.append((text, hits[0].scheme_no, hits[0].score))
+    assert not over, f"短句 / 闲聊过了门槛：{over}"
+    missed = []
+    for text, no in SHORT_REGISTERED_TURNS_T168.items():
+        hits = _match_t168(seeded_t168, text)
+        if not hits or hits[0].scheme_no != no or hits[0].score != 1.0:
+            missed.append((text, no, [(h.scheme_no, h.score) for h in hits[:2]]))
+    assert not missed, f"登记过的短说法没有满分命中：{missed}"
 
 
 def test_hits_are_sorted_bounded_and_deterministic(seeded_t168):
@@ -373,6 +433,23 @@ def test_a_cs_script_without_biz_type_is_not_served(seeded_t168):
     kb.upsert_doc(seeded_t168, {**row, "doc_id": "kb-cs-wild-LOG-004", "biz_type": None})
     hits = _match_t168(seeded_t168, "我的快递到哪了啊", limit=19)
     assert hits and "kb-cs-wild-LOG-004" not in {h.doc_id for h in hits}
+
+
+def test_a_cs_biz_type_doc_of_another_kind_is_not_served(seeded_t168):
+    """契约「只检 kind=cs_script」的另一半：biz_type='cs' 但 kind 不是话术的文档，
+    body 长得再像话术也不许作为 ScriptHit 返回、不许进 KbRetrieved。"""
+    row = next(r for r in corpus.load_corpus() if r["rule_no"] == "LOG-004")
+    fake = "kb-policy-looks-like-cs-t168"
+    kb.upsert_doc(seeded_t168, {**row, "doc_id": fake, "kind": kb.KIND_POLICY})
+    assert kb.get_doc(seeded_t168, TENANT, fake)["biz_type"] == T.BIZ_TYPE_CS
+    before = len(_kb_events_t168(seeded_t168))
+    hits = _match_t168(seeded_t168, "我的快递到哪了啊", limit=19)
+    assert hits and hits[0].doc_id == f"kb-cs-{TENANT}-LOG-004", "本篇都没检出，下面就没在验"
+    assert fake not in {h.doc_id for h in hits}
+    events = _kb_events_t168(seeded_t168)[before:]
+    assert len(events) == 1
+    assert fake not in {d["doc_id"] for d in events[0]["detail"]["docs"]}
+    assert {d["kind"] for d in events[0]["detail"]["docs"]} == {T.CS_KB_KIND}
 
 
 def test_other_tenants_cannot_retrieve_tnt_demo_scripts(seeded_t168):

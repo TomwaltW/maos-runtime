@@ -10,7 +10,9 @@
    所以每篇话术在空观察下必须说不出任何状态字眼，也不许承诺时限 / 金额 / 结果、
    不许露内部口径。
 4. **检索质量**：自检索（每条例句检出时本篇排第一）与泛化（holdout 改写 top-1、
-   无关句全部低于门槛）；短句两面（常见二元组撞上例句的闲聊不过门槛、登记过的短说法照样命中）。
+   无关句全部低于门槛）；短句两面（常见二元组撞上例句的闲聊不过门槛、登记过的短说法照样命中）；
+   召回不随退款侧的权重旋钮 ``MAOS_KB_WEIGHTS`` 漂（复核 L2-A）；问自己那一单状态的句子
+   不许被不转人工的政策话术答掉（复核 L2-B）。
 5. **审计与隔离**：一次检索恰好一条 KbRetrieved、客户原文不进 event_log；KB 关着零事件；
    话术与退款语料同库时互相检不到；别的租户检不到 tnt-demo 的话术；biz_type='cs' 但
    kind 不是 cs_script、或 kind 对但 biz_type 缺的文档都不许作为话术返回。
@@ -280,6 +282,13 @@ def test_holdout_file_is_well_formed_and_disjoint_from_the_corpus():
         for text in rewrites:
             assert _norm_t168(text) not in seen, f"{no} 的改写 {text!r} 抄了库里的说法"
     assert len(holdout["unrelated"]) >= 12
+    lookup = {no for no, (_intent, _scene, handoff) in CATALOG_T168.items() if handoff}
+    assert holdout["status_lookup"] and set(holdout["status_lookup"]) <= lookup, \
+        "status_lookup 的键必须是带转人工标记的方案编号"
+    for no, texts in holdout["status_lookup"].items():
+        assert len(texts) >= 2, f"status_lookup {no} 不足 2 条"
+        for text in texts:
+            assert _norm_t168(text) not in seen, f"status_lookup {no} 的 {text!r} 抄了库里的说法"
 
 
 def test_holdout_rewrites_generalise_and_unrelated_text_stays_below_the_threshold(seeded_t168):
@@ -340,6 +349,80 @@ def test_short_generic_turns_stay_below_the_threshold_but_registered_ones_hit(se
         if not hits or hits[0].scheme_no != no or hits[0].score != 1.0:
             missed.append((text, no, [(h.scheme_no, h.score) for h in hits[:2]]))
     assert not missed, f"登记过的短说法没有满分命中：{missed}"
+
+
+#: 复核 L2-A：退款侧的权重旋钮两档都能让话术整篇召不回来（修之前：fts=0 时「快递盒子破了个大洞」
+#: 检不到 LOG-006、自检索 124/125；fts 与 vector 都为 0 时一篇都检不到，自检索 0/125）。
+KNOB_SETTINGS_T168 = ('{"fts": 0}', '{"fts": 0, "vector": 0}')
+
+
+@pytest.mark.parametrize("knob_t168", KNOB_SETTINGS_T168)
+def test_recall_does_not_follow_the_refund_weight_knob(seeded_t168, monkeypatch, knob_t168):
+    """召回与 ``MAOS_KB_WEIGHTS`` 脱钩：旋钮怎么拧，返回逐项不变（分数与同分次序都不变）；
+    且重排能打出分（> 0）的每一篇都在返回里 —— 召回不替重排挡掉任何一篇。"""
+    bodies = {row["doc_id"]: json.loads(row["body"]) for row in corpus.load_corpus()}
+    holdout = json.loads(HOLDOUT_PATH.read_text(encoding="utf-8"))
+    texts = [ex for body in bodies.values() for ex in body["examples"]]
+    texts += [t for rewrites in holdout["rewrites"].values() for t in rewrites]
+    baseline = {t: _match_t168(seeded_t168, t, limit=len(bodies)) for t in texts}
+    monkeypatch.setenv(kb.KB_WEIGHTS_ENV, knob_t168)
+    assert retriever.load_weights()["fts"] == 0.0, "旋钮没生效，下面就没在验"
+    drifted, dropped = [], []
+    for text in texts:
+        hits = _match_t168(seeded_t168, text, limit=len(bodies))
+        if hits != baseline[text]:
+            drifted.append(text)
+        scorable = {d for d, body in bodies.items() if scripts.script_score(text, body) > 0}
+        if {h.doc_id for h in hits} != scorable:
+            dropped.append((text, sorted(scorable - {h.doc_id for h in hits})))
+    assert not drifted, f"旋钮一拧返回就变了：{drifted[:5]}"
+    assert not dropped, f"重排能打分的话术没召回：{dropped[:5]}"
+
+
+#: 复核 L2-B 点名的「问自己那一单」的句子。修之前全部被不转人工的政策话术以过门槛的分数答掉：
+#: 钱退回来了吗 → PAY-001 0.474、退款退了吗 → PAY-001 0.604、退的钱收到了吗 → PAY-001 0.447、
+#: 退款到账了没 → PAY-001 0.696、售后申请通过了没 → RET-002 0.436。写死在本文件，不从 holdout 取。
+REVIEW_STATUS_TURNS_T168 = {"钱退回来了吗": "PAY-003", "退款退了吗": "PAY-003",
+                            "退的钱收到了吗": "PAY-003", "退款到账了没": "PAY-003",
+                            "售后申请通过了没": "RET-005"}
+#: 已知残留（docs/BACKLOG.md task-t168）：句子里的实词全是政策话术的说法（「退到卡里」），「问状态」
+#: 只靠一个虚字「了」，字符二元组分不开「会退到卡里吗」与「退到卡里了吗」。只许这里列出的句子答错，
+#: 且只许答成列出的那篇；别的句子一答错就红。
+KNOWN_STATUS_MISROUTES_T168 = {"我的钱退到卡里了吗": "PAY-001"}
+
+
+def test_status_questions_are_not_answered_with_a_policy_script(seeded_t168):
+    """问自己那一单的状态要看具体订单（契约 §0）：只许命中带 needs_order_lookup 的话术或落兜底，
+    不许被不转人工的政策话术以过门槛的分数答掉 —— 那样前台照政策话术回，而不是转人工。
+
+    第二次复核轮实测（task-t168，2026-09-24，holdout status_lookup 47 条）：判对且过门槛 41 条
+    （0.872），判给另一篇查单话术 2 条（钱给我退了没、退款有结果了吗 → RET-005：路由对、intent 偏），
+    落兜底 3 条，被政策话术答掉 1 条（即 KNOWN_STATUS_MISROUTES_T168）。补例句之前同一批的前 32 条里
+    8 条被政策话术答掉；后 15 条私有验证句在例句定稿后只跑过一次：判对 14、答错 1。
+    """
+    for text, no in REVIEW_STATUS_TURNS_T168.items():
+        hits = _match_t168(seeded_t168, text)
+        assert hits and hits[0].scheme_no == no and hits[0].score >= scripts.MIN_SCRIPT_SCORE \
+            and hits[0].handoff == T.HANDOFF_NEEDS_ORDER_LOOKUP, \
+            (text, [(h.scheme_no, h.score) for h in hits])
+
+    holdout = json.loads(HOLDOUT_PATH.read_text(encoding="utf-8"))
+    total = correct = 0
+    answered_by_policy = {}
+    for no, texts in holdout["status_lookup"].items():
+        for text in texts:
+            total += 1
+            hits = _match_t168(seeded_t168, text)
+            if not hits or hits[0].score < scripts.MIN_SCRIPT_SCORE:
+                continue                                   # 兜底：不答错，由前台追问或转人工
+            if not hits[0].handoff:
+                answered_by_policy[text] = (hits[0].scheme_no, hits[0].score)
+            elif hits[0].scheme_no == no:
+                correct += 1
+    unexpected = {t: v for t, v in answered_by_policy.items()
+                  if KNOWN_STATUS_MISROUTES_T168.get(t) != v[0]}
+    assert not unexpected, f"问状态的句子被政策话术答掉：{unexpected}"
+    assert correct / total >= 0.85, f"status_lookup 判对且过门槛的只有 {correct}/{total}"
 
 
 def test_hits_are_sorted_bounded_and_deterministic(seeded_t168):

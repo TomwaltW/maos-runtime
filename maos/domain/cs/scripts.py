@@ -5,6 +5,7 @@
 1. **召回走知识层的两阶段检索**（``maos.kb.retriever.retrieve``）：租户硬约束、
    ``biz_type='cs'``、``kind='cs_script'``，关键词就是客户原文。不另写一条直查
    ``kb_doc`` 的 SQL —— 绕开 ``retrieve`` 就绕开了租户那条硬约束，而那不报错。
+   四通道权重点名给（``_RECALL_WEIGHTS``），不读退款侧调的 ``MAOS_KB_WEIGHTS``。
 2. **重排是本模块的**：对召回的每篇话术，拿客户原文与该篇的「适用场景 + 同义词 + 例句」
    逐条算字符二元组重合度，见 :func:`script_score`。知识层的四通道分数是为退款规划调的
    （规则编号、错误码两条精确通道在这里恒为 0），直接拿来当命中门槛会把门槛定在噪声上。
@@ -77,6 +78,18 @@ _MIN_CONTENT_HITS = 2
 #: 原样命中：「你好啊」就是登记过的「你好」，「在吗亲」就是「在吗」。只用于这一条判定，
 #: 不参与二元组打分；去到只剩一个字就停（「在呢」与「在吗」都去成「在」纯属巧合），见 :func:`tail_forms`。
 _TAIL_PARTICLES = frozenset("啊呀吗嘛呢吧哦哈啦拉呗哇亲么噢喔嗯哟呐")
+
+#: 召回用的四通道权重，**点名给、不读配置**（复核 L2-A）。``retrieve`` 缺省读
+#: ``MAOS_KB_WEIGHTS``（受治理的配置项，env 或 Nacos），那一套是为退款规划调的；
+#: 而阶段二丢掉加权和 <= 0 的文档 —— 退款侧把 fts 调成 0，话术就整篇召不回来，
+#: 重排连看都看不到，本该满分命中的一句变成兜底。所以这里的召回与那个旋钮脱钩：
+#: 两条精确通道对话术恒无信号，权重 0；全文通道按字召回（``kb.tokenize`` 中文按字切），
+#: 客户原文与一篇话术只要共享一个汉字就进候选，而重排分 > 0 至少要共享一个二元组 ——
+#: 话术库的说法里没有英数字（task-t168 复核轮实查 296 条），共享的二元组必含汉字，
+#: 于是重排能打出分的每一篇都召得回来。向量通道也给 1：它的分只作重排同分时的次序。
+#: ``KbRetrieved.detail.weights`` 仍是 ``retriever.weights_snapshot()`` 读到的配置值
+#: （``emit_kb_retrieved`` 不收权重参数，知识层不归本轨改），见 docs/DECISIONS.md。
+_RECALL_WEIGHTS = {"rule_no": 0.0, "gateway_code": 0.0, "fts": 1.0, "vector": 1.0}
 
 
 def _grams(text: str) -> frozenset[str]:
@@ -202,8 +215,9 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
     started = time.perf_counter()
     query = {"tenant_id": tenant_id, "biz_type": T.BIZ_TYPE_CS, "keyword": text}
     # limit 放到候选集上限：重排要看到全部召回，知识层的截断只按它自己的分数排。
+    # 权重点名给：召回不随退款侧的 MAOS_KB_WEIGHTS 漂（见 _RECALL_WEIGHTS）。
     recalled = retriever.retrieve(store, query, limit=retriever.MAX_CANDIDATES,
-                                  kinds=(T.CS_KB_KIND,))
+                                  weights=dict(_RECALL_WEIGHTS), kinds=(T.CS_KB_KIND,))
 
     scored: list[tuple[float, float, str, dict, dict]] = []
     for hit in recalled:

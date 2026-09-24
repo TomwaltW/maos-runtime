@@ -596,3 +596,68 @@ def test_meets_honours_given_thresholds_t170(cases_t170):
                          "cite_accuracy": 1.0}) is True
     assert "intent_accuracy" in report.describe().splitlines()[0]
     assert f"{cases_t170[0].id}#1" in report.describe()
+
+
+# ---------------------------------------------------------------------------
+# 复核修复轮二：手造 case 的形状（L2-1）、前台返回不合形状（L2-2）
+# ---------------------------------------------------------------------------
+_ANSWER_T170 = EvalExpect(route=T.ROUTE_ANSWER, intent=T.INTENT_GENERAL)
+_HANDOFF_T170 = EvalExpect(route=T.ROUTE_HANDOFF, intent=T.INTENT_COMPLAINT,
+                           reason=T.HANDOFF_COMPLAINT)
+
+
+@pytest.mark.parametrize("bad_cases", [
+    # 轮比期望多：多出来的「我要投诉」不能悄悄不发
+    (EvalCase(id="X-2", turns=("你好", "我要投诉"), expect=(_ANSWER_T170,)),),
+    # 期望比轮多：handoff 期望不能悄悄不查
+    (EvalCase(id="X-1", turns=("你好",), expect=(_ANSWER_T170, _HANDOFF_T170)),),
+    (EvalCase(id="X-0", turns=(), expect=()),),
+    (EvalCase(id="", turns=("你好",), expect=(_ANSWER_T170,)),),
+    (EvalCase(id="D-1", turns=("你好",), expect=(_ANSWER_T170,)),
+     EvalCase(id="D-1", turns=("在吗",), expect=(_ANSWER_T170,))),
+])
+def test_run_eval_rejects_malformed_cases_before_running_t170(bad_cases):
+    built: list[object] = []
+
+    def factory():
+        built.append(object())
+        raise AssertionError("形状不对时一个前台都不该造")
+    with pytest.raises(ValueError):
+        run_eval(factory, bad_cases)
+    assert built == []
+
+
+def test_mismatched_case_built_by_replace_is_not_scored_perfect_t170(cases_t170):
+    """复核给的反向验证原样：dataclasses.replace 砍掉一条期望，报告不许照样满分。"""
+    factory, _ = _factory_t170(cases_t170)
+    target = next(c for c in cases_t170 if len(c.turns) >= 2)
+    cut = tuple(dataclasses.replace(c, expect=c.expect[:-1]) if c is target else c
+                for c in cases_t170)
+    with pytest.raises(ValueError, match=target.id):
+        run_eval(factory, cut)
+
+
+class _OddDeskT170:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def handle(self, msg):
+        return self.reply
+
+
+@pytest.mark.parametrize("reply", [
+    None,
+    object(),
+    {"route": "answer", "intent": "general"},
+    T.DeskResult(reply_text=None, tenant_id="t", conversation_id="c", turn_id="u",
+                 route=T.ROUTE_ANSWER, intent=T.INTENT_GENERAL, draft=T.ReplyDraft(text="")),
+])
+def test_non_deskresult_reply_is_an_error_turn_not_a_crash_t170(cases_t170, reply):
+    """前台返回 None / 别的对象 / 字段类型不对：记该轮 error，整批照跑完。"""
+    report = run_eval(lambda: _OddDeskT170(reply), cases_t170)
+    total = sum(len(c.turns) for c in cases_t170)
+    assert report.turns == total
+    assert len(report.failures) == total
+    assert all(m.problems == ("error",) for m in report.failures)
+    assert report.intent_hits == report.route_hits == report.cite_hits == 0
+    assert report.meets(load_thresholds()) is False

@@ -10,38 +10,58 @@
 * **禁 import 前缀** —— ``ast.walk`` 全树（函数体内的 import 也算），相对 import 按包路径
   解析成绝对名再判；``from A import B`` 按 ``A.B`` 判（``from maos.domain.refund import
   projection`` 是 projection、放行；``from maos.domain.refund import objects`` 拦）。
-  另三种拿到同一个模块的写法按同一套规则判：
+  另几种拿到同一个模块的写法按同一套规则判：
   - ``from <祖先包> import *``（``maos`` / ``maos.domain`` / ``maos.skills.builtin`` …… 的
     star import 会把禁区子模块一并绑进来）；
   - 属性链：``from maos.skills import builtin`` 之后的 ``builtin.refund.payment_execute``、
     ``import maos.kb`` 之后的 ``maos.runtime.gate``，按还原出的点分名判；
-  - 动态 import：``import_module`` / ``find_spec`` / ``__import__`` / ``resolve_name`` /
-    ``run_module`` 的字面量参数（位置参数与关键字参数、``package`` / ``level`` 的相对名、
-    ``fromlist`` 每一项），``sys.modules[...]`` 的字面量下标；``exec`` / ``eval`` /
-    内建 ``compile`` 在扫描范围里一律判。
+  - **按真实出处再判一次**（复核 L3-B）：名字放行、拿到的对象却来自禁区（允许的模块把禁区
+    模块或其函数 / 类再导出）也判。``from A import b``、属性链、``from A import *`` 绑出的
+    每个公开名，都在测试进程里实际解析：是模块按 ``__name__``，是函数 / 类按
+    ``__module__.__qualname__``，途经的模块换成它的真名（``logging.sys.modules`` 就是
+    ``sys.modules``）。解析不了的不判 —— 运行时同样拿不到。
+* **动态加载失败即关**（复核 L3-A）：扫描范围里没有正当的动态加载需求。能按名字 / 路径 /
+  源码串加载或执行代码的标准库入口整模块禁 import（importlib、runpy、pkgutil、builtins、
+  pickle、subprocess ……），``sys.modules`` 等几个口子和起进程的 ``os`` 函数单独禁；加载入口
+  的名字（``import_module`` / ``__import__`` / ``find_spec`` / ``SourceFileLoader`` ……）不论
+  从哪拿到（别名、参数、getattr）出现即判；``exec`` / ``eval`` / ``compile`` 这三个名字出现
+  即判；通向内建、别的模块命名空间、调用栈的内省名（``__builtins__`` / ``__globals__`` /
+  ``__subclasses__`` / ``f_globals`` ……）出现即判；对导入的模块 / 对象做反射
+  （``getattr`` / ``vars`` / ``setattr`` / ``delattr`` / ``.__dict__``）即判；字符串常量是禁区
+  模块名（点分、``模块:属性``、``maos/…/x.py`` 路径三种写法）即判。
 * **允许清单** —— 契约列出来免得守卫写过头的那几项，逐条断言不误报。
-* **禁字符串常量** —— 任何位置的 ``ast.Constant`` 与之**相等**即判；包着禁工具的 skill 名
-  （``rtv.ship`` 等）同判，并由注册表反推钉住（新 skill 包了禁工具而这里没列，当场红）。
+* **禁字符串常量** —— 任何位置的 ``ast.Constant``（str，以及 bytes 按 UTF-8 解开后）与之
+  **相等**即判；包着禁工具的 skill 名（``rtv.ship`` 等）同判，并由注册表反推钉住（新 skill
+  包了禁工具而这里没列，当场红）。
 * **禁调用名** —— 调用（属性调用、裸名调用）与**引用**（``fn = gate.decide``、
   ``partial(gate.decide)``、``methodcaller("decide")``、``getattr(x, "decide")``）都判。
 * **不借别人的 identity** —— 扫描范围里不许出现 ``AGENT_POOL``（名字、属性、import 名、
   字符串），不许 import ``maos.capability``（``identities()`` 按角色给出全部身份）；
-  造 identity 时 ``allowed_skills`` 里的字面量只许是 ``cs.*``、``allowed_tools`` 不许有字面量。
+  ``allowed_skills`` / ``allowed_tools`` 不论出现在哪（``AgentIdentity`` 的位置参数、任何调用的
+  关键字参数、类属性 / 变量 / 属性赋值）都要能**静态求值**成字面量集合，求不出来即判
+  （失败即关），求出来的 skill 只许 ``cs.*``、工具只许为空；就地改写（``|=``）和等值字符串
+  （``setattr(x, "allowed_skills", …)``、``replace(x, **{"allowed_skills": …})``）即判。
 * **文件层** —— 扫描目录下出现符号链接（rglob 不跟进、import 会跟进）或没有源码的可导入
   文件（包目录里、不在 ``__pycache__`` 下的 ``.pyc``、扩展模块、``.pth``）即判。
 
-扫描逻辑是可注入根目录的纯函数 :func:`scan_cs_guard_t170`；反向验证全部在 tmp 目录里
-造违规文件喂给它，不落仓库。守卫只认字面量：拼接出来的字符串、用变量传的名字判不到
-（BACKLOG task-t170）。
+扫描逻辑是可注入根目录的函数 :func:`scan_cs_guard_t170`；反向验证全部在 tmp 目录里
+造违规文件喂给它，不落仓库。守卫仍只认字面量：拼接 / f-string / 运行时算出来的字符串、
+运行时对象图上的可达性（实例属性、闭包里的对象）判不到（BACKLOG task-t170）。
 """
 
 from __future__ import annotations
 
 import ast
+import functools
+import importlib
 import importlib.machinery
+import inspect
 import os
 import pathlib
+import re
 import textwrap
+import types
+from typing import Any
 
 import pytest
 
@@ -67,6 +87,20 @@ CONTRACT_FORBIDDEN_PREFIXES_T170: tuple[str, ...] = (
 EXTRA_FORBIDDEN_PREFIXES_T170: tuple[str, ...] = ("maos.capability",)
 FORBIDDEN_PREFIXES_T170 = CONTRACT_FORBIDDEN_PREFIXES_T170 + EXTRA_FORBIDDEN_PREFIXES_T170
 
+#: 失败即关（复核 L3-A）：能按名字 / 路径 / 源码串加载或执行代码的标准库入口，整模块禁。
+LOADER_MODULES_T170: tuple[str, ...] = (
+    "importlib", "runpy", "pkgutil", "imp", "zipimport", "builtins", "code", "codeop", "pydoc",
+    "pickle", "_pickle", "shelve", "marshal", "gc", "ctypes", "subprocess", "multiprocessing",
+)
+#: sys / os 常用、不整模块禁，只禁这几个口子：模块表与导入钩子、调用栈、起进程。
+SYS_OS_HOLES_T170: tuple[str, ...] = (
+    "sys.modules", "sys.meta_path", "sys.path_hooks", "sys.path_importer_cache", "sys._getframe",
+) + tuple(f"os.{n}" for n in (
+    "system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp",
+    "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe"))
+DYNAMIC_PREFIXES_T170 = LOADER_MODULES_T170 + SYS_OS_HOLES_T170
+
 #: maos.domain 下允许的一级名（共享底座与本域）；另有 refund.projection 一处。
 DOMAIN_ALLOWED_T170 = frozenset({"cs", "_dbport", "_schema_util"})
 
@@ -89,8 +123,29 @@ FORBIDDEN_CALLS_T170 = frozenset({
 
 #: 别的角色的身份从这里取（role -> Agent 类，类上挂着 identity）。
 IDENTITY_REGISTRIES_T170 = frozenset({"AGENT_POOL"})
-#: 前台自己的 skill 前缀：造 identity 时 allowed_skills 的字面量只许是它。
+#: identity 上决定授权的两个字段。
+IDENTITY_FIELDS_T170 = frozenset({"allowed_skills", "allowed_tools"})
+#: 前台自己的 skill 前缀：allowed_skills 求出来的值只许是它。
 CS_SKILL_PREFIX_T170 = "cs."
+
+#: 加载入口的名字（复核 L3-A）：不论从哪拿到 —— 别名、参数、getattr —— 出现即判。
+LOADER_NAMES_T170 = frozenset({
+    "__import__", "import_module", "find_spec", "find_loader", "resolve_name", "run_module",
+    "run_path", "spec_from_file_location", "spec_from_loader", "module_from_spec",
+    "load_module", "exec_module", "get_loader", "SourceFileLoader", "SourcelessFileLoader",
+    "ExtensionFileLoader",
+})
+#: 通向内建、别的模块命名空间、加载器、调用栈的内省名（复核 L3-A / L3-B）。
+INTROSPECTION_NAMES_T170 = frozenset({
+    "__builtins__", "__loader__", "__spec__", "__globals__", "__subclasses__", "__closure__",
+    "f_globals", "f_locals", "f_builtins",
+})
+#: 对导入的模块 / 对象做这几种反射即判（``getattr(sys, "modules")``、``vars(sys)``）。
+REFLECTIVE_CALLS_T170 = frozenset({"getattr", "vars", "setattr", "delattr"})
+#: 扫描范围里一律不许的动态执行：名字出现即判（调用、引用都算；``re.compile`` 是属性，不算）。
+DYNAMIC_EXEC_T170 = frozenset({"exec", "eval", "compile"})
+#: 属性写法只认 exec / eval（``builtins.exec``、参数传进来的 ``b.eval``）；``.compile`` 是 re 的日常用法。
+DYNAMIC_EXEC_ATTRS_T170 = frozenset({"exec", "eval"})
 
 #: star import 会把禁区子模块一并绑进来的祖先包（禁前缀的真前缀 + 按段放行的几个父包）。
 STAR_FORBIDDEN_BASES_T170 = frozenset(
@@ -99,17 +154,18 @@ STAR_FORBIDDEN_BASES_T170 = frozenset(
     | {"maos", "maos.skills", "maos.skills.builtin", "maos.agents", "maos.domain",
        "maos.domain.refund"})
 
-#: 动态 import 的入口 -> (模块名参数位置, 关键字)。
-DYNAMIC_IMPORTERS_T170 = {"import_module": (0, "name"), "find_spec": (0, "name"),
-                          "__import__": (0, "name"), "resolve_name": (0, "name"),
-                          "run_module": (0, "mod_name")}
-#: 扫描范围里一律不许的动态执行。``compile`` 只认内建（``re.compile`` 是属性调用，不算）。
-DYNAMIC_EXEC_T170 = frozenset({"exec", "eval", "compile"})
-
 #: 没有源码也能被 import 的文件（不在 __pycache__ 下时）。
 SOURCELESS_SUFFIXES_T170 = tuple(importlib.machinery.BYTECODE_SUFFIXES
                                  + importlib.machinery.EXTENSION_SUFFIXES
                                  + [".pyd", ".pth"])
+
+#: 字符串常量里的模块名：点分、``模块:属性``、``maos/…/x`` 路径（``.py`` 先剥掉）。
+_MODULE_STRING_RE_T170 = re.compile(r"^(?:maos|hiclaw)(?:[./:][A-Za-z_]\w*)+$")
+
+#: identity 字段静态求值时认的构造器（文件里被重新绑定过就不认）。
+_SET_BUILDERS_T170 = frozenset({"frozenset", "set", "tuple", "list", "sorted"})
+
+_MISSING_T170 = object()
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +181,9 @@ def import_violation_t170(name: str) -> str | None:
     for prefix in FORBIDDEN_PREFIXES_T170:
         if _has_prefix_t170(name, prefix):
             return f"禁 import 前缀 {prefix}"
+    for prefix in DYNAMIC_PREFIXES_T170:
+        if _has_prefix_t170(name, prefix):
+            return f"失败即关：禁动态加载 / 起进程的入口 {prefix}"
     if parts[:3] == ["maos", "skills", "builtin"] and len(parts) >= 4 and parts[3] != "cs":
         return "禁 import maos.skills.builtin.<非 cs>"
     if parts[:2] == ["maos", "agents"] and len(parts) >= 3 and parts[2] != "base":
@@ -143,6 +202,92 @@ def import_violation_t170(name: str) -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize=None)
+def _resolve_t170(dotted: str) -> Any:
+    """在测试进程里按点分名拿到对象：最长可 import 的模块前缀 + 逐段 getattr。拿不到返回哨兵。"""
+    parts = dotted.split(".")
+    for i in range(len(parts), 0, -1):
+        try:
+            obj = importlib.import_module(".".join(parts[:i]))
+        except Exception:                                  # noqa: BLE001 —— 拿不到就不判
+            continue
+        for attr in parts[i:]:
+            try:
+                obj = getattr(obj, attr)
+            except Exception:                              # noqa: BLE001
+                return _MISSING_T170
+        return obj
+    return _MISSING_T170
+
+
+def _canonical_t170(dotted: str) -> str | None:
+    """途经的最长一段模块换成它的真名：``maos.skills.invoker.registry`` → ``maos.skills.registry``。"""
+    parts = dotted.split(".")
+    for i in range(len(parts), 0, -1):
+        obj = _resolve_t170(".".join(parts[:i]))
+        if isinstance(obj, types.ModuleType):
+            return ".".join([obj.__name__] + parts[i:])
+    return None
+
+
+def _home_t170(obj: Any) -> str | None:
+    """函数 / 类的出处（``__module__.__qualname__``）；别的对象没有可信的出处，返回 None。"""
+    if isinstance(obj, type) or inspect.isroutine(obj):
+        mod = getattr(obj, "__module__", None)
+        qual = getattr(obj, "__qualname__", None) or getattr(obj, "__name__", None)
+        if isinstance(mod, str) and isinstance(qual, str):
+            return f"{mod}.{qual}"
+    return None
+
+
+def value_violation_t170(dotted: str) -> str | None:
+    """名字放行、拿到的东西却来自禁区（再导出）：按真实出处再判一次（复核 L3-B）。"""
+    if import_violation_t170(dotted):
+        return None                                        # 名字本身已判
+    for real in (_canonical_t170(dotted), _home_t170(_resolve_t170(dotted))):
+        if real and real != dotted:
+            why = _real_violation_t170(real)
+            if why:
+                return f"实为 {real} —— {why}"
+    return None
+
+
+def _real_violation_t170(real: str) -> str | None:
+    """真实出处触犯哪条禁令。内建的函数 / 类（``__module__ == 'builtins'``，如 typing.Text 就是
+    str）本来就人人可用，只有 exec / eval / compile / __import__ 这几个算动态加载。"""
+    head, _, rest = real.partition(".")
+    if head == "builtins" and rest:
+        if rest in DYNAMIC_EXEC_T170 or rest == "__import__":
+            return f"失败即关：动态执行 / 加载入口 builtins.{rest}"
+        return None
+    return import_violation_t170(real)
+
+
+def target_violation_t170(dotted: str) -> str | None:
+    return import_violation_t170(dotted) or value_violation_t170(dotted)
+
+
+def _name_violation_t170(name: str) -> tuple[str, str] | None:
+    """一个裸名字（标识符 / 属性名 / import 名 / 等值字符串）触犯哪类：返回（类别, 说明）。"""
+    if name in FORBIDDEN_CALLS_T170:
+        return "call", f"禁调用名 {name}"
+    if name in IDENTITY_REGISTRIES_T170:
+        return "identity", f"借身份的入口 {name}"
+    if name in LOADER_NAMES_T170:
+        return "import", f"失败即关：动态加载入口 {name}"
+    if name in INTROSPECTION_NAMES_T170:
+        return "escape", f"内省口子 {name}"
+    return None
+
+
+def module_string_violation_t170(text: str) -> str | None:
+    """字符串常量是禁区模块（或其成员）的名字：点分、``模块:属性``、``maos/…/x.py`` 都认。"""
+    name = text[:-3] if text.endswith(".py") else text
+    if not _MODULE_STRING_RE_T170.match(name):
+        return None
+    return import_violation_t170(name.replace("/", ".").replace(":", "."))
+
+
 def star_violation_t170(base: str) -> str | None:
     """``from <base> import *`` 触犯哪条禁令：base 本身禁，或是禁区的祖先包。"""
     why = import_violation_t170(base)
@@ -151,6 +296,25 @@ def star_violation_t170(base: str) -> str | None:
     if base in STAR_FORBIDDEN_BASES_T170:
         return f"star import 祖先包 {base}（会把禁区子模块一并绑进来）"
     return None
+
+
+def star_reexports_t170(base: str) -> list[str]:
+    """``from <base> import *`` 实际绑出来的公开名里触犯禁令的（名字、真实出处都判）。"""
+    mod = _resolve_t170(base)
+    if not isinstance(mod, types.ModuleType):
+        return []
+    names = getattr(mod, "__all__", None)
+    if not isinstance(names, (list, tuple)):
+        names = [n for n in vars(mod) if not n.startswith("_")]
+    out: list[str] = []
+    for name in names:
+        if not isinstance(name, str):
+            continue
+        why = target_violation_t170(f"{base}.{name}")
+        hit = _name_violation_t170(name)
+        if why or hit:
+            out.append(f"{name}（{why or hit[1]}）")
+    return out
 
 
 def _module_of_t170(root: pathlib.Path, path: pathlib.Path) -> tuple[str, bool]:
@@ -180,21 +344,6 @@ def _call_name_t170(func: ast.expr) -> str | None:
         return func.id
     if isinstance(func, ast.Attribute):
         return func.attr
-    return None
-
-
-def _str_t170(node: ast.AST | None) -> str | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    return None
-
-
-def _arg_t170(call: ast.Call, pos: int, kw: str) -> ast.expr | None:
-    if len(call.args) > pos:
-        return call.args[pos]
-    for keyword in call.keywords:
-        if keyword.arg == kw:
-            return keyword.value
     return None
 
 
@@ -229,47 +378,87 @@ def _dotted_t170(node: ast.AST, bindings: dict[str, str]) -> str | None:
     return None
 
 
-def _dynamic_targets_t170(call: ast.Call, name: str, module_name: str,
-                          is_pkg: bool) -> tuple[list[str], str | None]:
-    """动态 import 调用的目标模块名（绝对）；第二项非空 = 相对名解析不了（按违例算）。"""
-    pos, kw = DYNAMIC_IMPORTERS_T170[name]
-    target = _str_t170(_arg_t170(call, pos, kw))
-    if target is None:
-        return [], None                                  # 非字面量：判不到（BACKLOG）
-    own_pkg = module_name if is_pkg else module_name.rpartition(".")[0]
-    if name == "resolve_name":
-        return [target.replace(":", ".")], None
-    if name in ("import_module", "find_spec") and target.startswith("."):
-        level = len(target) - len(target.lstrip("."))
-        pkg_node = _arg_t170(call, 1, "package")
-        pkg = _str_t170(pkg_node)
-        if pkg is None and isinstance(pkg_node, ast.Name) and pkg_node.id == "__package__":
-            pkg = own_pkg
-        if pkg is None:
-            return [], f"{name}({target!r}) 的 package 不是字面量，相对名解析不了"
-        base = _resolve_from_t170(pkg, True, level, target[level:] or None)
-        return ([base], None) if base else ([], f"{name}({target!r}) 越过顶层")
-    if name == "__import__":
-        level_node = _arg_t170(call, 4, "level")
-        level = 0
-        if level_node is not None:
-            if not (isinstance(level_node, ast.Constant) and isinstance(level_node.value, int)):
-                return [], "__import__ 的 level 不是字面量"
-            level = level_node.value
-        base = target
-        if level > 0:
-            base = _resolve_from_t170(module_name, is_pkg, level, target or None)
-            if base is None:
-                return [], f"__import__({target!r}, level={level}) 越过顶层"
-        out = [base]
-        fromlist = _arg_t170(call, 3, "fromlist")
-        if isinstance(fromlist, (ast.List, ast.Tuple, ast.Set)):
-            for elt in fromlist.elts:
-                item = _str_t170(elt)
-                if item is not None:
-                    out.append(base if item == "*" else f"{base}.{item}")
-        return out, None
-    return [target], None
+def _bound_names_t170(tree: ast.AST) -> dict[str, int]:
+    """文件里每个名字被绑定的次数（赋值、def / class、参数、import）。"""
+    count: dict[str, int] = {}
+
+    def bump(name: str) -> None:
+        count[name] = count.get(name, 0) + 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bump(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bump(node.name)
+        elif isinstance(node, ast.arg):
+            bump(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bump((alias.asname or alias.name).split(".")[0])
+    return count
+
+
+def _module_consts_t170(tree: ast.Module, bound: dict[str, int]) -> dict[str, ast.expr]:
+    """模块顶层只绑定过一次的 ``NAME = <表达式>``，供 identity 字段静态求值。"""
+    out: dict[str, ast.expr] = {}
+    for stmt in tree.body:
+        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)):
+            name, value = stmt.targets[0].id, stmt.value
+        elif (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+              and stmt.value is not None):
+            name, value = stmt.target.id, stmt.value
+        else:
+            continue
+        if bound.get(name) == 1:
+            out[name] = value
+    return out
+
+
+def _as_strs_t170(value: Any) -> frozenset[str] | None:
+    if isinstance(value, str):
+        return frozenset({value})
+    if isinstance(value, (frozenset, set, tuple, list)) and all(isinstance(v, str) for v in value):
+        return frozenset(value)
+    return None
+
+
+def _static_strs_t170(node: ast.AST, consts: dict[str, ast.expr], bindings: dict[str, str],
+                      bound: dict[str, int], depth: int = 0) -> frozenset[str] | None:
+    """identity 字段的值静态求成字符串集合；求不出来（变量、调用、解包、自造集合类）返回 None。"""
+    if depth > 8:
+        return None
+
+    def rec(n: ast.AST) -> frozenset[str] | None:
+        return _static_strs_t170(n, consts, bindings, bound, depth + 1)
+
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return frozenset({node.value})
+        if isinstance(node.value, bytes):
+            return frozenset({node.value.decode("utf-8", "replace")})
+        return None
+    if isinstance(node, (ast.Set, ast.List, ast.Tuple)):
+        out: set[str] = set()
+        for elt in node.elts:
+            got = rec(elt)
+            if got is None:
+                return None
+            out |= got
+        return frozenset(out)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in _SET_BUILDERS_T170 and node.func.id not in bound
+            and not node.keywords and len(node.args) <= 1):
+        return frozenset() if not node.args else rec(node.args[0])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.BitOr, ast.Add)):
+        left, right = rec(node.left), rec(node.right)
+        return None if left is None or right is None else left | right
+    if isinstance(node, ast.Name) and node.id in consts:
+        return rec(consts[node.id])
+    dotted = _dotted_t170(node, bindings)
+    if dotted is not None:
+        return _as_strs_t170(_resolve_t170(dotted))
+    return None
 
 
 def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
@@ -280,6 +469,8 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
         return [f"{rel}:0: 解析失败: {exc}"]
     module_name, is_pkg = _module_of_t170(root, path)
     bindings = _bindings_t170(tree, module_name, is_pkg)
+    bound = _bound_names_t170(tree)
+    consts = _module_consts_t170(tree, bound)
     call_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     out: list[str] = []
 
@@ -287,15 +478,21 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
         out.append(f"{rel}:{getattr(node, 'lineno', 0)}: {kind}: {detail}")
 
     def check_import(node: ast.AST, target: str, how: str) -> None:
-        why = import_violation_t170(target)
+        why = target_violation_t170(target)
         if why:
             bad(node, "import", f"{how}{target} —— {why}")
 
-    def check_identity_literals(node: ast.AST, field: str, value: ast.AST) -> None:
-        for sub in ast.walk(value):
-            lit = _str_t170(sub)
-            if lit is None:
-                continue
+    def check_name(node: ast.AST, name: str, how: str) -> None:
+        hit = _name_violation_t170(name)
+        if hit:
+            bad(node, hit[0], f"{how}{hit[1]}")
+
+    def check_identity_value(node: ast.AST, field: str, value: ast.AST) -> None:
+        got = _static_strs_t170(value, consts, bindings, bound)
+        if got is None:
+            bad(node, "identity", f"{field} 求不出字面量集合（失败即关：判不了就不许）")
+            return
+        for lit in sorted(got):
             if field == "allowed_tools" or not lit.startswith(CS_SKILL_PREFIX_T170):
                 bad(node, "identity", f"{field} 含 {lit!r}（前台只许持 cs.* skill、零工具）")
 
@@ -313,64 +510,78 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
                     why = star_violation_t170(base)
                     if why:
                         bad(node, "import", f"from {base} import * —— {why}")
+                        continue
+                    for hit in star_reexports_t170(base):
+                        bad(node, "import", f"from {base} import * 绑出 {hit}")
                     continue
                 check_import(node, f"{base}.{alias.name}" if base else alias.name, "")
-                if alias.name in FORBIDDEN_CALLS_T170:
-                    bad(node, "call", f"import 名 {alias.name}")
-                if alias.name in IDENTITY_REGISTRIES_T170:
-                    bad(node, "identity", f"import 名 {alias.name}")
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node.value in FORBIDDEN_CONSTANTS_T170:
-                bad(node, "constant", repr(node.value))
-            if node.value in FORBIDDEN_CALLS_T170:
-                bad(node, "call", f"字符串 {node.value!r}")
-            if node.value in IDENTITY_REGISTRIES_T170:
-                bad(node, "identity", f"字符串 {node.value!r}")
+                check_name(node, alias.name, "import 名 ")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            text = (node.value if isinstance(node.value, str)
+                    else node.value.decode("utf-8", "replace"))
+            if text in FORBIDDEN_CONSTANTS_T170:
+                bad(node, "constant", repr(text))
+            check_name(node, text, f"字符串 {text!r}：")
+            if text in IDENTITY_FIELDS_T170:
+                bad(node, "identity", f"字符串 {text!r}（按名字改写 identity 的授权字段）")
+            why = module_string_violation_t170(text)
+            if why:
+                bad(node, "import", f"字符串 {text!r} 是禁区模块名 —— {why}")
         elif isinstance(node, ast.Name):
-            if node.id in FORBIDDEN_CALLS_T170 and id(node) not in call_funcs:
-                bad(node, "call", f"引用 {node.id}")
-            if node.id in IDENTITY_REGISTRIES_T170:
-                bad(node, "identity", node.id)
+            if node.id in FORBIDDEN_CALLS_T170:
+                if id(node) not in call_funcs:
+                    bad(node, "call", f"引用 {node.id}")
+            else:
+                check_name(node, node.id, "")
+            if node.id in DYNAMIC_EXEC_T170:
+                bad(node, "import", f"动态执行 {node.id} —— 扫描范围里一律不许")
         elif isinstance(node, ast.Attribute):
-            if node.attr in FORBIDDEN_CALLS_T170 and id(node) not in call_funcs:
-                bad(node, "call", f"引用 .{node.attr}")
-            if node.attr in IDENTITY_REGISTRIES_T170:
-                bad(node, "identity", f".{node.attr}")
+            if node.attr in FORBIDDEN_CALLS_T170:
+                if id(node) not in call_funcs:
+                    bad(node, "call", f"引用 .{node.attr}")
+            else:
+                check_name(node, node.attr, ".")
+            if node.attr in DYNAMIC_EXEC_ATTRS_T170:
+                bad(node, "import", f"动态执行 .{node.attr} —— 扫描范围里一律不许")
+            if node.attr == "__dict__" and _dotted_t170(node.value, bindings):
+                bad(node, "escape", f"反射 {_dotted_t170(node.value, bindings)}.__dict__")
             full = _dotted_t170(node, bindings)
             inner = _dotted_t170(node.value, bindings)
-            if full and not (inner and import_violation_t170(inner)):
+            if full and not (inner and target_violation_t170(inner)):
                 check_import(node, full, "属性链 ")
-        elif isinstance(node, ast.Subscript):
-            owner = _dotted_t170(node.value, bindings)
-            key = _str_t170(node.slice)
-            if owner == "sys.modules" and key is not None:
-                check_import(node, key, "sys.modules[…] ")
+
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for tgt in targets:
+                for sub in ast.walk(tgt):
+                    field = (sub.id if isinstance(sub, ast.Name)
+                             else sub.attr if isinstance(sub, ast.Attribute) else None)
+                    if field not in IDENTITY_FIELDS_T170:
+                        continue
+                    if isinstance(node, ast.AugAssign) or sub is not tgt:
+                        bad(node, "identity", f"{field} 被就地改写 / 解包赋值（判不了）")
+                    elif node.value is not None:
+                        check_identity_value(node, field, node.value)
+
         if isinstance(node, ast.Call):
             name = _call_name_t170(node.func)
             if name in FORBIDDEN_CALLS_T170:
                 bad(node, "call", name)
-            if name in DYNAMIC_IMPORTERS_T170:
-                targets, err = _dynamic_targets_t170(node, name, module_name, is_pkg)
-                if err:
-                    bad(node, "import", err)
-                for target in targets:
-                    check_import(node, target, f"{name}(…) ")
-            if isinstance(node.func, ast.Attribute) and node.func.attr in ("get", "pop", "setdefault"):
-                if _dotted_t170(node.func.value, bindings) == "sys.modules":
-                    key = _str_t170(_arg_t170(node, 0, "key"))
-                    if key is not None:
-                        check_import(node, key, "sys.modules.get(…) ")
-            if name in DYNAMIC_EXEC_T170 and (
-                    isinstance(node.func, ast.Name)
-                    or _dotted_t170(node.func, bindings) in {f"builtins.{name}"}):
-                bad(node, "import", f"动态执行 {name}(…) —— 扫描范围里一律不许")
-            if name == "AgentIdentity" and len(node.args) > 3:
-                check_identity_literals(node, "allowed_skills", node.args[3])
+            if (isinstance(node.func, ast.Name) and node.func.id in REFLECTIVE_CALLS_T170
+                    and node.args and _dotted_t170(node.args[0], bindings)):
+                bad(node, "escape",
+                    f"{node.func.id}(…) 反射访问导入的 {_dotted_t170(node.args[0], bindings)}")
+            if name == "AgentIdentity":
+                if (any(isinstance(a, ast.Starred) for a in node.args)
+                        or any(k.arg is None for k in node.keywords)):
+                    bad(node, "identity", "AgentIdentity 用 * / ** 解包传参（判不了）")
+                if len(node.args) > 3:
+                    check_identity_value(node, "allowed_skills", node.args[3])
                 if len(node.args) > 4:
-                    check_identity_literals(node, "allowed_tools", node.args[4])
+                    check_identity_value(node, "allowed_tools", node.args[4])
             for keyword in node.keywords:
-                if keyword.arg in ("allowed_skills", "allowed_tools"):
-                    check_identity_literals(node, keyword.arg, keyword.value)
+                if keyword.arg in IDENTITY_FIELDS_T170:
+                    check_identity_value(node, keyword.arg, keyword.value)
     return out
 
 
@@ -584,8 +795,9 @@ def test_dynamic_imports_are_caught_t170(tmp_path):
             ok = importlib.import_module("maos.kb.retriever")
         """,
     })
-    hits = [x for x in v if x.startswith("maos/domain/cs/dyn.py:")]
-    assert len(hits) == 2, v
+    lines = {int(x.split(":")[1]) for x in v if x.startswith("maos/domain/cs/dyn.py:")}
+    # 失败即关：import 本身、禁区目标、允许的目标（maos.kb.retriever）一样都判
+    assert lines == {2, 3, 4, 5}, v
 
 
 @pytest.mark.parametrize("const", sorted(FORBIDDEN_CONSTANTS_T170))
@@ -690,12 +902,25 @@ def test_allowed_list_is_not_flagged_t170(tmp_path):
 
             def lazy():
                 from maos.kb import retriever as r
-                import importlib
-                return (importlib.import_module("maos.domain.cs.claims"),
-                        importlib.import_module(".claims", __package__),
-                        importlib.import_module(".scripts", "maos.domain.cs"),
-                        importlib.import_module(name="maos.kb.retriever"),
-                        __import__("maos.domain.cs", fromlist=["claims"]), r)
+                return r
+
+            # 失败即关只关动态加载的口子，sys / os / logging 的日常用法不误报
+            import sys
+            import logging
+            from os import environ
+            from typing import *
+            LOG = logging.getLogger("maos.domain.cs.desk")
+            TENANTS = os.environ.get("MAOS_CS_TENANTS", "") or environ.get("X", "")
+            HERE = os.path.join(os.path.dirname(__file__), "x")
+
+            def warn(msg, obj):
+                sys.stderr.write(msg)
+                return getattr(obj, "route", None), vars(obj), obj.__dict__
+
+            SKILLS = frozenset({"cs.answer", "cs.handoff"})
+            BY_CONST = AgentIdentity("cs-3", "cs_front_desk", "d", SKILLS, frozenset())
+            BY_KW = AgentIdentity(agent_id="cs-4", role="r", duty="d",
+                                  allowed_skills=SKILLS | {"cs.answer"}, allowed_tools=())
         """,
         "maos/domain/cs/sub/__init__.py": "from .. import types\nfrom ..types import Claim\n",
         "maos/skills/builtin/cs/__init__.py": "from . import answer, handoff\n"
@@ -851,10 +1076,12 @@ def test_attribute_chain_to_forbidden_module_is_caught_t170(tmp_path, src):
 ])
 def test_other_dynamic_import_forms_are_caught_t170(tmp_path, src):
     v = _violations_t170(tmp_path, {
-        "maos/domain/cs/dyn2.py": "import importlib, importlib.util, sys, pkgutil, runpy, builtins\n"
-                                  f"def f(pkg, lv, src, name):\n    return {src}\n",
+        "maos/domain/cs/dyn2.py": "import sys\n"
+                                  "def f(pkg, lv, src, name, importlib, pkgutil, runpy, builtins):\n"
+                                  f"    return {src}\n",
     })
-    _one_t170(v, "maos/domain/cs/dyn2.py", "import")
+    # 加载器是参数传进来的（import 那一行不在这里）：判的必须是第 3 行这句本身
+    assert any(x.startswith("maos/domain/cs/dyn2.py:3: import: ") for x in v), v
 
 
 @pytest.mark.parametrize("src", [
@@ -906,3 +1133,195 @@ def test_scan_dir_itself_symlinked_is_caught_t170(tmp_path):
     files, v = scan_cs_guard_t170(tmp_path)
     assert_not_idle_t170(tmp_path, files)
     _one_t170(v, "maos/domain/cs", "file")
+
+
+# ---------------------------------------------------------------------------
+# 复核第三批（DECISIONS task-t170 修复轮二）：动态加载失败即关（L3-A）、按真实出处判
+# 再导出（L3-B）、identity 字段静态求值（L3-C）、bytes 常量（L3-D）
+# ---------------------------------------------------------------------------
+def _lines_t170(violations: list[str], rel: str) -> set[int]:
+    return {int(x.split(":")[1]) for x in violations if x.startswith(rel + ":")}
+
+
+@pytest.mark.parametrize("src,line", [
+    # 复核给的原样写法（L3-A）：导入函数起别名 / 间接拿到，模块名是完整字面量
+    ("import importlib\nm = getattr(importlib, 'import_module')('maos.runtime.gate')\n", 1),
+    ("from importlib import import_module as load\nm = load('maos.runtime.gate')\n", 1),
+    ("m = __builtins__['__import__']('maos.runtime.gate')\n", 1),
+    ("import importlib.machinery\n"
+     "m = importlib.machinery.SourceFileLoader('g', 'maos/runtime/gate.py').load_module()\n", 1),
+    ("import importlib.util\ns = importlib.util.spec_from_file_location('g', 'maos/runtime/gate.py')\n", 1),
+    ("import pkgutil\nl = pkgutil.get_loader('maos.runtime.gate')\n", 1),
+    ("import sys\nm = vars(sys)['modules']['maos.runtime.gate']\n", 2),
+    ("import sys\nmods = sys.modules\nm = mods['maos.runtime.gate']\n", 2),
+    ("import sys\nm = dict(sys.modules).get('maos.runtime.gate')\n", 2),
+    ("import runpy\nrunpy.run_path('maos/flows/refund_case.py')\n", 1),
+    ("import sys\nm = sys.modules['maos'].runtime.gate\n", 2),
+    ("import importlib\ng = importlib.import_module('maos').runtime.gate\n", 1),
+    ("g = __import__('maos').runtime.gate\n", 1),
+    # 同一类的其余写法：起进程、模块表的其余拿法、调用栈与函数的全局表、按名字解析的标准库
+    ("import subprocess, sys\nsubprocess.run([sys.executable, '-m', 'maos.flows.refund_case'])\n", 1),
+    ("import os\nos.system('python -m maos.flows.refund_case')\n", 2),
+    ("from os import *\n", 1),
+    ("from sys import *\n", 1),
+    ("import sys\nm = getattr(sys, 'modules')\n", 2),
+    ("import sys\nm = sys.__dict__['modules']\n", 2),
+    ("from logging import sys\nm = sys.modules\n", 2),
+    ("import sys\ng = sys._getframe(1)\n", 2),
+    ("def f(frame):\n    return frame.f_back.f_globals['gate']\n", 2),
+    ("from maos.skills.invoker import SkillInvoker\nR = SkillInvoker.invoke.__globals__\n", 2),
+    ("from maos.agents import base\nALL = base.Agent.__subclasses__()\n", 2),
+    ("import gc\nmods = gc.get_objects()\n", 1),
+    ("import pydoc\ng = pydoc.locate('maos.runtime.gate')\n", 1),
+    ("from unittest import mock\np = mock.patch('maos.runtime.gate.decide_all')\n", 2),
+    ("import logging.config\nlogging.config.dictConfig({'x': {'()': 'maos.runtime.gate.Gate'}})\n", 2),
+    ("run = exec\nrun('import maos.runtime.gate')\n", 1),
+    ("def f(b):\n    return b.eval('1')\n", 2),
+    ("def f(loader):\n    return loader.exec_module\n", 2),
+])
+def test_dynamic_loading_fails_closed_t170(tmp_path, src, line):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/load.py": src})
+    assert line in _lines_t170(v, "maos/domain/cs/load.py"), v
+
+
+def test_repo_attack_shortcut_file_is_caught_t170(tmp_path):
+    """复核 L3-A 的整文件原样：只给 import_module 起别名，靠允许清单里的 import 去付款。"""
+    v = _violations_t170(tmp_path, {
+        "maos/domain/cs/zz_shortcut.py": """
+            from importlib import import_module as load
+            from maos.core.store import SqliteStore
+
+            def approve_and_pay(store: SqliteStore, tenant, case, gw):
+                gate = load("maos.runtime.gate")
+                objects = load("maos.domain.refund.objects")
+                pay = load("maos.skills.builtin.refund.payment_execute")
+                return gate, objects, pay
+        """,
+    })
+    assert {2, 6, 7, 8} <= _lines_t170(v, "maos/domain/cs/zz_shortcut.py"), v
+
+
+@pytest.mark.parametrize("text", [
+    "maos.runtime.gate", "maos/flows/refund_case.py", "maos.runtime.gate:Gate",
+    "hiclaw.client", "maos.skills.registry", "maos.domain.refund.objects",
+    "maos.skills.builtin.refund.payment_execute",
+])
+def test_forbidden_module_name_strings_are_caught_t170(tmp_path, text):
+    assert module_string_violation_t170(text) is not None
+    v = _violations_t170(tmp_path, {"maos/domain/cs/names.py": f"X = {text!r}\n"})
+    _one_t170(v, "maos/domain/cs/names.py", "import")
+
+
+@pytest.mark.parametrize("text", [
+    "maos.domain.cs.desk", "maos.kb.retriever", "maos", "hiclaw", "maos.domain.refund.projection",
+    "maos.skills.registry.register_skill", "payment", "maos.tools是什么", "请联系 maos 客服",
+])
+def test_harmless_strings_are_not_module_names_t170(text):
+    assert module_string_violation_t170(text) is None
+
+
+@pytest.mark.parametrize("src,line", [
+    ("from maos.skills.invoker import registry\n", 1),                   # 复核 b09
+    ("from maos.skills.invoker import *\n", 1),                          # 复核 b10
+    ("from maos.skills.version_demo import guard, objects\n", 1),        # 复核 b11
+    ("from maos.ingress.classify import needs_human\n", 1),              # 函数出处在 refund 域
+    ("from maos.skills import invoker\nR = invoker.registry.SKILL_REGISTRY\n", 2),
+    ("import maos.skills.invoker\nR = maos.skills.invoker.registry\n", 2),
+    ("from maos.skills.version_demo import *\n", 1),
+])
+def test_reexported_forbidden_objects_are_caught_t170(tmp_path, src, line):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/reexp.py": src})
+    hits = [x for x in v if x.startswith(f"maos/domain/cs/reexp.py:{line}: import: ")]
+    assert hits and all("实为" in x for x in hits), v
+    assert len([x for x in v if "属性链" in x]) <= 1, v          # 属性链只报最短那一截
+
+
+def test_synthetic_reexport_is_caught_regardless_of_repo_internals_t170(tmp_path, monkeypatch):
+    """不依赖仓内哪个模块恰好再导出：在 sys.path 上造一个包，把禁区模块与函数转手出去。"""
+    pkg = tmp_path / "site" / "relay_pkg_t170"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "relay.py").write_text(
+        "from maos.domain.refund import objects\n"
+        "from maos.skills.registry import get as Handy\n"
+        "from maos.skills.registry import register_skill\n"
+        "OK = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    _resolve_t170.cache_clear()
+    try:
+        assert value_violation_t170("relay_pkg_t170.relay.objects") is not None
+        assert value_violation_t170("relay_pkg_t170.relay.Handy") is not None
+        assert value_violation_t170("relay_pkg_t170.relay.register_skill") is None
+        assert value_violation_t170("relay_pkg_t170.relay.OK") is None
+        v = _violations_t170(tmp_path / "repo", {
+            "maos/domain/cs/r1.py": "from relay_pkg_t170.relay import objects\n",
+            "maos/domain/cs/r2.py": "from relay_pkg_t170 import relay\nX = relay.Handy\n",
+            "maos/domain/cs/r3.py": "from relay_pkg_t170.relay import *\n",
+            "maos/domain/cs/r4.py": "from relay_pkg_t170.relay import OK, register_skill\n",
+        })
+    finally:
+        _resolve_t170.cache_clear()
+    for rel in ("r1", "r2", "r3"):
+        _one_t170(v, f"maos/domain/cs/{rel}.py", "import")
+    assert not any(x.startswith("maos/domain/cs/r4.py:") for x in v), v
+
+
+def test_value_rule_leaves_allowed_objects_alone_t170():
+    for dotted in ("maos.skills.invoker.SkillInvoker", "maos.kb.retriever.emit_kb_retrieved",
+                   "maos.core.store.SqliteStore", "maos.agents.base.AgentIdentity",
+                   "maos.domain.refund.projection.PUBLIC_SETTLED", "os.path.join",
+                   "os.environ", "typing.Text", "logging.getLogger", "maos.no_such_module.x"):
+        assert value_violation_t170(dotted) is None, dotted
+    assert value_violation_t170("maos.skills.invoker.registry") is not None
+
+
+@pytest.mark.parametrize("src", [
+    # 复核 b14：鸭子类型的类属性
+    "class _Id:\n    agent_id = 'cs-front-desk'\n"
+    "    allowed_skills = frozenset({'refund.intake', 'finance.settle'})\n",
+    # 复核 b15 / b16：按名字改字段
+    "import dataclasses\ndef f(ID):\n"
+    "    return dataclasses.replace(ID, **{'allowed_skills': frozenset({'refund.intake'})})\n",
+    "def f(ID):\n    object.__setattr__(ID, 'allowed_skills', frozenset({'refund.intake'}))\n",
+    # 复核 b18：先赋给变量再传
+    "from maos.agents.base import AgentIdentity\nS = frozenset({'refund.intake'})\n"
+    "I = AgentIdentity('x', 'y', 'z', S)\n",
+    # 复核 b19：__contains__ 恒真的集合
+    "class _All(frozenset):\n    def __contains__(self, x):\n        return True\n"
+    "class _Id:\n    agent_id = 'x'\n    allowed_skills = _All()\n",
+    # 其余：属性赋值、就地并集、解包传参、参数透传、改掉内建构造器、变量里带工具
+    "def f(ident):\n    ident.allowed_skills = {'refund.intake'}\n",
+    "def f(ident):\n    ident.allowed_skills |= {'refund.intake'}\n",
+    "from maos.agents.base import AgentIdentity\ndef f(kw):\n    return AgentIdentity(**kw)\n",
+    "from maos.agents.base import AgentIdentity\ndef f(a):\n    return AgentIdentity(*a)\n",
+    "def f(extra):\n    return dict(allowed_skills=frozenset({'cs.answer'}) | extra)\n",
+    "frozenset = type('F', (set,), {'__contains__': lambda s, x: True})\n"
+    "X = dict(allowed_skills=frozenset({'cs.answer'}))\n",
+    "T = ('carrier.track',)\nX = dict(allowed_skills={'cs.answer'}, allowed_tools=T)\n",
+    "def f(ident):\n    return getattr(ident, 'allowed_skills')\n",
+])
+def test_identity_forged_in_other_forms_is_caught_t170(tmp_path, src):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/forge2.py": src})
+    _one_t170(v, "maos/domain/cs/forge2.py", "identity")
+
+
+@pytest.mark.parametrize("src", [
+    "SK = ('cs.answer', 'cs.handoff')\nX = dict(allowed_skills=frozenset(SK), allowed_tools=frozenset())\n",
+    "SK = frozenset({'cs.answer'})\nX = dict(allowed_skills=SK | {'cs.handoff'}, allowed_tools=set())\n",
+    "class Card:\n    allowed_skills = ('cs.handoff',)\n    allowed_tools = ()\n",
+    "X = dict(allowed_skills=[\"cs.answer\"], allowed_tools=[])\n",
+])
+def test_identity_static_values_that_are_cs_only_pass_t170(tmp_path, src):
+    assert _violations_t170(tmp_path, {"maos/domain/cs/ok_id.py": src}) == []
+
+
+@pytest.mark.parametrize("src,kind", [
+    ("X = b'payment.execute'.decode()\n", "constant"),               # 复核 b04
+    ("X = b'carrier.ship'\n", "constant"),
+    ("def f(g):\n    return getattr(g, b'decide'.decode())\n", "call"),
+    ("X = b'AGENT_POOL'\n", "identity"),
+    ("X = b'maos.runtime.gate'\n", "import"),
+])
+def test_bytes_constants_are_caught_t170(tmp_path, src, kind):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/b.py": src})
+    _one_t170(v, "maos/domain/cs/b.py", kind)

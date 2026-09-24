@@ -37,6 +37,7 @@ from maos.domain.cs.types import (
     ROUTE_HANDOFF,
     ROUTES,
     VIOLATION_UNBACKED_STATUS,
+    DeskResult,
     ReplyDraft,
 )
 from maos.ingress.contracts import InboundMessage
@@ -265,11 +266,41 @@ def _fabricates_status(reply_text: str) -> bool:
     return any(v.kind == VIOLATION_UNBACKED_STATUS for v in result.violations)
 
 
+def _check_cases(cases: tuple[EvalCase, ...]) -> None:
+    """跑之前按 :func:`load_cases` 同一套形状规则校一遍（内存里手造 / replace 出来的 case 也算）：
+    turns 与 expect 等长且非空、id 非空且不重。不合形状就抛 ValueError，一个前台都不造 ——
+    否则 zip 会悄悄丢掉多出来的轮或期望，报告照样满分；重复 id 会让 msg_id 撞车。"""
+    seen: set[str] = set()
+    for case in cases:
+        if not case.id or case.id in seen:
+            raise ValueError(f"case id {case.id!r} 为空或重复")
+        seen.add(case.id)
+        if not case.turns or len(case.turns) != len(case.expect):
+            raise ValueError(f"{case.id}: turns（{len(case.turns)}）与 expect"
+                             f"（{len(case.expect)}）必须等长且非空")
+
+
+def _actual_of(res: Any) -> dict[str, Any]:
+    """从前台的返回里取比对要用的字段；不是 DeskResult、字段类型不对，都抛 TypeError。"""
+    if not isinstance(res, DeskResult):
+        raise TypeError(f"handle 返回的不是 DeskResult：{type(res).__name__}")
+    citations = res.draft.citations
+    if not isinstance(res.reply_text, str) or not isinstance(citations, (tuple, list)):
+        raise TypeError("DeskResult.reply_text 必须是 str、draft.citations 必须是序列")
+    return {"route": res.route, "intent": res.intent, "reason": res.handoff_reason,
+            "citations": list(citations), "reply_text": res.reply_text}
+
+
 def run_eval(desk_factory: Callable[[], Any], cases, *,
              tenant_map: Mapping[str, str] | None = None) -> EvalReport:
-    """每个 case 一个新前台、一段新会话，逐轮比对，返回报告。前台抛异常记为该轮失败。"""
+    """每个 case 一个新前台、一段新会话，逐轮比对，返回报告。
+
+    前台抛异常、或返回的不是合形状的 DeskResult，都记为该轮 ``error`` 失败、不中断整批。
+    case 本身不合形状（turns / expect 不等长、为空、id 重复）是调用方的错，抛 ValueError。
+    """
     tmap = dict(DEFAULT_TENANT_MAP if tenant_map is None else tenant_map)
     cases = tuple(cases)
+    _check_cases(cases)
     turns = intent_hits = route_hits = 0
     handoff_expected = handoff_caught = 0
     cite_expected = cite_hits = 0
@@ -279,41 +310,40 @@ def run_eval(desk_factory: Callable[[], Any], cases, *,
     for case in cases:
         desk = desk_factory()
         tenant = tmap.get(case.effective_open_kfid, "")
-        for i, (text, exp) in enumerate(zip(case.turns, case.expect), start=1):
+        for i, (text, exp) in enumerate(zip(case.turns, case.expect, strict=True), start=1):
             turns += 1
             problems: list[str] = []
+            got: dict[str, Any] | None
             try:
-                res = desk.handle(inbound_for(case, i, text))
+                got = _actual_of(desk.handle(inbound_for(case, i, text)))
             except Exception as exc:                 # noqa: BLE001 —— 评测记失败，不中断
-                res = None
+                got = None
                 actual: dict[str, Any] = {"error": f"{type(exc).__name__}: {exc}"}
                 problems.append("error")
             else:
-                actual = {"route": res.route, "intent": res.intent,
-                          "reason": res.handoff_reason,
-                          "citations": list(res.draft.citations)}
+                actual = {k: got[k] for k in ("route", "intent", "reason", "citations")}
 
             if exp.route == ROUTE_HANDOFF:
                 handoff_expected += 1
-            if res is not None:
-                if res.intent == exp.intent:
+            if got is not None:
+                if got["intent"] == exp.intent:
                     intent_hits += 1
                 else:
                     problems.append("intent")
-                route_ok = res.route == exp.route and (
-                    exp.route != ROUTE_HANDOFF or res.handoff_reason == exp.reason)
+                route_ok = got["route"] == exp.route and (
+                    exp.route != ROUTE_HANDOFF or got["reason"] == exp.reason)
                 if route_ok:
                     route_hits += 1
                 else:
                     problems.append("route")
-                if exp.route == ROUTE_HANDOFF and res.route == ROUTE_HANDOFF:
+                if exp.route == ROUTE_HANDOFF and got["route"] == ROUTE_HANDOFF:
                     handoff_caught += 1
-                if _fabricates_status(res.reply_text):
+                if _fabricates_status(got["reply_text"]):
                     fabrication += 1
                     problems.append("status_fabrication")
             if exp.cite:
                 cite_expected += 1
-                if res is not None and cite_doc_id(tenant, exp.cite) in res.draft.citations:
+                if got is not None and cite_doc_id(tenant, exp.cite) in got["citations"]:
                     cite_hits += 1
                 elif "error" not in problems:
                     problems.append("cite")

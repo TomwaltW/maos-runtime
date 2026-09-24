@@ -26,8 +26,8 @@ integrate-p12-evalfix 按三类补了 17 条（:data:`ADDITION_REASONS_T169` 逐
   评测句换一两个字的说法。要改的是重排（``maos/domain/cs/scripts.py``，不归本轨），见
   docs/BACKLOG.md 的 integrate-p12-evalfix 小节。
 
-所以满分那条仍标 ``xfail(strict=True)`` —— 哪天真跑满了会 XPASS 变红，逼着把标记摘掉；
-剩下的一轮由 :func:`test_eval_gaps_are_exactly_the_known_ones_t169` 钉住，别处退一步就红。
+满分那条原标 ``xfail(strict=True)``，整合期摘掉（理由见该处注释）；剩下的一轮由
+:func:`test_eval_gaps_are_exactly_the_known_ones_t169` 钉住：别处退一步就红，这一轮修好也红。
 
 ## 客套开场守卫（复核轮 F1）
 
@@ -290,18 +290,11 @@ def _with_extra_greeting_t169(monkeypatch, phrase: str) -> None:
     monkeypatch.setattr(corpus, "load_corpus", patched)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "开发集裁定（2026-09-24）后按三类通用缺口补了说法：CS12-014#1、CS12-045#1 已对上；"
-    "CS12-044#1 是 PAY-001 / PAY-003 的歧义，通用说法补不上、要改重排（见模块头与 "
-    "KNOWN_GAPS_T169），按裁定不硬补"))
-def test_real_front_desk_meets_the_p12_eval_thresholds_t169():
-    cases = evaluate.load_cases()
-    thresholds = evaluate.load_thresholds()
-    assert set(evaluate.THRESHOLD_KEYS) <= set(thresholds)
-    report = evaluate.run_eval(_desk_factory_t169, cases)
-    assert report.turns == sum(len(c.turns) for c in cases) >= 40
-    assert report.meets(thresholds), report.describe()
-    assert report.failures == (), report.describe()
+# 满分那条原先标 xfail(strict=True)。整合期（主会话，2026-09-24）摘掉：它与下面
+# test_eval_gaps_are_exactly_the_known_ones_t169 判的是同一件事（后者更严：没对上的轮
+# 必须恰好是 KNOWN_GAPS_T169，多一轮少一轮都红），而一条常驻的 xfail 会让作者 Mac 上
+# demo_preflight 第 1 步按「N passed」精确比对时差 1。CS12-044#1 修好那天，gaps 那条
+# 会先红，届时清空 KNOWN_GAPS_T169 即可。
 
 
 def test_eval_gaps_are_exactly_the_known_ones_t169():

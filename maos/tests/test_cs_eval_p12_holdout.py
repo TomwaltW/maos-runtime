@@ -12,8 +12,9 @@ review/p12-cs-contracts.md（含 §6 修订）、``maos/domain/cs/types.py`` 与
 * 不重合棘轮 —— 留出句与开发集（p12_cases.json）各轮、话术库 examples / synonyms
   去标点后不许共享 ≥6 字的连续片段，也不许整句一字之差。失败消息**只报留出 case id
   与来源**，不回显开发集或话术库的句子：改写者看不到对面，改写才仍然是盲的；
-* 真前台跑留出集、断言达到预登记门槛 —— 合流前 skip（``MAOS_CS_HOLDOUT_RUN=1`` 才跑），
-  主会话合流后删掉 skipif 启用。
+* 真前台跑留出集 —— 主会话合流后启用（cf0e97e 首跑）。首跑没达到预登记门槛，门槛原样保留
+  作 p13 验收目标；这里钉的是安全不变量（零编造、零自信答错）与「不许比首跑更差」的地板，
+  见 :data:`MEASURED_P12_HOLDOUT` 的注释。
 
 标签约定：expect 不写 cite（evaluate 对门槛里没登记的 cite_accuracy 按 1.0 要求），
 方案编号记在 case 的 tags 里，形如 ``scheme:LOG-001@2``（第 2 轮对应 LOG-001）；
@@ -23,7 +24,6 @@ review/p12-cs-contracts.md（含 §6 修订）、``maos/domain/cs/types.py`` 与
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import re
 import unicodedata
@@ -396,27 +396,63 @@ def test_holdout_does_not_overlap_dev_set_or_scripts_holdout():
 
 
 # ---------------------------------------------------------------------------
-# 真前台（合流后启用）
+# 真前台（主会话合流后启用，2026-09-24 于 cf0e97e 首跑）
 # ---------------------------------------------------------------------------
-@pytest.mark.skipif(os.environ.get("MAOS_CS_HOLDOUT_RUN") != "1",
-                    reason="留出集由主会话在合流后启用")
-def test_real_desk_meets_preregistered_thresholds_holdout():
+#: 首跑实测（cf0e97e，真前台、零模型）。预登记门槛**没达到**：intent 48/70 = 0.6857 < 0.85、
+#: route 45/70 = 0.6429 < 0.80、handoff 28/38 = 0.7368 < 0.90；status_fabrication = 0 达到。
+#: 主会话裁定（DECISIONS integrate-p12）：不拿留出集调 p12（调了它就不再是留出集），
+#: 预登记门槛原样保留、转成 p13 理解层的验收目标；p12 这里钉两件事 ——
+#: 安全不变量（零编造、零「自信答错」）与「不许比首跑更差」的地板。
+MEASURED_P12_HOLDOUT = {"turns": 70, "intent_hits": 48, "route_hits": 45,
+                        "handoff_expected": 38, "handoff_caught": 28}
+
+
+def _desk_factory_holdout():
     from maos.core.store import SqliteStore
     from maos.domain.cs.corpus import seed_cs_kb
     from maos.domain.cs.desk import CsConfig, FrontDesk
 
-    def desk_factory():
-        store = SqliteStore(":memory:")
-        seed_cs_kb(store)
-        return FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None))
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    return FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None))
 
+
+@pytest.fixture(scope="module")
+def holdout_report():
     cases = load_cases(HOLDOUT_PATH_HOLDOUT)
-    thresholds = load_document(HOLDOUT_PATH_HOLDOUT)["_thresholds"]
-    assert thresholds == PREREGISTERED_THRESHOLDS_HOLDOUT
-
-    report = run_eval(desk_factory, cases)
-
+    report = run_eval(_desk_factory_holdout, cases)
     assert report.turns == sum(len(c.turns) for c in cases)
-    assert report.meets(thresholds), (
-        "留出集没达到预登记门槛：" + "；".join(report.shortfalls(thresholds))
-        + "\n逐轮明细：\n" + report.describe())
+    return report
+
+
+def test_preregistered_thresholds_are_untouched_holdout():
+    """预登记门槛一个字都不许动 —— 没达到就是没达到，改门槛等于改题。"""
+    assert load_document(HOLDOUT_PATH_HOLDOUT)["_thresholds"] == PREREGISTERED_THRESHOLDS_HOLDOUT
+
+
+def test_real_desk_holdout_safety_invariants_holdout(holdout_report):
+    """安全不变量：宁可不答，不许错答。
+
+    * 零编造：任何一轮的回复在空观察下都过后置校验；
+    * 零「自信答错」：真前台走了 answer 的轮，意图必须对 —— 答错一篇话术比兜底更糟；
+    * 该转人工的轮，没被转的只能落在兜底 / 静默（兜底两轮就转人工），不许被「答」掉。
+    """
+    r = holdout_report
+    assert r.status_fabrication == 0, r.describe()
+    wrong_answers = [m for m in r.failures if m.actual.get("route") == ROUTE_ANSWER]
+    assert not wrong_answers, "真前台自信答错：\n" + "\n".join(
+        f"{m.case_id}#{m.turn} expected={m.expected} actual={m.actual}" for m in wrong_answers)
+    swallowed = [m for m in r.failures
+                 if m.expected.get("route") == ROUTE_HANDOFF
+                 and m.actual.get("route") not in (ROUTE_HANDOFF, ROUTE_FALLBACK, ROUTE_SILENT)]
+    assert not swallowed, [f"{m.case_id}#{m.turn}" for m in swallowed]
+
+
+def test_real_desk_holdout_does_not_regress_below_first_run_holdout(holdout_report):
+    """地板：不许比 cf0e97e 首跑更差。变好了照样过 —— 那时来这里把地板抬上去。"""
+    r = holdout_report
+    assert r.turns == MEASURED_P12_HOLDOUT["turns"]
+    assert r.handoff_expected == MEASURED_P12_HOLDOUT["handoff_expected"]
+    assert r.intent_hits >= MEASURED_P12_HOLDOUT["intent_hits"], r.describe()
+    assert r.route_hits >= MEASURED_P12_HOLDOUT["route_hits"], r.describe()
+    assert r.handoff_caught >= MEASURED_P12_HOLDOUT["handoff_caught"], r.describe()

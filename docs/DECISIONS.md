@@ -3114,3 +3114,34 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-23 | p11 | 真源 `docs/expected-metrics.json` 怎么刷 | 收集 4202 -> 4379：pytest_passed_nopg 4099 -> 4273、pytest_skipped_nopg 103 -> 106，pg_gated_tests 90 与 verify_result_line 不变；锚点 `docs/submission-checklist.md:24` 同步改成 4273 | +177 条全是六轨新增的 commerce 测试，其中 3 条 skip（eBay 两条缺 cryptography、Shopify 一条缺真凭据），有库无库两档都 skip，所以不进 PG 门控差值 |
 | 2026-09-23 | p11 | 证据重产要不要连 `evidence/capability-matrix.json` 一起产 | 一起产（`scripts/gen_capability_matrix.py`），出处从 e0541e9-dirty 刷到本轮 sha | 它有生成器，BACKLOG 2026-09-14 那条（make_release.sh 的 -dirty 计数）点名把它加进重产清单；它是 evidence/ 根下的单个文件，不进 verify 第 9 项的分母，刷不刷都不影响 10/10 |
 | 2026-09-23 | p11 | 真模型束 case-real-01/happy-live 要不要重产 | 不重产，出处仍停在 4a53a5c | 本轮禁网、不许用任何模型密钥；真模型束不进 verify 的十项分子与 provenance 分母（T128），前几波也都没动它 |
+
+## p12-contracts（p12 契约期：客服前台跨轨契约与骨架，2026-09-24）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-24 | p12 | 用户对方案的原话（交接会话转述）：「this is a good plan / you can use agentteams and build the workflows to finished the plan!」 | 方案 §9-1 选 **A**：MAOS 原生实现对话层，ADP 只当参考架构；B（MCP 连接器）作 p14 的暴露面；用 Workflow 多智能体编排把 p12→p14 做完 | 交接文档 §1；方案 §1 推荐 A 的理由：卖点是「可核验」，前台放进重放不了的平台，卖点只剩后台那一半 |
+| 2026-09-24 | p12 | 方案 §9-2 首发渠道（上一会话替用户选的缺省，交接 §2） | **wechat_kf**；对话处理器按「外部渠道」泛化写（显式列举的外部渠道集合），不绑死微信 | adapter 已有；WhatsApp 需新 adapter，记 BACKLOG 不做 |
+| 2026-09-24 | p12 | 方案 §9-3 语种（缺省） | **中 + 英，放 p13**：确定性语种判断 + 分语种兜底话术；p12 只有中文话术，英文输入走兜底 | ADP 4.4 专项；跨境方向必需 |
+| 2026-09-24 | p12 | 方案 §9-4 身份核验（缺省） | 可插拔 IdentityVerifier 端口，缺省实现是**失败即关**的绑定表（渠道 + 外部用户 id → 可查订单），没绑定就不查单、转人工；p13 落地，p12 不查单 | p11 冻结的 ExternalOrder 只有 5 个字段、没有买家信息，拿平台买家数据核验要改冻结契约 —— 不做 |
+| 2026-09-24 | p12 | 方案 §9-5 资料（缺省） | 自写合成话术库，格式照 ADP 3.3（方案编号｜适用场景｜处理原则｜标准话术），**标明「合成」**，不照抄课程原文 | 真实资料还没人给 |
+| 2026-09-24 | p12 | 用户拍板 1（本会话）：「交接写的基线 goai-restructure@393dd5b（p11 整合）不在远端：GitHub 上最新是 65bd0a5（p10 收尾，09-14），p11 只在你 Mac 上、没推过。p12 在哪个基线上开？」 | 「我去推 p11，你等 (Recommended)」 | 选项说明原文：你在 Mac 上 git push origin goai-restructure，我 fetch 到 393dd5b 再开 p12。用户推送后实测 origin/goai-restructure = 393dd5b，是 65bd0a5 的快进，p12 基线即此 |
+| 2026-09-24 | p12 | 用户拍板 2：「容器里没装 pytest（pyproject 的 dev 可选依赖就是它）。能不能 pip install pytest 到这个临时容器里？不改仓库任何文件。」 | 「可以，只装 pytest (Recommended)」 | 只装进临时容器，pyproject / Docker / CI 一个字没动 |
+| 2026-09-24 | p12 | 用户拍板 3：「基线测试在收集阶段就崩了（5 个 ingress 测试文件）：容器的 python3 指向 3.11，但系统自带的 cryptography 是给 3.12 编译的，3.11 一 import 就 panic … 怎么修？」 | 「给 3.11 装 cryptography (Recommended)」 | 选项说明原文：pip install cryptography，就是 pyproject 里声明的 ingress 可选依赖，只装进临时容器。实装 50.0.1 到 3.11 自己的 dist-packages（要 --ignore-installed，否则 pip 认为系统那份已满足） |
+| 2026-09-24 | p12 | 用户拍板 4：「CLAUDE.md 禁止 push，但这是云端临时容器，闲置后会回收，本地 commit 会丢 … push 怎么办？」 | 「允许推到会话分支 (Recommended)」 | 选项说明原文：只推 claude/ecstatic-bardeen-myl3au（本会话专用分支，不是 goai-restructure / main），每个整合收尾推一次；共享分支仍你手动。integrate/p12 与 task-t16N 分支只在本地 |
+| 2026-09-24 | p12 | 本容器在基线 393dd5b 上的实跑读数（python 3.11 + pytest 9.1.1 + cryptography 50.0.1） | 收集数与真源的 passed + skipped 相等；实跑 7 条红全是环境：3 条 doc-guard（review/ 下那些 md 在作者 Mac 上被 exclude、本 clone 里不存在）、1 条 room_wiring（写死 macOS 的 /private/tmp）、3 条 verify_warn（没有 docker daemon，沙箱降级多出 2 行 trace-tree warn）。p12 各轨的验收口径 = 这 7 条 + 恰好一条收集数红，其余全绿 | 7 条逐条查了根因、与代码无关；不去修（铁律 4），也不拿本容器读数刷真源 —— 真源是作者主仓读数 |
+| 2026-09-24 | p12 | 前台要不要调模型 | **p12 零模型调用**：问答对 + 同义词 + 兜底全是确定性的；槽位抽取、意图模型、多语种放 p13 | ADP 3.2 标准模式本来就是问答对；不调模型就不碰 call_site 登记与 model_usage 归属，也让「说不出没观察的状态」由结构保证、不靠提示词 |
+| 2026-09-24 | p12 | 会话轮次挂哪个 id（交接 §3、方案 §8 的开放探针） | event_log 行 plan_id = cs: + 会话 id、task_id = 轮次 id、trace_id 恒空串；model_usage p12 不产生；CS 行不进 scenario-* / case-* 证据束；cs 树族与 verify 新项放 p14 | verify 第 8 项读 model_usage.trace_id：非空而查不到 plan 判负；event_log 的 task_id 全仓没人拿去对 task 表，又是 SkillInvoked / KbRetrieved / 自有事件三者唯一共有的逐轮键（KbRetrieved 的 event_id 写死空串）；前缀先例是圆桌的 roundtable: |
+| 2026-09-24 | p12 | 挂钩放哪、管多少 | router 只加一处：外部渠道（显式 wechat_kf）+ 装了前台 + 非命令且有字 → 前台，放在 _text_reply 之前（@ 某岗那条路径对外部客户于是也关了）；命令分支一个字不动 | 方案 §8「router 只加一处、内部逐字不变」；外部 /refund /help 今天的外泄是存量行为不是 p12 回归，记 BACKLOG 给 p13 的退款预检桥收口 |
+| 2026-09-24 | p12 | 外部会话的租户从哪来 | MAOS_CS_TENANTS 显式映射（客服账号 open_kfid → 租户）；映射不到就落空串、直接转人工（tenant_unmapped），不检索 | 同 2026-09-10 那条「不猜、不编默认租户」；KB 预过滤没有租户一条都检不出 |
+| 2026-09-24 | p12 | 会话表怎么建 | cs_ 前缀三张新表 + 迁移记账表，放 cs 自己的 schema.sql，走 DomainConn 双后端；不进 DOMAIN_REGISTRY；只做离线 DDL 翻译测试，不加 PG 门控测试 | 铁律 1 只许新增表；注册表里的域都有权威终态与观察表，前台两样都没有；pg_gated_tests 是要人签字才能动的不变量 |
+| 2026-09-24 | p12 | 客户原文放哪 | 原文进 cs_turn（会话对象本身、转人工卡片要带），event_log 只落摘要；KbRetrieved 的 query 里客户原文换摘要；日志里客户标识打码 | 圆桌口径「原文一个字都不进 event_log」；retrieve_and_log 会把 keyword 原样写进 detail.query，所以话术检索改走 retrieve + emit_kb_retrieved 两步 |
+| 2026-09-24 | p12 | 话术用哪种 kind | 新增 kind cs_script、biz_type = cs；不进 POSITIVE_KINDS；test_kb_corpus 里「漏斗盖全八类」那条改口径为「退款漏斗盖全除 cs_script 外的全部类、且不含 cs_script」 | 文档侧 NULL 是通配，biz_type 非空才互相隔离；不进正例 = 话术无权改任何 DAG；那条断言原意是「每类知识都检得到」，cs_script 本就不该出现在退款检索里，改成正向隔离判据 |
+| 2026-09-24 | p12 | 引用与 basis_ref 的单位 | 引用写 kb doc_id；basis_ref 只两种前缀 obs: / kb:；状态字眼只认 obs:；p12 没有观察来源，任何状态字眼一律兜底 + 转人工 | KbRetrieved.detail.docs 与 verify 第 5 项认的都是 doc_id；ToolInvoked 行没有自己的 id、append_event_log 也不回 seq，p13 的查单结果要落 cs 自己的观察行才撑得起 obs: |
+| 2026-09-24 | p12 | cs 域能不能 import 别的域 | 只许一处：maos.domain.refund.projection（五个对外字面值）；_dbport / _schema_util 是共享底座不算域 | 方案 §8「客户回复的状态措辞唯一产出处仍是 projection.py」；projection 是零依赖模块 |
+| 2026-09-24 | p12 | 四轨怎么排 | 两波：W-A = T167 / T168 / T170 并行（基线 = 骨架 sha）；W-B = T169（基线 = W-A 合流 sha），用真会话表、真检索、真校验端到端跑评测集 | 前台编排依赖另三轨的实现，对着替身写要到整合期才发现对不上（交接 §5 那个坑）；本容器 4 核、编排并发上限 2，四轨同开也只能两两跑；先例 p10 Wave A–C 按依赖序 |
+| 2026-09-24 | p12 | 契约与派单放哪 | `review/p12-cs-contracts.md` 提交进版本库；派单不落 review/paste-*.md，直接写进编排脚本交给工作流子代理 | 本 clone 的 .git/info/exclude 只有注释，review/ 不被忽略；worktree 从 commit 建，看不见未提交的契约（BACKLOG task-t161 那条） |
+| 2026-09-24 | p12 | 评测门槛写哪 | 写在评测数据文件的 _thresholds 里、由测试断言；docs/expected-metrics.json 键集不动 | test_expected_metrics 用 REQUIRED_KEYS 精确钉键集；方案说门槛进真源，那一步与 verify 新项同批放 p14 |
+| 2026-09-24 | p12 | 评测种子从哪来 | 全部合成、标 synthetic，按方案 §7 列的类别出题；不声称是 ADP 3.3 那 6 行调试表 + 8 行测试表 | 课程原文不在本环境：Drive 里按「单工作流模式实战」「ADP」「FDE」搜只找到方案本身 |
+| 2026-09-24 | p12 | 转人工卡片怎么送 | MAOS_CS_HANDOFF_TARGET = 渠道:chat_id，同进程 adapter 发；没配就 delivery = unconfigured 只落库；cs_handoff 行是持久事实；人工接手走企微客服工作台 | router 只有 _reply 一条出口、只回原会话；Matrix 房间在另一个进程；会话转接 API 没封装，记 BACKLOG |
+| 2026-09-24 | p12 | 机器人会不会回自己 | wecom 的 _sync 丢掉带 origin 且不等于 3（不是客户发的）的行，T169 做 | 回话器一装上，sync_msg 若把人工或我方的消息也带回来就成了自问自答；字段缺省时照旧收，存量夹具不受影响 |
+| 2026-09-24 | p12 | 骨架怎么冻 | 冻结类型与常量放 `maos/domain/cs/types.py`（只用标准库），由 `maos/tests/test_cs_contract_p12.py` 逐字段钉住；四轨只 import 不改 | 并行轨各自写对、合起来字段名对不上，症状是整合期才红；机器钉让改的那一轨当场红 |

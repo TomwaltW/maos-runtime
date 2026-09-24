@@ -2937,3 +2937,19 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-23 | p11 | **平台接入的前置条件与推送面缺口**：Woo 的 Delivery-ID 与修改时间都只到秒、要 HTTPS 与 pretty permalinks（## task-t162 第 2–5 条）；eBay 没有取消 / 退款类通知、两种令牌约两小时过期（## task-t163 第 5、6 条）；Amazon 订单通知未接、已取消单可能缺 OrderTotal、基座 base.py 那段注释与官方模型不符（## task-t164 第 2、4、5 条） | 分别影响去重精度、接入门槛、推送覆盖与读单成功率，详见各条 | 客户接入说明与 M2 装配时逐条处理；改基座的部分先问 |
 | 2026-09-23 | p11 | **派单模板：后台会话带 FORCE_COLOR=3，pytest 日志带颜色码，按 PASSED / FAILED 计数的 grep 静默为 0**。见 ## task-t164 第 6 条、## task-t165 第 6 条、## task-t166 第 2 条 | 判据在「全过」时报「全缺」，或有红时报 0 条 FAILED | 本轮整合派单的 pytest 命令已一律带 --color=no；下一版派单模板照此写 |
 | 2026-09-23 | p11 | **已办（记一笔以便对账）**：## task-t165 第 7 条（真源条数待刷）本轮已刷到收集 4379；## task-t166 第 1 条（一致性判据在真对象上的第一次判定）本轮合流后判据 1–8 对 6 个真平台全绿，精确断言按用户拍板为 6 而非该条建议的 7 | 无 | 无 |
+
+## p12-contracts（p12 契约期：客服前台读图时查到的存量问题，2026-09-24）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-24 | p12 | **外部渠道的命令路径外泄内部内容**：wechat_kf 上 /refund 回内部预检卡（含 /approve 提示与审批岗）、/help 回内部 USAGE、命令出错时附 USAGE、其它异常把异常原文回给客户（router.py 的 handle 命令分支）；p12 的前台只接非命令文本，这条路没动 | 客户看得到内部命令、审批岗与规则编号 | p13 退款预检桥（外部渠道的命令改走前台） |
+| 2026-09-24 | p12 | **scripts/run_ingress.py serve 的库恒为 :memory:**，docstring 提到的 --db 选项并不存在 | 进程一重启，会话、转人工卡片、入站幂等键全丢；企微客服游标也只在内存里，只剩 KF_MAX_AGE 挡重放 | p13（前台真上线前） |
+| 2026-09-24 | p12 | **scripts/make_evidence.py 的密钥名正则漏掉 *_AES_KEY / *_ENCRYPT_KEY / CORP_ID**（MAOS_WECHAT_KF_AES_KEY、MAOS_WECOM_AES_KEY、MAOS_FEISHU_ENCRYPT_KEY） | 这些值既不脱敏也不进扫描哨兵（铁律 6） | 下一次渠道配置可能进证据束之前 |
+| 2026-09-24 | p12 | **客户侧状态措辞在 projection 之外还有两个出口**：notify.customer 在 projection 返回空串时回落 _INTERNAL_SAID（其中 settled 就是「退款已到账」），payload 的 content 能整段绕过 projection | 与「对外措辞唯一产出处是 projection.py」的口径不一致 | p13 前台接退款状态时一并收 |
+| 2026-09-24 | p12 | **企微客服取图未实现；附件入库对外部渠道没有渠道闸** | 客户发图进不来；将来进来了会进内部证据缓冲 | p13 |
+| 2026-09-24 | p12 | **企微客服会话转接（kf/service_state/trans）没封装** | 转人工只能发内部卡片，微信侧会话仍挂在机器人上，人工要自己去客服工作台接 | p13 / p14 |
+| 2026-09-24 | p12 | **obs/trace.py 与 scripts/verify.py 没有 cs 树族**，cs: 前缀的 event_log 行进证据束就是游离事件 | CS 行只能留在 cs 自己的库里，不进证据束 | p14（与 verify 新项同批） |
+| 2026-09-24 | p12 | **kb_doc 的 kind CHECK 是 IF NOT EXISTS**，加 cs_script 到不了已存在的持久库（同 task-t118 那条） | 旧 PG / 文件库写 cs_script 会撞 CHECK | 前台接持久库之前 |
+| 2026-09-24 | p12 | **IngressServer 只有一个工作线程；企微客服 sync_msg 在 HTTP 线程里拉、不按 has_more 翻页** | 前台慢会拖住内部 /approve；积压超过一页的消息会漏 | p13 |
+| 2026-09-24 | p12 | **WhatsApp 没有 adapter**（方案 §9-2 的跨境候选） | 跨境方向的首发渠道缺位 | 用户定跨境渠道时 |
+| 2026-09-24 | p12 | **docs/ops/ORCHESTRATION.md 停在 2026-08-29**，p10 起没更新 | 编排现状要去 phase 文档与两本账里拼 | 编排总管有空时（本会话无权写它） |

@@ -2953,3 +2953,12 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-24 | p12 | **IngressServer 只有一个工作线程；企微客服 sync_msg 在 HTTP 线程里拉、不按 has_more 翻页** | 前台慢会拖住内部 /approve；积压超过一页的消息会漏 | p13 |
 | 2026-09-24 | p12 | **WhatsApp 没有 adapter**（方案 §9-2 的跨境候选） | 跨境方向的首发渠道缺位 | 用户定跨境渠道时 |
 | 2026-09-24 | p12 | **docs/ops/ORCHESTRATION.md 停在 2026-08-29**，p10 起没更新 | 编排现状要去 phase 文档与两本账里拼 | 编排总管有空时（本会话无权写它） |
+
+## task-t167（会话对象与新表，2026-09-24）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-24 | p12 | **_dbport.DomainConn 的 sqlite 事务深度记在实例上**：atomic 块里再 DomainConn.open 一个新实例执行写入（例如块内调某域 objects.execute），新实例不知道自己在事务里、当场 commit，保存点被提前提交；块内随后抛错时 ROLLBACK TO 报 no such savepoint，已写的行全部留下（本轨 scratchpad 探针实测：块内两行、抛错后两行都在） | 在事务块里调各域 execute / query 薄壳的代码会静默失去原子性；cs 的 transaction 目前靠 docstring 约束「块内只用 yield 出来的那个连接」 | 下一次有域需要嵌套事务之前；_dbport 是共享底座，改之前先问 |
+| 2026-09-24 | p12 | **cs 会话事实与 Cs* 审计行不同事务**（见 DECISIONS 本节第 1 条）：进程在「会话表已提交、append_event_log 还没落」之间崩掉，会留下一轮没有 CsTurnRecorded 的 cs_turn | event_log 条数与 cs_turn 行数可能差一，审计对账会差 | p14 做 cs 树族与 verify 新项时加一条「cs_turn 行数 = CsTurnRecorded 条数」的对账 |
+| 2026-09-24 | p12 | **STAGE_EXTRA_REASONS 目前只有 human_released**（maos/domain/cs/conversation.py）：p12 只走 active → handed_off（原因取 HANDOFF_REASONS），handed_off → active、→ closed 两条路径 p12 没有调用方 | 以后接这两条路径时若传别的原因字眼，审计行里只剩 sha256 摘要、读不出原因（不泄原文，但不可读） | p13/p14 接人工交还 / 结束会话时，把用到的原因字眼追加进 STAGE_EXTRA_REASONS 并补测试 |
+| 2026-09-24 | p12 | **反向验证脚本会读到上一个变异的旧 .pyc**：变异脚本用 shutil.copy2 还原源文件（连原 mtime 一起还原），两个长度相同的变异又在同一秒内写入时，Python 按「mtime 秒 + 文件大小」判 .pyc 新鲜，第二个变异直接用了第一个的字节码。本轨复核第二轮实测：N3（change_stage 忽略 now）与 N4（mark_handoff_delivery 忽略 now）报出一模一样的失败清单；每个变异单独设 PYTHONPYCACHEPREFIX 之后，N4 才红在它该红的那条上。上一轮 10 个变异隔离后重跑，结论不变 | 各轨与复核的反向验证若也这么写，「变异红」可能是上一个变异红的，「变异绿」可能是上一个变异绿的，判负结论不可信 | 下次派单写反向验证要求时，在契约 §3 测试口径里加一句「每个变异单独设 PYTHONPYCACHEPREFIX（或每次跑前删掉被变异模块的 .pyc）」 |

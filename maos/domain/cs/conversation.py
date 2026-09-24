@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from maos.domain.cs import objects
+from maos.domain.cs.ports import LANG_ZH, LANGS, LOOKUP_OUTCOMES
 from maos.domain.cs.types import (
     CARD_RECENT_TURNS,
     DELIVERIES,
@@ -44,6 +45,7 @@ from maos.domain.cs.types import (
     HANDOFF_REASONS,
     INTENTS,
     ROUTE_ANSWER,
+    ROUTE_CLARIFY,
     ROUTE_FALLBACK,
     ROUTE_HANDOFF,
     ROUTE_SILENT,
@@ -193,12 +195,13 @@ def allocate_turn(store: Any, conv: Conversation) -> tuple[str, int]:
 
 
 def _next_streak(route: str, current: int) -> int:
-    """fallback_streak 的更新规则（契约 §1.4）：兜底 +1，答上 / 转人工清零，静默不变。"""
+    """fallback_streak 的更新规则（p12 契约 §1.4 + p13 §1.1）：兜底 +1，答上 / 转人工清零，
+    静默与追问（clarify）不变 —— 追问必填槽位不是「判不准」，不该把会话往转人工推。"""
     if route == ROUTE_FALLBACK:
         return current + 1
     if route in (ROUTE_ANSWER, ROUTE_HANDOFF):
         return 0
-    if route == ROUTE_SILENT:
+    if route in (ROUTE_SILENT, ROUTE_CLARIFY):
         return current
     raise ValueError(f"未知的 route {route!r}，只认 {ROUTES}")
 
@@ -206,12 +209,17 @@ def _next_streak(route: str, current: int) -> int:
 def record_turn(store: Any, conv: Conversation, *, turn_id: str, seq: int, msg_dedup_key: str,
                 inbound_text: str, reply_text: str, route: str, intent: str,
                 handoff_reason: str, draft: ReplyDraft, check: CheckResult,
-                now: str | None = None) -> Conversation:
+                now: str | None = None, lang: str = LANG_ZH,
+                lookup_outcome: str = "") -> Conversation:
     """落一轮：插 ``cs_turn``、按规则更新 ``fallback_streak`` 与 ``updated_at``（同一个事务），
     提交后落恰好一条 ``CsTurnRecorded``；返回更新后的会话。
 
     枚举在进库前先校验（``ValueError``）：库上的 CHECK 是最后一道，不是第一道。
     ``turn_id`` 必须是 ``turn_id_for(conv.conversation_id, seq)``（即 ``allocate_turn`` 给的那一对）。
+
+    p13（契约 §1.3）：``lang`` / ``lookup_outcome`` 是带缺省的关键字参数（p12 的调用处不用改），
+    原样进 detail；detail 另带 ``observation_count``（本轮 cs_observation 行数）与
+    ``slot_count``（本会话 cs_slot 行数）—— 这两个数**从库里读**，不收调用方给的。
     """
     if route not in ROUTES:
         raise ValueError(f"未知的 route {route!r}，只认 {ROUTES}")
@@ -219,6 +227,10 @@ def record_turn(store: Any, conv: Conversation, *, turn_id: str, seq: int, msg_d
         raise ValueError(f"未知的 handoff_reason {handoff_reason!r}，只认空串或 {HANDOFF_REASONS}")
     if intent and intent not in INTENTS:
         raise ValueError(f"未知的 intent {intent!r}，只认空串或 {INTENTS}")
+    if lang not in LANGS:
+        raise ValueError(f"未知的 lang {lang!r}，只认 {LANGS}")
+    if lookup_outcome and lookup_outcome not in LOOKUP_OUTCOMES:
+        raise ValueError(f"未知的 lookup_outcome {lookup_outcome!r}，只认空串或 {LOOKUP_OUTCOMES}")
     if turn_id != turn_id_for(conv.conversation_id, seq):
         raise ValueError(f"turn_id {turn_id!r} 与 seq={seq} 对不上"
                          f"（应为 {turn_id_for(conv.conversation_id, seq)!r}）")
@@ -244,6 +256,13 @@ def record_turn(store: Any, conv: Conversation, *, turn_id: str, seq: int, msg_d
         db.execute("UPDATE cs_conversation SET fallback_streak=?, updated_at=?"
                    " WHERE tenant_id=? AND conversation_id=?",
                    (streak, ts, conv.tenant_id, conv.conversation_id))
+        observation_count = int(db.query(
+            "SELECT COUNT(*) AS n FROM cs_observation"
+            " WHERE tenant_id=? AND conversation_id=? AND turn_id=?",
+            (conv.tenant_id, conv.conversation_id, turn_id))[0]["n"])
+        slot_count = int(db.query(
+            "SELECT COUNT(*) AS n FROM cs_slot WHERE tenant_id=? AND conversation_id=?",
+            (conv.tenant_id, conv.conversation_id))[0]["n"])
 
     _emit(store, conversation_id=conv.conversation_id, turn_id=turn_id,
           event_type=EVENT_TURN_RECORDED, reason=route,
@@ -260,6 +279,11 @@ def record_turn(store: Any, conv: Conversation, *, turn_id: str, seq: int, msg_d
               "check_ok": bool(check.ok),
               "violation_kinds": _violation_kinds(check),
               "fallback_streak": streak,
+              # p13（契约 §1.3）：两个枚举、两个库里读的计数。槽位值与观察内容不进审计行。
+              "lang": lang,
+              "lookup_outcome": lookup_outcome or "",
+              "observation_count": observation_count,
+              "slot_count": slot_count,
           })
     updated = get_conversation(store, conv.tenant_id, conv.conversation_id)
     assert updated is not None

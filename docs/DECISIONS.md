@@ -3306,3 +3306,14 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-24 | p13 | 理解层要不要调模型 | 确定性优先，只在确定性判不出意图、且注入的是真模型时调；CALL_SITE 登记、model_usage 行 trace_id 空、task_id None、plan_id=cs:…；Scripted / None 下零 usage 行 | 测试与证据恒为 Scripted，行为要确定；verify 第 8 项的四条判据在这个口径下自然成立 |
 | 2026-09-24 | p13 | p13 的评测集算什么 | scenarios/cs/eval/p13_cases.json 定性为开发集（T174 会拿它调）；门槛预登记在文件里（intent 0.9 / route 0.9 / handoff 0.95 / 编造 0 / 措辞 1.0 / 错状态 0）；泛化由 p12 留出集与 p14 新写的留出集量 | 查单流程是规则驱动的，开发集调到满分合理；泛化另量 |
 | 2026-09-24 | p13 | 骨架里顺手动了 p12 各轨的文件（schema.sql、desk.py、两份测试） | 只动到「枚举增长后 p12 测试仍全绿」所需的最小面：CHECK 三处、原因表各四条、契约钉子、留出测试的失败消息 | 骨架是主会话的；让骨架提交本身全绿（除收集数），各轨从同一个绿基线出发 |
+
+## task-t171（存储与绑定，2026-09-24）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-24 | p13 | 旧库探针的 PG 分支：派单给了「读等价元数据」与「保存点里试插」二选一 | 读元数据：pg_constraint 上 pg_get_constraintdef 的文本，与 SQLite 读 sqlite_master 的建表原文走同一个拆法（CHECK 括号体里第一个标识符是列名、单引号串是认的取值）；探针放在建表**之前**，要求的取值取 types.py 的全集（ROUTES、空串 + HANDOFF_REASONS），不手抄 p13 新增的五个；抛 objects.CsSchemaOutdated，消息写明「p13 之前建的库、要重建」 | 试插要写（哪怕回滚）而新库上探针必须零写入；放在建表前，旧库上一张新表都不建就停下；取全集则以后枚举再长、没重建的库照样被认出。PG 分支本容器无库，只用假连接测了分派与 PG 规范化文本的拆法 |
+| 2026-09-24 | p13 | 契约 §1.3 只给了列名的列：NOT NULL、缺省、CHECK 没写全 | 一律 NOT NULL；可空语义的给字面量缺省（version 0、cs_observation.updated_at 空串、lookup_outcome / ask_slot 空串、ask_count 0、退款桥五个文本列空串）；契约没给 CHECK 的两列补了与 Python 校验同口径的 CHECK：cs_refund_bridge.ok IN (0, 1)、cs_turn_ext.ask_slot IN (空串 + SLOT_KEYS) | 派单要「五张表的 CHECK 拒非法值」而退款桥在契约里没有 CHECK；ask_slot 是闭集（SLOT_KEYS）。两条 CHECK 与写入口的校验一致，合法写入一条都不受影响；可逆 |
+| 2026-09-24 | p13 | 契约没列索引，但每轮都要按 (会话, 轮) 读回观察、按 (会话, 槽位) 数追问次数 | 加两条：idx_cs_observation_conv_turn (conversation_id, turn_id)、idx_cs_turn_ext_conv_slot (tenant_id, conversation_id, ask_slot)；T167 的语句条数钉子（5 -> 12）与 PG 翻译钉子（四张 -> 九张、CHECK 5 -> 14）同步改 | 不建索引则两处读回都是整表扫、随累计轮数线性变慢；观察那条不带租户，因为 turn_observation_ids 的冻结签名不收租户（会话 id 本身由租户算出） |
+| 2026-09-24 | p13 | record_turn 的 observation_count / slot_count「由库里读」没说数什么 | observation_count = 本轮（租户 + 会话 + 轮）cs_observation 行数；slot_count = 本会话 cs_slot 当前行数（累积后的槽位个数，不是本轮写了几个）；两个数在 record_turn 同一个事务里读；record_turn 不收这两个参数（传了就是 TypeError） | 与 lang / lookup_outcome 同为「本轮快照」；槽位是跨轮累积的会话字段，数当前行数最贴近「会话此刻有几个槽位」 |
+| 2026-09-24 | p13 | 契约没写的写入口校验 | 从严：绑定六个必填项非空、空租户写不进、display_no 写入侧同样规范化（去首尾空白 + 全角转半角）后存；种子文件条目里不认识的键拒（防拼错键静默丢字段）、顶层多余键（如 _note）不管、读不了 / 不是 JSON / 形状不对一律带文件名的 ValueError 且一条都不写、报错不回显值；槽位值不许空串或纯空白；record_turn_ext 一轮一行（重复撞主键）、ask_slot 空时 ask_count 只能 0；record_bridge 一轮一行、PrecheckResult.summary 不落（契约列里没有，它进内部卡片）；观察 / 槽位 / 扩展 / 桥都校验 turn_id 形如「本会话 -t 数字」 | 这几张表撑的是「能不能查单、说哪句状态」，宁可早抛不静默；写入侧与比较侧用同一个规范化函数，两边口径不会漂 |
+| 2026-09-24 | p13 | 观察 id 的取号范围与 BindingVerifier 遇库错怎么办 | 取号按 (租户, 轮次) 数行（与主键 (tenant_id, observation_id) 的唯一范围一致，observation_id 只由 turn_id 派生），在持锁事务里取；BindingVerifier 只把「查不到 / 空键」判成 None，库本身报错照常抛、不吞 | ports.IdentityVerifier 没要求永不抛（OrderLookup / RefundPrecheck 才要求）；吞掉库错会把「系统坏了」伪装成「客户没绑定」，desk 的「永不抛」兜底本来就会接住并转人工 |

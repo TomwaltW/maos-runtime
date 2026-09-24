@@ -1,6 +1,7 @@
--- 客服前台（cs）会话对象 —— 3 张业务表 + 1 张迁移记账表，
--- 由 objects.py::ensure_schema(store) 读本文件建表。形状照跨轨契约
--- review/p12-cs-contracts.md §1.3 逐列抄写：列名、类型、缺省、主键一个字不改。
+-- 客服前台（cs）会话对象 —— p12 的 3 张业务表 + 1 张迁移记账表，外加 p13 的 5 张
+-- （观察、绑定、槽位、轮次扩展、退款桥，见文件末尾），由 objects.py::ensure_schema(store)
+-- 读本文件建表。形状照跨轨契约 review/p12-cs-contracts.md §1.3 与
+-- review/p13-cs-contracts.md §1.3 逐列抄写：列名、类型、主键一个字不改。
 --
 -- 硬约束（改这个文件前先读）：
 --   1. 全部是**新增**表，全部 cs_ 前缀。maos/core/store.py 的现有表一字不改（铁律 1）。
@@ -16,6 +17,9 @@
 --
 -- 本文件只描述**目标形状**：整份 IF NOT EXISTS，对已存在的表改不动一列。
 -- 改列要动两处 —— 这里写目标形状，objects.py 的 _MIGRATIONS 末尾追加一步迁移。
+-- CHECK 的取值长了（p13 的 clarify 与四个新原因）**没有迁移**：cs_ 表在 p13 之前没有落过
+-- 盘的库。objects.py 的旧库探针在建表前读已存在的 cs_turn / cs_handoff 的 CHECK，
+-- 不认新值就抛 CsSchemaOutdated（要重建），不让写入在运行时才撞 CHECK。
 
 -- 迁移记账表：一条已应用的迁移一行，当前版本 = MAX(version)，一行都没有就是 0。
 -- 库级事实，不带 tenant_id（同一个库上的所有租户共享一份表结构）。
@@ -85,4 +89,98 @@ CREATE TABLE IF NOT EXISTS cs_handoff (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     PRIMARY KEY (tenant_id, handoff_id)
+);
+
+-- ===================================================================== p13（T171）
+-- 以下五张照 review/p13-cs-contracts.md §1.3。枚举取 maos/domain/cs/ports.py 的冻结值，
+-- 由 maos/tests/test_cs_records_t171.py 按枚举全集逐值钉住。读写口径在 records.py /
+-- identity.py；这五张表的写入**一律不落 event_log**（订单号、query_key、槽位值都不进审计行，
+-- 契约 §2' R5 增量），只由那一轮的 CsTurnRecorded 带计数。
+
+-- 一次**成功**查单的观察（outcome ok 且状态在措辞表里才落，records.record_observation 把关）。
+-- observation_id = ports.observation_id_for(turn_id, n)：「本轮的观察」在结构上可判。
+-- status 的 CHECK 照契约列全四个平台状态；amended 在 Python 侧就被拒（措辞表里没有它）。
+-- updated_at 是平台给的订单更新时刻（LookupResult.updated_at，可空串），observed_at 是本行落库时刻。
+-- 不存金额、不存客户原文。
+CREATE TABLE IF NOT EXISTS cs_observation (
+    tenant_id       TEXT NOT NULL,
+    observation_id  TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('order_lookup')),
+    system_name     TEXT NOT NULL,
+    query_key       TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('paid', 'shipped', 'cancelled', 'amended')),
+    version         INTEGER NOT NULL DEFAULT 0,
+    updated_at      TEXT NOT NULL DEFAULT '',
+    observed_at     TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, observation_id)
+);
+-- 读回「本轮的观察」按 (会话, 轮次) 过滤（records.turn_observation_ids 的口径不带租户：
+-- 会话 id 本身由租户算出）。
+CREATE INDEX IF NOT EXISTS idx_cs_observation_conv_turn ON cs_observation (conversation_id, turn_id);
+
+-- 订单绑定：这位客户可以查这一单。**是授权，不是订单事实**（铁律 8）。
+-- 只从内部路径写（启动种子文件、测试）；外部渠道没有任何一条路写得进来。
+-- display_no 存规范化之后的形状（去首尾空白、全角转半角，见 identity.normalize_display_no）。
+CREATE TABLE IF NOT EXISTS cs_order_binding (
+    tenant_id       TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    external_userid TEXT NOT NULL,
+    display_no      TEXT NOT NULL,
+    system_name     TEXT NOT NULL,
+    query_key       TEXT NOT NULL,
+    source          TEXT NOT NULL CHECK (source IN ('seed', 'test', 'internal')),
+    bound_at        TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, channel, external_userid, display_no)
+);
+
+-- 会话的槽位：跨轮累积，同一槽位新值覆盖旧值（turn_id 记最后写它的那一轮）。
+-- 是会话对象自己的字段，不是 Task 状态（铁律 9）。
+CREATE TABLE IF NOT EXISTS cs_slot (
+    tenant_id       TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    slot_key        TEXT NOT NULL CHECK (slot_key IN ('order_no', 'product', 'problem',
+                        'request', 'emotion')),
+    value           TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    source          TEXT NOT NULL CHECK (source IN ('rule', 'model')),
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, conversation_id, slot_key)
+);
+
+-- 一轮的 p13 扩展字段：语种、查单结果、追问的槽位与这是第几次追问。
+-- 一轮一行；records.ask_count 按 (会话, ask_slot) 数行得「该槽位已追问几次」。
+CREATE TABLE IF NOT EXISTS cs_turn_ext (
+    tenant_id       TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    lang            TEXT NOT NULL CHECK (lang IN ('zh', 'en')),
+    lookup_outcome  TEXT NOT NULL DEFAULT '' CHECK (lookup_outcome IN ('', 'ok', 'not_found',
+                        'unmapped_status', 'amended', 'system_misconfigured',
+                        'platform_error')),
+    ask_slot        TEXT NOT NULL DEFAULT '' CHECK (ask_slot IN ('', 'order_no', 'product',
+                        'problem', 'request', 'emotion')),
+    ask_count       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, turn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cs_turn_ext_conv_slot ON cs_turn_ext (tenant_id, conversation_id,
+    ask_slot);
+
+-- 退款桥：一轮至多一行（bridge_id = turn_id），记下只读预检的结论，供内部卡片与复盘。
+-- 前台**不**建工单、不发命令：command_line 只是给内部同事以自己名义发出去的那一行。
+CREATE TABLE IF NOT EXISTS cs_refund_bridge (
+    tenant_id       TEXT NOT NULL,
+    bridge_id       TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    turn_id         TEXT NOT NULL,
+    order_no        TEXT NOT NULL,
+    ok              INTEGER NOT NULL CHECK (ok IN (0, 1)),
+    decision        TEXT NOT NULL DEFAULT '',
+    rule_ref        TEXT NOT NULL DEFAULT '',
+    reason_code     TEXT NOT NULL DEFAULT '',
+    command_line    TEXT NOT NULL DEFAULT '',
+    refused_why     TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, bridge_id)
 );

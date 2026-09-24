@@ -3145,3 +3145,15 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-24 | p12 | 转人工卡片怎么送 | MAOS_CS_HANDOFF_TARGET = 渠道:chat_id，同进程 adapter 发；没配就 delivery = unconfigured 只落库；cs_handoff 行是持久事实；人工接手走企微客服工作台 | router 只有 _reply 一条出口、只回原会话；Matrix 房间在另一个进程；会话转接 API 没封装，记 BACKLOG |
 | 2026-09-24 | p12 | 机器人会不会回自己 | wecom 的 _sync 丢掉带 origin 且不等于 3（不是客户发的）的行，T169 做 | 回话器一装上，sync_msg 若把人工或我方的消息也带回来就成了自问自答；字段缺省时照旧收，存量夹具不受影响 |
 | 2026-09-24 | p12 | 骨架怎么冻 | 冻结类型与常量放 `maos/domain/cs/types.py`（只用标准库），由 `maos/tests/test_cs_contract_p12.py` 逐字段钉住；四轨只 import 不改 | 并行轨各自写对、合起来字段名对不上，症状是整合期才红；机器钉让改的那一轨当场红 |
+
+## task-t170（后置校验、静态守卫与评测集，2026-09-24）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-24 | p12 | check_reply 规则 3 的「状态字眼」扫什么（契约只写 STATUS_PATTERNS，派单要求五个对外字面值无依据全部拦下） | check_reply 扫 STATUS_PATTERNS ∪ projection 五个对外字面值的出现处；status_spans 仍只按 STATUS_PATTERNS（签名注释口径） | 已提出退款 / 支付处理中 / 已驳回 三句不含任何 STATUS_WORDS，只扫 STATUS_PATTERNS 时「您的退款支付处理中」在空观察下原样放行；R3「退款状态只许说五句」说明五句本身就是状态 |
+| 2026-09-24 | p12 | 「同一处状态字眼只报一次」与「有效 obs claim」怎么界定 | 重叠命中合成一处（「退款已到账」与其中的「已到账」算一处）；有效 obs claim 只看规则 1、2（literal 在正文、basis 本轮存在），且必须盖住合并后的整段；规则 5 不参与有效性 | 否则同一句话报两条 unbacked_status；非 PUBLIC 的退款说法带 obs 依据只报 foreign_literal，不再叠一条 unbacked_status |
+| 2026-09-24 | p12 | 静态守卫的边界（契约 §2.3 只列禁表与免写过头的允许清单） | from A import B 按 A.B 判；maos.skills.registry 只许 from … import register_skill（整模块 import 也判）；另把 importlib.import_module / __import__ 的字面量参数、getattr(x, 禁调用名) 纳入同一套规则；禁表与允许清单之外的 maos 模块不判 | 前两条是契约原文的逐字落地；后两条是同一件事的字符串写法，不纳入就是一行绕过；契约写的是禁表而不是失败即关的白名单，写成白名单会让 T169 在整合期无故变红 |
+| 2026-09-24 | p12 | 评测集里 silent 轮与 tenant_unmapped 轮的期望 intent（契约 §1.4 只规定 route / reason） | 两者期望 intent 一律 unknown | 判定顺序里这两步都排在触发词与检索之前，没有做意图判断；T169 若另有口径需回主会话改契约，已写进回执 open_issues |
+| 2026-09-24 | p12 | cite 写在哪些轮 | 只写在 answer 轮；带 handoff 标记的六个编号记在 case 的 tags 里，覆盖判据按 cite ∪ tags 算，另要求 13 个不带标记的编号各被 cite 钉过至少一次 | 契约 §1.4 第 4 步只规定 answer 轮 citations = (该篇 doc_id,)；handoff 轮引不引用没规定，写 cite 等于替 T169 定口径 |
+| 2026-09-24 | p12 | cite 对不上计入哪个指标（契约「给了就要求」，四个指标里没有它的位置） | 另记第五个量 cite_accuracy；门槛文件没写它时 meets 按 1.0 要求；_thresholds 形状不动 | 不计入就等于「给了也不要求」；塞进 route_accuracy 会改写契约对 route 的定义 |
+| 2026-09-24 | p12 | 评测跑批的两个细节（派单没写） | msg_id 的序号从 1 起（与 turn_id_for 同）；desk.handle 抛异常记该轮 error 失败、不中断整批；评测句与话术库 examples 逐字相同即红（话术库合入前 skip），问候类句子写长一点降低巧合撞句 | 契约说 handle 永不抛，评测要能看到违约而不是整批崩；「不许抄 examples」变成机器判据，合流后自动生效 |

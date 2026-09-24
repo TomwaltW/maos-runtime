@@ -2953,3 +2953,12 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-24 | p12 | **IngressServer 只有一个工作线程；企微客服 sync_msg 在 HTTP 线程里拉、不按 has_more 翻页** | 前台慢会拖住内部 /approve；积压超过一页的消息会漏 | p13 |
 | 2026-09-24 | p12 | **WhatsApp 没有 adapter**（方案 §9-2 的跨境候选） | 跨境方向的首发渠道缺位 | 用户定跨境渠道时 |
 | 2026-09-24 | p12 | **docs/ops/ORCHESTRATION.md 停在 2026-08-29**，p10 起没更新 | 编排现状要去 phase 文档与两本账里拼 | 编排总管有空时（本会话无权写它） |
+
+## task-t170（后置校验、静态守卫与评测集，2026-09-24）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-24 | p12 | **check_reply 把「已提出退款 / 支付处理中 / 已驳回」也当状态字眼**（见 DECISIONS task-t170 第 1 条）；T168 在 W-A 里看不到 claims.py，只能照 STATUS_PATTERNS 自查话术，话术或前台常量若含这三串（例如「如您已提出退款申请」）在空观察下会被拦 | 整合期真前台跑评测时这类话术会走 unverified_claim 转人工，answer 轮对不上 | W-A 合流时把 T168「每篇 script 空观察下过 check_reply」那条换成调 maos/domain/cs/claims.py 的真 check_reply |
+| 2026-09-24 | p12 | **cs 包 __init__ 的说明写「本包不 import maos/contracts/**」，契约 §2.3 禁表里却没有 maos.contracts**；静态守卫照契约不判 | 这一条只是口头约定，没有机器判据 | p12 整合期由主会话决定要不要把 maos.contracts 加进 §2.3 禁表（改契约 + 守卫一处常量） |
+| 2026-09-24 | p12 | **静态守卫只认字面量**：拼接出来的字符串（"payment." + "execute"）、用变量传给 import_module / getattr 的都判不到 | 防得住误用，防不住蓄意绕过 | p14 若要更严，补运行时判据（前台 identity 的 allowed_tools 为空 + SkillInvoker 的授权拒绝） |
+| 2026-09-24 | p12 | **评测集 silent / tenant_unmapped 轮的期望 intent = unknown 是契约空白处的推断**（DECISIONS task-t170 第 4 条） | T169 若在这两步也做意图判断，真前台跑评测 intent_accuracy 掉到 1 以下 | W-B 开工前由主会话确认口径 |

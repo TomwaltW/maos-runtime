@@ -101,6 +101,7 @@ from maos.ingress.contracts import (
     CHANNEL_FEISHU, CHANNEL_MATRIX, CHANNEL_WECOM, Attachment, AttachmentUnsupported,
     ChannelAdapter, InboundMessage, OutboundMessage,
 )
+from maos.ingress.contracts import CHANNEL_WECHAT_KF
 
 log = logging.getLogger("maos.ingress.router")
 
@@ -110,6 +111,11 @@ DEFAULT_LEDGER = ROOT / "scenarios" / "custom" / "ledger.json"
 #: 允许发审批命令的渠道。**外部渠道不在里面**，理由见模块抬头。
 #: Matrix 房间是内部审批房（`MAOS_APPROVERS` 里的人就坐在里面），与企微自建应用同级。
 ALLOW_APPROVAL = frozenset({CHANNEL_FEISHU, CHANNEL_WECOM, CHANNEL_MATRIX})
+
+#: 外部渠道（客户说话的地方）。显式列举、失败即关：新渠道缺省不进。
+#: 装了客服前台（``cs``）时，这些渠道上的非命令文本交给前台（p12，跨轨契约 §1.8）；
+#: 命令路径一个字不动（外部 ``/approve`` 照旧被 `ALLOW_APPROVAL` 那道闸拒掉）。
+EXTERNAL_CHANNELS = frozenset({CHANNEL_WECHAT_KF})
 
 CMD_REFUND = "refund"
 CMD_HELP = "help"
@@ -377,7 +383,8 @@ class IngressRouter:
                  attachment_store: AttachmentStore | None = None,
                  attachment_buffer: AttachmentBuffer | None = None,
                  chat: Any = None,
-                 team: Any = None) -> None:
+                 team: Any = None,
+                 cs: Any = None) -> None:
         self.adapters = adapters
         self.store = store
         self.ledger_path = Path(ledger_path)
@@ -409,6 +416,9 @@ class IngressRouter:
         #: `IngressServer` 的工作线程与 Matrix 的回调线程都会调 `handle`，
         #: 共用一个列表的话，A 的回帖会把 B 登记的事件一起 fire 掉。
         self._events = threading.local()
+        #: 客服前台（`maos.domain.cs.desk.FrontDesk`，p12）。**缺省不装**：不装时所有渠道
+        #: 与从前逐字节一致；装了也只接 `EXTERNAL_CHANNELS` 上的非命令文本。
+        self.cs = cs
 
     # -- 审批人 -------------------------------------------------------------
     def is_approver(self, sender: str) -> bool:
@@ -458,7 +468,13 @@ class IngressRouter:
             # 而证据其实已经存下来了。回执同时告诉他下一步该打什么。
             # 带字的非命令消息交给 `_text_reply`：@ 了某一岗就由那一岗答，否则走闲聊
             # （缺省没装回话器，闲聊照旧一声不吭）。
-            chat_note = self._text_reply(msg) if (msg.text or "").strip() else ""
+            # INTEGRATION-POINT: p12 客服前台
+            # 外部渠道 + 装了 cs + 有字 → 这一轮归前台（点名、闲聊都不走），回话照旧经 `_reply`。
+            if (self.cs is not None and msg.channel in EXTERNAL_CHANNELS
+                    and (msg.text or "").strip()):
+                chat_note = self._cs_turn(msg)
+            else:
+                chat_note = self._text_reply(msg) if (msg.text or "").strip() else ""
             out = self._reply(msg, "\n\n".join(p for p in (evidence_note, chat_note) if p))
             self._fire()
             return out
@@ -1987,6 +2003,67 @@ class IngressRouter:
         """长驻运行时里还没收口的 plan。取不到就返回空 —— 不猜。"""
         lister = getattr(self.store, "list_open_plans", None)
         return list(lister()) if callable(lister) else []
+
+    # -- 客服前台（p12） -----------------------------------------------------
+    def _cs_turn(self, msg: InboundMessage) -> str:
+        """外部渠道的一句非命令文本交给客服前台，返回给客户的回话（``""`` = 本轮静默）。
+
+        **永不抛**：前台本身已承诺不抛，这里再兜一层 —— 抛出去就是整条消息变成
+        「处理失败：…」发给客户。有转人工卡片就经 `_cs_deliver` 投到内部房间；
+        回话由 `handle` 经 `_reply` 发出（open_kfid 只有它会带）。日志里客户标识只打码。
+        """
+        from maos.domain.cs.desk import REPLY_DESK_UNAVAILABLE
+        from maos.domain.cs.types import mask_customer
+        try:
+            res = self.cs.handle(msg)
+            reply = str(res.reply_text or "")
+            card = res.handoff
+        except Exception as exc:                        # noqa: BLE001
+            log.error("客服前台处理失败（%s，客户 %s）：%s",
+                      msg.channel, mask_customer(msg.chat_id), type(exc).__name__)
+            return REPLY_DESK_UNAVAILABLE
+        if card is not None:
+            self._cs_deliver(card)
+        return reply
+
+    def _cs_deliver(self, card: Any) -> None:
+        """把转人工卡片投到 ``cs.config.handoff_target``（同进程的 adapter），回写投递状态。
+
+        没配目标 → unconfigured；目标是外部渠道、同进程没有那个渠道的 adapter、发送抛了 →
+        failed；发出去 → delivered。**失败只记日志**：客户那句过渡话术照发，卡片在库里
+        （``conversation.list_handoffs`` 捞得回）。
+        """
+        from maos.domain.cs import conversation as cs_conv
+        from maos.domain.cs.desk import render_card_text
+        from maos.domain.cs.types import (
+            DELIVERY_DELIVERED, DELIVERY_FAILED, DELIVERY_UNCONFIGURED,
+        )
+        try:
+            target = self.cs.config.handoff_target
+            delivered_to = ""
+            if not target:
+                delivery = DELIVERY_UNCONFIGURED
+            else:
+                channel, chat_id = target
+                adapter = self.adapters.get(channel)
+                if channel in EXTERNAL_CHANNELS or adapter is None:
+                    log.warning("转人工卡片 %s 没投：目标渠道 %s %s", card.handoff_id, channel,
+                                "是外部渠道" if channel in EXTERNAL_CHANNELS else "在本进程没有 adapter")
+                    delivery = DELIVERY_FAILED
+                else:
+                    try:
+                        adapter.send(OutboundMessage(chat_id=chat_id,
+                                                     text=render_card_text(card)))
+                        delivery, delivered_to = DELIVERY_DELIVERED, f"{channel}:{chat_id}"
+                    except Exception as exc:            # noqa: BLE001
+                        log.warning("转人工卡片 %s 投递失败（%s）：%s", card.handoff_id,
+                                    channel, type(exc).__name__)
+                        delivery = DELIVERY_FAILED
+            cs_conv.mark_handoff_delivery(getattr(self.cs, "store", None) or self.store,
+                                          card.tenant_id, card.handoff_id, delivery,
+                                          delivered_to=delivered_to)
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("转人工卡片的投递回写失败：%s", type(exc).__name__)
 
     # -- 回帖 ---------------------------------------------------------------
     def _reply(self, msg: InboundMessage, text: str) -> str:

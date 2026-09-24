@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-注册表里共 **42 个 skill / 42 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
+注册表里共 **44 个 skill / 44 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
 
 失败策略取值域冻结为 `retry`、`fallback`、`escalate`（maos/skills/contract.py:16）。
 
@@ -27,6 +27,8 @@
 | `claim.pay` | `1.0.0` | 软件交付域 | `claim_payment` | escalate | `payer.submit` | `maos/skills/builtin/claim/pay.py:35` |
 | `claim.settle` | `1.0.0` | 软件交付域 | `claim_settlement` | escalate | （空） | `maos/skills/builtin/claim/settle.py:62` |
 | `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:154` |
+| `cs.answer` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/answer.py:52` |
+| `cs.handoff` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/handoff.py:24` |
 | `finance.settle` | `1.0.0` | 制造售后退款域 | `refund_finance` | escalate | （空） | `maos/skills/builtin/refund/finance.py:55` |
 | `investigation.cancel` | `1.0.0` | 软件交付域 | `investigation_cancel` | escalate | `clearing.cancel` | `maos/skills/builtin/investigation/cancel.py:43` |
 | `investigation.classify` | `1.0.0` | 软件交付域 | `investigation_classify` | escalate | （空） | `maos/skills/builtin/investigation/classify.py:67` |
@@ -279,6 +281,40 @@
 | `security_boundary` | ⑦ 安全边界 | 受保护路径判定：补丁路径规范化后按 / 分段，任一段命中 PROTECTED_SEGMENTS（infra / .github / secrets / tests，任意层级、大小写不敏感）立即抛 ProtectedPathViolation，不重试、不降级；skill 自身不落盘、不执行补丁 |
 | `reuse_note` | ⑧ 复用说明 | Coding 角色唯一的补丁产出入口；返工走同一入口，findings 从 payload 进 |
 | `owner_roles` | ⑨ 归属角色 | `coding` |
+
+### cs.answer @ 1.0.0
+
+实现：`CsAnswerSkill` @ `maos/skills/builtin/cs/answer.py:52`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 客服前台一轮的检索 + 组稿 + 后置校验：按客户原文检索话术库（kind=cs_script），命中就照标准话术组稿（带引用），没命中给兜底话术，再过确定性后置校验 |
+| `input_schema` | ② 输入 | `tenant_id`: str —— 租户（客服账号映射得到，非空）<br>`conversation_id`: str —— 会话 id（csc-…）<br>`turn_id`: str —— 本轮 id（<会话>-tNNNN）<br>`text`: str —— 客户本轮原文（只用于检索，审计行里只落摘要） |
+| `output_schema` | ③ 输出 | `draft`: ReplyDraft.to_json() —— 这一版回复（text / claims / citations）<br>`check`: CheckResult.to_json() —— 空观察下的后置校验结果<br>`hits`: list[str] —— 本次检出的话术 doc_id（按分数降序）<br>`route`: answer \| fallback \| handoff<br>`intent`: str —— 命中话术的意图；没命中为 unknown<br>`handoff_reason`: str —— route=handoff 时为话术的转人工标记，否则空串 |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`conversation_id`、`turn_id`、`text` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读、只落 cs_ 表、不调任何工具：只检索 kind=cs_script 的话术、只从 event_log 读回本轮命中；不写任何业务表（唯一的写是检索落的一条 KbRetrieved 审计行，客户原文只落摘要）；不调模型、不查单，不碰审批 / 放款 / 补偿 / 工单任何一条路。失败直接上报不重试：重试会重复落 KbRetrieved。 |
+| `reuse_note` | ⑧ 复用说明 | 检索口径在 maos/domain/cs/scripts.py，校验口径在 maos/domain/cs/claims.py；本 skill 只把两者按契约 §1.4 的判定顺序接起来 |
+| `owner_roles` | ⑨ 归属角色 | （空） |
+
+### cs.handoff @ 1.0.0
+
+实现：`CsHandoffSkill` @ `maos/skills/builtin/cs/handoff.py:24`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 客服前台转人工：把一张带齐上下文的转人工卡片落进 cs_handoff，并落一条 CsHandoffRaised 审计行 |
+| `input_schema` | ② 输入 | `card`: HandoffCard.to_json() —— handoff_id 必须等于 turn_id（一轮至多一张卡）<br>`delivery`: pending（配了投递目标）\| unconfigured（没配，只落库）<br>`now`: str，可选 —— 时间戳（测试注入用） |
+| `output_schema` | ③ 输出 | `handoff_id`: str —— 与本轮 turn_id 同值<br>`delivery`: str —— 落库时的投递状态 |
+| `preconditions` | ④ 前置条件 | `card`、`delivery` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读、只落 cs_ 表、不调任何工具：唯一的写是 cs_handoff 一行 + 一条 CsHandoffRaised 审计行（只带摘要与枚举，不带客户原文与客户标识）；不调模型、不查单，不碰审批 / 放款 / 补偿 / 工单任何一条路。失败直接上报不重试：重试会撞同一轮卡片的主键、重复落事件。 |
+| `reuse_note` | ⑧ 复用说明 | 会话表口径在 maos/domain/cs/conversation.py（T167）；本 skill 只是经 SkillInvoker 调它，让转人工这一步也落一条 SkillInvoked |
+| `owner_roles` | ⑨ 归属角色 | （空） |
 
 ### finance.settle @ 1.0.0
 
@@ -782,4 +818,4 @@
 - **回滚**：旧版本从不被覆盖，`get(name, "1.0.0")` 永远拿得到当年那一个。在册版本用 `versions(name)` 列（maos/skills/registry.py:84）。升级期间在跑的旧 Plan 因此行为可复现 —— 这是保留历史版本的**唯一**理由。
 - **质量评估**：每次调用落一条 `SkillInvoked`，`detail` 带 `status` / `duration_ms` / `input_digest` / `output_hash` / `usage`；按 `skill + version` 聚合 event_log 即可得到成功率与耗时分布，无需另建埋点。证据侧由 `scripts/verify.py` 第 1 项做哈希一致性重放。
 
-当前在册的 42 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。
+当前在册的 44 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。

@@ -69,6 +69,11 @@ BASELINE: frozenset[tuple[str, str]] = frozenset({
     # （`scenario_7.COMPENSATION_IDENTITY` / `TICKET_DESK_IDENTITY`）。
     # 给它安一个 Agent 只会让「补偿是谁做的」多一个含糊的答案。
     ("skill-unowned", "refund.compensation_close"),
+    # T169（p12 客服前台）：两条同一个理由 —— 调用方是前台的专用身份
+    # `maos.domain.cs.desk.CS_FRONT_DESK_IDENTITY`，它不进 AGENT_POOL（外部渠道零授权，
+    # 前台不是可被派单的岗位），所以体检机看不到持有者。
+    ("skill-unowned", "cs.answer"),
+    ("skill-unowned", "cs.handoff"),
     ("owner-roles-mismatch", "issue.aggregate"),
     ("owner-roles-mismatch", "policy.match"),
     ("owner-roles-mismatch", "req.normalize"),
@@ -200,7 +205,7 @@ def test_findings_group_counts() -> None:
         "tool-not-declared": 2,          # 甲：coding / testing 的 sandbox
         "depends-tool-missing": 2,       # 丙：code.repo-patch / test.verify（与甲同源）
         "owner-role-unknown": 1,         # 乙：ap.compensate -> ap_compensation
-        "skill-unowned": 6,              # 乙：六个 skill 没有任何角色持有（T116 +1、T117 +1）
+        "skill-unowned": 8,              # 乙：八个 skill 没有任何角色持有（T116 +1、T117 +1、T169 +2）
         "owner-roles-mismatch": 3,       # 乙：自述与实际持有者不等
         # 丁 depends-tool-not-allowed 当前 0 条，所以不出现在这张表里
     }

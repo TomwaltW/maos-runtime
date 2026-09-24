@@ -3290,3 +3290,19 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-24 | p12 | 开发集满分那条的 strict xfail 要不要留到收尾 | 摘掉；恰好已知缺口那条（更严）照旧钉住剩下一轮 | 常驻 xfail 让作者 Mac 上 demo_preflight 第 1 步按「N passed」精确比对差 1；两条判的是同一件事 |
 | 2026-09-24 | p12 | 真源怎么刷 | 收集 4379 -> 5002（+623）：pytest_passed_nopg 4273 -> 4896、skipped 仍 106；锚点 `docs/submission-checklist.md` 同步 | 新增 623 条全在 test_cs_*，云端容器实测零 skip、零 PG 门控；passed 按「作者主仓旧值 + 新增条数」推算（容器里另有 7 条环境红不代表主仓读数） |
 | 2026-09-24 | p12 | p12 收在哪 | 收在 integrate/p12；快进到会话分支 claude/ecstatic-bardeen-myl3au 并推送（用户拍板 4）；goai-restructure 不动 | 快进共享分支要问用户（CLAUDE.md），p11 的授权不延续；证据重产在 Mac 上做完再由用户合进主干 |
+
+## p13-contracts（p13 契约期：单工作流客服的跨轨契约与骨架，2026-09-24）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-24 | p13 | 用户指示（本会话）：「ok keep going through p13 and p14」 | p12 收尾后接着按同一节奏做 p13、p14：契约 + 骨架 → W-A 并行 → W-B → 整合；每期整合收尾快进会话分支并推送 | 用户原话；推送范围沿用用户拍板 4（只推会话分支） |
+| 2026-09-24 | p13 | 查单放哪（p12 静态守卫禁 cs 范围碰任何工具，且由注册表反推：包了禁工具的 skill 名也禁） | 前台只定义端口（maos/domain/cs/ports.py 的三个 Protocol），查单与退款预检的实现放 maos/ingress/cs_ports.py（扫描范围外），装配处注入 | 守卫一字不放宽；cs.* skill 包 order.query 在守卫里走不通；invoke_tool 不查身份，绑定核验必须在端口外先过 |
+| 2026-09-24 | p13 | 枚举长不长（追问、四种查单 / 桥出口） | 长：ROUTES 加 clarify，HANDOFF_REASONS 加 identity_unverified / order_unmapped / lookup_failed / refund_request，DeskResult 加三个带缺省字段；schema.sql 三处 CHECK 同步改；desk.py 三张原因表各补四条；T171 加旧库探针（CHECK 不认新值就抛） | cs_ 表至今没有落盘的库（run_ingress 到 p13 才有 --db），现在长枚举不需要迁移；把四种出口都挤进 needs_order_lookup 会让 p14 的运营统计失真。设计评审建议过「不长枚举、另表记」，本条推翻它的理由就是「没有旧库」 |
+| 2026-09-24 | p13 | 「本轮观察撑得起哪句话」 | 只有成功查单才落 cs_observation（id = 轮次 id + 序号，本轮在结构上可判）；另加 check_observation_wording：obs: claim 的 literal 必须逐字等于措辞表里该观察状态那句 | p12 的 check_reply 只查观察 id 存在，不查观察说了什么（设计评审 C2：「已发货」挂一条 paid 的观察也能过） |
+| 2026-09-24 | p13 | 订单状态对外怎么说 | 冻结措辞表：paid / shipped / cancelled 中英各一句；amended、平台不映射、已签收、金额、时间一律不说、转人工 | 各平台把签收 / 完成都折进 shipped，「已签收」撑不住；部分发货也算 shipped，所以 shipped 那句带「可能分批发出」 |
+| 2026-09-24 | p13 | 退款桥 | 只出卡：身份与查单通过后用存量只读预检算一遍，内部卡带摘要与一行现成的 /refund 命令，由内部同事以自己的名义发出；前台不建 Ticket | Ticket 按 RC-订单号 静默覆盖、/pending 只显示发起人、驳回卡照样给 /approve —— 让客户侧建 Ticket 要补的洞太多；只出卡对审批路径零改动 |
+| 2026-09-24 | p13 | 外部渠道的命令路径外泄（p12 BACKLOG 第 1 条） | 装了前台时外部渠道的所有消息（含 /xxx、含附件）都先进前台；cs=None 时逐字节不变 | 收掉 /refund /help 对客户的外泄；只影响装了前台的外部渠道 |
+| 2026-09-24 | p13 | p12 留出集的预登记门槛没达到，p13 怎么对待 | 预登记门槛作为 p13 理解层（T173）的验收目标，由主会话在整合期**自己**量一次；实现轨与复核者一律不许读留出集与它的测试，测试失败消息改成只报聚合数与 case id；只把误判的**类别**告诉 T173（复合词误伤触发词、时长与进度说法混淆、换说法泛化差） | 留出集一旦被实现者看过就没用了；只报类别不报句子，是在「能改进」与「保持留出」之间能做到的最好 |
+| 2026-09-24 | p13 | 理解层要不要调模型 | 确定性优先，只在确定性判不出意图、且注入的是真模型时调；CALL_SITE 登记、model_usage 行 trace_id 空、task_id None、plan_id=cs:…；Scripted / None 下零 usage 行 | 测试与证据恒为 Scripted，行为要确定；verify 第 8 项的四条判据在这个口径下自然成立 |
+| 2026-09-24 | p13 | p13 的评测集算什么 | scenarios/cs/eval/p13_cases.json 定性为开发集（T174 会拿它调）；门槛预登记在文件里（intent 0.9 / route 0.9 / handoff 0.95 / 编造 0 / 措辞 1.0 / 错状态 0）；泛化由 p12 留出集与 p14 新写的留出集量 | 查单流程是规则驱动的，开发集调到满分合理；泛化另量 |
+| 2026-09-24 | p13 | 骨架里顺手动了 p12 各轨的文件（schema.sql、desk.py、两份测试） | 只动到「枚举增长后 p12 测试仍全绿」所需的最小面：CHECK 三处、原因表各四条、契约钉子、留出测试的失败消息 | 骨架是主会话的；让骨架提交本身全绿（除收集数），各轨从同一个绿基线出发 |

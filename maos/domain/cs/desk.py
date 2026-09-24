@@ -62,9 +62,13 @@ from maos.domain.cs.types import (
     HANDOFF_ANGER,
     HANDOFF_COMPENSATION,
     HANDOFF_COMPLAINT,
+    HANDOFF_IDENTITY_UNVERIFIED,
+    HANDOFF_LOOKUP_FAILED,
     HANDOFF_NEEDS_ORDER_LOOKUP,
+    HANDOFF_ORDER_UNMAPPED,
     HANDOFF_PRIVACY,
     HANDOFF_REASONS,
+    HANDOFF_REFUND_REQUEST,
     HANDOFF_REPEATED_FALLBACK,
     HANDOFF_REQUESTED,
     HANDOFF_TENANT_UNMAPPED,
@@ -139,6 +143,16 @@ REPLY_BY_REASON: Mapping[str, str] = MappingProxyType({
                                "我这边已为您转接人工客服，请您稍候。"),
     HANDOFF_TENANT_UNMAPPED: ("您好，当前咨询暂时无法为您自动解答，"
                               "我这边已为您转接人工客服，请您稍候。"),
+    # p13 骨架补的四条（review/p13-cs-contracts.md §1.1）；措辞由 T174 接手时可再打磨，
+    # 但照样要在空观察下过 check_reply、不说任何状态。
+    HANDOFF_IDENTITY_UNVERIFIED: ("为了保护您的订单信息，这一单需要人工客服先核实您的身份，"
+                                  "我这边已为您转接人工客服，请您稍候。"),
+    HANDOFF_ORDER_UNMAPPED: ("您这一单的情况需要人工客服进一步核实，"
+                             "我这边已为您转接人工客服，请您稍候。"),
+    HANDOFF_LOOKUP_FAILED: ("抱歉，暂时没能查到这一单的信息，"
+                            "我这边已为您转接人工客服，请您稍候。"),
+    HANDOFF_REFUND_REQUEST: ("您的诉求我这边已整理好转交售后专员，"
+                             "稍后会有同事与您联系，请您稍候。"),
 })
 
 #: 前台内部出错、但转人工卡片已落下时的话术。
@@ -173,6 +187,14 @@ SUGGESTION_BY_REASON: Mapping[str, str] = MappingProxyType({
                                 "请看最近几轮原文，了解客户想咨询什么。"),
     HANDOFF_TENANT_UNMAPPED: ("这个客服账号没有绑定租户（MAOS_CS_TENANTS 里没有它），机器人没有作答。"
                               "请人工接待，并请运维补齐绑定。"),
+    HANDOFF_IDENTITY_UNVERIFIED: ("客户报的订单号没有绑定到这位客户，机器人没有查单。"
+                                  "请先核实身份与订单归属，再决定能否告知订单情况。"),
+    HANDOFF_ORDER_UNMAPPED: ("查到了订单，但平台状态不在对外措辞表里（改单或平台状态未映射），"
+                             "机器人没有说状态。请到平台后台核实后答复客户。"),
+    HANDOFF_LOOKUP_FAILED: ("只读查单没有成功（查不到、平台出错或订单系统没配），机器人没有说状态。"
+                            "请核实订单号与订单系统后答复客户。"),
+    HANDOFF_REFUND_REQUEST: ("客户提出退款 / 退货诉求，身份与查单已通过、只读预检已算好。"
+                             "如同意受理，请由你本人发出卡片上那一行 /refund 命令，走正常审批。"),
 })
 
 REASON_LABELS: Mapping[str, str] = MappingProxyType({
@@ -185,6 +207,10 @@ REASON_LABELS: Mapping[str, str] = MappingProxyType({
     HANDOFF_UNVERIFIED_CLAIM: "回复未通过校验",
     HANDOFF_REPEATED_FALLBACK: "连续答不上",
     HANDOFF_TENANT_UNMAPPED: "客服账号未绑定租户",
+    HANDOFF_IDENTITY_UNVERIFIED: "订单未绑定到客户",
+    HANDOFF_ORDER_UNMAPPED: "订单状态说不准",
+    HANDOFF_LOOKUP_FAILED: "查单失败",
+    HANDOFF_REFUND_REQUEST: "退款待采纳",
 })
 
 

@@ -95,7 +95,8 @@ ROUTE_ANSWER = "answer"      # 命中话术，照标准话术回
 ROUTE_FALLBACK = "fallback"  # 知识不足，兜底话术（不编）
 ROUTE_HANDOFF = "handoff"    # 转人工：回一句过渡话术 + 出一张内部卡片
 ROUTE_SILENT = "silent"      # 已转人工的会话：只记录，不回话
-ROUTES = (ROUTE_ANSWER, ROUTE_FALLBACK, ROUTE_HANDOFF, ROUTE_SILENT)
+ROUTE_CLARIFY = "clarify"    # p13：追问必填槽位（不计入 fallback_streak）
+ROUTES = (ROUTE_ANSWER, ROUTE_FALLBACK, ROUTE_HANDOFF, ROUTE_SILENT, ROUTE_CLARIFY)
 
 #: 顶层售后意图（ADP 3.3 的四个分支 + 通用 + 四类必转 + 判不准）。
 INTENT_LOGISTICS = "logistics"              # 物流
@@ -121,9 +122,16 @@ HANDOFF_NEEDS_ORDER_LOOKUP = "needs_order_lookup"  # 要看具体订单 —— p
 HANDOFF_UNVERIFIED_CLAIM = "unverified_claim"    # 后置校验拦下了状态断言 / 悬空引用
 HANDOFF_REPEATED_FALLBACK = "repeated_fallback"  # 连续兜底 = 判不准
 HANDOFF_TENANT_UNMAPPED = "tenant_unmapped"      # 客服账号没绑定租户
+# p13 增量（review/p13-cs-contracts.md §1.1）：查单与退款桥各自的出口，不再一律并进 needs_order_lookup。
+HANDOFF_IDENTITY_UNVERIFIED = "identity_unverified"  # 订单号没绑定到这位客户：不查单
+HANDOFF_ORDER_UNMAPPED = "order_unmapped"        # 平台状态不映射 / amended：状态说不准
+HANDOFF_LOOKUP_FAILED = "lookup_failed"          # 查不到、平台出错、系统没配
+HANDOFF_REFUND_REQUEST = "refund_request"        # 退款预检卡已出，等内部同事采纳
 HANDOFF_REASONS = (HANDOFF_REQUESTED, HANDOFF_COMPLAINT, HANDOFF_ANGER, HANDOFF_COMPENSATION,
                    HANDOFF_PRIVACY, HANDOFF_NEEDS_ORDER_LOOKUP, HANDOFF_UNVERIFIED_CLAIM,
-                   HANDOFF_REPEATED_FALLBACK, HANDOFF_TENANT_UNMAPPED)
+                   HANDOFF_REPEATED_FALLBACK, HANDOFF_TENANT_UNMAPPED,
+                   HANDOFF_IDENTITY_UNVERIFIED, HANDOFF_ORDER_UNMAPPED, HANDOFF_LOOKUP_FAILED,
+                   HANDOFF_REFUND_REQUEST)
 
 #: 连续几轮兜底就转人工（第 N 轮本身走 handoff，原因 repeated_fallback）。
 FALLBACK_STREAK_HANDOFF = 2
@@ -329,3 +337,7 @@ class DeskResult:
     handoff: HandoffCard | None = None
     handoff_reason: str = ""
     check: CheckResult = field(default_factory=lambda: CheckResult(ok=True))
+    # p13 增量（带缺省，p12 的构造处不用改）：本轮语种、查单结果、追问的是哪个槽位。
+    lang: str = "zh"
+    lookup_outcome: str = ""
+    ask_slot: str = ""

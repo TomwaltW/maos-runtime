@@ -35,7 +35,9 @@ def test_dataclass_shapes_are_frozen():
         "citations", "slots", "created_at")
     assert _fields(T.DeskResult) == (
         "reply_text", "tenant_id", "conversation_id", "turn_id", "route", "intent",
-        "draft", "handoff", "handoff_reason", "check")
+        "draft", "handoff", "handoff_reason", "check",
+        # p13 骨架追加的三个带缺省字段（review/p13-cs-contracts.md §1.1）
+        "lang", "lookup_outcome", "ask_slot")
     for cls in (T.Claim, T.ReplyDraft, T.Violation, T.CheckResult, T.ScriptHit,
                 T.HandoffCard, T.DeskResult):
         assert cls.__dataclass_params__.frozen, f"{cls.__name__} 必须 frozen"
@@ -43,12 +45,16 @@ def test_dataclass_shapes_are_frozen():
 
 def test_enumerations_are_frozen():
     assert T.STAGES == ("active", "handed_off", "closed")
-    assert T.ROUTES == ("answer", "fallback", "handoff", "silent")
+    # p13 骨架追加 clarify（review/p13-cs-contracts.md §1.1）
+    assert T.ROUTES == ("answer", "fallback", "handoff", "silent", "clarify")
     assert T.INTENTS == ("logistics", "refund_payment", "return_exchange", "general",
                          "handoff_request", "complaint", "compensation", "privacy", "unknown")
     assert T.HANDOFF_REASONS == ("requested", "complaint", "anger", "compensation", "privacy",
                                  "needs_order_lookup", "unverified_claim",
-                                 "repeated_fallback", "tenant_unmapped")
+                                 "repeated_fallback", "tenant_unmapped",
+                                 # p13 骨架追加的四个（review/p13-cs-contracts.md §1.1）
+                                 "identity_unverified", "order_unmapped", "lookup_failed",
+                                 "refund_request")
     assert T.DELIVERIES == ("pending", "delivered", "failed", "unconfigured")
     assert T.VIOLATION_KINDS == ("unbacked_status", "dangling_basis", "literal_not_in_text",
                                  "uncited_rule", "foreign_literal")

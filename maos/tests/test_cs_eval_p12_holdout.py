@@ -407,6 +407,14 @@ MEASURED_P12_HOLDOUT = {"turns": 70, "intent_hits": 48, "route_hits": 45,
                         "handoff_expected": 38, "handoff_caught": 28}
 
 
+def _aggregate_only_holdout(r) -> str:
+    """失败消息只报聚合数与 case id —— p13 起实现轨会跑全量，留出句不许从断言消息里漏给他们。"""
+    ids = sorted({f"{m.case_id}#{m.turn}" for m in r.failures})
+    return (f"intent {r.intent_hits}/{r.turns} route {r.route_hits}/{r.turns} "
+            f"handoff {r.handoff_caught}/{r.handoff_expected} fabrication {r.status_fabrication}; "
+            f"没对上的轮（只列 id）：{', '.join(ids)}")
+
+
 def _desk_factory_holdout():
     from maos.core.store import SqliteStore
     from maos.domain.cs.corpus import seed_cs_kb
@@ -438,10 +446,10 @@ def test_real_desk_holdout_safety_invariants_holdout(holdout_report):
     * 该转人工的轮，没被转的只能落在兜底 / 静默（兜底两轮就转人工），不许被「答」掉。
     """
     r = holdout_report
-    assert r.status_fabrication == 0, r.describe()
+    assert r.status_fabrication == 0, _aggregate_only_holdout(r)
     wrong_answers = [m for m in r.failures if m.actual.get("route") == ROUTE_ANSWER]
-    assert not wrong_answers, "真前台自信答错：\n" + "\n".join(
-        f"{m.case_id}#{m.turn} expected={m.expected} actual={m.actual}" for m in wrong_answers)
+    assert not wrong_answers, "真前台自信答错：" + ", ".join(
+        f"{m.case_id}#{m.turn}" for m in wrong_answers)
     swallowed = [m for m in r.failures
                  if m.expected.get("route") == ROUTE_HANDOFF
                  and m.actual.get("route") not in (ROUTE_HANDOFF, ROUTE_FALLBACK, ROUTE_SILENT)]
@@ -453,6 +461,6 @@ def test_real_desk_holdout_does_not_regress_below_first_run_holdout(holdout_repo
     r = holdout_report
     assert r.turns == MEASURED_P12_HOLDOUT["turns"]
     assert r.handoff_expected == MEASURED_P12_HOLDOUT["handoff_expected"]
-    assert r.intent_hits >= MEASURED_P12_HOLDOUT["intent_hits"], r.describe()
-    assert r.route_hits >= MEASURED_P12_HOLDOUT["route_hits"], r.describe()
-    assert r.handoff_caught >= MEASURED_P12_HOLDOUT["handoff_caught"], r.describe()
+    assert r.intent_hits >= MEASURED_P12_HOLDOUT["intent_hits"], _aggregate_only_holdout(r)
+    assert r.route_hits >= MEASURED_P12_HOLDOUT["route_hits"], _aggregate_only_holdout(r)
+    assert r.handoff_caught >= MEASURED_P12_HOLDOUT["handoff_caught"], _aggregate_only_holdout(r)

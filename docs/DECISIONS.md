@@ -3471,3 +3471,15 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p13 | 真源怎么刷 | 收集 5002 -> 6560（+1558）：pytest_passed_nopg 4896 -> 6454、skipped 仍 106；锚点 docs/submission-checklist.md 同步（「一分多钟」改「两分多钟」，容器实跑 2 分 41 秒） | 新增全在 test_cs_*，零 skip、零 PG 门控；两处 strict xfail 已摘，collected == passed + skipped 成立 |
 | 2026-09-25 | p13 | 证据束 | 不在容器重产，留给 Mac（用户拍板 5 延续）；p13 没改任何证据生成路径 | 同 integrate-p12 |
 | 2026-09-25 | p13 | p13 收在哪 | 收在 integrate/p13；快进到会话分支 claude/ecstatic-bardeen-myl3au 并推送（用户拍板 4）；共享分支不动 | 同 integrate-p12 |
+
+## p14-contracts（p14 契约期：客服三期的跨轨契约与骨架，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | verify 要不要加第 11 项 cs-claim-basis | 不加进缺省：照 `--domains` 先例做可选旗 `--cs`，追加计分项 cs/claim-basis；`len(CHECKS)==10` 与缺省 `RESULT: 10/10 PASS` 不变 | 分母是冻结的跨轨数字（expected-metrics、client_smoke、两份测试钉着），现有 8 个证据束里没有 cs 行，缺省加一项只会恒 SKIP |
+| 2026-09-25 | p14 | cs/claim-basis 能不能复用前台的 claims.py 校验 | 不能：verify 只许 import cs 的 types / ports（纯数据），判据自己写 | 同源对账等于没核（verify 第 8 项注释里同样的理由） |
+| 2026-09-25 | p14 | 圆桌会诊卡放哪、落什么 | maos/roundtable/cs_conference.py（守卫范围外）；plan_id 用 `cs:<会话>` 而不是 `roundtable:`，事件名 CsConferenceHeld 不进 CS_EVENT_TYPES；不新增表；确定性、零模型 | `roundtable:` 家族有 verify 的树形判据（退款圆桌的座次与事件），硬塞进去会让两边互相误判；不进 CS_EVENT_TYPES 省得动 T167 的四张钉子表 |
+| 2026-09-25 | p14 | 触发会诊的原因 | complaint / anger / compensation / refund_request | 方案 v1 §6「复杂投诉走圆桌」；退款桥那张卡也值得四座会诊（预检结论 + 风险）；needs_order_lookup 等是「缺信息」不是「复杂」 |
+| 2026-09-25 | p14 | MCP 连接器给外部平台（ADP）什么 | 三个只读工具：查单（先过绑定）、退款预检（不回 command_line）、转人工列表（不回正文与客户标识）；DEFAULT_ROLE_SERVERS 不挂 | 外部平台等同外部渠道：零授权、不外泄；command_line 只给以自己名义发命令的内部同事 |
+| 2026-09-25 | p14 | p13 没达到的 p12 留出集门槛怎么办 | 开 T182，只给主会话从留出集归纳的五个误判**类别**（不给句子），限定泛化手段、禁止按 id 反推；T181 另盲写一份覆盖 p13 流程的 p14 留出集 | 留出集一旦被实现者看过就没用；p13 的 T173 拿到类别后读数零改进，这次把类别写得更具体（p13 路径也同样落兜底：检索召回 + 查单线索两处都缺） |
+| 2026-09-25 | p14 | 波次 | A1 = T176 / T177 / T181 / T182，A2 = T178 / T179 / T180；七轨文件零交集 | 工作流并发 2，分两批降低容器重启时的损失 |

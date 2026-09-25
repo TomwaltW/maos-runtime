@@ -157,6 +157,22 @@ CS_EVENT_TYPES = (EVENT_TURN_RECORDED, EVENT_STAGE_CHANGED, EVENT_HANDOFF_RAISED
                   EVENT_REPLY_REJECTED)
 
 # ---------------------------------------------------------------------------
+# p14 增量（review/p14-cs-contracts.md §1.1）
+# ---------------------------------------------------------------------------
+#: 复杂投诉的圆桌会诊卡（内部卡，不对客户）。**不进** CS_EVENT_TYPES：那四个是会话对象
+#: 自己（conversation._emit）落的，这一条由 maos/roundtable/cs_conference.py 落，plan_id 同样
+#: 是 ``cs:<会话>``、task_id 是触发它的那一轮。
+EVENT_CONFERENCE_HELD = "CsConferenceHeld"
+
+#: 触发圆桌会诊的转人工原因（一轮转人工且原因在这里 → 投递转人工卡片之后再出一张会诊卡）。
+#: 取字面量不取常量：本段在 HANDOFF_* 定义之前，契约测试钉住与 HANDOFF_* 逐字相等。
+CONFERENCE_REASONS = frozenset({"complaint", "anger", "compensation", "refund_request"})
+
+#: MCP 连接器（p14 · T179）落 event_log 时的 plan_id：同属 cs 家族，与会话的 ``cs:csc-…``
+#: 不会撞（会话 id 恒以 ``csc-`` 开头）。task_id 是一次 MCP 调用的 id。
+CS_MCP_PLAN_ID = CS_PLAN_PREFIX + "mcp"
+
+# ---------------------------------------------------------------------------
 # 状态字眼（契约 §1.5，后置校验的扫描对象）
 # ---------------------------------------------------------------------------
 #: 回复里出现这些，就必须有一条 claim 覆盖它、且 basis_ref 指向**本轮**的观察。

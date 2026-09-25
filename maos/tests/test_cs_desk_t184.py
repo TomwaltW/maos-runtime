@@ -703,8 +703,11 @@ def p12_fingerprint_t184() -> str:
     return h.hexdigest()
 
 
-#: 基线 7c19a1d 的 desk.py 跑 :func:`p12_fingerprint_t184` 的结果（改动之前实测，见 DECISIONS task-t184）。
-P12_GOLDEN_T184 = "72a7e7364985299f301528579a40984e5fe33db82d2dddcd5ff3da0c6d84b09e"
+#: 基线 7c19a1d 的 desk.py 跑 :func:`p12_fingerprint_t184` 的结果。原值 72a7e736…（T184 分支上、
+#: 其余代码同基线时实测）。整合期 p15 并入 T186（词法零命中时的近邻兜底，p12 路径同样生效，契约本意）之后
+#: 整体读数变了；主会话在整合后的代码上把 desk.py 换回 7c19a1d 原样再跑一次，得到的指纹与当前 desk.py
+#: **逐字相同**（cfd2e407…）—— 即 T184 的判定改动在 p12 路径上仍是零变化，变化全来自检索层。于是改钉整合后的值。
+P12_GOLDEN_T184 = "cfd2e407f6762505bfff6dc5299fc9dc4107c2aff2ba6802792cf813af581ee6"
 
 
 def test_without_ports_every_turn_is_byte_identical_to_baseline_t184():

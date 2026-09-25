@@ -380,3 +380,45 @@ def test_near_dup_detector_bites_t183():
     assert _near_dups_t183([("x", "退货要满足什么条件吗")], {"s": [base]}) == ["x@s"]
     assert _near_dups_t183([("x", "Order #A1  ok？")], {"s": ["order a1 OK"]}) == ["x@s"]
     assert _near_dups_t183([("x", "退货要满足啥条件呀")], {"s": [base]}) == []
+
+
+# ---------------------------------------------------------------------------
+# 真前台（整合期 p15 主会话接上，2026-09-25 首跑 = 唯一一次验收读数）
+# ---------------------------------------------------------------------------
+#: 首跑实测（integrate/p15 合入四轨之后，夹具端口、零模型）：intent 148/161 = 0.9193 ✓、
+#: route 140/161 = 0.8696 ✓、handoff 48/51 = 0.9412 ✓、编造 0 ✓、错状态 0 ✓、措辞 ≈0.8947 ✗（1.0；两轮没说出
+#: 该说的状态，落了兜底，不是说错）、零「自信答错」（route=answer 的轮意图全对；有一轮引错篇，见 DECISIONS
+#: integrate-p15）。读过之后本集不再是盲的，这里只钉安全不变量与首跑地板。
+MEASURED_P15_HOLDOUT = {"turns": 161, "intent_hits": 148, "route_hits": 140,
+                        "handoff_expected": 51, "handoff_caught": 48}
+
+
+def _real_desk_factory_p15h(ports):
+    from maos.core.store import SqliteStore
+    from maos.domain.cs.corpus import seed_cs_kb
+    from maos.domain.cs.desk import CsConfig, FrontDesk
+
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    return FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None),
+                     **ports)
+
+
+def _aggregate_only_p15h(r) -> str:
+    ids = sorted({f"{m.case_id}#{m.turn}" for m in r.failures})
+    return (f"intent {r.intent_hits}/{r.turns} route {r.route_hits}/{r.turns} "
+            f"handoff {r.handoff_caught}/{r.handoff_expected} fabrication {r.status_fabrication} "
+            f"wrong_status {r.wrong_status}; 没对上的轮（只列 id）：{', '.join(ids)}")
+
+
+def test_real_desk_p15_holdout_safety_and_floor_p15h():
+    r = evaluate.run_eval_p13(_real_desk_factory_p15h, _cases_t183())
+    assert r.turns == MEASURED_P15_HOLDOUT["turns"]
+    assert r.status_fabrication == 0 and r.wrong_status == 0, _aggregate_only_p15h(r)
+    confident_wrong = [f"{m.case_id}#{m.turn}" for m in r.failures
+                       if m.actual.get("route") == "answer" and "intent" in m.problems]
+    assert not confident_wrong, "真前台自信答错（只列 id）：" + ", ".join(confident_wrong)
+    assert r.handoff_expected == MEASURED_P15_HOLDOUT["handoff_expected"], _aggregate_only_p15h(r)
+    assert r.intent_hits >= MEASURED_P15_HOLDOUT["intent_hits"], _aggregate_only_p15h(r)
+    assert r.route_hits >= MEASURED_P15_HOLDOUT["route_hits"], _aggregate_only_p15h(r)
+    assert r.handoff_caught >= MEASURED_P15_HOLDOUT["handoff_caught"], _aggregate_only_p15h(r)

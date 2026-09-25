@@ -427,8 +427,9 @@ def test_near_duplicate_failure_message_carries_ids_only_t181():
 #: 预登记门槛 **route 与 wording 没达到**（DECISIONS integrate-p14）。其中 CS14H-060 第 1 轮的问候撞了
 #: p12 触发词地板（盲写者看不到触发词表），其后三轮随之 silent —— 照契约判定顺序这一条的期望与地板冲突，
 #: 文件照旧不改（预登记之后改题等于改门槛），在账里记明。这里钉安全不变量与「不许比首跑更差」的地板。
-MEASURED_P14_HOLDOUT = {"turns": 100, "intent_hits": 90, "route_hits": 84,
-                        "handoff_expected": 40, "handoff_caught": 36}
+#: 整合期 p15 抬地板（T184–T186 之后）：intent 90 → 93、route 84 → 90、handoff 36 → 38。
+MEASURED_P14_HOLDOUT = {"turns": 100, "intent_hits": 93, "route_hits": 90,
+                        "handoff_expected": 40, "handoff_caught": 38}
 
 
 def _real_desk_factory_p14h(ports):

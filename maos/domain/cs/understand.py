@@ -625,12 +625,40 @@ _OWN_SUBJECT_RE = re.compile(
     r"(?:就|也|还是|先|暂时|干脆|都|已经)?\s*$")
 #: 裸的「不 + 诉求词」。
 _BARE_NOT_RE = re.compile(r"不(?:退|换)")
+#: 条件威胁（T173 终审复核 major-1，task-t174 修）：裸的「不 + 诉求词」后面（隔着「的话」、标点、空白）
+#: 紧跟一个后果从句 —— 「不退款，我就去差评」「不退货，我就不收了」「不退钱，这事没完」「不换货，否则
+#: 我去消协」。这是「不给我办我就……」的省略说法，诉求还在，不是客户撤回。
+_THREAT_TAIL_RE = re.compile(
+    r"(?:的话)?[\s，,、:：]*(?:那|那么)?\s*(?:我们?|咱们?)?\s*"
+    r"(?:就(?!这样|这么|算了|好了?|行|可以|不用|留着|自己)|会|去|立刻|马上)"
+    r"|(?:的话)?[\s，,、:：]*(?:这事儿?|这件事|这个事)?(?:没完|不算完|跟你们没完)"
+    r"|(?:的话)?[\s，,、:：]*(?:否则|不然|要不然|要么|别怪)")
+#: 前文里客户自己拿了主意（「我改主意了，不退货，我就自己留着」）：那是撤回，不是威胁。
+_OWN_DECISION_RE = re.compile(r"改主意|算了|决定|想了想|想想|还是")
+
+
+def _conditional_threat(text: str, start: int, matched: str) -> bool:
+    """这一处「不 + 诉求词」是条件威胁（见 :data:`_THREAT_TAIL_RE`），不是撤回。
+
+    只认**裸的**「不 + 诉求词」且不带「了 / 啦 / 咯」：「不退款了，我就留着用吧」是客户拿主意（撤回），
+    「不用退款，我就自己修」也是（「不用」不是裸的「不」）。前文里客户已经说了拿主意的话也不算。
+    """
+    if not matched.startswith("不") or len(matched) < 2 or matched[1] not in "退换":
+        return False
+    if matched[-1] in "了啦咯":
+        return False
+    if _OWN_DECISION_RE.search(text[:start]):
+        return False
+    return bool(_THREAT_TAIL_RE.match(text, start + len(matched)))
 
 
 def _blamed(text: str, start: int, matched: str) -> bool:
     """这一处撤回的说法不是客户自己撤的：前面是在质问 / 转述商家、第三方撤的（:data:`_BLAME_ZH_RE`）、
     「不」前面是抱怨副词（:data:`_COMPLAINT_ADVERB_RE`）、A 不 A 的问法（退不退 / 需不需要）、
-    或裸的「不 + 诉求词」前面不是客户这一方（:data:`_OWN_SUBJECT_RE`）。"""
+    裸的「不 + 诉求词」前面不是客户这一方（:data:`_OWN_SUBJECT_RE`），或者后面紧跟后果从句、
+    是条件威胁（:func:`_conditional_threat`）。"""
+    if _conditional_threat(text, start, matched):
+        return True
     prefix = text[:start]
     clause = _CLAUSE_SPLIT_RE.split(prefix)[-1]
     if _BLAME_ZH_RE.search(clause) or _REPORTED_ZH_RE.search(prefix):

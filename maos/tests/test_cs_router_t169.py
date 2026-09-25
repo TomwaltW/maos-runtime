@@ -185,7 +185,21 @@ def test_wechat_kf_silent_turn_sends_nothing_t169():
     assert _sent_t169(router) == before
 
 
+class _SpyBridge_t169:
+    """审批桥替身：任何一次属性访问都记下来（前台路径上一次都不许碰）。"""
+
+    def __init__(self):
+        object.__setattr__(self, "touched", [])
+
+    def __getattr__(self, name):
+        self.touched.append(name)
+        return lambda *a, **kw: None
+
+
 def test_wechat_kf_approve_is_still_refused_and_desk_untouched_t169():
+    """p13 T174 改的钉子（挂钩前移，p13 契约 §2' R1）：装了前台时外部渠道的 ``/approve`` ``/refund``
+    ``/help`` **进前台**（前台被调用、回话是前台的），runner 与审批桥从不被调用；没装前台时照旧
+    被命令分支拒掉（``不受理审批命令``），同样不触发 runner。"""
     calls = []
 
     def runner(*a, **kw):
@@ -193,13 +207,19 @@ def test_wechat_kf_approve_is_still_refused_and_desk_untouched_t169():
         return {}
 
     spy = _SpyDesk_t169()
-    wired = _router_t169(cs=spy, runner=runner)
+    bridge = _SpyBridge_t169()
+    wired = R.IngressRouter(_adapters_t169(), store=_store_t169(), runner=runner, cs=spy,
+                            approval_bridge=bridge)
     bare = _router_t169(runner=runner)
-    for i, text in enumerate(["/approve RC-123", "/refund ORD-2026-0001 质量问题", "/help"]):
+    texts = ["/approve RC-123", "/refund ORD-2026-0001 质量问题", "/help"]
+    for i, text in enumerate(texts):
         msg = _msg_t169(CHANNEL_WECHAT_KF, text, msg_id=f"m-{i}")
-        assert wired.handle(msg) == bare.handle(msg), text
-    assert "不受理审批命令" in _sent_t169(wired)[0][2]
-    assert spy.calls == [] and calls == []
+        assert wired.handle(msg) == spy.reply, text
+        bare.handle(msg)
+    assert [m.text for m in spy.calls] == texts
+    assert [s[2] for s in _sent_t169(wired)] == [spy.reply] * len(texts)
+    assert "不受理审批命令" in _sent_t169(bare)[0][2]
+    assert calls == [] and bridge.touched == []
 
 
 def test_desk_exploding_does_not_break_the_router_t169(caplog):

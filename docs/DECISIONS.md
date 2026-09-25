@@ -3434,3 +3434,24 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p13 | 复核 L3R2-2：posix、pty、asyncio 子进程、进程池、len 的 dunder self 与 inspect.getmodule 绕过动态加载 / 起进程禁令 | os 那几个起进程名映射到 posix / nt 同名禁（posix 其余函数照旧放行，免得 os.getpid 这类按真实出处误报）；pty、_posixsubprocess 整模块禁；asyncio.subprocess、concurrent.futures.process 按真实出处禁；create_subprocess_exec 等进程入口名、dunder self、getmodule 出现即判；exec / eval / compile 只在当字符串键或调用参数时判，字节串出现即判 | 复核点名的形状全部判红；evaluate.py 把 eval 当路径段（除法操作数），全局按字符串判会误报 |
 | 2026-09-25 | p13 | 复核 L3R2-3：入口脚本所在目录进 sys.path[0]，import run_ingress 这类裸名绕过一方代码判据 | 仓库里（跳过点开头目录）放着 main 守卫的每个目录，其中能当顶层名 import 的名字一律并进一方代码表（scripts、client、hiclaw、deploy/synapse、review/tools、scenarios/bulk，以及 maos 本身与 flows、kb、skills、tools/mcp，撞标准库名的除外），动态找、另写死 run_ingress / run_requests 两个下限 | 黑名单式补强，同 L2-6 口径、不需主会话裁定；python maos/main.py 同样把 maos/ 放进 sys.path[0]（import runtime 即 maos.runtime），一并收 |
 | 2026-09-25 | p13 | 复核 L3R2-4：中文「已 + 动词」表缺妥投 / 派件 / 派送 / 完成 / 到了 / 退给您，英文缺出库、揽收、签收、付款等的对应说法 | 中文进 P13_ZH_STATUS_PATTERNS（已经到了后接时间 / 下班 / 期限一类的不算；另认已经在派送 / 配送 / 运输 / 路上），英文按动词逐个补（went out、signed for、picked it up、left our warehouse、was rejected、compensated、received your payment、with the courier、you will receive it tomorrow），测试按动词逐个钉一句英文例句、表里加动词没配英文当场红；评测经 reply_status_places 同口径认，不在评测里抄第二份 | 话术库 19 篇 script 在新扫描下零误报（测试钉住）；已完成也收（您的订单已完成是状态），误伤过渡语的风险记 BACKLOG；在路上了、已经寄了这批仍按上一轮口径留 p14 |
+
+## task-t174（前台编排 p13，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p13 | 契约 §2 第 4 步（理解）排在第 5 步（无端口走 p12）之前，第 0 步又说所有固定话术按语种取 | 三个端口全为 None 时不调 cs.understand、给客户的固定话术恒为 p12 的中文；DeskResult.lang 与 cs_turn_ext 照填检测出的语种 | p12 的测试钉着「SkillInvoked 只有 cs.answer / cs.handoff」、留出集与开发集「不改一个期望」，只有这样守得住；maos/tests/test_cs_desk_t174.py 在 p12 开发集每一轮上比对 DeskResult 指纹（基线 9d53be8 的 desk.py 跑出） |
+| 2026-09-25 | p13 | 「要看具体订单」契约写 request 属于 track / refund / return / exchange，但理解层对「帮我查查它现在到哪了」「那我的 Z2525 发出去了没」「我想查一下 G3333 的物流」、追问后的「订单号是 S1818」不给 request | desk.order_need：本轮 request 是四者之一即是；本轮 request 为空时，有进度线索（scripts.detect_cue 为 progress）记 track，或本轮报了单号且会话诉求是四者之一（取会话诉求）/ 意图是物流或带查询说法（记 track）；request 为 other 一律不算 | 不改 T173 的抽取也能让追问回答、跨轮累积走通；撤回（other）不查单 |
+| 2026-09-25 | p13 | 只报了单号、没说要办什么（「我的订单号是 B2727」）时检索会被「订单号」拉到 LOG-004 转人工，p13 评测集期望兜底 | 注入端口时这种轮直接兜底（计连续兜底、不检索），单号照进槽位 | 下一轮说了诉求就查（槽位跨轮累积）；与评测集 CS13-027 / 028 口径一致 |
+| 2026-09-25 | p13 | 注入端口时的英文政策问题 | 不检中文话术库，直接英文兜底（计连续兜底，第二次英文兜底转 repeated_fallback 用英文话术） | 契约 §0 不买英文话术库，「英文政策问题走英文兜底」 |
+| 2026-09-25 | p13 | 查单分支这一轮记什么意图（追问后「单号是 R1717」理解层判 unknown / general） | 理解层给的是物流 / 支付退款 / 退换货就用它；否则退款、退货、换货记 return_exchange，查进度记会话里最近一轮的业务意图，没有就 logistics | 与评测集按「为某个订单申请退货 / 退款记 return_exchange」出题一致 |
+| 2026-09-25 | p13 | 换货且查单成功（契约 §2 第 6 步 d 只写了退款 / 退货） | 转 needs_order_lookup，不调预检、不落退款桥，卡片带查单观察（中文措辞表那句 + 观察 id） | 派单明示；前台不办换货，人工拿着观察接手 |
+| 2026-09-25 | p13 | 注入端口的路径上 needs_order_lookup 有三种来由（追问两次仍缺单号、预检没过、换货），p12 的过渡话术是话术库那篇、处理建议写着「本期前台不查单」 | 另起 REPLY_NEEDS_ORDER_LOOKUP（中英）与三条 SUGGESTION_ASK_EXHAUSTED / REFUND_REFUSED / EXCHANGE，REPLY_BY_REASON 与 SUGGESTION_BY_REASON 一字不动 | p12 测试钉着 REPLY_BY_REASON 的键集与 SUGGESTION_BY_REASON 各条互异 |
+| 2026-09-25 | p13 | 卡片要带预检摘要与命令行，HandoffCard 冻结、没有这两个字段 | 前台把查单观察、预检摘要、采纳命令、预检未通过各写成处理建议里以固定前缀起头的独立一行；render_card_text 按前缀各渲染一行、其余行并回第一段；槽位另起「槽位：」一行 | 命令行单独一行才好复制；这几行只由前台写，客户原文进不了处理建议，卡片的每一行仍由前台起头 |
+| 2026-09-25 | p13 | 退款 / 退货查单成功但预检端口没装（没配 MAOS_CS_LEDGER_TENANT）、预检端口抛了、或 ok 却没有命令行 | 一律按没通过：退款桥照落（refused_why = precheck_unconfigured / precheck_error），转 needs_order_lookup | 失败即关：采纳命令是这张卡存在的理由 |
+| 2026-09-25 | p13 | 预检的原因文本取什么 | 本轮原文；会话里的问题槽位不在本轮原文里时追加在后面 | 客户常在上一轮说原因、这一轮只报单号 |
+| 2026-09-25 | p13 | 挂钩前移后空白消息怎么办 | 空白且不带附件：什么都不做（不进前台，与不装前台一致，T169 复核 L2-7 的钉子不改）；只有附件没字的进前台（前台按空文本处理，走兜底），附件不入库 | R1 更严：外部渠道的附件不再进附件入库；空白消息进前台会白涨连续兜底 |
+| 2026-09-25 | p13 | cs.answer 多了可选入参 intent_hint | 只在 run 里接、写注释，不写进 input_schema | input_schema 会生成进 docs/skill-catalog.md（gen_docs 生成物），那份文档不在本轨白名单；整合期补 schema 并重产 |
+| 2026-09-25 | p13 | run_ingress 的 MAOS_INGRESS_DB 与前台装配的关系 | 只在 serve 读、与 MAOS_CS_TENANTS 无关（--simulate 仍 :memory:）；查单端口装了才装 BindingVerifier，再有 MAOS_CS_LEDGER_TENANT 才装预检；模型恒取 select_model_client() | 三个变量都不配时与今天逐字节一致；Scripted 下理解层零模型调用 |
+| 2026-09-25 | p13 | T173 终审复核 major-1：条件威胁（「不退款，我就去差评」）被判成客户撤回 | understand.py 只加一处判定：裸的「不 + 诉求词」（不带了 / 啦 / 咯）后面隔着「的话」、标点紧跟后果从句（就 / 会 / 去、这事没完、没完、否则、不然、要不然、要么、别怪；「就这样 / 就算了 / 就好 / 就行 / 留着 / 自己」除外），且前文没有「改主意 / 算了 / 决定 / 想了想 / 还是」，就不算撤回 | 真撤回（带「了」、「不用 / 不要」、先说改主意）一句不受影响；九句威胁、十句撤回在 maos/tests/test_cs_desk_t174.py 钉住 |
+| 2026-09-25 | p13 | p13 评测集 CS13-035 第 1 轮「嗨，客服小姐姐在吗」期望 GEN-001，但「客服小姐姐」是 p12 触发词地板，契约 §2 第 3 步触发词先于一切 | 前台照契约转人工；maos/tests/test_cs_eval_p13_t174.py 钉「失误恰好是 CS13-035 三轮」且去掉它后达到文件全部门槛，整份 meets 标 xfail(strict) | 评测集归 T175、触发词归 T173，都不在本轨白名单；写进回执 open_issues 与 BACKLOG |
+| 2026-09-25 | p13 | T169 测试里被本轨改到的钉子 | 只改两处：test_cs_desk_t169 的身份钉子（allowed_skills 加 cs.understand、注册的 cs.* 等于 allowed_skills）；test_cs_router_t169 的外部 /approve 钉子改成「前台被调用、runner 与审批桥从不被调用、回话是前台的；不装前台照旧被拒」 | 分别是 identity 加 cs.understand 与挂钩前移的直接后果，契约点名 |

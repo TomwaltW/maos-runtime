@@ -10,19 +10,16 @@ ADP 课程 3.3 单工作流的「参数提取 + 意图识别」两个节点的 M
 
 1. **触发词**（:func:`maos.domain.cs.triggers.detect`）：隐私 / 赔偿 / 情绪 / 投诉 / 要人工；
 2. **本轮诉求**：要退款 / 退货 / 换货 → 退换货；查进度按查的是钱、是售后单还是包裹分到三个意图；
-3. **意图示例**（:data:`INTENT_EXAMPLES`，ADP 课程 4.4「相近说法靠示例强制干预」）：一张
-   「说法 → 意图」的数据表。比对前两边都按同义表归一（:data:`EXAMPLE_SYNONYMS`：啥 / 什么、
-   几号 / 哪天 / 什么时候、货 / 包裹 / 商品词表里的品类 → 东西、破的 → 坏的……；英文 came → arrive、
-   damaged → broken），于是「东西啥时候能到呀」「收到的衣服是破的」认得出（复核 L3-3）。原文与某条
-   示例**在实词上**足够像（:func:`example_similarity`）就按它、压过关键词词表；只在**句式上**像
-   （「……什么时候能到」）的，只在关键词词表一票都没有时补位（复核 L2-3 / L3-1：只看整句二元组，
-   虚词骨架会把「退款什么时候能到」拉成物流）；
-4. **关键词词表**（:data:`INTENT_KEYWORDS`）数票；
-5. 以上都判不出 → ``unknown``。话术检索的意图**不在这里做**（检索落 KbRetrieved，是前台的事）；
-6. 判不出、且注入的是**真模型**（非 None、非 ``ScriptedModelClient``）才调一次模型，输出夹到
+3. **关键词词表**（:data:`INTENT_KEYWORDS`）数票；
+4. 以上都判不出 → ``unknown``。话术检索的意图**不在这里做**（检索落 KbRetrieved，是前台的事）；
+5. 判不出、且注入的是**真模型**（非 None、非 ``ScriptedModelClient``）才调一次模型，输出夹到
    ``types.INTENTS``（不在里面就是 unknown）。调了就记账（``record_model_usage`` /
    ``record_model_failure``，trace_id 空串、task_id None、plan_id 照传）；模型出错不抛，
    记一行失败、回规则的结果 —— 模型坏了不该让客户被转人工（前台「永不抛」）。
+
+p13 第三轮曾在第 2、3 步之间加过一张「意图示例」表（ADP 课程 4.4「相近说法靠示例强制干预」）。
+主会话裁定 R4：示例表在开发集与 T168 holdout 上测不出增益，整张删掉 —— ADP 4.4 的示例干预留给
+真模型路径的 few-shot（docs/DECISIONS.md task-t173）。
 
 Scripted / None 下一次模型都不调，零 ``model_usage`` 行：测试、证据、演示恒为确定性。
 
@@ -30,26 +27,25 @@ Scripted / None 下一次模型都不调，零 ``model_usage`` 行：测试、�
 
 五个槽位（``ports.SLOT_KEYS``），全部确定性、**只从词表与正则来**，取不到就不给：
 
-* ``order_no``：常见平台单号形态 —— 纯数字 ≥ 8 位；字母数字混排带连字符（拼多多式
-  「200924-1234567890」、自编号「SO-2026-000123」）；短一些的「字母 + 数字」（「A1001」）与
-  「# + 数字」只在**紧挨着**「订单号 / 单号 / 那单 / order」这类字眼（「我那单 A1001」「A1001 这单」）、
-  或整句就是这个号（可带「谢谢」这类客套、或再带一个诉求词：「A1001 退款」）时才认（「iPhone15」
-  「我订单里的 RTX4090」「order the MX5000」是型号不是单号，复核 L2-6）。**不认**：手机号（去掉
-  连字符与 86 / +86 国家码后是 11 位手机号形态的，「138-1234-5678」「+8613812345678」一样不认；
-  隐私，不能当单号存进槽位表）、日期（2026-09-24）、400 / 800 热线（带不带连字符）与座机号；
-  离得最近的上下文字眼说的是别的号（银行卡 / 卡号 / QQ / 微信 / 身份证 / 电话 / 会员号）的；
-  前后没有单号字眼、又是身份证号或过 Luhn 校验的银行卡号形态的（复核 L3-4，理由同手机号）。
-  取原文里第一个，NFKC 后字母转大写。
-* ``request``：诉求闭集 refund / return / exchange / track / other。**只在客户要办 / 要查自己那一单
-  时给**：问规则的（怎么退、多久到、什么时候到账、能不能退）不给 —— 否则前台会为一句政策问题去要单号。
-  refund / return / exchange 的缺省是**不给**（复核 L3-2）：只命中「退款 / 退货」字眼的裸说法
-  （「退款会退运费吗」「Is a refund free?」）是在问政策；**明说要办**的分句（「我要退款」「帮我把这单
-  退了」「I want a refund」）、整句就是诉求（「退款」「退货吧」）、或句子指向自己的某一单（本轮有
-  单号，或「这单 / 我的订单 / 我买的 / 收到的 / my order」）才给。明说要办的分句优先 —— 「东西一直
-  没收到，我要退款」是要退款（复核 L2-1）。问进度（到没到 / 发了没）是 track，哪怕句子里有「退款」
-  二字。**撤回**诉求的说法（「不用退款了」「我不想退货了」「I don't need a refund」，复核 L2-2）里的
-  诉求词不算；撤回之后本轮没有别的诉求就给 ``other`` —— 槽位跨轮合并、新值覆盖旧值，给空就盖不掉
-  上一轮的 refund。
+* ``order_no``（主会话裁定 R3）：纯数字 ≥ 8 位；字母开头、字母数字混排、总长 ≥ 5 且至少 3 位数字
+  （「A1001」「AB12345」「SO-2026-0001」，**不要求**旁边有「订单号」字眼 —— 追问之后客户常常只回
+  「H8008 发到哪了」）；数字开头、带连字符、至少 6 位数字的平台单号（「200924-1234567890」）；
+  「# + 数字」只在紧挨单号字眼时认。**不认**：手机号（去掉连字符、空格与 86 / +86 / 0086 国家码后
+  是 11 位手机号形态的；隐私，不能当单号存进槽位表）、座机（带连字符、括号、空格或不带分隔符的
+  「0 + 区号 + 号码」）、400 / 800 热线、日期；离得最近的上下文字眼说的是别的号（银行卡 / 卡号 /
+  QQ / 微信 / 身份证 / 电话 / 会员号）的；前后没有单号字眼、又是身份证号或过 Luhn 校验的银行卡号
+  形态的（复核 L3-4）；型号的两类写法（品牌驼峰「iPhone15」、紧跟品类名词「RTX4090显卡」）。
+  紧挨单号字眼的优先，其余取原文里第一个；NFKC 后字母转大写。
+* ``request``（主会话裁定 R2，回到 3831987 的口径）：诉求闭集 refund / return / exchange / track /
+  other。句子里有退款 / 退货 / 换货 / refund / return / exchange 这类诉求词就给对应的诉求，**除非**
+  (a) 是问规则的问法（怎么 / 流程 / 能不能 / ……吗 / 多久 / 几天 / 什么时候 / how / when / 问号）
+  且诉求词前面没有行动标记（我要 / 帮我 / 申请 / 给我 / 想 / 麻烦 / 马上 / 赶紧 / now / please），
+  这时不给 —— 否则前台会为一句政策问题去要单号；或 (b) 是**客户自己撤回**（「不用 / 不要 /
+  不需要 / 不想 / 先不 + 诉求词」「诉求词 + 就不用了 / 算了」「撤销 / 撤回 + 诉求词」、英文 no longer
+  want / never mind / changed my mind），且前面不是在质问或转述商家不退（为什么 / 凭什么 / 怎么又 /
+  商家 / 店家 / 你们 + 不退）—— 撤回的那一段不算诉求，本轮没有别的诉求就给 ``other``（槽位跨轮合并、
+  新值覆盖旧值，给空就盖不掉上一轮的 refund）。明说要办的分句优先（「东西一直没收到，我要退款」
+  是要退款，复核 L2-1）；问进度（到没到 / 发了没）是 track，哪怕句子里有「退款」二字。
 * ``emotion``：calm / upset / angry，按词表（情绪触发词、「着急 / 失望 / 等了好久」、「谢谢 /
   不着急」），没有线索不给（不猜「平静」）。
 * ``product`` / ``problem``：商品名、问题描述**只从词表取**（:data:`PRODUCT_WORDS` /
@@ -76,7 +72,6 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from maos import kb
 from maos.core.store import record_model_failure, record_model_usage
 from maos.domain.cs import scripts, triggers
 from maos.domain.cs.lang import detect_lang
@@ -213,14 +208,19 @@ def _en_re(parts) -> re.Pattern[str]:
 
 
 # ---------------------------------------------------------------------------
-# 订单号
+# 订单号（主会话裁定 R3：短形态无上下文也认）
 # ---------------------------------------------------------------------------
 #: 纯数字 ≥ 8 位（淘宝 / 京东 / 抖店一类）。
 _DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])\d{8,}(?![0-9A-Za-z])")
-#: 字母数字混排、带连字符（拼多多「200924-1234567890」、自编号「SO-2026-000123」）。
+#: 带连字符的串（拼多多「200924-1234567890」、自编号「SO-2026-000123」、日期、电话都长这样，下面分辨）。
 _HYPHEN_RE = re.compile(r"(?<![0-9A-Za-z-])[0-9A-Za-z]+(?:-[0-9A-Za-z]+)+(?![0-9A-Za-z-])")
-#: 短形态：字母 1–4 个 + 数字 ≥ 4 位（「A1001」「JD20260001」），或「#」+ 数字 ≥ 3 位。
-_SHORT_RE = re.compile(r"(?<![0-9A-Za-z#])(?:[A-Za-z]{1,4}\d{4,}|#\d{3,})(?![0-9A-Za-z])")
+#: 字母开头、字母数字混排的串（「A1001」「AB12345」「JD20260001」）：总长够 :data:`_ALNUM_MIN_LEN`、
+#: 数字够 :data:`_ALNUM_MIN_DIGITS` 位才认（型号、制式常常只带一两位数：Mate60、wifi6、Note12）。
+_ALNUM_RE = re.compile(r"(?<![0-9A-Za-z#-])[A-Za-z][A-Za-z0-9]*\d[A-Za-z0-9]*(?![0-9A-Za-z-])")
+_ALNUM_MIN_LEN = 5
+_ALNUM_MIN_DIGITS = 3
+#: 「#」+ 数字（「订单 #1001」）：太短，只在紧挨着单号字眼时认。
+_HASH_RE = re.compile(r"(?<![0-9A-Za-z#])#\d{3,}(?![0-9A-Za-z])")
 #: 候选串前面的上下文字眼（复核 L2-6 / L3-4）：**离候选串最近的那一个**说了算 ——
 #: 说单号的（订单号 / 单号 / 那单 / order #）与说别的号的（卡号 / QQ / 微信 / 身份证 / 电话 / 会员号）。
 #: 在 NFKC、小写、保留空白的文本上找，只看候选串前面 :data:`_CONTEXT_WINDOW` 个字符。
@@ -229,12 +229,11 @@ _ORDER_WORD_RE = re.compile(
     r"|(?<![a-z])order(?:\s*(?:no\.?|number|num|id|#))?(?![a-z])")
 _OTHER_NUMBER_RE = re.compile(
     r"银行卡|卡号|信用卡|储蓄卡|借记卡|这张卡|qq|微信|身份证|证件|护照|工号|会员|账号|账户|支付宝"
-    r"|手机|电话|座机|(?<![a-z])(?:card|account|wechat|passport|phone|mobile|tel|id)(?![a-z])")
+    r"|手机|电话|座机|热线|(?<![a-z])(?:card|account|wechat|passport|phone|mobile|tel|id)(?![a-z])")
 _CONTEXT_WINDOW = 12
-#: 短形态要**紧挨着**单号字眼（中间只许空白、冒号、「#」、「是 / 为」）：「我订单里的 RTX4090」
-#: 「I'd like to order the MX5000」里的是型号（复核 L2-6）。
+#: 紧挨着单号字眼：中间只许空白、冒号、「#」、「是 / 为」。
 _ADJACENT_GAP_RE = re.compile(r"[\s:#是为]*")
-#: 短形态后面紧跟着的单号字眼（「A1001 这单到哪了」「A1001 的订单」）。
+#: 候选串后面紧跟着的单号字眼（「A1001 这单到哪了」「A1001 的订单」）。
 _FOLLOWING_ORDER_RE = re.compile(r"\s*(?:(?:这|那)一?单|的?订单|order(?![a-z]))")
 #: 不是单号的形态：手机号、日期、400 / 800 热线与座机。手机号与热线按**去掉分隔符与国家码之后**
 #: 的数字判（复核 L1-1 / L2-4）：「138-1234-5678」「+8613812345678」「86-138-1234-5678」
@@ -242,19 +241,37 @@ _FOLLOWING_ORDER_RE = re.compile(r"\s*(?:(?:这|那)一?单|的?订单|order(?![
 _MOBILE_RE = re.compile(r"^1[3-9]\d{9}$")
 _HOTLINE_RE = re.compile(r"^[48]00\d{7}$")
 _COUNTRY_CODE_RE = re.compile(r"^(?:00)?86(?=1[3-9]\d{9}$)")
+#: 座机不带分隔符的写法：0 + 区号 + 七八位号（「057188886666」）。平台单号不以 0 开头。
+_LANDLINE_DIGITS_RE = re.compile(r"^0[1-9]\d{8,10}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 _PHONE_RE = re.compile(r"^(?:[48]00-\d{3,4}-\d{3,4}|0\d{2,3}-\d{7,8}(?:-\d{1,6})?)$")
-#: 连字符形态至少要有这么多位数字（再短就像型号「GT-3」「X-100」）。
+#: 座机的另两种写法：区号带括号（「(0571)88886666」）、区号与号码之间是空格（「021 62345678」）。
+#: 这一段里的数字都不当单号。
+_LANDLINE_SPAN_RE = re.compile(r"[(（]\s*0\d{2,3}\s*[)）]\s*\d{7,8}(?!\d)|(?<!\d)0\d{2,3}\s+\d{7,8}(?!\d)")
+#: 连字符串（数字开头的）至少要有这么多位数字（再短就像日期、型号）。
 _HYPHEN_MIN_DIGITS = 6
+#: 型号不是单号（复核 L2-6）。按两类一般写法认，不逐个列型号：
+#: * 品牌的驼峰写法：同一段字母里小写紧跟大写（「iPhone15」「AirPods3」「MacBook2024」）——
+#:   平台单号是单一大小写的；
+#: * 紧跟一个品类名词（「RTX4090显卡」「MX5000 鼠标」「X1 Carbon 笔记本」不在此列）：
+#:   见 :data:`MODEL_FOLLOWERS`。
+_CAMEL_RE = re.compile(r"[a-z][A-Z]")
+MODEL_FOLLOWERS: tuple[str, ...] = (
+    "显卡", "手机", "耳机", "主板", "处理器", "芯片", "相机", "镜头", "手表", "电脑", "笔记本", "平板",
+    "鼠标", "键盘", "显示器", "路由器", "音箱", "充电器", "电视", "投影仪", "硬盘", "内存", "型号",
+    "机型", "款", "系列",
+)
+_MODEL_FOLLOWER_RE = re.compile(r"\s*(?:" + "|".join(map(re.escape, MODEL_FOLLOWERS)) + ")")
 
 
 def _is_phone_shaped(token: str) -> bool:
-    """去掉分隔符与国家码（86 / 0086）后是手机号或 400 / 800 热线。"""
+    """去掉分隔符与国家码（86 / 0086）后是手机号、400 / 800 热线，或不带分隔符的座机。"""
     digits = token.replace("-", "")
     if not digits.isdigit():
         return False
     digits = _COUNTRY_CODE_RE.sub("", digits)
-    return bool(_MOBILE_RE.match(digits) or _HOTLINE_RE.match(digits))
+    return bool(_MOBILE_RE.match(digits) or _HOTLINE_RE.match(digits)
+                or _LANDLINE_DIGITS_RE.match(digits))
 
 
 #: 18 位身份证形态：6 位地区 + 19xx / 20xx 年 + 合法月日 + 3 位 + 校验位（数字；带 X 的本来就不是纯数字）。
@@ -299,31 +316,52 @@ def _adjacent_order_word(text: str, start: int, end: int) -> bool:
     return bool(_FOLLOWING_ORDER_RE.match(text[end:].lower()))
 
 
-def _order_candidates(text: str) -> list[tuple[int, str]]:
-    """原文里所有像单号的串：(起点, 原样)。
+def _alnum_shaped(alnum: str) -> bool:
+    """字母开头的串（已去掉连字符）够长、数字够多。"""
+    return len(alnum) >= _ALNUM_MIN_LEN and sum(c.isdigit() for c in alnum) >= _ALNUM_MIN_DIGITS
 
-    被排除的连字符串（日期、电话）占的那一段，里面的数字段也不再当纯数字单号认 ——
-    否则「0571-88886666」排除了整串，又把后半截「88886666」认成八位单号。
-    离候选串最近的上下文说的是别的号（卡号 / QQ / 身份证 / 电话……）的不认；前后没有单号字眼、
-    又是身份证号或银行卡号形态的也不认（复核 L2-6 / L3-4）。
+
+def _is_model_number(text: str, token: str, end: int) -> bool:
+    """型号的两类写法：驼峰（iPhone15）、紧跟品类名词（RTX4090显卡）。"""
+    return bool(_CAMEL_RE.search(token) or _MODEL_FOLLOWER_RE.match(text[end:]))
+
+
+def _order_candidates(text: str) -> list[tuple[int, int, str]]:
+    """原文里所有像单号的串：(起点, 终点, 原样)，按起点排。
+
+    认三种形态（主会话裁定 R3）：纯数字 ≥ 8 位；字母开头、字母数字混排、总长 ≥ 5（带不带连字符都行：
+    「A1001」「AB12345」「SO-2026-0001」）；数字开头带连字符、至少 6 位数字的平台单号。另有「# + 数字」
+    只在紧挨单号字眼时认。
+
+    不认：手机号（含 +86 / 86 前缀、带连字符或空格）、座机（带连字符、括号、空格或不带分隔符）、
+    400 / 800 热线、日期 —— 被排除的那一段里的数字段也不再另当单号（「0571-88886666」排除了整串，
+    后半截「88886666」不另算）；离候选串最近的上下文说的是别的号（卡号 / QQ / 身份证 / 电话……）的；
+    前后没有单号字眼、又是身份证号或银行卡号形态的（复核 L2-6 / L3-4）；型号（:func:`_is_model_number`）。
     """
-    found: list[tuple[int, str]] = []
-    blocked: list[tuple[int, int]] = []
+    found: list[tuple[int, int, str]] = []
+    blocked: list[tuple[int, int]] = [m.span() for m in _LANDLINE_SPAN_RE.finditer(text)]
+
+    def free(start: int) -> bool:
+        return not any(s <= start < e for s, e in blocked) \
+            and not any(s <= start < e for s, e, _t in found)
+
     for m in _HYPHEN_RE.finditer(text):
         tok = m.group(0)
-        if _DATE_RE.match(tok) or _PHONE_RE.match(tok) or _is_phone_shaped(tok):
-            blocked.append((m.start(), m.end()))
+        if not free(m.start()):
             continue
-        if _context_before(text, m.start()) == "other":
-            blocked.append((m.start(), m.end()))
+        if (_DATE_RE.match(tok) or _PHONE_RE.match(tok) or _is_phone_shaped(tok)
+                or _context_before(text, m.start()) == "other"):
+            blocked.append(m.span())
             continue
-        if sum(ch.isdigit() for ch in tok) >= _HYPHEN_MIN_DIGITS:
-            found.append((m.start(), tok))
+        if tok[0].isalpha():
+            ok = _alnum_shaped(tok.replace("-", "")) and not _is_model_number(text, tok, m.end())
+        else:
+            ok = sum(ch.isdigit() for ch in tok) >= _HYPHEN_MIN_DIGITS
+        if ok:
+            found.append((m.start(), m.end(), tok))
     for m in _DIGITS_RE.finditer(text):
         tok = m.group(0)
-        if _is_phone_shaped(tok):
-            continue
-        if any(s <= m.start() < e for s, e in blocked):
+        if _is_phone_shaped(tok) or not free(m.start()):
             continue
         context = _context_before(text, m.start())
         if context == "other":
@@ -331,44 +369,41 @@ def _order_candidates(text: str) -> list[tuple[int, str]]:
         if (context != "order" and _is_personal_number(tok)
                 and not _FOLLOWING_ORDER_RE.match(text[m.end():].lower())):
             continue
-        if not any(s <= m.start() < s + len(t) for s, t in found):
-            found.append((m.start(), tok))
+        found.append((m.start(), m.end(), tok))
+    for m in _ALNUM_RE.finditer(text):
+        tok = m.group(0)
+        if not _alnum_shaped(tok) or not free(m.start()):
+            continue
+        if _context_before(text, m.start()) == "other" or _is_model_number(text, tok, m.end()):
+            continue
+        found.append((m.start(), m.end(), tok))
+    for m in _HASH_RE.finditer(text):
+        if free(m.start()) and _adjacent_order_word(text, m.start(), m.end()):
+            found.append((m.start(), m.end(), m.group(0)))
     return sorted(found)
 
 
-#: 只报一个号时常带的客套（「A1001，谢谢」「A1001 thanks」）：判「整句就是这个号」前先抹掉。
-_POLITE_RE = re.compile(r"谢谢(?:你|您|啦|了)?|谢啦|多谢|感谢|麻烦(?:你|您)?了|辛苦(?:你|您)?了|好的|您好|你好"
-                        r"|(?<![a-z])(?:thanks|thank you|thx|please|pls|hi|hello)(?![a-z])")
-_BARE_STRIP = "。.，,！!？?：:；;、~～ 啊呀哦呢哈亲"
-
-
 def extract_order_no(text: str) -> str:
-    """订单号：见模块头「槽位」。取不到返回空串。"""
+    """订单号：见模块头「槽位」。紧挨单号字眼的优先，其余取原文里第一个；取不到返回空串。"""
     s = _nfkc(text)
-    strong = _order_candidates(s)
-    if strong:
-        return strong[0][1].upper()
-    lower = s.lower()
-    bare = _POLITE_RE.sub(" ", lower).strip(_BARE_STRIP).strip()
-    for m in _SHORT_RE.finditer(s):
-        token = m.group(0).lower()
-        # 整句就是这个号，或这个号 + 一个诉求词（「A1001 退款」「A1001退货」）
-        rest = bare.replace(token, " ", 1).strip(_BARE_STRIP).strip() if token in bare else None
-        if (rest is not None and (not rest or _is_bare_request(rest))) \
-                or _adjacent_order_word(s, m.start(), m.end()):
-            return m.group(0).upper()
-    return ""
+    candidates = _order_candidates(s)
+    if not candidates:
+        return ""
+    adjacent = [c for c in candidates if _adjacent_order_word(s, c[0], c[1])]
+    return (adjacent or candidates)[0][2].upper()
 
 
 # ---------------------------------------------------------------------------
-# 诉求
+# 诉求（主会话裁定 R2：回到 3831987 的口径 —— 有诉求词就给，问规则的与客户撤回的除外）
 # ---------------------------------------------------------------------------
 #: 诉求词表：诉求 → (中文片段, 英文片段)。先后即优先级（同一句中了几种取靠前的）。
 REQUEST_WORDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     REQUEST_EXCHANGE: (
         (r"换货", r"换一(?:个|件|双|台|条|套|只|支|瓶|盒)", r"换个(?:新的|颜色|尺码|码|型号|大的|小的)",
          r"换(?:颜色|尺码|大一码|小一码|大一号|小一号|码)", r"换个?(?:大|小)一?[码号]", r"调换",
-         r"更换(?:商品|新的|一个)"),
+         r"更换(?:商品|新的|一个)",
+         # 换 + 尺寸的形容词（换长一点的、换宽松些、换个短一点）
+         r"换(?:个|件|条|双)?更?[大小长短宽窄厚薄松紧肥瘦深浅]{1,2}一?(?:点|些|码|号)"),
         (r"exchange", r"swap", r"replace(?:ment)?"),
     ),
     REQUEST_RETURN: (
@@ -398,22 +433,33 @@ _REQUEST_RES: dict[str, tuple[re.Pattern[str], re.Pattern[str]]] = {
     k: (_zh_re(zh), _en_re(en)) for k, (zh, en) in REQUEST_WORDS.items()
 }
 
-#: 问规则的说法（怎么办理、要多久、能不能）：有它、又没有「帮我 / 给我」这类办事的字眼，
-#: 就是在问政策，不给 request。
+# ---- 问规则的标记（R2 (a)）：问办法 / 条件 / 谁出、是非问、问时长 ------------------------------
+#: 问办法、条件、规则。
 _HOWTO_ZH = _zh_re((r"怎么", r"怎样", r"如何", r"咋", r"流程", r"步骤", r"条件", r"规则", r"要求",
-                    r"政策", r"谁出", r"我出", r"你们出", r"谁承担", r"谁付", r"在哪", r"哪里", r"入口",
-                    r"需要什么", r"要什么"))
-_HOWTO_EN = _en_re((r"how (?:do|can|to|does|should)", r"what(?:'s| is) the (?:policy|process)",
-                    r"policy", r"process", r"who pays"))
-#: 是非问（能退吗 / 可以换吗）：没有办事的字眼时也是在问政策（「其他」类诉求除外：改地址、
-#: 取消订单问一句「能改吗」就是要改）。
-_YESNO_ZH = _zh_re((r"能不能", r"可不可以", r"可以吗", r"能吗", r"行吗", r"支持吗", r"可以不",
-                    r"能.{0,6}[吗嘛么不][?!.~。]*$", r"可以.{0,6}[吗嘛么不][?!.~。]*$"))
-_YESNO_EN = _en_re((r"can i", r"could i", r"is it possible", r"am i able",
-                    r"do you (?:accept|allow|support)"))
-_ACTION_ZH = _zh_re((r"帮我", r"给我", r"替我", r"帮忙", r"麻烦你?帮", r"请帮", r"我要", r"我想要",
-                     r"我需要", r"申请", r"办理", r"办一下", r"处理一下", r"直接"))
-_ACTION_EN = _en_re((r"i want", r"i'd like", r"i would like", r"i need", r"please", r"help me"))
+                    r"政策", r"规定", r"谁出", r"谁来出", r"我出", r"你们出", r"谁承担", r"谁付", r"在哪",
+                    r"哪里", r"哪儿", r"入口", r"需要什么", r"要什么", r"什么情况", r"哪些"))
+_HOWTO_EN = _en_re((r"how", r"what(?:'s| is| are)? (?:the|your) (?:policy|process|rules?)", r"policy",
+                    r"process", r"who pays", r"which"))
+#: 是非问（能退吗 / 可以换吗 / 会退运费吗 / 有手续费吗）。
+_YESNO_ZH = _zh_re((r"能不能", r"可不可以", r"能否", r"是否", r"有没有", r"会不会", r"要不要", r"需不需要",
+                    r"是不是", r"可以吗", r"能吗", r"行吗", r"支持吗", r"可以不",
+                    r"能.{0,6}[吗嘛么不][?!.~。]*$", r"可以.{0,6}[吗嘛么不][?!.~。]*$",
+                    # 分句末的疑问语气词
+                    r"[吗嘛么](?=$|[?？!！。.,，~～…;；])"))
+#: 英文的问句：分句以助动词 / 疑问词开头，或带问号。
+_YESNO_EN = re.compile(r"(?:^|[,.;!?] ?)(?:is|are|do|does|did|can|could|will|would|should|may|am|when|what|"
+                       r"which|why|who)(?![a-z0-9])|\?")
+#: 行动标记（R2 (a)）：有它，问句也是在要办。中文的要出现在诉求词**前面**（「我想退货怎么弄」是要退；
+#: 「退货我要付运费吗」是在问）；「想问 / 想知道 / 麻烦问下 / 麻烦了」是问，不是办。
+_ACTION_ZH = _zh_re((r"帮我", r"给我", r"替我", r"帮忙", r"请帮", r"我要(?!问|咨询)", r"我想要", r"我需要",
+                     r"要求", r"申请", r"办理", r"办一下", r"处理一下", r"直接", r"马上", r"赶紧", r"立刻",
+                     r"立即", r"尽快", r"快点", r"麻烦(?!问|咨询|请教|了|你了|您了)",
+                     r"(?<!不)想(?!问|知道|了解|咨询|确认|请教|看|查|打听)"))
+_ACTION_EN = _en_re((r"i want", r"i'd like", r"i would like", r"(?<!do )i need(?! to know)", r"help me",
+                     r"please(?! (?:tell|let me know|advise|explain|confirm))", r"pls", r"now", r"asap",
+                     r"right away", r"immediately"))
+#: 诉求词后面跟着「后 / 以后 / 之后」是个时间点（「申请退款后钱什么时候到」），前面的办事字眼不算。
+_TIME_POINT_RE = re.compile(r"了?(?:以|之)?后")
 
 #: 进度线索要落在「订单的事」上才算查进度（「你们店开了多久」「怎么样了」闲聊不算）。
 _TRACK_TOPIC_ZH = _zh_re((r"单", r"货", r"快递", r"物流", r"包裹", r"东西", r"钱", r"款", r"售后",
@@ -421,17 +467,38 @@ _TRACK_TOPIC_ZH = _zh_re((r"单", r"货", r"快递", r"物流", r"包裹", r"东
 _TRACK_TOPIC_EN = _en_re((r"order", r"package", r"parcel", r"refund", r"money", r"item",
                           r"shipment", r"delivery", r"return", r"exchange"))
 
+
+def _is_policy_question(zh: str, en: str, cue: str) -> bool:
+    """问规则的问法：问办法 / 条件、是非问、问时长（多久 / 几天 / 什么时候）。"""
+    return bool(_HOWTO_ZH.search(zh) or _HOWTO_EN.search(en) or _YESNO_ZH.search(zh)
+                or _YESNO_EN.search(en) or cue == scripts.CUE_DURATION)
+
+
+def _has_action(zh: str, en: str, request_at: tuple[int, int] | None) -> bool:
+    """句中有明确的行动标记。中文的要在诉求词前面，且诉求词后面不是「后 / 以后」这个时间点。"""
+    if _ACTION_EN.search(en):
+        return True
+    if request_at is None:
+        return bool(_ACTION_ZH.search(zh))
+    start, end = request_at
+    if _TIME_POINT_RE.match(zh, end):
+        return False
+    return any(m.start() < start for m in _ACTION_ZH.finditer(zh))
+
+
 # ---- 明说要办（复核 L2-1）：「我要退款」「帮我把这单退了」「I want a refund」 ----------------
 #: 办事的字眼**紧挨着**（中间至多几个不是「查 / 看 / 问」的字）退款 / 退货 / 换货的说法，且同一分句里
-#: 没有进度或时长线索：这是客户明说要办，诉求就是它 —— 前一分句在催（「东西一直没收到，我要退款」）、
-#: 后一分句在问规则（「我要退货，运费谁出」）都不改。「申请退款后……」「退款以后……」里的办事是个
-#: 时间点，不算。
-_EXPLICIT_ACTION_ZH = r"(?:帮我|给我|替我|帮忙|麻烦你?帮?我?|请帮?我?|我要|我想要?|我需要|要求|申请|办理|直接)"
+#: 没有进度或时长线索、不是在问规则：这是客户明说要办，诉求就是它 —— 前一分句在催（「东西一直没收到，
+#: 我要退款」）、后一分句在问规则（「我要退货，运费谁出」）都不改。「申请退款后……」「退款以后……」
+#: 里的办事是个时间点，不算。
+_EXPLICIT_ACTION_ZH = (r"(?:帮我|给我|替我|帮忙|麻烦你?帮?我?|请帮?我?|我要|(?<!不)我?想要?|(?<![不想])要|我需要|要求"
+                       r"|申请|办理|直接|马上|赶紧|立刻|立即|尽快|快点)")
 #: 办事字眼与诉求说法之间允许的字（不许夹「查 / 看 / 问 / 知道」：「帮我查下退款」是在查）。
 _EXPLICIT_GAP_ZH = r"[^查看问催知解确认，,。.!！?？;；]{0,5}?"
 _EXPLICIT_CORE_ZH: dict[str, tuple[str, ...]] = {
     REQUEST_EXCHANGE: (r"换货", r"换一(?:个|件|双|台|条|套|只|支|瓶|盒)", r"换个?(?:新的|颜色|尺码|码|型号|大|小)",
-                       r"换(?:颜色|尺码|码|尺寸)", r"调换", r"更换"),
+                       r"换(?:颜色|尺码|码|尺寸)", r"调换", r"更换",
+                       r"换(?:个|件|条|双)?更?[大小长短宽窄厚薄松紧肥瘦深浅]{1,2}一?(?:点|些|码|号)"),
     REQUEST_RETURN: (r"退货", r"退回去", r"退掉", r"退换", r"寄回(?!来)", r"(?<!钱)退(?![款钱费宽到回休出])"),
     REQUEST_REFUND: (r"退款", r"退钱", r"退费", r"返款", r"退我钱", r"把钱退", r"把钱还"),
 }
@@ -455,8 +522,9 @@ _CLAUSE_SPLIT_RE = re.compile(r"[，,。.!！?？;；~～\n]+")
 def explicit_request(text: str) -> str:
     """明说要办的诉求（refund / return / exchange），没有返回空串。先后即优先级（同 REQUEST_WORDS）。
 
-    只看**同一分句**里既没有进度 / 时长线索、也不是在问规则（怎么 / 流程 / 能不能）的那些分句：
-    「我想退货怎么弄」「给我退了没」「申请退款后钱什么时候退回来」都不算明说要办。
+    只看**同一分句**里既没有进度 / 时长线索、也不是在问规则（怎么 / 流程 / 能不能 / ……吗）的那些分句：
+    「我想退货怎么弄」「给我退了没」「申请退款后钱什么时候退回来」都不算**明说**要办（前一句另由
+    :func:`extract_request` 的行动标记认出来）。
     """
     for clause in _CLAUSE_SPLIT_RE.split(_nfkc(text)):
         if not clause.strip() or scripts.detect_cue(clause):
@@ -471,101 +539,106 @@ def explicit_request(text: str) -> str:
     return ""
 
 
-# ---- 撤回的诉求（复核 L2-2）：「不用退款了」「我不想退货了」「退款就不用了」「I don't need a refund」 ----
-#: 这几种说法里的诉求词不算诉求：先把整段换成分句边界再判（「不要退款，给我换一件」照样是换货）。
-#: 撤回之后本轮没有别的诉求时，诉求给 ``other``（不是空）—— 槽位跨轮合并、新值覆盖旧值，给空就
-#: 盖不掉上一轮的 refund，前台照旧会去出退款预检卡。
+# ---- 客户撤回（R2 (b)）：「不用退款了」「退款的事就算了」「撤销退款申请」「I no longer want a refund」 ----
+#: 客户以第一人称或无主语说的撤回。撤回的那一段先换成分句边界再判诉求（「不要退款，给我换一件」照样
+#: 是换货）；撤回之后本轮没有别的诉求时，诉求给 ``other``（不是空）—— 槽位跨轮合并、新值覆盖旧值，
+#: 给空就盖不掉上一轮的 refund，前台照旧会去出退款预检卡。
+_WITHDRAW_CORE = r"(?:退款|退货|换货|退钱|退换货?)"
 WITHDRAWN_REQUEST_ZH: tuple[str, ...] = (
-    r"(?:不用|不要|不需要|不想|不打算|无需|没必要|不必|先不|暂时不|暂不|别)(?:再|了)?(?:给我|帮我|申请|办)?"
+    # 不用 / 不要 / 不需要 / 不想 / 先不 / 别 +（再 / 了）+（给我 / 帮我 / 申请）+ 诉求词
+    r"(?:不用|不要|不需要|不想要?|不打算|无需|没必要|不必|先不|暂时不|暂不|别)(?:再|了)?(?:给我|帮我|申请|办)?"
     r"(?:退款|退货|换货|退钱|退换货?|退|换)",
-    r"不(?:退款|退货|换货|退|换)了",
-    r"(?:退款|退货|换货|退钱|退换货?)(?:就|也|先)?(?:不用|不要|不需要|算了|不办|取消)了?",
+    # 不 + 诉求词 + 了（这单我不退了、算了不换了）
+    r"不(?:退款|退货|换货|退钱|退|换)(?:了|啦|咯)",
+    # 分句末的「不退货 / 不退款」（我改主意了，不退货）
+    r"不(?:退款|退货|换货|退钱)(?=$|[，,。.!！~～…;；])",
+    # 诉求词（的事 / 申请）+ 就不用了 / 算了 / 取消吧 / 撤回了（「退货不要运费吗」不是：后面还有字）
+    _WITHDRAW_CORE + r"(?:的事|这事|申请)?(?:我|已经)?(?:就|也|先|还是)?"
+    r"(?:不用|不要|不需要|不办|算了|不必|取消|撤销|撤回)(?:了|吧|掉|啦)*(?=$|[，,。.!！~～…;；?？ ])",
+    # 撤销 / 撤回 / 取消 + 诉求词（申请）
+    r"(?:撤销|撤回|取消)(?:掉)?(?:这个|这笔|我的|那个)?" + _WITHDRAW_CORE + r"(?:申请)?",
 )
 WITHDRAWN_REQUEST_EN: tuple[str, ...] = (
-    # 主语是客户自己（I / we don't want / need …、I'm not going to …、no need to / for …）：
+    # 主语是客户自己（I / we don't want / no longer need …、I'm not going to …、no need to / for …）：
     # 「you don't refund」「they won't refund me」是在怪店家不退，不是撤回
-    r"(?:(?:i|we)(?: really| just)? (?:don't|do not|dont) (?:want|need|wanna)"
+    r"(?:(?:i|we)(?: really| just)? (?:don't|do not|dont|no longer) (?:want|need|wanna)"
     r"|(?:i'm|i am|we're|we are) not going|no need)(?: to| for)?"
     r"(?: (?:get|have|request|make|do|process))?(?: (?:a|an|the|my|this|it|any))*"
     r" (?:refunds?|returns?|exchanges?|send (?:it |this |them )?back)",
     r"no (?:refunds?|returns?|exchanges?) (?:needed|necessary|required|please)",
     r"(?:refunds?|returns?|exchanges?) (?:is |are )?(?:not|no longer) (?:needed|necessary|required)",
     r"cancel (?:my |the |this )?(?:refund|return|exchange)(?: request)?",
+    # never mind / changed my mind …… refund（中间不许夹 want / need：「never mind, I want a refund」是要）
+    r"(?:never ?mind|changed my mind)(?:(?!want|need|like|please)[^.!?]){0,30}?(?:refunds?|returns?|exchanges?)",
 )
 _WITHDRAWN_ZH_RE = _zh_re(WITHDRAWN_REQUEST_ZH)
 _WITHDRAWN_EN_RE = _en_re(WITHDRAWN_REQUEST_EN)
+#: 质问 / 转述商家不退（R2 (b)）：撤回的说法前面（同一分句）有这些，就不是客户自己撤回
+#: （「为什么不退了」「凭什么不退款了」「商家说不退了」「卖家说退款不用了」「店家不换了怎么办」）。
+_BLAME_ZH_RE = re.compile(r"为什么|为啥|凭什么|怎么|咋|商家|店家|卖家|客服|他们|她们|平台|厂家|店铺|老板|说好")
+#: 「你们 + 不退」是在怪店家；「你们不用退了」是客户在放弃 —— 「你们」只在紧挨着直接拒绝时算质问。
+_BLAME_YOU_ZH_RE = re.compile(r"你们(?:就|都|也|还|又|竟然|居然)?\s*$")
+#: 前一分句是第三方在说（「商家说了，不退了」）。
+_REPORTED_ZH_RE = re.compile(r"(?:商家|店家|卖家|客服|他们|平台|厂家|老板)[^，,。.!！?？]{0,4}说[^，,。.!！?？]*[，,]\s*$")
+
+
+def _blamed(text: str, start: int, matched: str) -> bool:
+    """撤回说法前面是在质问 / 转述商家不退（见 :data:`_BLAME_ZH_RE`）。"""
+    prefix = text[:start]
+    clause = _CLAUSE_SPLIT_RE.split(prefix)[-1]
+    if _BLAME_ZH_RE.search(clause) or _REPORTED_ZH_RE.search(prefix):
+        return True
+    return matched.startswith(("不退", "不换")) and bool(_BLAME_YOU_ZH_RE.search(clause))
 
 
 def _mask_withdrawn(text: str) -> tuple[str, bool]:
-    """把撤回诉求的说法换成分句边界（「，」）：(处理后的文本, 有没有撤回)。
+    """把客户撤回诉求的说法换成分句边界（「，」）：(处理后的文本, 有没有撤回)。
 
     在 NFKC、小写、空白压成一个空格的文本上找（中文片段按字、英文按词），返回的也是这份文本。
     """
     s = _spaced(text)
-    masked = _WITHDRAWN_ZH_RE.sub("，", s)
-    masked = _WITHDRAWN_EN_RE.sub("，", masked)
-    return masked, masked != s
-
-
-# ---- 说的是自己那一单（复核 L3-2）：refund / return / exchange 的缺省是**不给** ------------------
-#: 只命中诉求词表的裸说法（「退款会退运费吗」「Is a refund free?」）是在问政策；refund / return /
-#: exchange 只在明说要办（:func:`explicit_request`）、整句就是诉求（「退款」「退货吧」）、或句子指向
-#: 自己的某一单 / 某一件（本轮有单号，或有下面这些字眼）时才给。
-OWN_ORDER_ZH: tuple[str, ...] = (
-    r"(?:这|那)(?:一|个)?(?:单|笔|件|双|条|台|套|个订单)", r"我(?:的|那|这)(?:个|一)?(?:订单|单子?)",
-    r"我(?:买|拍|下|收到)的", r"收到的", r"我订单",
-)
-OWN_ORDER_EN: tuple[str, ...] = (
-    r"(?:my|this|that) (?:order|item|package|parcel|purchase)", r"order (?:#|no\.?|number)",
-    r"i (?:bought|ordered|purchased|received)",
-)
-_OWN_ORDER_ZH_RE = _zh_re(OWN_ORDER_ZH)
-_OWN_ORDER_EN_RE = _en_re(OWN_ORDER_EN)
-_BARE_REQUEST_ZH_RE = re.compile(
-    r"^(?:那就?|就|还是|直接|算了)?(?:我要|我想|要|想)?(?:申请)?(?:仅退款|退款|退货|换货|退钱|退换货?|退货退款|退款退货)"
-    r"(?:吧|啊|呀|哦|呢|了吧)?$")
-_BARE_REQUEST_EN_RE = re.compile(r"^(?:a )?(?:refund|return|exchange)(?: please| pls)?$")
-
-
-def _points_to_own_order(text: str) -> bool:
-    """句子指向自己的某一单：本轮有单号，或有「这单 / 我的订单 / 我买的 / 收到的 / my order」这类字眼。"""
-    return bool(extract_order_no(text) or _OWN_ORDER_ZH_RE.search(_compact(text))
-                or _OWN_ORDER_EN_RE.search(_spaced(text)))
-
-
-def _is_bare_request(text: str) -> bool:
-    """整句（抹掉客套与句末标点）就是一个诉求词：「退款」「退货吧」「refund please」。"""
-    lower = _POLITE_RE.sub(" ", _spaced(text))
-    zh = "".join(c for c in lower if not c.isspace()).strip(_BARE_STRIP)
-    en = re.sub(r"\s+", " ", lower).strip(_BARE_STRIP).strip()
-    return bool(_BARE_REQUEST_ZH_RE.match(zh) or _BARE_REQUEST_EN_RE.match(en))
+    spans = [m.span() for m in _WITHDRAWN_ZH_RE.finditer(s) if not _blamed(s, m.start(), m.group(0))]
+    spans += [m.span() for m in _WITHDRAWN_EN_RE.finditer(s)]
+    if not spans:
+        return s, False
+    out, last = [], 0
+    for start, end in sorted(spans):
+        if start < last:
+            start = last
+        out.append(s[last:start])
+        out.append("，")
+        last = max(last, end)
+    out.append(s[last:])
+    return "".join(out), True
 
 
 def extract_request(text: str) -> str:
     """诉求：见模块头「槽位」。取不到返回空串。
 
-    先把撤回诉求的说法（「不用退款了」）换成分句边界；然后：明说要办（:func:`explicit_request`：
+    先把客户撤回诉求的说法（「不用退款了」）换成分句边界；然后：明说要办（:func:`explicit_request`：
     「我要退款」「帮我把这单退了」）→ 就是它，别的分句在催在问都不改；否则查进度（进度线索 + 说的是
-    订单的事）→ track，哪怕句子里有「退款」；refund / return / exchange 只在整句就是诉求、或句子指向
-    自己的某一单时给（复核 L3-2）；问规则（怎么 / 流程 / 多久 / 什么时候 / 谁出）→ 不给；是非问又没有
-    「帮我 / 我要」→ 不给；其余按诉求词表（先后即优先级）。撤回过、本轮又没有别的诉求 → ``other``。
+    订单的事）→ track，哪怕句子里有「退款」；有诉求词就给对应的诉求，**除非**是问规则的问法（怎么 /
+    流程 / 能不能 / ……吗 / 多久 / 什么时候）而句中没有行动标记（我要 / 帮我 / 申请 / 想 / 马上 /
+    please ……）。改地址、取消订单这类 ``other`` 问一句「能改吗」就是要改，只有问办法（怎么改）不给。
+    撤回过、本轮又没有别的诉求 → ``other``。
     """
     masked, withdrawn = _mask_withdrawn(text)
-    got = _request_after_withdrawal(masked, original=text)
+    got = _request_of(masked)
     if not got and withdrawn:
         return REQUEST_OTHER
     return got
 
 
-def _request_after_withdrawal(text: str, *, original: str) -> str:
+def _request_of(text: str) -> str:
     explicit = explicit_request(text)
     if explicit:
         return explicit
     zh, en = _compact(text), _spaced(text)
-    kind = ""
+    kind, at = "", None
     for key, (zre, ere) in _REQUEST_RES.items():
-        if zre.search(zh) or ere.search(en):
-            kind = key
+        m = zre.search(zh)
+        if m or ere.search(en):
+            kind, at = key, (m.span() if m else None)
             break
     cue = scripts.detect_cue(text)
     on_topic = bool(kind or _TRACK_TOPIC_ZH.search(zh) or _TRACK_TOPIC_EN.search(en))
@@ -573,14 +646,10 @@ def _request_after_withdrawal(text: str, *, original: str) -> str:
         return REQUEST_TRACK
     if not kind or kind == REQUEST_TRACK:
         return kind
-    if (kind in (REQUEST_REFUND, REQUEST_RETURN, REQUEST_EXCHANGE)
-            and not (_is_bare_request(text) or _points_to_own_order(original))):
-        return ""
-    action = bool(_ACTION_ZH.search(zh) or _ACTION_EN.search(en))
-    howto = bool(_HOWTO_ZH.search(zh) or _HOWTO_EN.search(en)) or cue == scripts.CUE_DURATION
-    if howto:
-        return ""
-    if kind != REQUEST_OTHER and not action and (_YESNO_ZH.search(zh) or _YESNO_EN.search(en)):
+    if kind == REQUEST_OTHER:
+        howto = bool(_HOWTO_ZH.search(zh) or _HOWTO_EN.search(en))
+        return "" if howto and not _has_action(zh, en, at) else kind
+    if _is_policy_question(zh, en, cue) and not _has_action(zh, en, at):
         return ""
     return kind
 
@@ -888,200 +957,12 @@ def _request_intent(request: str, text: str) -> str:
     return INTENT_LOGISTICS
 
 
-# ---- 意图示例（ADP 课程 4.4：相近说法靠示例强制干预） ------------------------
-#: 「说法 → 意图」。词表容易判错或判不出的说法写在这里；原文与某条在实词上的相似度
-#: （:func:`example_similarity`）≥ :data:`EXAMPLE_MIN_SIMILARITY` 就按那条的意图、压过关键词词表；
-#: 只有句式像的，词表一票都没有时才补位（见 :data:`EXAMPLE_MIN_SHAPE_SIMILARITY`）。
-#: **自写**：不抄 p12 开发集的句子，也没看过任何留出集。
-INTENT_EXAMPLES: tuple[tuple[str, str], ...] = (
-    # 物流：没有「发货 / 快递」字眼的问法
-    ("东西什么时候能到", INTENT_LOGISTICS),
-    ("大概几号能收到", INTENT_LOGISTICS),
-    ("我买的东西寄了没有", INTENT_LOGISTICS),
-    ("我的货到哪了", INTENT_LOGISTICS),
-    ("能送到我们村里吗", INTENT_LOGISTICS),
-    ("要另外付邮费吗", INTENT_LOGISTICS),
-    ("东西一直没收到", INTENT_LOGISTICS),
-    # 支付退款：没有「退款」二字的问法
-    ("钱什么时候能回到卡里", INTENT_REFUND_PAYMENT),
-    # 与物流那条「东西什么时候能到」只差主语：说的是钱就是支付退款（复核 L2-3 / L3-1）
-    ("钱什么时候能到", INTENT_REFUND_PAYMENT),
-    ("钱会原路返回吗", INTENT_REFUND_PAYMENT),
-    ("钱什么时候到我账上", INTENT_REFUND_PAYMENT),
-    ("怎么扣了我两次", INTENT_REFUND_PAYMENT),
-    ("付不了钱怎么办", INTENT_REFUND_PAYMENT),
-    ("能开个票吗", INTENT_REFUND_PAYMENT),
-    # 退换货：没有「退货 / 换货」字眼的问法
-    ("收到的东西是坏的", INTENT_RETURN_EXCHANGE),
-    ("尺码拍错了怎么办", INTENT_RETURN_EXCHANGE),
-    ("不喜欢可以退吗", INTENT_RETURN_EXCHANGE),
-    ("东西有问题想换一个", INTENT_RETURN_EXCHANGE),
-    ("穿着不合身想退", INTENT_RETURN_EXCHANGE),
-    # 通用
-    ("客服什么时候上班", INTENT_GENERAL),
-    ("好的知道了谢谢", INTENT_GENERAL),
-    # 英文
-    ("where is my order", INTENT_LOGISTICS),
-    ("when will my package arrive", INTENT_LOGISTICS),
-    ("how long does delivery take", INTENT_LOGISTICS),
-    ("when will i get my money back", INTENT_REFUND_PAYMENT),
-    ("i was charged twice", INTENT_REFUND_PAYMENT),
-    ("can i return this item", INTENT_RETURN_EXCHANGE),
-    ("the item arrived broken", INTENT_RETURN_EXCHANGE),
-    ("thank you for your help", INTENT_GENERAL),
-)
-
-#: 示例生效的两档门槛（复核 L2-3 / L3-1：只看整句二元组时，「退款什么时候能到」因为和
-#: 「东西什么时候能到」共享「什么时候能到」的虚词骨架而被判成物流，压过了「退款」这个实词）：
-#:
-#: 1. **实词上像**（:func:`example_similarity`：中文按 ``scripts.weighted_similarity`` 的加权二元组，
-#:    虚词二元组几乎不计；英文按去掉虚词后的词集合）≥ :data:`EXAMPLE_MIN_SIMILARITY`：压过关键词词表
-#:    （ADP 4.4「示例强制干预」）；
-#: 2. **只有句式像**（:func:`example_shape_similarity`：不分虚实的二元组 Dice）≥
-#:    :data:`EXAMPLE_MIN_SHAPE_SIMILARITY`，且关键词词表一票都没有：词表判不出时才补位
-#:    （「东西大概什么时候能到呀」没有一个物流的词，只能靠句式像「东西什么时候能到」）。
-EXAMPLE_MIN_SIMILARITY = 0.75
-EXAMPLE_MIN_SHAPE_SIMILARITY = 0.65
-
-#: 英文示例比对时丢掉的虚词（where / is / my 这类句子骨架）。英文按词比：字符二元组在英文上
-#: 会被骨架带跑（「where is my refund」与「where is my order」共享 wh / he / er / is / my ……）。
-EN_EXAMPLE_STOPWORDS: frozenset[str] = frozenset((
-    "a an the i me my mine you your yours we our us it its this that these those he she they them "
-    "is are was were be been being am do does did done will would can could should shall may might must "
-    "have has had to of for on in at by with from and or but so if when where what which who whom how why "
-    "there here please pls hi hello hey just still yet not no yes ok okay t s d m ll re ve don doesn didn "
-    "isn aren wasn haven hasn won can cant get got very really any some all"
-).split())
-
-
-#: 比对示例之前把同义的说法归一（复核 L3-3：只差「什么 → 啥」「几号 → 哪天」「货 → 东西」的改写
-#: 原先够不到门槛，示例表只相当于一张近乎逐字的查表）。数据表：(正则片段, 归一成)，按先后替换；
-#: 原文与示例**两边都**归一。只用于示例比对，不动关键词票数、不动话术检索。
-EXAMPLE_SYNONYMS: tuple[tuple[str, str], ...] = (
-    # 问时间
-    (r"啥时候|什么时间|何时|几时|哪一?天|几号|多会儿?", "什么时候"),
-    (r"啥|甚么", "什么"),
-    (r"咋", "怎么"),
-    (r"哪儿|哪里", "哪"),
-    # 客套与填充
-    (r"大概|大约|一般|差不多|请问一?下?|麻烦问一?下|我(?:买|拍|订|下单)的|我的", ""),
-    # 到手（送到 / 寄到 / 收到 / 到货都是「到」）
-    (r"送到|送来|寄到|寄来|到货|到手|收到", "到"),
-    # 东西：泛指的货与商品词表里的品类（「收到的衣服是破的」就是「收到的东西是坏的」）
-    (r"(?<![退换发到收拿进])货物?|包裹|快递|宝贝|商品", "东西"),
-    # 坏了的说法
-    (r"破的|烂的|坏掉的|坏了的", "坏的"), (r"破了|烂了|坏掉了", "坏了"),
-    (r"毛病|故障", "问题"),
-    (r"换个|换一件|换一双|换一台", "换一个"),
-    (r"可以|能够", "能"),
-    (r"账户|账上|卡上", "卡里"),
-)
-#: 英文示例比对前的归一：短语先换（two times → twice），再按词换成同一个词根。
-EN_EXAMPLE_PHRASES: tuple[tuple[str, str], ...] = (
-    (r"\btwo times\b", "twice"), (r"\bget here\b", "arrive"), (r"\bshow(?:ed|s)? up\b", "arrive"),
-)
-EN_EXAMPLE_SYNONYMS: dict[str, str] = {
-    **{w: "arrive" for w in ("arrived", "arrives", "arriving", "came", "comes", "come", "delivered")},
-    **{w: "broken" for w in ("damaged", "defective", "cracked", "smashed", "faulty", "broke")},
-    **{w: "item" for w in ("product", "thing", "stuff", "package", "parcel", "goods")},
-    **{w: "charged" for w in ("charge", "billed", "bill")},
-    **{w: "money" for w in ("refund", "refunds", "cash")},
-}
-_EXAMPLE_SYNONYM_RES = tuple((re.compile(p), repl) for p, repl in EXAMPLE_SYNONYMS)
-_EXAMPLE_PRODUCT_RE = re.compile("|".join(
-    re.escape(w) for w in sorted({w for w in PRODUCT_WORDS if not w.isascii()}, key=lambda w: (-len(w), w))))
-
-
-def canonical_for_examples(text: str) -> str:
-    """示例比对用的归一化：中文按 :data:`EXAMPLE_SYNONYMS` 与商品词表归一（去空白、小写），
-    全英文句按 :data:`EN_EXAMPLE_PHRASES` 换短语。"""
-    s = _nfkc(text).lower()
-    if _en_words(s) is not None:
-        for pattern, repl in EN_EXAMPLE_PHRASES:
-            s = re.sub(pattern, repl, s)
-        return s
-    s = _compact(s)
-    s = _EXAMPLE_PRODUCT_RE.sub("东西", s)
-    for pattern, repl in _EXAMPLE_SYNONYM_RES:
-        s = pattern.sub(repl, s)
-    return s
-
-
-def _bigrams(text: str) -> frozenset[str]:
-    s = "".join(kb.tokenize(text))
-    if len(s) < 2:
-        return frozenset({s}) if s else frozenset()
-    return frozenset(s[i:i + 2] for i in range(len(s) - 1))
-
-
-def _en_words(text: str) -> frozenset[str] | None:
-    """全英文（没有一个汉字）时的实词集合（按 :data:`EN_EXAMPLE_SYNONYMS` 归一）；有汉字返回 None。"""
-    tokens = kb.tokenize(text)
-    if not tokens or not all(t.isascii() for t in tokens):
-        return None
-    return frozenset(EN_EXAMPLE_SYNONYMS.get(t, t) for t in tokens if t not in EN_EXAMPLE_STOPWORDS)
-
-
-def example_similarity(text: str, example: str) -> float:
-    """原文与一条示例**在实词上**的相似度，[0, 1]，六位小数。两边先按 :func:`canonical_for_examples` 归一。
-
-    去句尾语气词后逐字相等（``scripts.tail_forms`` 有交集）为 1；两句都是英文时按实词集合的
-    Dice（:data:`EN_EXAMPLE_STOPWORDS` 之外的词）；否则是加权二元组 Dice
-    （``scripts.weighted_similarity``：实词二元组 1、虚词二元组 0.1）。
-    """
-    text, example = canonical_for_examples(text), canonical_for_examples(example)
-    if scripts.tail_forms(text) & scripts.tail_forms(example):
-        return 1.0
-    a_words, b_words = _en_words(text), _en_words(example)
-    if a_words is not None and b_words is not None:
-        if not a_words or not b_words:
-            return 0.0
-        return round(2.0 * len(a_words & b_words) / (len(a_words) + len(b_words)), 6)
-    return scripts.weighted_similarity(text, example)
-
-
-def example_shape_similarity(text: str, example: str) -> float:
-    """原文与一条示例**在句式上**的相似度：归一之后不分虚实的字符二元组 Dice，[0, 1]，六位小数。"""
-    text, example = canonical_for_examples(text), canonical_for_examples(example)
-    if scripts.tail_forms(text) & scripts.tail_forms(example):
-        return 1.0
-    a, b = _bigrams(text), _bigrams(example)
-    if not a or not b:
-        return 0.0
-    return round(2.0 * len(a & b) / (len(a) + len(b)), 6)
-
-
-def _best_example(text: str, score) -> tuple[float, str]:
-    best, got = 0.0, INTENT_UNKNOWN
-    for example, intent in INTENT_EXAMPLES:
-        sim = score(text, example)
-        if sim > best:
-            best, got = sim, intent
-    return best, got
-
-
-def example_intent(text: str, *, votes: Mapping[str, float] | None = None) -> str:
-    """按示例表判的意图（见 :data:`EXAMPLE_MIN_SIMILARITY` 的两档）；没有返回 unknown。同分取表里靠前的。
-
-    ``votes`` 是这句话的关键词票数（缺省现算）：只有一票都没有时才看第二档（句式像）。
-    """
-    best, got = _best_example(text, example_similarity)
-    if best >= EXAMPLE_MIN_SIMILARITY:
-        return got
-    if votes is None:
-        votes = keyword_votes(text)
-    if max(votes.values(), default=0) <= 0:
-        best, got = _best_example(text, example_shape_similarity)
-        if best >= EXAMPLE_MIN_SHAPE_SIMILARITY:
-            return got
-    return INTENT_UNKNOWN
-
-
 def rule_intent(text: str, *, request: str = "") -> str:
-    """确定性的意图：触发词 → 本轮诉求 → 示例 → 关键词。判不出是 unknown。
+    """确定性的意图：触发词 → 本轮诉求 → 关键词。判不出是 unknown。
 
-    诉求在示例之前（复核 L2-1）：客户明说要办 / 在查自己那一单（「东西一直没收到，我要退款」）时，
-    诉求是结构化的信号，示例只是整句像不像。
+    诉求在关键词之前（复核 L2-1）：客户明说要办 / 在查自己那一单（「东西一直没收到，我要退款」）时，
+    诉求是结构化的信号。p13 第三轮的「意图示例」一步已整张删掉（主会话裁定 R4：在开发集与 T168 holdout
+    上测不出增益，见 docs/DECISIONS.md task-t173）。
     """
     hit = triggers.detect(text)
     if hit is not None:
@@ -1089,11 +970,7 @@ def rule_intent(text: str, *, request: str = "") -> str:
     by_request = _request_intent(request, text)
     if by_request != INTENT_UNKNOWN:
         return by_request
-    votes = keyword_votes(text)
-    by_example = example_intent(text, votes=votes)
-    if by_example != INTENT_UNKNOWN:
-        return by_example
-    return _vote_intent(votes)
+    return _vote_intent(keyword_votes(text))
 
 
 # ---------------------------------------------------------------------------

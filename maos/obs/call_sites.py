@@ -70,7 +70,7 @@ CALL_SITE_SHEET_HEADER_MAP = (
 CALL_SITE_ROUNDTABLE_SPEAKER = "maos/roundtable/speaker.py::Speaker.complete"
 
 #: 客服前台的理解层（``maos/domain/cs/understand.py`` 的 ``CALL_SITE``，经 skill ``cs.understand``
-#: 调到，p13 T173）。只在规则（触发词 / 意图示例 / 词表）判不出意图、且注入的是真模型时才烧
+#: 调到，p13 T173）。只在规则（触发词 / 诉求 / 词表）判不出意图、且注入的是真模型时才烧
 #: token —— Scripted / None 下一行都没有。与圆桌同理 ``trace_id`` 恒为空串、``task_id`` 恒为 NULL
 #: （前台不属于任何 Run），``plan_id`` 是 ``cs:csc-…``：它只进 ``unattributed_usage``。
 CALL_SITE_CS_UNDERSTAND = "maos/domain/cs/understand.py::understand"

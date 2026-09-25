@@ -267,15 +267,6 @@ def _dice(a: frozenset[str], b: frozenset[str]) -> float:
     return 2.0 * _mass(inter) / (_mass(a) + _mass(b))
 
 
-def weighted_similarity(a: str, b: str) -> float:
-    """两句话的加权字符二元组 Dice（实词二元组 1、虚词二元组 ``_FUNCTION_WEIGHT``），[0, 1]，六位小数。
-
-    重排不用它（重排是 :func:`script_score`）；理解层的意图示例拿它判「在实词上像不像」
-    （p13 T173 复核 L2-3 / L3-1：「退款什么时候能到」与「东西什么时候能到」的虚词骨架一样，实词不一样）。
-    """
-    return round(_dice(_grams(a), _grams(b)), 6)
-
-
 def _variants(body: dict) -> list[str]:
     """一篇话术用来比对的全部说法：适用场景 + 同义词 + 例句。标准话术本身不算 ——
     它是我们要说的话，不是客户会怎么问。"""

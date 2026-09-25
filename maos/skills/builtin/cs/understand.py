@@ -3,7 +3,7 @@
 入参 ``{tenant_id, conversation_id, turn_id, text, prior_slots}``（``prior_slots`` 可缺省，缺省为空）；
 出参是 :class:`maos.domain.cs.understand.Understanding` 的 JSON：``{lang, intent, slots, source}``。
 
-* **确定性优先**：语种、槽位、意图都先按规则判（触发词 → 本轮诉求 → 意图示例 → 关键词词表）；
+* **确定性优先**：语种、槽位、意图都先按规则判（触发词 → 本轮诉求 → 关键词词表）；
 * 只在规则判不出意图、且 ``ctx.extras["model"]`` 是**真模型**（非 None、非 ScriptedModelClient）
   时调一次模型，输出夹到 ``types.INTENTS``。调了就记账：``model_usage`` / ``model_call_failure``
   一行，``trace_id=""``、``task_id=None``、``plan_id=extras["plan_id"]``（照契约原样取；extras 里
@@ -31,7 +31,7 @@ class CsUnderstandSkill(Skill):
         name="cs.understand",
         version="1.0.0",
         purpose="客服前台一轮的理解：判语种、抽槽位（订单号 / 商品 / 问题 / 诉求 / 情绪，跨轮合并）、"
-                "判意图（触发词 → 本轮诉求 → 意图示例 → 关键词词表；判不出且注入真模型才问模型）",
+                "判意图（触发词 → 本轮诉求 → 关键词词表；判不出且注入真模型才问模型）",
         input_schema={
             "tenant_id": "str —— 租户（客服账号映射得到）",
             "conversation_id": "str —— 会话 id（csc-…）",
@@ -50,8 +50,8 @@ class CsUnderstandSkill(Skill):
         failure_policy="escalate",
         max_retries=0,
         security_boundary="只读、不调任何工具、不写任何业务表、不落事件：槽位只从词表与正则来"
-                          "（不自由抽取，客户的住址、手机号进不了槽位），手机号（含连字符与 +86 写法）"
-                          "与 400 / 800 热线不当单号，紧跟在卡号 / QQ / 身份证 / 电话字眼后面的号、"
+                          "（不自由抽取，客户的住址、手机号进不了槽位），手机号（含连字符、空格与 +86 写法）、"
+                          "座机与 400 / 800 热线不当单号，紧跟在卡号 / QQ / 身份证 / 电话字眼后面的号、"
                           "没有单号字眼的身份证号与银行卡号形态也不当单号；"
                           "只在规则判不出意图且注入真模型时调一次模型，唯一的写是那一行模型账；"
                           "模型出错记一行失败、按规则结果返回，不重试（重试会重复记账）。"

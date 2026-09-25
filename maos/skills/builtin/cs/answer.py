@@ -95,8 +95,19 @@ class CsAnswerSkill(Skill):
         plan_id = str(extras.get("plan_id") or plan_id_for(conversation_id))
         task_id = str(extras.get("task_id") or turn_id)
 
-        hits = scripts.match_scripts(store, tenant_id=tenant_id, text=text,
-                                     plan_id=plan_id, task_id=task_id)
+        # p13（契约 §2 第 7 步，T174）：入参可多带一个 intent_hint（理解层判出的意图），原样交给
+        # match_scripts 优先该意图的话术；缺省 / 空串时调用形状与 p12 逐字节一致。这个可选键没写进
+        # input_schema：那张表生成进 docs/skill-catalog.md，而那份生成文档不在本轨白名单里
+        # （DECISIONS task-t174；整合期重产时再补）。
+        intent_hint = str(payload.get("intent_hint") or "")
+        if intent_hint:
+            hits = scripts.match_scripts(store, tenant_id=tenant_id, text=text,
+                                         plan_id=plan_id, task_id=task_id,
+                                         intent_hint=intent_hint)
+        else:
+            # p12 的调用形状原样：缺省不带这个关键字参数。
+            hits = scripts.match_scripts(store, tenant_id=tenant_id, text=text,
+                                         plan_id=plan_id, task_id=task_id)
         route, intent, reason, draft = compose(hits, min_score=scripts.MIN_SCRIPT_SCORE)
         check = claims.check_reply(
             draft, observations=frozenset(),

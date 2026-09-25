@@ -35,9 +35,37 @@ p12 没有观察来源（不查单、不读支付观察），``check_reply`` 的
 
 ## 零授权
 
-身份 :data:`CS_FRONT_DESK_IDENTITY` 只持 ``cs.answer`` / ``cs.handoff`` 两个 skill、零工具、
-最高风险 L。前台不 import 审批、放款、补偿、查单的任何一条路（静态守卫
+身份 :data:`CS_FRONT_DESK_IDENTITY` 只持 ``cs.answer`` / ``cs.handoff`` / ``cs.understand`` 三个
+skill、零工具、最高风险 L。前台不 import 审批、放款、补偿、查单的任何一条路（静态守卫
 ``maos/tests/test_cs_guard_t170.py`` 全仓扫）。
+
+## p13：单工作流（review/p13-cs-contracts.md §2，T174）
+
+``FrontDesk(store, config, *, clock=None, verifier=None, lookup=None, precheck=None, model=None)``。
+三个端口（``ports.IdentityVerifier`` / ``OrderLookup`` / ``RefundPrecheck``）由装配处**注入**，
+前台自己一个工具都不碰。一轮按契约 §2 走：
+
+0. 语种 :func:`~maos.domain.cs.lang.detect_lang`，``DeskResult.lang`` 照填；
+1–3. 同 p12（已转人工 → silent；租户空 → tenant_unmapped；触发词）；
+4. 理解：经 ``SkillInvoker`` 调 ``cs.understand``（extras 带 plan_id / task_id / trace_id="" 与
+   model），合并后的槽位里变了的写进 ``cs_slot``（跨轮累积，新值覆盖旧值）；
+5. **三个端口全为 None** → 不调理解、照 p12 的第 4–6 步走，给客户的固定话术也照 p12（中文）——
+   p12 的开发集、留出集与全部 p12 测试逐字节不变（DECISIONS task-t174）；
+6. 「要看具体订单」（:func:`order_need`：本轮诉求是 track / refund / return / exchange，或本轮
+   有进度线索、或本轮只补了单号而会话里的诉求是这几种之一）：缺单号 → ``clarify`` 追问
+   （同一槽位已追问 ``MAX_ASKS_PER_SLOT`` 次仍缺 → needs_order_lookup）；身份核验不过 →
+   identity_unverified（**不查单**）；查单 ok 且状态在措辞表 → 落 ``cs_observation`` →
+   ``answer``，正文就是措辞表那一句、claim 挂 ``obs:<本轮观察 id>``；amended / 平台不映射 →
+   order_unmapped；其余 → lookup_failed。退款 / 退货且查单成功 → 预检 → 落 ``cs_refund_bridge``：
+   ok → refund_request（卡片带预检摘要与一行现成命令，由内部同事以自己的名义发出）；不 ok →
+   needs_order_lookup（卡片写拒绝原因）。换货查单成功 → needs_order_lookup（卡片带观察）；
+7. 其余同 p12（检索时把理解出的意图当 ``intent_hint``）；英文的政策问题不检中文话术，回英文兜底；
+8. 出门前两道校验（观察与命中一律**从库里读回**）：``check_reply`` 与
+   ``check_observation_wording``，任一不过 → ``CsReplyRejected`` + 兜底 + unverified_claim；
+9. 每轮 ``record_turn``（lang、lookup_outcome）+ ``record_turn_ext``（再加 ask_slot、ask_count）。
+
+给客户的话一个状态字都不说，唯一的例外是第 6 步那三句（措辞表、挂本轮观察）。订单号、
+query_key、槽位值不进日志与 event_log（R5）。
 """
 
 from __future__ import annotations
@@ -45,15 +73,43 @@ from __future__ import annotations
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from maos.agents.base import AgentIdentity
-from maos.domain.cs import claims, conversation
+from maos.domain.cs import claims, conversation, objects, records, scripts
+from maos.domain.cs import understand as cs_understand
+from maos.domain.cs import lang as cs_lang
+from maos.domain.cs.lang import detect_lang
+from maos.domain.cs.ports import (
+    LANG_EN,
+    LANG_ZH,
+    LOOKUP_AMENDED,
+    LOOKUP_MISCONFIGURED,
+    LOOKUP_OK,
+    LOOKUP_OUTCOMES,
+    LOOKUP_PLATFORM_ERROR,
+    LOOKUP_UNMAPPED,
+    MAX_ASKS_PER_SLOT,
+    ORDER_STATUS_WORDING,
+    REQUEST_EXCHANGE,
+    REQUEST_REFUND,
+    REQUEST_RETURN,
+    REQUEST_TRACK,
+    SLOT_KEYS,
+    SLOT_ORDER_NO,
+    SLOT_PROBLEM,
+    SLOT_REQUEST,
+    SLOT_SOURCE_RULE,
+    LookupResult,
+    PrecheckResult,
+)
 from maos.domain.cs.triggers import detect
 from maos.domain.cs.types import (
+    BASIS_OBS,
     CARD_RECENT_TURNS,
     CHANNEL_WECHAT_KF,
     DELIVERY_PENDING,
@@ -73,15 +129,20 @@ from maos.domain.cs.types import (
     HANDOFF_REQUESTED,
     HANDOFF_TENANT_UNMAPPED,
     HANDOFF_UNVERIFIED_CLAIM,
+    INTENT_LOGISTICS,
+    INTENT_REFUND_PAYMENT,
+    INTENT_RETURN_EXCHANGE,
     INTENT_UNKNOWN,
     INTENTS,
     ROUTE_ANSWER,
+    ROUTE_CLARIFY,
     ROUTE_FALLBACK,
     ROUTE_HANDOFF,
     ROUTE_SILENT,
     STAGE_ACTIVE,
     STAGE_HANDED_OFF,
     CheckResult,
+    Claim,
     DeskResult,
     HandoffCard,
     ReplyDraft,
@@ -101,15 +162,17 @@ log = logging.getLogger("maos.cs")
 #: 前台这一个身份的 skill 名。identity 里仍写字面量（静态守卫要能直接求值）。
 SKILL_ANSWER = "cs.answer"
 SKILL_HANDOFF = "cs.handoff"
+SKILL_UNDERSTAND = "cs.understand"
 
-#: 客服前台的身份。**最小授权**：两个只读 / 只落 cs_ 表的 skill、零工具、风险上限 L。
+#: 客服前台的身份。**最小授权**：三个只读 / 只落 cs_ 表的 skill、零工具、风险上限 L。
 #: 不进 AGENT_POOL（不是可被派单的岗位），口径同 ``outcome_commands.TICKET_DESK_IDENTITY``。
+#: 查单与预检不是 skill、也不是前台的工具：它们是装配处注入的端口（p13 契约 §1.2）。
 CS_FRONT_DESK_IDENTITY = AgentIdentity(
     agent_id="cs-front-desk",
     role="cs_front_desk",
     duty="外部渠道客服前台：按话术库答政策问题、答不上就兜底、该转人工就出卡片；"
          "只读、只转述、只转人工，不碰钱、审批、工单",
-    allowed_skills=frozenset({"cs.answer", "cs.handoff"}),
+    allowed_skills=frozenset({"cs.answer", "cs.handoff", "cs.understand"}),
     allowed_tools=frozenset(),
     write_scope=frozenset(),
     max_risk="L",
@@ -161,10 +224,86 @@ REPLY_INTERNAL_ERROR = "抱歉，刚才没能处理好您的消息，我这边�
 #: 前台内部出错、连卡片都没落下时的话术（router 兜底也用它）：不说「已转接」—— 没转成。
 REPLY_DESK_UNAVAILABLE = "抱歉，刚才没能处理好您的消息，请您稍后再发一次，或者直接回复「人工」。"
 
-#: 全部给客户的固定话术（测试逐句过 check_reply 与禁词）。
+#: p13：追问订单号（route=clarify）。
+REPLY_ASK_ORDER_NO = "为了帮您查询这一单，请告诉我您的订单号，可以在订单详情页找到。"
+
+#: p13：注入了端口、要看具体订单却办不下去时的 needs_order_lookup 过渡话术（追问两次仍缺单号、
+#: 退款预检没过、换货）。p12 路径里这个原因回的是话术库那篇的标准话术，不用它。
+REPLY_NEEDS_ORDER_LOOKUP = "您这一单的诉求需要人工客服进一步处理，我这边已为您转接人工客服，请您稍候。"
+
+# ---- 英文固定话术（p13 契约 §2 第 0 步：中英各一套；只在注入了端口时用，见模块头第 5 步）----
+#: 每一句同样在空观察下过（开了英文扫描的）check_reply：不说 shipped / refunded / cancelled /
+#: delivered / paid 之类的状态，不承诺时间、金额、结果，不露斜杠写法、内部岗位名、规则编号。
+REPLY_FALLBACK_EN = ("Sorry, I could not find an accurate answer to this question. Could you "
+                     "describe it in another way, or tell me what you would like to ask about?")
+REPLY_HANDOFF_EN = ("Sure, I am transferring you to a human agent. Please hold on, and a colleague "
+                    "will continue the conversation with you.")
+REPLY_BY_REASON_EN: Mapping[str, str] = MappingProxyType({
+    HANDOFF_REQUESTED: ("Sure, I am transferring you to a human agent. Please hold on, and a "
+                        "colleague will join the conversation."),
+    HANDOFF_COMPLAINT: ("We are very sorry for this experience. I am transferring you to a human "
+                        "agent, who will look into what you described. Please hold on."),
+    HANDOFF_ANGER: ("I am sorry this has upset you. I am transferring you to a human agent, who "
+                    "will listen to your concerns. Please hold on."),
+    HANDOFF_COMPENSATION: ("Your request needs a human agent to discuss the details with you. "
+                           "I am transferring you to a human agent, please hold on."),
+    HANDOFF_PRIVACY: ("Questions about personal information need to be handled by a human agent. "
+                      "Please do not send identity numbers or other sensitive details in this chat. "
+                      "I am transferring you to a human agent, please hold on."),
+    HANDOFF_NEEDS_ORDER_LOOKUP: ("This order needs a human agent to look into it. I am "
+                                 "transferring you to a human agent, please hold on."),
+    HANDOFF_UNVERIFIED_CLAIM: ("Sorry, this needs to be confirmed by a human agent. I am "
+                               "transferring you to a human agent, please hold on."),
+    HANDOFF_REPEATED_FALLBACK: ("Sorry, I could not understand your question. I am transferring "
+                                "you to a human agent, who will help you further. Please hold on."),
+    HANDOFF_TENANT_UNMAPPED: ("Hello, this inquiry cannot be answered automatically at the moment. "
+                              "I am transferring you to a human agent, please hold on."),
+    HANDOFF_IDENTITY_UNVERIFIED: ("To protect your order information, a human agent needs to "
+                                  "verify your identity for this order first. I am transferring "
+                                  "you to a human agent, please hold on."),
+    HANDOFF_ORDER_UNMAPPED: ("The details of this order need to be checked further by a human "
+                             "agent. I am transferring you to a human agent, please hold on."),
+    HANDOFF_LOOKUP_FAILED: ("Sorry, I could not retrieve the information for this order. I am "
+                            "transferring you to a human agent, please hold on."),
+    HANDOFF_REFUND_REQUEST: ("I have passed your request on to our after-sales team, and a "
+                             "colleague will contact you. Please hold on."),
+})
+REPLY_INTERNAL_ERROR_EN = ("Sorry, something went wrong while handling your message. I am "
+                           "transferring you to a human agent, please hold on.")
+REPLY_DESK_UNAVAILABLE_EN = ("Sorry, something went wrong while handling your message. Please "
+                             "send it again later, or reply \"human\" to reach a human agent.")
+REPLY_ASK_ORDER_NO_EN = ("To look into this order for you, please tell me your order number. "
+                         "You can find it on the order details page.")
+
+#: 按语种取的固定话术（p13）。键：``fallback`` / ``internal_error`` / ``desk_unavailable`` /
+#: ``ask_order_no`` / ``needs_order_lookup`` 与各转人工原因。中文的各原因就是 p12 那几句。
+REPLIES: Mapping[str, Mapping[str, str]] = MappingProxyType({
+    LANG_ZH: MappingProxyType({
+        "fallback": REPLY_FALLBACK, "internal_error": REPLY_INTERNAL_ERROR,
+        "desk_unavailable": REPLY_DESK_UNAVAILABLE, "ask_order_no": REPLY_ASK_ORDER_NO,
+        **REPLY_BY_REASON, HANDOFF_NEEDS_ORDER_LOOKUP: REPLY_NEEDS_ORDER_LOOKUP,
+    }),
+    LANG_EN: MappingProxyType({
+        "fallback": REPLY_FALLBACK_EN, "internal_error": REPLY_INTERNAL_ERROR_EN,
+        "desk_unavailable": REPLY_DESK_UNAVAILABLE_EN, "ask_order_no": REPLY_ASK_ORDER_NO_EN,
+        **REPLY_BY_REASON_EN,
+    }),
+})
+
+
+def reply_for(lang: str, key: str) -> str:
+    """某语种的一句固定话术；语种不认就按中文（缺省语种）。"""
+    table = REPLIES.get(lang) or REPLIES[LANG_ZH]
+    return table[key]
+
+
+#: 全部给客户的固定话术（测试逐句过 check_reply 与禁词）。p12 的在前，p13 的中英各句在后。
 CUSTOMER_REPLIES: tuple[str, ...] = (
     REPLY_FALLBACK, REPLY_HANDOFF, *REPLY_BY_REASON.values(),
     REPLY_INTERNAL_ERROR, REPLY_DESK_UNAVAILABLE,
+    REPLY_ASK_ORDER_NO, REPLY_NEEDS_ORDER_LOOKUP,
+    REPLY_FALLBACK_EN, REPLY_HANDOFF_EN, *REPLY_BY_REASON_EN.values(),
+    REPLY_INTERNAL_ERROR_EN, REPLY_DESK_UNAVAILABLE_EN, REPLY_ASK_ORDER_NO_EN,
 )
 
 # ---------------------------------------------------------------------------
@@ -196,6 +335,30 @@ SUGGESTION_BY_REASON: Mapping[str, str] = MappingProxyType({
     HANDOFF_REFUND_REQUEST: ("客户提出退款 / 退货诉求，身份与查单已通过、只读预检已算好。"
                              "如同意受理，请由你本人发出卡片上那一行 /refund 命令，走正常审批。"),
 })
+
+#: p13：needs_order_lookup 在注入了端口的路径上有三种来由，各一条建议（SUGGESTION_BY_REASON 那条
+#: 说的是「本期前台不查单」，只对 p12 路径成立）。
+SUGGESTION_ASK_EXHAUSTED = (f"客户要办具体订单，但追问 {MAX_ASKS_PER_SLOT} 次仍没有给出订单号，机器人没有查单。"
+                            "请向客户核实订单号与身份后处理。")
+SUGGESTION_REFUND_REFUSED = ("客户提出退款 / 退货诉求，身份核验与只读查单已通过，但只读预检没有通过，"
+                             "机器人没有出采纳命令。请核实订单与诉求后按正常流程处理。")
+SUGGESTION_EXCHANGE = ("客户提出换货诉求，身份核验与只读查单已通过（本期前台不办换货）。"
+                       "请核实订单与商品情况后与客户沟通换货事宜。")
+
+#: 卡片处理建议里前台自己另起一行写的几段（:func:`render_card_text` 按这几个前缀认，各占一行）。
+CARD_SECTION_OBSERVATION = "查单观察："
+CARD_SECTION_SUMMARY = "预检摘要："
+CARD_SECTION_COMMAND = "采纳命令："
+CARD_SECTION_REFUSED = "预检未通过："
+#: 退款桥预检用的内部单号（= 绑定的 query_key）；只在它与客户报的单号不同时另起一行写出。
+CARD_SECTION_LEDGER_NO = "内部单号："
+CARD_SECTIONS = (CARD_SECTION_OBSERVATION, CARD_SECTION_SUMMARY, CARD_SECTION_COMMAND,
+                 CARD_SECTION_REFUSED, CARD_SECTION_LEDGER_NO)
+
+#: 预检端口没注入时，退款桥里记的拒绝原因。
+REFUSED_PRECHECK_UNCONFIGURED = "precheck_unconfigured"
+#: 预检端口抛了（端口承诺不抛，这里再兜一层）时记的拒绝原因。
+REFUSED_PRECHECK_ERROR = "precheck_error"
 
 REASON_LABELS: Mapping[str, str] = MappingProxyType({
     HANDOFF_REQUESTED: "客户要求人工",
@@ -231,6 +394,71 @@ _LONG_DIGITS_RE = re.compile(r"\d{5,}")
 def retrieval_query(text: str) -> str:
     """本轮交给 ``cs.answer`` 检索的那句话：去掉长数字串，再截到 :data:`MAX_QUERY_CHARS` 字。"""
     return _LONG_DIGITS_RE.sub(" ", text or "")[:MAX_QUERY_CHARS]
+
+
+# ---------------------------------------------------------------------------
+# 「要看具体订单」（p13 契约 §2 第 6 步）
+# ---------------------------------------------------------------------------
+#: 要看具体订单的诉求（``request == other`` 不算）。
+ORDER_REQUESTS = frozenset({REQUEST_TRACK, REQUEST_REFUND, REQUEST_RETURN, REQUEST_EXCHANGE})
+#: 查单成功后要走退款桥的诉求。
+BRIDGE_REQUESTS = frozenset({REQUEST_REFUND, REQUEST_RETURN})
+#: 能落到查单分支上的业务意图。
+ORDER_INTENTS = frozenset({INTENT_LOGISTICS, INTENT_REFUND_PAYMENT, INTENT_RETURN_EXCHANGE})
+
+
+def order_need(text: str, *, fresh: Mapping[str, str], merged: Mapping[str, str],
+               intent: str) -> str:
+    """本轮要不要看具体订单：返回诉求（track / refund / return / exchange），不要就返回空串。
+
+    契约的口径是「request ∈ {track, refund, return, exchange}」（other 不算）。理解层只把**本轮**
+    明说的诉求放进 ``fresh``，下面三种它不给、却同样是在办具体订单（DECISIONS task-t174）：
+
+    * 本轮没说诉求、但带着进度线索（「帮我查查它现在到哪了」，单号是上一轮给的）→ track；
+    * 本轮只补了单号（追问之后的回答「订单号是 S1818」）→ 会话里已有的诉求；
+    * 本轮报了单号、意图是物流或带着查询的说法（「我想查一下 G3333 的物流」「could you check
+      where my order A5001 is」，:data:`_ORDER_QUERY_RE`）→ track。
+
+    本轮的诉求是 other（撤回、改地址一类）→ 不看订单。只报了单号、没说要办什么（「我的订单号是
+    B2727」）也不看：单号记进槽位，下一轮说了诉求再查。
+    """
+    req = str(fresh.get(SLOT_REQUEST) or "")
+    if req in ORDER_REQUESTS:
+        return req
+    if req:
+        return ""
+    if scripts.detect_cue(text) == scripts.CUE_PROGRESS:
+        return REQUEST_TRACK
+    if fresh.get(SLOT_ORDER_NO):
+        prior = str(merged.get(SLOT_REQUEST) or "")
+        if prior in ORDER_REQUESTS:
+            return prior
+        if intent == INTENT_LOGISTICS or _ORDER_QUERY_RE.search(text or ""):
+            return REQUEST_TRACK
+    return ""
+
+
+#: 报了单号时「是在要查这一单」的说法（中文按子串、英文按词）。
+_ORDER_QUERY_RE = re.compile(
+    r"查|看看|看下|看一下|到哪|物流|快递|状态"
+    r"|(?<![A-Za-z])(?:where|track|tracking|check|status)(?![A-Za-z])", re.IGNORECASE)
+
+
+def has_lang_signal(text: str) -> bool:
+    """本轮原文有没有语种信号：有 CJK，或拿掉编码串（单号、型号）后还剩字母。
+
+    只回一个单号（「A1001」「SO-2026-000123」）、纯数字、纯符号：没有信号，``detect_lang`` 只是
+    回了缺省 zh —— 注入端口的路径上改沿用会话上一轮的语种（复核 L2-2）。
+    """
+    norm = unicodedata.normalize("NFKC", text or "")
+    if any(cs_lang.is_cjk(ch) for ch in norm):
+        return True
+    return any(unicodedata.category(ch).startswith("L") for ch in cs_lang._drop_codes(norm))
+
+
+def only_order_no(fresh: Mapping[str, str]) -> bool:
+    """本轮只报了单号（顺带的情绪不算）：没有诉求、商品、问题。"""
+    return bool(fresh.get(SLOT_ORDER_NO)) and not (set(fresh) - {SLOT_ORDER_NO, "emotion"})
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +546,13 @@ class _Turn:
     card_recorded: bool = False
     staged: bool = False
     turn_recorded: bool = False
+    # p13
+    lang: str = LANG_ZH                   # 本轮语种（DeskResult.lang、cs_turn_ext）
+    say: str = LANG_ZH                    # 给客户的固定话术用哪种语言（无端口时恒为中文）
+    lookup_outcome: str = ""
+    ask_slot: str = ""
+    ask_count: int = 0
+    ext_recorded: bool = False
 
 
 @dataclass(frozen=True)
@@ -328,22 +563,38 @@ class _Plan:
     draft: ReplyDraft
     reason: str = ""
     check: CheckResult | None = None      # cs.answer 已校验过的，就带着它的结果
+    # p13：卡片上要带的东西（p12 路径恒为缺省）
+    suggestion: str = ""                  # 非空就替掉 SUGGESTION_BY_REASON 那条
+    sections: tuple[str, ...] = ()        # 处理建议下面前台另起一行写的几段（CARD_SECTIONS 起头）
+    slots: tuple[tuple[str, str], ...] = ()
 
 
 class FrontDesk:
     """客服前台。``handle`` 一次处理一条外部消息，**永不抛**。"""
 
     def __init__(self, store: Any, config: CsConfig, *,
-                 clock: Callable[[], Any] | None = None) -> None:
-        # import 即注册 cs.answer / cs.handoff（不指望 builtin 的动态发现恰好跑过）。
+                 clock: Callable[[], Any] | None = None,
+                 verifier: Any = None, lookup: Any = None, precheck: Any = None,
+                 model: Any = None) -> None:
+        # import 即注册 cs.answer / cs.handoff / cs.understand（不指望 builtin 的动态发现恰好跑过）。
         # 放在函数体里：skill 模块要取本模块的话术常量，模块级 import 会成环。
         from maos.skills.builtin import cs as _cs_skills  # noqa: F401
         self.store = store
         self.config = config
         self._clock = clock
+        #: p13 的三个端口（``ports.py`` 的 Protocol，装配处注入）与理解层的模型。
+        self.verifier = verifier
+        self.lookup = lookup
+        self.precheck = precheck
+        self.model = model
         self._invoker = SkillInvoker(CS_FRONT_DESK_IDENTITY, store)
         # 本前台要写 event_log：核心五表不在就建（幂等）。
         store.init_schema()
+
+    @property
+    def ports_injected(self) -> bool:
+        """三个端口有没有注入任何一个。一个都没有 → 走 p12 路径（契约 §2 第 5 步）。"""
+        return any(p is not None for p in (self.verifier, self.lookup, self.precheck))
 
     # ------------------------------------------------------------ 入口
     def handle(self, msg: InboundMessage) -> DeskResult:
@@ -352,6 +603,21 @@ class FrontDesk:
             return self._handle(msg, turn)
         except Exception as exc:                          # noqa: BLE001 —— 永不抛
             return self._recover(msg, turn, exc)
+
+    def _previous_lang(self, turn: _Turn) -> str:
+        """会话上一轮（按 seq）记在 cs_turn_ext 里的语种；没有就空串。"""
+        if not turn.tenant_id:
+            return ""
+        objects.ensure_schema(self.store)
+        rows = objects.query(
+            self.store,
+            "SELECT e.lang AS lang FROM cs_turn_ext e JOIN cs_turn t"
+            " ON t.tenant_id = e.tenant_id AND t.turn_id = e.turn_id"
+            " WHERE e.tenant_id=? AND e.conversation_id=? AND e.turn_id<>?"
+            " ORDER BY t.seq DESC LIMIT 1",
+            (turn.tenant_id, turn.conv.conversation_id, turn.turn_id))
+        lang = str(rows[0]["lang"]) if rows else ""
+        return lang if lang in (LANG_ZH, LANG_EN) else ""
 
     def _stamp(self) -> str:
         if self._clock is not None:
@@ -372,6 +638,14 @@ class FrontDesk:
                   "task_id": turn.turn_id, "trace_id": ""}
         text = msg.text or ""
 
+        # 0. 语种。没注入端口时给客户的固定话术照 p12（中文），见模块头第 5 步。
+        turn.lang = detect_lang(text)
+        if self.ports_injected and not has_lang_signal(text):
+            # 只回了一个单号（「A1001」）之类：没有语种信号，沿用会话上一轮的语种
+            # （DECISIONS task-t174 复核 L2-2）。p12 路径不动。
+            turn.lang = self._previous_lang(turn) or turn.lang
+        turn.say = turn.lang if self.ports_injected else LANG_ZH
+
         # 1. 已转人工：只记录。
         if turn.conv.stage != STAGE_ACTIVE:
             return self._silent(msg, turn, now)
@@ -379,7 +653,7 @@ class FrontDesk:
         # 2. 租户映射不到：不检索，直接转人工。
         if not turn.tenant_id:
             plan = _Plan(ROUTE_HANDOFF, INTENT_UNKNOWN,
-                         ReplyDraft(text=REPLY_BY_REASON[HANDOFF_TENANT_UNMAPPED]),
+                         ReplyDraft(text=reply_for(turn.say, HANDOFF_TENANT_UNMAPPED)),
                          reason=HANDOFF_TENANT_UNMAPPED)
             return self._finish(msg, turn, plan, extras, now,
                                 note=f"客服账号：{open_kfid or '（空）'}")
@@ -388,30 +662,215 @@ class FrontDesk:
         hit = detect(text)
         if hit is not None:
             reason, intent = hit
-            plan = _Plan(ROUTE_HANDOFF, intent, ReplyDraft(text=REPLY_BY_REASON[reason]),
+            plan = _Plan(ROUTE_HANDOFF, intent, ReplyDraft(text=reply_for(turn.say, reason)),
                          reason=reason)
             return self._finish(msg, turn, plan, extras, now)
 
-        # 4. 检索 + 组稿 + 后置校验（cs.answer）。检索只看截短、去掉长数字串的那句。
-        plan = self._answer(turn, retrieval_query(text), extras)
-        turn.intent = plan.intent
+        # 5.（先判）没注入端口：不调理解，照 p12 的第 4–6 步。
+        if not self.ports_injected:
+            return self._policy(msg, turn, text, extras, now, intent_hint="")
 
-        # 5. 连续兜底。
-        if (plan.route == ROUTE_FALLBACK
-                and turn.conv.fallback_streak + 1 >= FALLBACK_STREAK_HANDOFF):
-            plan = _Plan(ROUTE_HANDOFF, INTENT_UNKNOWN,
-                         ReplyDraft(text=REPLY_BY_REASON[HANDOFF_REPEATED_FALLBACK]),
-                         reason=HANDOFF_REPEATED_FALLBACK)
-        return self._finish(msg, turn, plan, extras, now)
+        # 4. 理解：槽位并进 cs_slot。
+        understood, prior = self._understand(turn, text, extras, now)
+        fresh = cs_understand.extract_slots(text, lang=understood.lang)
+        slots = tuple(records.get_slots(self.store, turn.tenant_id,
+                                        turn.conv.conversation_id).items())
+
+        # 6. 要看具体订单。
+        need = order_need(text, fresh=fresh, merged=understood.slots, intent=understood.intent)
+        if need:
+            return self._order(msg, turn, text, extras, now, need=need,
+                               understood=understood, slots=slots)
+
+        # 7. 其余同 p12；英文不检中文话术，回英文兜底。只报了单号、没说要办什么：兜底请客户说明
+        #    （单号已进槽位，下一轮说了诉求就查）—— 不拿「订单号」三个字去检索查单篇转人工。
+        if turn.lang == LANG_EN or only_order_no(fresh):
+            plan = _Plan(ROUTE_FALLBACK, INTENT_UNKNOWN,
+                         ReplyDraft(text=reply_for(turn.say, "fallback")))
+            return self._finish(msg, turn, self._streak(turn, plan), extras, now)
+        return self._policy(msg, turn, text, extras, now, intent_hint=understood.intent)
 
     # ------------------------------------------------------------ 各步
-    def _answer(self, turn: _Turn, text: str, extras: dict) -> _Plan:
-        res = self._invoker.invoke(SKILL_ANSWER, {
+    def _policy(self, msg: Any, turn: _Turn, text: str, extras: dict, now: str, *,
+                intent_hint: str) -> DeskResult:
+        """p12 的第 4–5 步：检索 + 组稿 + 后置校验（cs.answer），再看连续兜底。"""
+        plan = self._answer(turn, retrieval_query(text), extras, intent_hint=intent_hint)
+        turn.intent = plan.intent
+        return self._finish(msg, turn, self._streak(turn, plan), extras, now)
+
+    def _streak(self, turn: _Turn, plan: _Plan) -> _Plan:
+        """本轮兜底使 fallback_streak 达到门槛 → 改走 repeated_fallback（意图 unknown）。"""
+        if (plan.route == ROUTE_FALLBACK
+                and turn.conv.fallback_streak + 1 >= FALLBACK_STREAK_HANDOFF):
+            return _Plan(ROUTE_HANDOFF, INTENT_UNKNOWN,
+                         ReplyDraft(text=reply_for(turn.say, HANDOFF_REPEATED_FALLBACK)),
+                         reason=HANDOFF_REPEATED_FALLBACK)
+        return plan
+
+    def _understand(self, turn: _Turn, text: str, extras: dict,
+                    now: str) -> tuple[Any, dict[str, str]]:
+        """第 4 步：经 cs.understand 理解本轮；合并后的槽位里变了的写进 cs_slot。"""
+        conv = turn.conv
+        prior = records.get_slots(self.store, turn.tenant_id, conv.conversation_id)
+        res = self._invoker.invoke(SKILL_UNDERSTAND, {
+            "tenant_id": turn.tenant_id,
+            "conversation_id": conv.conversation_id,
+            "turn_id": turn.turn_id,
+            "text": text,
+            "prior_slots": dict(prior),
+        }, extras={**extras, "model": self.model})
+        if res.status != "ok" or not isinstance(res.output, dict):
+            raise RuntimeError(f"{SKILL_UNDERSTAND} 失败：{res.error}")
+        understood = cs_understand.Understanding.from_json(res.output)
+        for key in SLOT_KEYS:
+            value = understood.slots.get(key)
+            if value and prior.get(key) != value:
+                records.set_slot(self.store, conv, key=key, value=value, turn_id=turn.turn_id,
+                                 source=SLOT_SOURCE_RULE, now=now)
+        turn.intent = understood.intent
+        return understood, prior
+
+    def _order_intent(self, turn: _Turn, intent: str, need: str) -> str:
+        """查单分支这一轮记的意图：理解层给的是业务意图就用它；否则退款 / 退货 / 换货记
+        return_exchange，查进度记会话里最近一轮的业务意图（没有就 logistics）。"""
+        if intent in ORDER_INTENTS:
+            return intent
+        if need != REQUEST_TRACK:
+            return INTENT_RETURN_EXCHANGE
+        rows = objects.query(
+            self.store, "SELECT intent FROM cs_turn WHERE tenant_id=? AND conversation_id=?"
+                        " ORDER BY seq DESC", (turn.tenant_id, turn.conv.conversation_id))
+        for row in rows:
+            if row["intent"] in ORDER_INTENTS:
+                return str(row["intent"])
+        return INTENT_LOGISTICS
+
+    def _order(self, msg: Any, turn: _Turn, text: str, extras: dict, now: str, *,
+               need: str, understood: Any, slots: tuple[tuple[str, str], ...]) -> DeskResult:
+        """第 6 步：追问 → 身份核验 → 只读查单 →（退款 / 退货）只读预检。"""
+        conv = turn.conv
+        intent = self._order_intent(turn, understood.intent, need)
+        turn.intent = intent
+        order_no = str(understood.slots.get(SLOT_ORDER_NO) or "")
+
+        def handoff(reason: str, *, suggestion: str = "", sections: tuple[str, ...] = (),
+                    draft: ReplyDraft | None = None) -> DeskResult:
+            plan = _Plan(ROUTE_HANDOFF, intent, draft or ReplyDraft(text=reply_for(turn.say, reason)),
+                         reason=reason, suggestion=suggestion, sections=sections, slots=slots)
+            return self._finish(msg, turn, plan, extras, now)
+
+        # a. 缺单号：追问；已追问够次数仍缺 → 转人工。
+        if not order_no:
+            asked = records.ask_count(self.store, turn.tenant_id, conv.conversation_id,
+                                      SLOT_ORDER_NO)
+            if asked >= MAX_ASKS_PER_SLOT:
+                return handoff(HANDOFF_NEEDS_ORDER_LOOKUP, suggestion=SUGGESTION_ASK_EXHAUSTED)
+            turn.ask_slot, turn.ask_count = SLOT_ORDER_NO, asked + 1
+            plan = _Plan(ROUTE_CLARIFY, intent, ReplyDraft(text=reply_for(turn.say, "ask_order_no")))
+            return self._finish(msg, turn, plan, extras, now)
+
+        # b. 身份核验：查不到绑定（或核验器缺席 / 出错）一律不查单。
+        binding = None
+        if self.verifier is not None:
+            try:
+                binding = self.verifier.resolve(
+                    self.store, tenant_id=turn.tenant_id, channel=msg.channel,
+                    external_userid=msg.chat_id, display_no=order_no)
+            except Exception as exc:                      # noqa: BLE001 —— 失败即关
+                log.warning("身份核验出错（客户 %s，轮次 %s）：%s",
+                            mask_customer(msg.chat_id), turn.turn_id, type(exc).__name__)
+                binding = None
+        if binding is None:
+            return handoff(HANDOFF_IDENTITY_UNVERIFIED)
+
+        # c. 只读查单。
+        result = self._lookup_once(turn, binding, extras)
+        turn.lookup_outcome = result.outcome
+        wording = ORDER_STATUS_WORDING[turn.say]
+        if result.outcome == LOOKUP_OK and result.status in wording:
+            obs_id = records.record_observation(self.store, conv, turn_id=turn.turn_id,
+                                                result=result, now=now)
+            observed = (f"{CARD_SECTION_OBSERVATION}{ORDER_STATUS_WORDING[LANG_ZH][result.status]}"
+                        f"（{obs_id}）",)
+            # d. 退款 / 退货：只读预检 → 退款桥。给客户的只有过渡话术，一个状态字都不说。
+            if need in BRIDGE_REQUESTS:
+                # 预检与 /refund 认的是台账 / 订单系统里的单号 = 绑定解析出的 query_key，
+                # 不是客户报的 display_no（两者可以不同，见 DECISIONS task-t174 复核 L2-1）。
+                ledger_no = str(getattr(binding, "query_key", "") or "") or order_no
+                if ledger_no != order_no:
+                    observed += (f"{CARD_SECTION_LEDGER_NO}{ledger_no}（客户报的是 {order_no}）",)
+                pre = self._precheck_once(turn, ledger_no, text, slots)
+                records.record_bridge(self.store, conv, turn_id=turn.turn_id, order_no=ledger_no,
+                                      result=pre, now=now)
+                if pre.ok:
+                    return handoff(HANDOFF_REFUND_REQUEST, sections=observed + (
+                        f"{CARD_SECTION_SUMMARY}{pre.summary or pre.decision}",
+                        f"{CARD_SECTION_COMMAND}{pre.command_line}"))
+                return handoff(HANDOFF_NEEDS_ORDER_LOOKUP, suggestion=SUGGESTION_REFUND_REFUSED,
+                               sections=observed + (
+                                   f"{CARD_SECTION_REFUSED}{pre.refused_why or '（未说明）'}",))
+            if need == REQUEST_EXCHANGE:
+                return handoff(HANDOFF_NEEDS_ORDER_LOOKUP, suggestion=SUGGESTION_EXCHANGE,
+                               sections=observed)
+            sentence = wording[result.status]
+            plan = _Plan(ROUTE_ANSWER, intent, ReplyDraft(
+                text=sentence, claims=(Claim(literal=sentence, basis_ref=BASIS_OBS + obs_id),)))
+            return self._finish(msg, turn, plan, extras, now)
+        note = f"查单结果：{result.outcome}" + (f"（{result.error_kind}）" if result.error_kind else "")
+        if result.outcome in (LOOKUP_AMENDED, LOOKUP_UNMAPPED, LOOKUP_OK):
+            return handoff(HANDOFF_ORDER_UNMAPPED, sections=(f"{CARD_SECTION_OBSERVATION}{note}",))
+        return handoff(HANDOFF_LOOKUP_FAILED, sections=(f"{CARD_SECTION_OBSERVATION}{note}",))
+
+    def _lookup_once(self, turn: _Turn, binding: Any, extras: dict) -> LookupResult:
+        """调一次查单端口；端口缺席记 system_misconfigured，端口抛了记 platform_error（只记类名）。"""
+        system_name = str(getattr(binding, "system_name", "") or "")
+        query_key = str(getattr(binding, "query_key", "") or "")
+        if self.lookup is None:
+            return LookupResult(outcome=LOOKUP_MISCONFIGURED, system_name=system_name,
+                                query_key=query_key)
+        try:
+            result = self.lookup.lookup(self.store, binding, plan_id=extras["plan_id"],
+                                        task_id=turn.turn_id)
+        except Exception as exc:                          # noqa: BLE001 —— 端口承诺不抛，再兜一层
+            return LookupResult(outcome=LOOKUP_PLATFORM_ERROR, system_name=system_name,
+                                query_key=query_key, error_kind=type(exc).__name__)
+        if not isinstance(result, LookupResult) or result.outcome not in LOOKUP_OUTCOMES:
+            return LookupResult(outcome=LOOKUP_PLATFORM_ERROR, system_name=system_name,
+                                query_key=query_key, error_kind="InvalidLookupResult")
+        return result
+
+    def _precheck_once(self, turn: _Turn, order_no: str, text: str,
+                       slots: tuple[tuple[str, str], ...]) -> PrecheckResult:
+        """调一次预检端口。原因文本 = 本轮原文 + 会话里的问题槽位（客户常在上一轮说原因）。"""
+        if self.precheck is None:
+            return PrecheckResult(ok=False, refused_why=REFUSED_PRECHECK_UNCONFIGURED)
+        problem = dict(slots).get(SLOT_PROBLEM, "")
+        reason_text = text if not problem or problem in text else f"{text} {problem}"
+        try:
+            pre = self.precheck.precheck(tenant_id=turn.tenant_id, order_no=order_no,
+                                         reason_text=reason_text, now=self._stamp())
+        except Exception as exc:                          # noqa: BLE001 —— 端口承诺不抛，再兜一层
+            log.warning("退款预检出错（轮次 %s）：%s", turn.turn_id, type(exc).__name__)
+            return PrecheckResult(ok=False, refused_why=REFUSED_PRECHECK_ERROR)
+        if not isinstance(pre, PrecheckResult):
+            return PrecheckResult(ok=False, refused_why=REFUSED_PRECHECK_ERROR)
+        if pre.ok and not pre.command_line:
+            # 采纳命令是卡片存在的理由；ok 却没有命令就按没通过算（失败即关）。
+            return PrecheckResult(ok=False, decision=pre.decision, rule_ref=pre.rule_ref,
+                                  reason_code=pre.reason_code, refused_why=REFUSED_PRECHECK_ERROR)
+        return pre
+
+    def _answer(self, turn: _Turn, text: str, extras: dict, *, intent_hint: str = "") -> _Plan:
+        payload = {
             "tenant_id": turn.tenant_id,
             "conversation_id": turn.conv.conversation_id,
             "turn_id": turn.turn_id,
             "text": text,
-        }, extras=extras)
+        }
+        if intent_hint:
+            # 只在给了提示时才带这个键：p12 路径的入参（与它的 SkillInvoked 摘要）逐字节不变。
+            payload["intent_hint"] = intent_hint
+        res = self._invoker.invoke(SKILL_ANSWER, payload, extras=extras)
         if res.status != "ok" or not isinstance(res.output, dict):
             raise RuntimeError(f"{SKILL_ANSWER} 失败：{res.error}")
         out = res.output
@@ -434,22 +893,36 @@ class FrontDesk:
         **出门的那一版**与它自己的校验结果；被拦下的那一版只以违例种类进
         ``CsReplyRejected`` 与卡片附注。
         """
+        conv_id = turn.conv.conversation_id
         check = plan.check
         if check is None:
-            # 固定话术也过一遍：守住「每一句出门的回复都过校验」这个不变量。
-            check = claims.check_reply(plan.draft, observations=frozenset(),
-                                       kb_doc_ids=self._kb_ids(turn))
+            # 固定话术也过一遍：守住「每一句出门的回复都过校验」这个不变量。观察与命中都从库里读回
+            # （p13 第 8 步），不信本函数手里那份。
+            check = claims.check_reply(
+                plan.draft,
+                observations=records.turn_observation_ids(self.store, conversation_id=conv_id,
+                                                          turn_id=turn.turn_id),
+                kb_doc_ids=self._kb_ids(turn))
+        rejected = check
         if check.ok:
-            return plan, check, ""
+            # 第二道：obs: claim 说的就是那条观察（措辞表、本轮语种、一条观察只撑一处）。
+            wording = claims.check_observation_wording(
+                plan.draft,
+                records.observations_for_turn(self.store, conversation_id=conv_id,
+                                              turn_id=turn.turn_id),
+                lang=turn.say)
+            if wording.ok:
+                return plan, check, ""
+            rejected = wording
         conversation.record_reply_rejected(self.store, turn.conv, turn_id=turn.turn_id,
-                                           check=check)
-        kinds = ",".join(sorted({v.kind for v in check.violations}))
+                                           check=rejected)
+        kinds = ",".join(sorted({v.kind for v in rejected.violations}))
         log.warning("前台回复被后置校验拦下（客户 %s，轮次 %s）：%s",
                     mask_customer(turn.conv.external_userid), turn.turn_id, kinds)
-        fallback = ReplyDraft(text=REPLY_BY_REASON[HANDOFF_UNVERIFIED_CLAIM])
+        fallback = ReplyDraft(text=reply_for(turn.say, HANDOFF_UNVERIFIED_CLAIM))
         final = claims.check_reply(fallback, observations=frozenset(), kb_doc_ids=frozenset())
         return (_Plan(ROUTE_HANDOFF, plan.intent, fallback, reason=HANDOFF_UNVERIFIED_CLAIM,
-                      check=final),
+                      check=final, slots=plan.slots),
                 final, f"被拦下的违例：{kinds}")
 
     def _kb_ids(self, turn: _Turn) -> frozenset[str]:
@@ -466,49 +939,77 @@ class FrontDesk:
         if plan.route == ROUTE_HANDOFF:
             card = self._raise_card(msg, turn, reason=plan.reason, intent=plan.intent,
                                     reply=reply, citations=plan.draft.citations,
-                                    extras=extras, now=now, note=note)
+                                    extras=extras, now=now, note=note,
+                                    suggestion=plan.suggestion, sections=plan.sections,
+                                    slots=plan.slots)
+        self._record(msg, turn, route=plan.route, intent=plan.intent, reason=plan.reason,
+                     reply=reply, draft=plan.draft, check=check, now=now)
+        return self._result(turn, route=plan.route, intent=plan.intent, draft=plan.draft,
+                            card=card, reason=plan.reason, check=check)
+
+    def _record(self, msg: Any, turn: _Turn, *, route: str, intent: str, reason: str,
+                reply: str, draft: ReplyDraft, check: CheckResult, now: str) -> None:
+        """第 9 步：record_turn（lang、lookup_outcome）+ record_turn_ext（再加 ask_slot、ask_count）。"""
         turn.conv = conversation.record_turn(
             self.store, turn.conv, turn_id=turn.turn_id, seq=turn.seq,
             msg_dedup_key=msg.dedup_key, inbound_text=msg.text or "", reply_text=reply,
-            route=plan.route, intent=plan.intent, handoff_reason=plan.reason,
-            draft=plan.draft, check=check, now=now)
+            route=route, intent=intent, handoff_reason=reason,
+            draft=draft, check=check, now=now, lang=turn.lang,
+            lookup_outcome=turn.lookup_outcome)
         turn.turn_recorded = True
-        return DeskResult(reply_text=reply, tenant_id=turn.tenant_id,
+        self._record_ext(turn)
+
+    def _record_ext(self, turn: _Turn) -> None:
+        if turn.ext_recorded:
+            return
+        records.record_turn_ext(self.store, turn.conv, turn_id=turn.turn_id, lang=turn.lang,
+                                lookup_outcome=turn.lookup_outcome, ask_slot=turn.ask_slot,
+                                ask_count=turn.ask_count)
+        turn.ext_recorded = True
+
+    @staticmethod
+    def _result(turn: _Turn, *, route: str, intent: str, draft: ReplyDraft,
+                card: HandoffCard | None, reason: str, check: CheckResult) -> DeskResult:
+        return DeskResult(reply_text=draft.text, tenant_id=turn.tenant_id,
                           conversation_id=turn.conv.conversation_id, turn_id=turn.turn_id,
-                          route=plan.route, intent=plan.intent, draft=plan.draft,
-                          handoff=card, handoff_reason=plan.reason, check=check)
+                          route=route, intent=intent, draft=draft,
+                          handoff=card, handoff_reason=reason, check=check,
+                          lang=turn.lang, lookup_outcome=turn.lookup_outcome,
+                          ask_slot=turn.ask_slot)
 
     def _silent(self, msg: Any, turn: _Turn, now: str) -> DeskResult:
         draft = ReplyDraft(text="")
         check = CheckResult(ok=True)
-        turn.conv = conversation.record_turn(
-            self.store, turn.conv, turn_id=turn.turn_id, seq=turn.seq,
-            msg_dedup_key=msg.dedup_key, inbound_text=msg.text or "", reply_text="",
-            route=ROUTE_SILENT, intent=INTENT_UNKNOWN, handoff_reason="",
-            draft=draft, check=check, now=now)
-        turn.turn_recorded = True
-        return DeskResult(reply_text="", tenant_id=turn.tenant_id,
-                          conversation_id=turn.conv.conversation_id, turn_id=turn.turn_id,
-                          route=ROUTE_SILENT, intent=INTENT_UNKNOWN, draft=draft,
-                          handoff=None, handoff_reason="", check=check)
+        self._record(msg, turn, route=ROUTE_SILENT, intent=INTENT_UNKNOWN, reason="",
+                     reply="", draft=draft, check=check, now=now)
+        return self._result(turn, route=ROUTE_SILENT, intent=INTENT_UNKNOWN, draft=draft,
+                            card=None, reason="", check=check)
 
     def _raise_card(self, msg: Any, turn: _Turn, *, reason: str, intent: str, reply: str,
                     citations: tuple[str, ...], extras: dict, now: str,
-                    note: str = "") -> HandoffCard:
-        """组卡片 → 经 cs.handoff 落库 → 会话转 handed_off。"""
+                    note: str = "", suggestion: str = "", sections: tuple[str, ...] = (),
+                    slots: tuple[tuple[str, str], ...] = ()) -> HandoffCard:
+        """组卡片 → 经 cs.handoff 落库 → 会话转 handed_off。
+
+        p13：``suggestion`` 非空就替掉按原因取的那条；``sections``（查单观察、预检摘要、采纳命令、
+        预检未通过）在处理建议后面各起一行（:func:`render_card_text` 各渲染成一行）；``slots`` 是
+        会话当前的槽位。
+        """
         conv = turn.conv
         earlier = conversation.recent_turns(self.store, conv.tenant_id, conv.conversation_id,
                                             limit=CARD_RECENT_TURNS - 1)
-        suggestion = SUGGESTION_BY_REASON.get(reason, "请人工接手这段会话。")
+        advice = suggestion or SUGGESTION_BY_REASON.get(reason, "请人工接手这段会话。")
         if note:
-            suggestion = f"{suggestion}（{note}）"
+            advice = f"{advice}（{note}）"
+        advice = "\n".join((advice, *(_LINEBREAKS_RE.sub(" ", s) for s in sections
+                                      if s.startswith(CARD_SECTIONS))))
         card = HandoffCard(
             handoff_id=turn.turn_id, tenant_id=conv.tenant_id,
             conversation_id=conv.conversation_id, turn_id=turn.turn_id,
             channel=msg.channel, reason=reason, intent=intent,
             customer_ref=mask_customer(msg.chat_id), customer_text=msg.text or "",
             recent_turns=tuple(earlier) + ((msg.text or "", reply),),
-            suggestion=suggestion, citations=tuple(citations), slots=(), created_at=now)
+            suggestion=advice, citations=tuple(citations), slots=tuple(slots), created_at=now)
         delivery = DELIVERY_PENDING if self.config.handoff_target else DELIVERY_UNCONFIGURED
         res = self._invoker.invoke(SKILL_HANDOFF, {"card": card.to_json(),
                                                    "delivery": delivery, "now": now},
@@ -553,14 +1054,16 @@ class FrontDesk:
             try:
                 if not turn.turn_recorded:
                     return self._silent(msg, turn, now)
+                self._record_ext(turn)
             except Exception:                             # noqa: BLE001
                 log.error("客服前台出错后静默轮也没落下（客户 %s）", who, exc_info=True)
             return DeskResult(reply_text="", tenant_id=turn.tenant_id,
                               conversation_id=turn.conv.conversation_id, turn_id=turn.turn_id,
                               route=ROUTE_SILENT, intent=INTENT_UNKNOWN,
-                              draft=ReplyDraft(text=""))
+                              draft=ReplyDraft(text=""), lang=turn.lang,
+                              lookup_outcome=turn.lookup_outcome, ask_slot=turn.ask_slot)
 
-        reply = REPLY_INTERNAL_ERROR
+        reply = reply_for(turn.say, "internal_error")
         if not turn.card_recorded:
             try:
                 card = self._raise_card(
@@ -578,9 +1081,12 @@ class FrontDesk:
             except Exception:                             # noqa: BLE001
                 log.error("客服前台出错后会话阶段没改成（客户 %s）", who, exc_info=True)
         if not turn.card_recorded:
-            reply = REPLY_DESK_UNAVAILABLE
+            reply = reply_for(turn.say, "desk_unavailable")
         draft = ReplyDraft(text=reply)
         check = CheckResult(ok=True)
+        if turn.ask_slot and not turn.turn_recorded:
+            # 追问那一轮没落成：这一轮不算追问过（ask_count 只数真的问出去的）。
+            turn.ask_slot, turn.ask_count = "", 0
         if not turn.turn_recorded:
             try:
                 turn.conv = conversation.record_turn(
@@ -589,22 +1095,30 @@ class FrontDesk:
                     reply_text=reply, route=ROUTE_HANDOFF,
                     intent=turn.intent if turn.intent in INTENTS else INTENT_UNKNOWN,
                     handoff_reason=turn.reason or HANDOFF_UNVERIFIED_CLAIM,
-                    draft=draft, check=check, now=now)
+                    draft=draft, check=check, now=now, lang=turn.lang,
+                    lookup_outcome=turn.lookup_outcome)
                 turn.turn_recorded = True
             except Exception:                             # noqa: BLE001
                 log.error("客服前台出错后本轮没落下（客户 %s）", who, exc_info=True)
+        if turn.turn_recorded:
+            try:
+                self._record_ext(turn)
+            except Exception:                             # noqa: BLE001
+                log.error("客服前台出错后本轮扩展字段没落下（客户 %s）", who, exc_info=True)
         return self._error_result(turn, card=card, reply=reply)
 
     @staticmethod
     def _error_result(turn: _Turn, *, card: HandoffCard | None,
-                      reply: str = REPLY_DESK_UNAVAILABLE) -> DeskResult:
+                      reply: str | None = None) -> DeskResult:
         conv_id = turn.conv.conversation_id if turn.conv is not None else ""
+        reply = reply_for(turn.say, "desk_unavailable") if reply is None else reply
         return DeskResult(reply_text=reply, tenant_id=turn.tenant_id, conversation_id=conv_id,
                           turn_id=turn.turn_id, route=ROUTE_HANDOFF,
                           intent=turn.intent if turn.intent in INTENTS else INTENT_UNKNOWN,
                           draft=ReplyDraft(text=reply), handoff=card,
                           handoff_reason=turn.reason or HANDOFF_UNVERIFIED_CLAIM,
-                          check=CheckResult(ok=True))
+                          check=CheckResult(ok=True), lang=turn.lang,
+                          lookup_outcome=turn.lookup_outcome, ask_slot=turn.ask_slot)
 
 
 def _check_from_json(d: Mapping[str, Any]) -> CheckResult:
@@ -639,6 +1153,25 @@ def _inline(text: Any) -> str:
     return _LINEBREAKS_RE.sub(CARD_LINEBREAK, str(text or "")).translate(_CARD_MARKUP)
 
 
+def _split_suggestion(suggestion: str) -> tuple[str, list[tuple[str, str]]]:
+    """处理建议 → (第一段, [(段名前缀, 正文)…])。
+
+    前台在处理建议后面另起一行写的几段（:data:`CARD_SECTIONS` 起头：查单观察、预检摘要、采纳命令、
+    预检未通过）各渲染成卡片里的一行；不以这些前缀起头的行一律并回第一段（压成可见换行记号）——
+    卡片的每一行仍由前台起头。
+    """
+    parts = _LINEBREAKS_RE.split(str(suggestion or ""))
+    head: list[str] = [parts[0]]
+    sections: list[tuple[str, str]] = []
+    for part in parts[1:]:
+        prefix = next((p for p in CARD_SECTIONS if part.startswith(p)), "")
+        if prefix:
+            sections.append((prefix, part[len(prefix):]))
+        else:
+            head.append(part)
+    return "\n".join(head), sections
+
+
 def render_card_text(card: HandoffCard) -> str:
     """内部房间看到的纯文本卡片：原因、意图、客户（打码）、本轮原文、最近几轮、处理建议、会话 id。
 
@@ -656,7 +1189,12 @@ def render_card_text(card: HandoffCard) -> str:
         for i, (said, replied) in enumerate(card.recent_turns, start=1):
             lines.append(f"  {i}. 客户：{_inline(said)}")
             lines.append(f"     回复：{_inline(replied) or '（未回复）'}")
-    lines.append(f"处理建议：{_inline(card.suggestion)}")
+    advice, sections = _split_suggestion(card.suggestion)
+    lines.append(f"处理建议：{_inline(advice)}")
+    for prefix, body in sections:
+        lines.append(f"{prefix}{_inline(body)}")
+    if card.slots:
+        lines.append("槽位：" + "、".join(f"{_inline(k)}={_inline(v)}" for k, v in card.slots))
     if card.citations:
         lines.append(f"引用话术：{'、'.join(card.citations)}")
     lines.append(f"会话：{card.conversation_id} · 轮次：{card.turn_id}"

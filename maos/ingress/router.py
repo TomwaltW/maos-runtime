@@ -113,8 +113,9 @@ DEFAULT_LEDGER = ROOT / "scenarios" / "custom" / "ledger.json"
 ALLOW_APPROVAL = frozenset({CHANNEL_FEISHU, CHANNEL_WECOM, CHANNEL_MATRIX})
 
 #: 外部渠道（客户说话的地方）。显式列举、失败即关：新渠道缺省不进。
-#: 装了客服前台（``cs``）时，这些渠道上的非命令文本交给前台（p12，跨轨契约 §1.8）；
-#: 命令路径一个字不动（外部 ``/approve`` 照旧被 `ALLOW_APPROVAL` 那道闸拒掉）。
+#: 装了客服前台（``cs``）时，这些渠道上的**所有**消息（含 ``/xxx``、含附件）都先交给前台
+#: （p13 契约 §2' R1，p12 只交非命令文本）；没装前台时命令路径一个字不动（外部 ``/approve``
+#: 照旧被 `ALLOW_APPROVAL` 那道闸拒掉）。
 EXTERNAL_CHANNELS = frozenset({CHANNEL_WECHAT_KF})
 
 CMD_REFUND = "refund"
@@ -417,7 +418,7 @@ class IngressRouter:
         #: 共用一个列表的话，A 的回帖会把 B 登记的事件一起 fire 掉。
         self._events = threading.local()
         #: 客服前台（`maos.domain.cs.desk.FrontDesk`，p12）。**缺省不装**：不装时所有渠道
-        #: 与从前逐字节一致；装了也只接 `EXTERNAL_CHANNELS` 上的非命令文本。
+        #: 与从前逐字节一致；装了就接 `EXTERNAL_CHANNELS` 上的所有消息（p13），内部渠道不受影响。
         self.cs = cs
 
     # -- 审批人 -------------------------------------------------------------
@@ -457,6 +458,18 @@ class IngressRouter:
             log.info("重复投递，已忽略：%s", msg.dedup_key)
             return ""
 
+        # INTEGRATION-POINT: p13 客服前台
+        # 装了前台时，外部渠道的**所有**消息（含 `/xxx`、含附件）在去重之后、附件入库与
+        # `Command.parse` 之前就交给前台（p13 契约 §2' R1）：客户侧永远到不了命令分支、审批、
+        # 附件入库。只有空白、又不带附件的一条什么都不做（与不装前台一致，复核 L2-7）。
+        # `cs=None` 时这一段整个不进，下面逐字节同从前。
+        if self.cs is not None and msg.channel in EXTERNAL_CHANNELS:
+            if not (msg.text or "").strip() and not msg.attachments:
+                return ""
+            out = self._reply(msg, self._cs_turn(msg))
+            self._fire()
+            return out
+
         # 先收附件、再认命令。两者并列而不是二选一：一条消息可以图文都有
         # （飞书 post、Matrix 带 body 的图），先判命令会把图丢掉。
         evidence_note = self._ingest_attachments(msg) if msg.attachments else ""
@@ -468,13 +481,9 @@ class IngressRouter:
             # 而证据其实已经存下来了。回执同时告诉他下一步该打什么。
             # 带字的非命令消息交给 `_text_reply`：@ 了某一岗就由那一岗答，否则走闲聊
             # （缺省没装回话器，闲聊照旧一声不吭）。
-            # INTEGRATION-POINT: p12 客服前台
-            # 外部渠道 + 装了 cs + 有字 → 这一轮归前台（点名、闲聊都不走），回话照旧经 `_reply`。
-            if (self.cs is not None and msg.channel in EXTERNAL_CHANNELS
-                    and (msg.text or "").strip()):
-                chat_note = self._cs_turn(msg)
-            else:
-                chat_note = self._text_reply(msg) if (msg.text or "").strip() else ""
+            # p12 的客服前台挂钩在 p13 前移到了 `_claim` 之后（见上面 INTEGRATION-POINT: p13）：
+            # 装了前台的外部渠道走不到这里。
+            chat_note = self._text_reply(msg) if (msg.text or "").strip() else ""
             out = self._reply(msg, "\n\n".join(p for p in (evidence_note, chat_note) if p))
             self._fire()
             return out

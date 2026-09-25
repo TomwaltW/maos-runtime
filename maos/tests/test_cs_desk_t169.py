@@ -777,13 +777,13 @@ MONEY_SKILLS_T169 = frozenset({
 def test_front_desk_identity_is_minimal_t169():
     ident = CS_FRONT_DESK_IDENTITY
     assert (ident.agent_id, ident.role, ident.max_risk) == ("cs-front-desk", "cs_front_desk", "L")
-    assert ident.allowed_skills == frozenset({"cs.answer", "cs.handoff"})
+    # p13 T174 改的钉子：前台身份收进 cs.understand（p13 契约 §1.4 / §4）。
+    assert ident.allowed_skills == frozenset({"cs.answer", "cs.handoff", "cs.understand"})
     assert ident.allowed_tools == frozenset() and ident.write_scope == frozenset()
     assert not ident.allowed_skills & MONEY_SKILLS_T169
     assert all(name.startswith("cs.") for name in ident.allowed_skills)
     registered = {n for n in registry.names() if n.startswith("cs.")}
-    # p13 T173 改的钉子：cs.understand 已注册，W-B 由 T174 收进前台身份（desk.py 不归 T173）。
-    assert registered == set(ident.allowed_skills) | {"cs.understand"}
+    assert registered == set(ident.allowed_skills)
     for name in ident.allowed_skills:
         contract = registry.get(name).contract
         assert contract.owner_roles == [] and contract.depends_tools == []

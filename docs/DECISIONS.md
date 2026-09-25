@@ -3633,3 +3633,19 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p15 | p14 留出集那条「明确要真人 + 带情绪」期望 requested、前台给 anger | 不改：原因优先级是 p12 契约 §1.4 冻结的（privacy > compensation > anger > complaint > requested），契约钉子另加一条；那一轮记为期望与契约冲突 | 两个原因都转人工，差别只在卡片上的标签；改优先级是改 p12 契约 |
 | 2026-09-25 | p15 | 盲写者要不要知道触发词地板 | 要：契约附录 A 列出地板的说法族与优先级（契约裁定，不是实现细节） | p13 开发集与 p14 留出集都因为出题人不知道地板而出过期望冲突（CS13-035、CS14H-060） |
 | 2026-09-25 | p15 | 门槛 | 与 p14 留出集同：intent 0.85 / route 0.85 / handoff 0.90 / 编造 0 / 措辞 1.0 / 错状态 0；契约钉子逐字比对文件 | 预登记，一经提交不许改 |
+
+## task-t183（p15 盲写留出集，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p15 | §1 类别「各 ≥4 轮」怎么计 | case 挂 tags cat:Cn（每个挂了的 case 至少有一轮属该类），测试要求每类 ≥4 个 case；daily 与 cat: 互斥、每个 case 必挂其一，daily 的轮数 ≥ 总轮数一半 | case 形状没有逐轮标签的位置；按 case 计比按轮计严（每类 ≥4 个 case 即 ≥4 轮），且不给 expect 加 evaluate 不认的键 |
+| 2026-09-25 | p15 | 覆盖地板的具体数值（契约只给了类目） | 规模 ≥60 case / ≥130 轮；六种查单结果各 ≥2 轮；ok 三态中英各 ≥1；identity_unverified / refund_request / repeated_fallback 各 ≥3；lookup_failed ≥4、needs_order_lookup ≥8、order_unmapped ≥2、tenant_unmapped ≥1、五个触发原因各 ≥2；退款桥被拒 ≥2；追问 ≥12、silent ≥6、fallback ≥6、英文 ≥15；追问用尽后转人工 ≥4 个 case；13 篇非转人工话术各被引用 ≥2 轮、四个政策意图带引用各 ≥3；p12 / p13 两条路径各 ≥20 case | 按本集实际写出来的量取略低的整数，作为今后改集合时只许抬的地板 |
+| 2026-09-25 | p15 | 为具体订单申请退款 / 退货、查退款进度、订单异常的 intent | 申请退款 / 退货（含追问用尽后「直接退」）期望 return_exchange；退款进度、钱没到、重复扣款期望 refund_payment；中转停滞、签收未收到、破损、改地址期望 logistics | 照 p12 契约 §1.5 编号目录的意图归属（RET-005 / PAY-003 / PAY-004 / LOG-004..006），不照实现推 |
+| 2026-09-25 | p15 | 换货带单号、查单 ok 时该 answer 还是转人工 | 本集不出这一类题（写了一条后删掉） | p13 契约 §2 第 6d 步只对 refund / return 开预检，换货是否出卡契约没说死（task-t181 BACKLOG 已记），出了题等于替主会话定口径 |
+| 2026-09-25 | p15 | 兜底轮与连续兜底转人工轮的 intent | 一律 unknown；英文只出查单、触发词、闲聊兜底三类题，不出英文政策问题 | p12 契约「判不准」即 unknown；p13 不买英文话术库，英文政策问题在 understand 给出意图时 intent 期望契约未定 |
+| 2026-09-25 | p15 | C7 带前缀单号的夹具 | 夹具 bindings 的 display_no 写去掉前缀后的形态，客户原话带 # / No. / NO: / 单号： / 订单号# 前缀 | p15 契约 §2 T185：绑定写入与核验两侧同一个 normalize_display_no，夹具就是规范化后的绑定行 |
+| 2026-09-25 | p15 | identity_unverified 轮要不要写 lookup 期望 | 不写（没查单，lookup_outcome 为空串；evaluate 空串即不比） | p13 契约 §2 第 6b 步：核验不过不查单 |
+| 2026-09-25 | p15 | 英文 lawyer / get me a human 的期望 | lawyer 期望 complaint，get me a human 期望 requested | 附录 A 的 requested 写明英文「talk to a human / a real person / an agent 一类」；lawyer 出自 p13 契约 T173 点名的英文触发词 |
+| 2026-09-25 | p15 | 近重复棘轮的口径与对照集 | NFKC + casefold，只留 [0-9a-z] 与 CJK 字符，编辑距离 ≤1 即红；对照 = p12 / p13 开发集 turns、话术库 kb_doc.body.examples、p12 / p14 留出集 turns、cs_scripts_holdout.json 的全部字符串叶子（「三份旧留出集」按这三份解读）；另加集合内部归一后不许重复 | 失败消息只报「case#轮@来源」；写作中撞了 11 句，只按本集 id 改写自己的句子，没有打印对照文件的句子 |
+| 2026-09-25 | p15 | 期望自洽测试要用触发词地板 | 测试里抄一份附录 A 的说法表（子串即中、按冻结优先级取原因），逐轮核本集期望 | 盲写纪律不许 import triggers.py；地板是契约裁定，照契约抄 |
+| 2026-09-25 | p15 | cite 写在哪些轮 | 只在政策篇 answer 轮写；转人工标记篇、查单 answer 不写 | p12 契约 §1.6「给了就要求」；转人工轮的引用契约没要求 |

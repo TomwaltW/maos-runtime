@@ -41,10 +41,16 @@
 ## p13 增量（review/p13-cs-contracts.md §1.4 T175）
 
 * 补扫「已付款 / 已支付」：付款 / 支付进了「已 + 动词」表（p13 措辞表里有「您的订单已付款」，
-  不扫的话这句在空观察下原样放行）。
+  不扫的话这句在空观察下原样放行）；付款族的其余完成态（已完成支付、已成功付款、支付成功、
+  已经付了、句末「已付」）一并认，「付款成功后……」「完成付款」这类政策说法不认（复核 L3-5）。
 * 补扫英文状态说法（:data:`EN_STATUS_PATTERNS`）：shipped / dispatched / delivered / refunded /
   cancel(l)ed、arrive 的各词形（will arrive / arriving / arrived / arrives）、has / have / 's been …、
-  will [be] ship / deliver、in transit / out for delivery / on its way、is / was / already paid。
+  will [be] ship / deliver / refund / cancel / credit / issue、in transit / out for delivery /
+  on its way、is / was / already paid；复核 L2-5 / L3-4 补了现在时（ships / delivers / dispatches /
+  cancels、带时间副词的 refunds）、进行时（is shipping / are refunding / is processing ……，shipping fee
+  这类名词搭配除外）、被动（will be sent / issued / credited / processed、being processed、
+  Your order was sent、Payment confirmed）、went through，以及时限（within / in N(-M) [business]
+  days|hours|weeks、N-M business days、by tomorrow / Friday）。
   大小写不论；在**保留词间空格**的另一份规范化上认（NFKC、去零宽 / 软连字符 / 组合附加符 /
   间隔号、空白压成一个），词边界只看 ASCII 字母，中英混排也认。**否定不豁免**：
   「has not shipped yet」同样是在替外部世界说这一单的状态（中文「尚未发货」放行是 p12 口径，不动）。
@@ -128,6 +134,11 @@ SUPPLEMENTARY_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     # 不带「预计」的时限承诺：时长紧接到账 / 退回 / 发货类动词
     re.compile(rf"{_RANGE}{_UNIT}(?:之内|以内|内|左右)?(?:就|即可|即|会|能|可以|可|便)?"
                r"(?:到[账帐]|原路(?:退回|返回|退还)|退还到|退到|发货|送达|送到|到货)"),
+    # p13 付款族的其余完成态（T175 复核 L3-5）：已完成支付 / 已成功付款、支付成功 / 付款成功、
+    # 已经付了 / 已付清 / 句末的「已付」。「付款成功后……」「完成付款」是政策说法，不命中。
+    re.compile(rf"{_DONE_PREFIX}(?:完成|成功)(?:付款|支付)"),
+    re.compile(r"(?:付款|支付)成功(?!后|之后|以后|的话|时|才|再|即可|方可)"),
+    re.compile(r"已经?付(?:了|过|清|(?=$|[,.。!?;:、…)」』\]]))"),
 )
 
 #: 规范化时直接丢掉的可见分隔符（间隔号一类）。空白、格式字符（Cf）、组合附加符（Mn / Me）
@@ -144,6 +155,16 @@ _EN_R = r"(?![A-Za-z])"
 #: 撇号的两种写法（NFKC 不把弯撇号折成直撇号）。
 _APOS = "['’]"
 
+#: 英文时限承诺里的数量与单位（T175 复核 L3-4）：3 / 3-5 / three to five / a few；[business] days / hours / weeks。
+_EN_NUM = (r"(?:\d+(?:\.\d+)?|an?|one|two|three|four|five|six|seven|eight|nine|ten|twelve"
+           r"|twenty-?four|forty-?eight|seventy-?two|a\s+few|a\s+couple(?:\s+of)?|several)")
+_EN_RANGE = rf"{_EN_NUM}(?:\s*(?:-|–|—|~|to)\s*{_EN_NUM})?"
+_EN_UNIT = r"(?:(?:business|working|calendar)\s+)?(?:days?|hours?|weeks?)"
+#: 「shipping」后面跟这些是名词搭配（运费 / 配送方式……），不是「正在发货」。
+_EN_SHIPPING_NOUN = (r"(?!\s+(?:fee|fees|cost|costs|rate|rates|charge|charges|polic(?:y|ies)|options?"
+                     r"|address(?:es)?|methods?|times?|info(?:rmation)?|labels?|details|and\s+handling)"
+                     + _EN_R + ")")
+
 #: check_reply 规则 3 要认的英文状态说法（DECISIONS task-t175）。否定不豁免。
 EN_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     # 完成态 / 到达：shipped / dispatched / delivered / refunded / cancel(l)ed / arrive 各词形
@@ -151,14 +172,57 @@ EN_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
                r"|arriv(?:e|es|ed|ing))" + _EN_R, re.IGNORECASE),
     # has / have / had been …、…'s been …（「Your order's been processed」）
     re.compile(rf"(?:{_EN_L}(?:has|have|had)|{_APOS}s)\s*been{_EN_R}", re.IGNORECASE),
-    # will / 'll [be] ship / deliver / dispatch：时限承诺（will arrive 由上一条的 arrive 认）
-    re.compile(rf"(?:{_EN_L}will|{_APOS}ll)\s*(?:be\s*)?(?:ship|deliver|dispatch)(?:ped|ed)?{_EN_R}",
+    # will / 'll [be] ship / deliver / dispatch / refund / cancel / credit / issue：结果与时限承诺
+    # （will arrive 由第一条的 arrive 认）
+    re.compile(rf"(?:{_EN_L}will|{_APOS}ll)\s*(?:be\s*)?"
+               rf"(?:ship|deliver|dispatch|refund|cancel|credit|issue)(?:ped|led|ed|d)?{_EN_R}",
                re.IGNORECASE),
     # 在途
     re.compile(_EN_L + r"(?:in\s*transit|out\s*for\s*delivery|on\s*(?:its|the)\s*way)" + _EN_R,
                re.IGNORECASE),
     # 付款完成（中文「已付款」的对应）
     re.compile(_EN_L + r"(?:is|was|are|were|been|already|fully)\s*paid" + _EN_R, re.IGNORECASE),
+    # ---- T175 复核 L2-5 / L3-4：现在时、进行时、被动、时限 ----
+    # 一般现在时第三人称：ships / delivers / dispatches / cancels（We ship to … 的原形不认）
+    re.compile(_EN_L + r"(?:ships|delivers|dispatches|cancels)" + _EN_R, re.IGNORECASE),
+    # refunds 常作名词复数（Refunds go back to …），只认带时间 / 方式副词的动词用法
+    re.compile(_EN_L + r"refunds\s+(?:today|tomorrow|tonight|now|soon|automatically|immediately)"
+               + _EN_R, re.IGNORECASE),
+    # 进行时：be 动词 + delivering / dispatching / refunding / cancel(l)ing / processing / shipping
+    # （shipping fee / shipping cost 这类名词搭配除外）
+    re.compile(rf"(?:{_EN_L}(?:is|are|am|was|were|be|being|been)|{_APOS}(?:s|re|m))\s+"
+               r"(?:(?:now|currently|already|still)\s+)?"
+               rf"(?:delivering|dispatching|refunding|cancell?ing|processing|shipping{_EN_SHIPPING_NOUN})"
+               + _EN_R, re.IGNORECASE),
+    # 将来被动：will / 'll be sent / issued / credited / processed / returned / completed ……
+    re.compile(rf"(?:{_EN_L}will|{_APOS}ll)\s+be\s+(?:sent|issued|credited|processed|returned"
+               r"|completed|posted|mailed|approved|confirmed)" + _EN_R, re.IGNORECASE),
+    # 进行被动：being processed / sent / issued ……
+    re.compile(_EN_L + r"being\s+(?:processed|sent|issued|credited|returned|prepared|packed)" + _EN_R,
+               re.IGNORECASE),
+    # 订单 / 包裹 / 付款 / 退款 + [be] 完成态：Your order was sent、Payment confirmed、Refund approved
+    re.compile(_EN_L + r"(?:orders?|packages?|parcels?|items?|goods|shipments?|payments?|refunds?)\s+"
+               r"(?:(?:was|were|is|are|got)\s+)?(?:sent|posted|mailed|processed|issued|credited"
+               r"|returned|packed|prepared|confirmed|received|approved|completed?|successful)" + _EN_R,
+               re.IGNORECASE),
+    re.compile(_EN_L + r"it\s+(?:was|got|is)\s+(?:sent|posted|mailed|processed|issued|credited"
+               r"|returned|packed|confirmed|approved|completed)" + _EN_R, re.IGNORECASE),
+    # 付款走通：went / gone through
+    re.compile(_EN_L + r"(?:went|gone)\s+through" + _EN_R, re.IGNORECASE),
+    # 在途 / 送达承诺 / 已寄出的其余说法：en route、will reach / get to you + 时间、
+    # sent it out / yesterday、sent your order（「sent your request to a colleague」不认）
+    re.compile(_EN_L + r"en\s+route" + _EN_R, re.IGNORECASE),
+    re.compile(rf"(?:{_EN_L}will|{_APOS}ll)\s+(?:reach|get\s+to)\s+you\s+"
+               r"(?:today|tomorrow|tonight|by|within|in|on|next|this)" + _EN_R, re.IGNORECASE),
+    re.compile(_EN_L + r"(?:sent|posted|mailed)\s+(?:(?:it|them)\s+(?:out|off|yesterday|today"
+               r"|this\s+morning|already|on)|your\s+(?:order|package|parcel|items?|goods))" + _EN_R,
+               re.IGNORECASE),
+    # 时限：within / in N(-M) [business] days|hours|weeks、N-M business days、by tomorrow / Friday ……
+    # 与中文不同，英文时长不要求紧接到账 / 发货类动词（英文口径比中文严，同否定，BACKLOG task-t175）
+    re.compile(_EN_L + rf"(?:with)?in\s+{_EN_RANGE}\s+{_EN_UNIT}" + _EN_R, re.IGNORECASE),
+    re.compile(_EN_L + rf"{_EN_RANGE}\s+(?:business|working)\s+days?" + _EN_R, re.IGNORECASE),
+    re.compile(_EN_L + r"by\s+(?:tomorrow|tonight|today|(?:mon|tues|wednes|thurs|fri|satur|sun)day"
+               r"|the\s+end\s+of\s+(?:the\s+)?(?:day|week|month))" + _EN_R, re.IGNORECASE),
 )
 
 
@@ -243,6 +307,16 @@ def _status_places(text: str) -> list[tuple[int, int, str]]:
     if not english:
         return places                     # 没有英文状态说法：与 p12 逐字节一致
     return _merge_spans(text, [(s, e) for s, e, _ in places + english])
+
+
+def reply_status_places(text: str) -> list[tuple[int, int, str]]:
+    """check_reply 规则 3 扫的**全部**状态字眼（冻结模式 ∪ 补充模式 ∪ 对外字面值 ∪ 英文说法）：
+    ``[(起, 止, 原文)]``，原文偏移、按起点升序、重叠的合成一处。
+
+    与 :func:`status_spans`（只按冻结的 STATUS_PATTERNS）不同，这是出门校验真正用的口径；
+    p13 评测跑批（``evaluate.said_statuses``）用它认「措辞表以外的状态说法」，与出门校验同一口径。
+    """
+    return _status_places(text)
 
 
 def en_status_spans(text: str) -> list[tuple[int, int, str]]:

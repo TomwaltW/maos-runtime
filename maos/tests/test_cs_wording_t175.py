@@ -185,6 +185,9 @@ def test_wording_comes_from_ports_not_a_copy_t175():
 @pytest.mark.parametrize("text", [
     "您的订单已付款", "这笔已经付款了", "订单已支付成功", "已为您支付", "您的订单已​付款",
     "已 支 付",
+    # 复核 L3-5：付款族的其余完成态
+    "您的订单已完成支付", "您的订单已成功付款", "您的订单付款成功", "支付成功", "支付成功！",
+    "您的订单已经付了", "您的订单已付", "尾款已付清",
 ])
 def test_paid_wording_blocked_without_obs_t175(text):
     result = check_reply(T.ReplyDraft(text=text))
@@ -194,6 +197,7 @@ def test_paid_wording_blocked_without_obs_t175(text):
 @pytest.mark.parametrize("text", [
     "请在订单页完成付款", "付款成功后可以在订单页查看进度", "未付款的订单可以直接取消",
     "支持微信、支付宝和银行卡支付", "如果付款失败，请换一张卡再试",
+    "支付成功以后就能在订单页看到", "完成支付即可", "请确认支付成功再联系我们",
 ])
 def test_payment_policy_text_passes_t175(text):
     assert check_reply(T.ReplyDraft(text=text)).ok, text
@@ -225,6 +229,34 @@ EN_FABRICATIONS_T175 = (
     "has  \n been",                             # 各种空白
     "您的订单shipped了",                               # 中英混排
     "Your order’s been processed.",             # 弯撇号
+    # 复核 L2-5 / L3-4：现在时、进行时、被动、结果承诺、时限
+    "Your order ships today.",
+    "Your order delivers tomorrow.",
+    "It dispatches from our warehouse tonight.",
+    "Your order cancels automatically.",
+    "It refunds automatically.",
+    "Your order is shipping now.",
+    "We are delivering it today.",
+    "We are refunding your payment now.",
+    "We're cancelling your order.",
+    "Your refund is processing.",
+    "Your refund will be issued in 3-5 business days.",
+    "Your order will be sent tomorrow.",
+    "We will refund you.",
+    "We'll cancel it for you.",
+    "Your request is being processed.",
+    "Your order was sent.",
+    "Payment confirmed.",
+    "Your payment was successful.",
+    "It was processed this morning.",
+    "Your payment went through.",
+    "Refund within 24 hours.",
+    "Please allow three to five business days.",
+    "You will get it by Friday.",
+    "Your parcel is en route.",                       # 复核 L3 探针 G1 / G3 的英文尾巴
+    "It will reach you tomorrow.",
+    "We sent it yesterday.",
+    "We've sent your order.",
 )
 
 
@@ -244,9 +276,22 @@ def test_english_status_blocked_without_obs_t175(text):
     "We ship to most countries.",
     "Delivery times vary by carrier.",
     "Thanks for waiting.",
+    "Free shipping on orders over $50",               # 复核 L2-5：名词搭配不是「正在发货」
+    "What's the shipping cost to Singapore?",
+    "Could you share your order number, please?",
+    "Thanks, a colleague will follow up with you.",
+    "I have sent your request to a colleague.",
+    "A colleague will get back to you shortly.",
 ])
 def test_english_policy_text_passes_t175(text):
     assert check_reply(T.ReplyDraft(text=text)).ok, text
+
+
+def test_every_english_pattern_has_a_blocked_example_t175():
+    """EN_STATUS_PATTERNS 每一条都有至少一句空观察判负的例句（新增的模式不许空转）。"""
+    normalized = [C._normalize_words(t)[0] for t in EN_FABRICATIONS_T175]
+    for idx, pattern in enumerate(C.EN_STATUS_PATTERNS):
+        assert any(pattern.search(n) for n in normalized), (idx, pattern.pattern)
 
 
 def test_english_spans_map_back_to_original_offsets_t175():

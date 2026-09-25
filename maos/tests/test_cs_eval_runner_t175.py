@@ -32,6 +32,7 @@ from maos.domain.cs.evaluate import (
     P13_EVAL_PATH,
     P13_THRESHOLD_KEYS,
     REFUSED_NOT_IN_LEDGER,
+    STATUS_OFF_TABLE,
     EvalCase,
     EvalExpect,
     EvalFixtures,
@@ -304,106 +305,184 @@ def test_trigger_beats_lookup_and_tenant_unmapped_with_fixtures_t175(cases_t175)
     assert any(c.open_kfid and c.open_kfid not in DEFAULT_TENANT_MAP for c, _, _ in with_ports)
 
 
+#: 不带单号的轮里「点名要看具体订单」的说法（到哪了 / 帮我查查 / 我要退货 / where / track）——
+#: 与「下单后多久能发货」「退货运费谁出」这类政策问法区分（复核 L2-2：查单链由正文推，不由标签推）。
+SPECIFIC_RE_T175 = re.compile(r"到哪|查查|查一下|查下|看看|看下|发了没|发货了没|发货没有|发出去了没"
+                              r"|寄出来没|我要退|想退|申请退|(?i:\b(?:where|track|check)\b)")
+#: 要看具体订单的话术编号（p12 契约 §1.5 带 needs_order_lookup 的六篇）：注入端口时不该被当政策答。
+ORDER_SCHEMES_T175 = frozenset({"LOG-004", "LOG-005", "LOG-006", "PAY-003", "PAY-004", "RET-005"})
+
+
+def _judge_case_t175(case: EvalCase) -> None:
+    """按 p13 契约 §2 的判定顺序把一个 case 的每轮期望重推一遍；对不上就 AssertionError。
+
+    「这一轮进不进查单链」由**正文与累积的槽位**推（有诉求、且本轮带单号或点名要看具体订单），
+    再断言期望的标签与它一致 —— 标签写错（该追问的写成兜底、该查单的写成政策答）当场红。
+    """
+    tenant = DEFAULT_TENANT_MAP.get(case.effective_open_kfid, "")
+    fx = case.fixtures
+    handed_off, streak, asks = False, 0, 0
+    order_no: str | None = None
+    request: str | None = None
+    for i, (text, exp) in enumerate(zip(case.turns, case.expect), start=1):
+        where = (case.id, i, text)
+        assert exp.lang == _detect_lang_t175(text), where                          # 0. 语种
+        if handed_off:                                                             # 1.
+            assert (exp.route, exp.intent) == (T.ROUTE_SILENT, T.INTENT_UNKNOWN), where
+            continue
+        assert exp.route != T.ROUTE_SILENT, where
+        if not tenant:                                                             # 2.
+            assert (exp.route, exp.reason, exp.intent) == (
+                T.ROUTE_HANDOFF, T.HANDOFF_TENANT_UNMAPPED, T.INTENT_UNKNOWN), where
+            handed_off = True
+            continue
+        triggers = _triggers_in_t175(text)
+        if triggers:                                                               # 3.
+            top = triggers[0]
+            assert (exp.route, exp.reason, exp.intent) == (
+                T.ROUTE_HANDOFF, top, INTENT_OF_TRIGGER_T175[top]), where
+            assert not (exp.lookup or exp.say or exp.ask), where
+            handed_off = True
+            continue
+        found = ORDER_NO_RE_T175.findall(text)                                     # 4. 槽位累积
+        if found:
+            order_no = found[-1]
+        if RETURN_RE_T175.search(text):
+            request = "return"
+        elif TRACK_RE_T175.search(text):
+            request = "track"
+        # 由正文推：有诉求（本轮或之前），且本轮带单号或点名要看具体订单
+        wants_order = request is not None and bool(found or SPECIFIC_RE_T175.search(text))
+        labelled_flow = bool(exp.route == T.ROUTE_CLARIFY or exp.lookup
+                             or exp.reason in P13_REASONS_T175
+                             or (fx is not None and exp.reason == T.HANDOFF_NEEDS_ORDER_LOOKUP))
+        order_flow = fx is not None and wants_order
+        if fx is None:                                                             # 5. p12 路径
+            assert not (exp.lookup or exp.ask or exp.say), where
+            assert exp.route != T.ROUTE_CLARIFY and exp.reason not in P13_REASONS_T175, where
+            # p12 口径：要看具体订单的一律 needs_order_lookup（话术带标记），别的轮不是
+            assert (exp.reason == T.HANDOFF_NEEDS_ORDER_LOOKUP) == wants_order, where
+        else:
+            assert labelled_flow == order_flow, (where, "期望的标签与正文推出的查单链不一致")
+        if order_flow:                                                             # 6. 查单链
+            assert fx is not None and request is not None, where
+            want_intent = T.INTENT_LOGISTICS if request == "track" else T.INTENT_RETURN_EXCHANGE
+            assert exp.intent == want_intent, where
+            assert not exp.cite, where
+            if order_no is None:                                                   # 6a
+                assert not (exp.lookup or exp.say), where
+                if asks >= P.MAX_ASKS_PER_SLOT:
+                    assert (exp.route, exp.reason) == (
+                        T.ROUTE_HANDOFF, T.HANDOFF_NEEDS_ORDER_LOOKUP), where
+                else:
+                    assert (exp.route, exp.ask) == (T.ROUTE_CLARIFY, P.SLOT_ORDER_NO), where
+                    asks += 1
+            else:
+                binding = fx.binding(order_no)
+                if binding is None:                                                # 6b
+                    assert (exp.route, exp.reason) == (
+                        T.ROUTE_HANDOFF, T.HANDOFF_IDENTITY_UNVERIFIED), where
+                    assert not exp.lookup, where                                   # 不查单
+                else:                                                              # 6c
+                    order = fx.order(binding.query_key)
+                    outcome = order.outcome if order else P.LOOKUP_NOT_FOUND
+                    assert exp.lookup == outcome, where
+                    if outcome == P.LOOKUP_OK and request == "return":             # 6d
+                        pre = fx.precheck_for(order_no)
+                        want = (T.HANDOFF_REFUND_REQUEST if pre is not None and pre.ok
+                                else T.HANDOFF_NEEDS_ORDER_LOOKUP)
+                        assert (exp.route, exp.reason, exp.say) == (
+                            T.ROUTE_HANDOFF, want, ""), where
+                    elif outcome == P.LOOKUP_OK:
+                        assert (exp.route, exp.say) == (T.ROUTE_ANSWER, order.status), where
+                    elif outcome in (P.LOOKUP_AMENDED, P.LOOKUP_UNMAPPED):
+                        assert (exp.route, exp.reason) == (
+                            T.ROUTE_HANDOFF, T.HANDOFF_ORDER_UNMAPPED), where
+                    else:
+                        assert (exp.route, exp.reason) == (
+                            T.ROUTE_HANDOFF, T.HANDOFF_LOOKUP_FAILED), where
+        else:                                                                      # 5 / 7. 话术
+            assert exp.route != T.ROUTE_CLARIFY and not (exp.lookup or exp.ask or exp.say), where
+            assert exp.reason not in P13_REASONS_T175, where
+            assert exp.reason not in TRIGGERS_T175, where
+            assert exp.reason != T.HANDOFF_TENANT_UNMAPPED, where
+            if fx is not None and exp.route == T.ROUTE_ANSWER:
+                assert not ORDER_NO_RE_T175.search(text), where                    # 带单号的是查单
+                assert exp.cite and exp.cite not in ORDER_SCHEMES_T175, where      # 注入端口的答是政策答
+            if exp.route == T.ROUTE_FALLBACK:
+                streak += 1
+                assert streak < T.FALLBACK_STREAK_HANDOFF, where
+                assert exp.intent == T.INTENT_UNKNOWN, where
+            elif exp.reason == T.HANDOFF_REPEATED_FALLBACK:
+                assert streak + 1 == T.FALLBACK_STREAK_HANDOFF, where
+                assert exp.intent == T.INTENT_UNKNOWN, where
+            else:
+                assert exp.route == T.ROUTE_ANSWER or (
+                    fx is None and exp.reason == T.HANDOFF_NEEDS_ORDER_LOOKUP), where
+                assert exp.intent not in SPECIAL_INTENTS_T175, where
+        if exp.route in (T.ROUTE_ANSWER, T.ROUTE_HANDOFF):
+            streak = 0                                       # clarify 与 silent 不动兜底计数
+        if exp.route == T.ROUTE_HANDOFF:
+            handed_off = True
+
+
+def _judge_t175(cases) -> list[str]:
+    """逐 case 跑 :func:`_judge_case_t175`，收集对不上的（case id + 断言说明）。"""
+    out: list[str] = []
+    for case in cases:
+        try:
+            _judge_case_t175(case)
+        except AssertionError as exc:
+            out.append(f"{case.id}: {exc}")
+    return out
+
+
 def test_expectations_follow_the_p13_judgment_order_t175(cases_t175):
     """按 p13 契约 §2 的判定顺序把每一轮的期望重推一遍（数据自洽的判据）。"""
-    for case in cases_t175:
-        tenant = DEFAULT_TENANT_MAP.get(case.effective_open_kfid, "")
-        fx = case.fixtures
-        handed_off, streak, asks = False, 0, 0
-        order_no: str | None = None
-        request: str | None = None
-        for i, (text, exp) in enumerate(zip(case.turns, case.expect), start=1):
-            where = (case.id, i, text)
-            assert exp.lang == _detect_lang_t175(text), where                      # 0. 语种
-            if handed_off:                                                         # 1.
-                assert (exp.route, exp.intent) == (T.ROUTE_SILENT, T.INTENT_UNKNOWN), where
-                continue
-            assert exp.route != T.ROUTE_SILENT, where
-            if not tenant:                                                         # 2.
-                assert (exp.route, exp.reason, exp.intent) == (
-                    T.ROUTE_HANDOFF, T.HANDOFF_TENANT_UNMAPPED, T.INTENT_UNKNOWN), where
-                handed_off = True
-                continue
-            triggers = _triggers_in_t175(text)
-            if triggers:                                                           # 3.
-                top = triggers[0]
-                assert (exp.route, exp.reason, exp.intent) == (
-                    T.ROUTE_HANDOFF, top, INTENT_OF_TRIGGER_T175[top]), where
-                assert not (exp.lookup or exp.say or exp.ask), where
-                handed_off = True
-                continue
-            found = ORDER_NO_RE_T175.findall(text)                                 # 4. 槽位累积
-            if found:
-                order_no = found[-1]
-            if RETURN_RE_T175.search(text):
-                request = "return"
-            elif TRACK_RE_T175.search(text):
-                request = "track"
-            order_flow = bool(exp.route == T.ROUTE_CLARIFY or exp.lookup
-                              or exp.reason in P13_REASONS_T175
-                              or (fx is not None and exp.reason == T.HANDOFF_NEEDS_ORDER_LOOKUP))
-            if fx is None:                                                         # 5. p12 路径
-                assert not order_flow or exp.reason == T.HANDOFF_NEEDS_ORDER_LOOKUP, where
-                assert not (exp.lookup or exp.ask or exp.say), where
-            elif order_flow:                                                       # 6. 查单链
-                assert request is not None, where
-                want_intent = T.INTENT_LOGISTICS if request == "track" else T.INTENT_RETURN_EXCHANGE
-                assert exp.intent == want_intent, where
-                if order_no is None:                                               # 6a
-                    assert not (exp.lookup or exp.say), where
-                    if asks >= P.MAX_ASKS_PER_SLOT:
-                        assert (exp.route, exp.reason) == (
-                            T.ROUTE_HANDOFF, T.HANDOFF_NEEDS_ORDER_LOOKUP), where
-                    else:
-                        assert (exp.route, exp.ask) == (T.ROUTE_CLARIFY, P.SLOT_ORDER_NO), where
-                        asks += 1
-                else:
-                    binding = fx.binding(order_no)
-                    if binding is None:                                            # 6b
-                        assert (exp.route, exp.reason) == (
-                            T.ROUTE_HANDOFF, T.HANDOFF_IDENTITY_UNVERIFIED), where
-                        assert not exp.lookup, where                               # 不查单
-                    else:                                                          # 6c
-                        order = fx.order(binding.query_key)
-                        outcome = order.outcome if order else P.LOOKUP_NOT_FOUND
-                        assert exp.lookup == outcome, where
-                        if outcome == P.LOOKUP_OK and request == "return":         # 6d
-                            pre = fx.precheck_for(order_no)
-                            want = (T.HANDOFF_REFUND_REQUEST if pre is not None and pre.ok
-                                    else T.HANDOFF_NEEDS_ORDER_LOOKUP)
-                            assert (exp.route, exp.reason, exp.say) == (
-                                T.ROUTE_HANDOFF, want, ""), where
-                        elif outcome == P.LOOKUP_OK:
-                            assert (exp.route, exp.say) == (T.ROUTE_ANSWER, order.status), where
-                        elif outcome in (P.LOOKUP_AMENDED, P.LOOKUP_UNMAPPED):
-                            assert (exp.route, exp.reason) == (
-                                T.ROUTE_HANDOFF, T.HANDOFF_ORDER_UNMAPPED), where
-                        else:
-                            assert (exp.route, exp.reason) == (
-                                T.ROUTE_HANDOFF, T.HANDOFF_LOOKUP_FAILED), where
-            if not order_flow or fx is None:                                       # 5 / 7. 话术
-                assert exp.reason not in P13_REASONS_T175, where
-                assert exp.reason not in TRIGGERS_T175, where
-                assert exp.reason != T.HANDOFF_TENANT_UNMAPPED, where
-                if fx is not None and exp.route == T.ROUTE_ANSWER:
-                    assert not ORDER_NO_RE_T175.search(text), where                # 带单号的是查单
-                if exp.route == T.ROUTE_FALLBACK:
-                    streak += 1
-                    assert streak < T.FALLBACK_STREAK_HANDOFF, where
-                    assert exp.intent == T.INTENT_UNKNOWN, where
-                    if fx is not None and found:
-                        assert not (RETURN_RE_T175.search(text) or TRACK_RE_T175.search(text))
-                elif exp.reason == T.HANDOFF_REPEATED_FALLBACK:
-                    assert streak + 1 == T.FALLBACK_STREAK_HANDOFF, where
-                    assert exp.intent == T.INTENT_UNKNOWN, where
-                else:
-                    assert exp.route == T.ROUTE_ANSWER or (
-                        fx is None and exp.reason == T.HANDOFF_NEEDS_ORDER_LOOKUP), where
-                    assert exp.intent not in SPECIAL_INTENTS_T175, where
-            if exp.route in (T.ROUTE_ANSWER, T.ROUTE_HANDOFF):
-                streak = 0                                   # clarify 与 silent 不动兜底计数
-            if exp.route == T.ROUTE_HANDOFF:
-                handed_off = True
+    assert _judge_t175(cases_t175) == []
+
+
+def _mutate_t175(cases, case_id: str, turn: int, **changes):
+    """内存里把某个 case 第 turn 轮（1 起）的期望改掉，返回新的 case 元组。"""
+    out = []
+    for case in cases:
+        if case.id == case_id:
+            exp = dataclasses.replace(case.expect[turn - 1], **changes)
+            case = dataclasses.replace(case, expect=case.expect[:turn - 1] + (exp,)
+                                       + case.expect[turn:])
+        out.append(case)
+    return tuple(out)
+
+
+@pytest.mark.parametrize("case_id,turn,changes", [
+    # 复核 L2-2 的原样变异体：该追问（缺单号、问物流）的轮写成兜底
+    ("CS13-017", 1, {"route": T.ROUTE_FALLBACK, "intent": T.INTENT_UNKNOWN, "ask": ""}),
+    # 政策问法（下单后多久发货）写成追问
+    ("CS13-025", 1, {"route": T.ROUTE_CLARIFY, "cite": "", "ask": P.SLOT_ORDER_NO}),
+    # 只报单号、没有诉求的轮写成追问
+    ("CS13-027", 1, {"route": T.ROUTE_CLARIFY, "intent": T.INTENT_LOGISTICS, "ask": P.SLOT_ORDER_NO}),
+    # 缺单号的退货诉求直接转人工（该先追问）
+    ("CS13-018", 1, {"route": T.ROUTE_HANDOFF, "reason": T.HANDOFF_NEEDS_ORDER_LOOKUP, "ask": ""}),
+    # 追问两次以后还在追问（该转人工）
+    ("CS13-016", 3, {"route": T.ROUTE_CLARIFY, "reason": "", "ask": P.SLOT_ORDER_NO}),
+    # 查单结果对应的出口写错：unmapped_status 该 order_unmapped
+    ("CS13-008", 1, {"reason": T.HANDOFF_LOOKUP_FAILED}),
+    # 预检缺项（台账里没有）写成 refund_request
+    ("CS13-022", 1, {"reason": T.HANDOFF_REFUND_REQUEST}),
+    # 说的状态与夹具不符
+    ("CS13-001", 1, {"say": "paid"}),
+    # p12 式要看具体订单的轮写成兜底
+    ("CS13-036", 1, {"route": T.ROUTE_FALLBACK, "intent": T.INTENT_UNKNOWN, "reason": ""}),
+    # 连续第二次兜底写成兜底（该 repeated_fallback）
+    ("CS13-031", 3, {"route": T.ROUTE_FALLBACK, "reason": ""}),
+    # 政策答引用了要看具体订单的话术编号
+    ("CS13-025", 1, {"cite": "LOG-004"}),
+])
+def test_judge_rejects_mislabelled_expectations_t175(cases_t175, case_id, turn, changes):
+    """判据能判负：期望在内存里改错一条，重推必须红、且红在那个 case 上。"""
+    assert _judge_t175(cases_t175) == []
+    bad = _judge_t175(_mutate_t175(cases_t175, case_id, turn, **changes))
+    assert bad and all(x.startswith(case_id + ":") for x in bad), bad
 
 
 def test_cites_only_on_answer_turns_and_in_tags_t175(cases_t175):
@@ -566,7 +645,9 @@ class FakeDeskT175:
 
     ``tweak(msg, exp, fields) -> dict | None`` 改写某一轮：可改 route / intent / reason / lang /
     lookup / ask / reply / citations，以及查单轮的 ``say``（说哪个状态）、``say_lang``、
-    ``obs_status``（观察行记成什么状态）、``write_obs``、``claim``。
+    ``obs_status``（观察行记成什么状态）、``write_obs``、``claim``；``lookup_now``（不说状态的轮也真的
+    核验、查单、落观察，例如退款桥轮）、``claim_literal``（obs claim 挂在哪句上，缺省是措辞表那句）、
+    ``suffix``（接在回复后面的话）。
     """
 
     def __init__(self, answers, tenant_map, ports, tweak=None, *, with_store=True):
@@ -594,30 +675,37 @@ class FakeDeskT175:
                 REPLY_EN_T175 if lang == P.LANG_EN else REPLY_ZH_T175),
             "citations": (cite_doc_id(tenant, exp.cite),) if exp.cite else (),
             "say": exp.say, "say_lang": lang, "obs_status": exp.say, "write_obs": True,
-            "claim": True,
+            "claim": True, "lookup_now": None, "claim_literal": "", "suffix": "",
         }
         if self.tweak is not None:
             fields.update(self.tweak(msg, exp, fields) or {})
+        if fields["lookup_now"] is None:                     # 缺省：要说状态的轮才查单
+            fields["lookup_now"] = bool(fields["say"])
         claims: tuple[T.Claim, ...] = ()
-        if fields["say"]:
+        if fields["lookup_now"]:
             history = " ".join(m.text for m in self.seen)
             order_no = ORDER_NO_RE_T175.findall(history)[-1]
             binding = self.ports["verifier"].resolve(
                 self.store if hasattr(self, "store") else None, tenant_id=tenant,
                 channel=msg.channel, external_userid=msg.chat_id, display_no=order_no)
-            result = self.ports["lookup"].lookup(None, binding, plan_id=T.plan_id_for(conv),
-                                                 task_id=turn)
-            sentence = P.ORDER_STATUS_WORDING[fields["say_lang"]][fields["say"]]
-            fields["reply"] = sentence
-            if fields["write_obs"]:
-                obs_id = _write_obs_t175(self._db, tenant=tenant, conv=conv, turn=turn, n=1,
-                                         system_name=result.system_name,
-                                         query_key=result.query_key,
-                                         status=fields["obs_status"] or result.status)
-            else:
-                obs_id = P.observation_id_for(turn, 1)
-            if fields["claim"]:
-                claims = (T.Claim(sentence, f"obs:{obs_id}"),)
+            if binding is not None:                          # 核验不过：不查单、不说状态
+                result = self.ports["lookup"].lookup(None, binding, plan_id=T.plan_id_for(conv),
+                                                     task_id=turn)
+                sentence = ""
+                if fields["say"]:
+                    sentence = P.ORDER_STATUS_WORDING[fields["say_lang"]][fields["say"]]
+                    fields["reply"] = sentence
+                if fields["write_obs"]:
+                    obs_id = _write_obs_t175(self._db, tenant=tenant, conv=conv, turn=turn, n=1,
+                                             system_name=result.system_name,
+                                             query_key=result.query_key,
+                                             status=fields["obs_status"] or result.status)
+                else:
+                    obs_id = P.observation_id_for(turn, 1)
+                literal = fields["claim_literal"] or sentence
+                if fields["claim"] and literal:
+                    claims = (T.Claim(literal, f"obs:{obs_id}"),)
+        fields["reply"] += fields["suffix"]
         return T.DeskResult(
             reply_text=fields["reply"], tenant_id=tenant, conversation_id=conv, turn_id=turn,
             route=fields["route"], intent=fields["intent"],
@@ -734,7 +822,8 @@ def test_status_word_in_a_non_lookup_turn_is_fabrication_and_wrong_t175(cases_t1
 @pytest.mark.parametrize("tweak_fields,problems", [
     ({"write_obs": False}, {"status_fabrication", "wrong_status", "wording"}),   # 观察没落
     ({"claim": False}, {"status_fabrication", "wording"}),                       # 没挂 claim
-    ({"say_lang": P.LANG_EN}, {"wording"}),                                      # 语种说错
+    # 语种说错：第二道出门校验按本轮语种不过，wrong_status 也算（复核 L2-1 / L3-1：每轮都跑）
+    ({"say_lang": P.LANG_EN}, {"wording", "wrong_status"}),
 ])
 def test_wording_accuracy_can_fail_t175(cases_t175, tweak_fields, problems):
     case, turn = _say_turn_t175(cases_t175)
@@ -764,6 +853,107 @@ def test_wording_needs_exactly_one_sentence_and_nothing_else_t175(cases_t175):
     report = run_eval_p13(lambda ports: Twice(answers, DEFAULT_TENANT_MAP, ports), cases_t175)
     assert report.wording_accuracy < 1.0 and report.wrong_status == 0
     assert [m.problems for m in report.failures] == [("wording",)]
+
+
+@pytest.mark.parametrize("backed", [False, True])
+def test_wording_requires_no_other_status_t175(cases_t175, backed):
+    """复核 L2-4：对的那句恰一次、挂着真观察，后面又说了另一个状态 —— wording 自己就得判负
+    （不挂观察的那一版只有「没说别的状态」这一条拦得住）。"""
+    case, turn = _say_turn_t175(cases_t175)
+    victim = f"{case.id}-{turn}"
+    truth = case.expect[turn - 1].say
+    other = P.ORDER_STATUS_WORDING[P.LANG_ZH][next(
+        s for s in ("paid", "shipped", "cancelled") if s != truth)]
+
+    class Extra(FakeDeskT175):
+        def handle(self, msg):
+            res = super().handle(msg)
+            if msg.msg_id != victim:
+                return res
+            text = res.reply_text + "；" + other
+            claims = res.draft.claims + (
+                (T.Claim(other, res.draft.claims[0].basis_ref),) if backed else ())
+            return dataclasses.replace(res, reply_text=text, draft=dataclasses.replace(
+                res.draft, text=text, claims=claims))
+    answers = _answers_t175(cases_t175)
+    report = run_eval_p13(lambda ports: Extra(answers, DEFAULT_TENANT_MAP, ports), cases_t175)
+    assert report.wording_accuracy < 1.0 and report.wrong_status == 1
+    assert not report.meets(load_thresholds(P13_EVAL_PATH))
+    (miss,) = report.failures
+    assert {"wording", "wrong_status"} <= set(miss.problems), miss
+
+
+def _refund_bridge_turn_t175(cases) -> tuple[EvalCase, int]:
+    return next((c, i) for c, i, _, e in _all_turns_t175(cases)
+                if e.reason == T.HANDOFF_REFUND_REQUEST and e.lookup == P.LOOKUP_OK)
+
+
+@pytest.mark.parametrize("reply,claimed", [
+    ("您的订单已签收", True),                     # 复核 L2-1 原样：挂着本轮真观察
+    ("您的订单已送达", True),
+    ("Your order was delivered.", True),
+    ("您的退款已到账", True),                     # 退款说法：对外字面值以外（foreign_literal）
+    ("退款已到账", True),                         # 对外字面值本身：订单观察撑不起退款状态
+    ("Your order ships tomorrow.", True),
+    ("您的包裹在路上了", False),                  # 出门校验还不认的口语说法（评测侧认）
+    ("您的订单明天就能到", False),
+])
+def test_off_table_status_on_a_refund_bridge_turn_is_wrong_t175(cases_t175, reply, claimed):
+    """复核 L2-1 / L3-1（G2）：退款桥轮真的核验、查单、落了观察，回复说的却是措辞表以外的状态
+    —— 路由全对、编造为 0，只有 wrong_status 判负，且门槛不过。"""
+    case, turn = _refund_bridge_turn_t175(cases_t175)
+    victim = f"{case.id}-{turn}"
+    factory, _, got_ports = _factory_t175(cases_t175, tweak=lambda m, e, f: {
+        "lookup_now": True, "reply": reply, "claim": claimed,
+        "claim_literal": reply} if m.msg_id == victim else None)
+    report = run_eval_p13(factory, cases_t175)
+    ports = got_ports[[c.id for c in cases_t175].index(case.id)]
+    assert len(ports["lookup"].calls) == 1                       # 真的经夹具端口查了这一单
+    assert report.wrong_status == 1 and report.status_fabrication == 0
+    assert report.route_accuracy == report.intent_accuracy == report.handoff_recall == 1.0
+    assert not report.meets(load_thresholds(P13_EVAL_PATH))
+    assert any("wrong_status" in s for s in report.shortfalls(load_thresholds(P13_EVAL_PATH)))
+    (miss,) = report.failures
+    assert (miss.case_id, miss.turn, miss.problems) == (case.id, turn, ("wrong_status",))
+
+
+@pytest.mark.parametrize("lang,suffix", [
+    (P.LANG_ZH, "，已经发了"),                    # 复核 L3-1（G3）原样
+    (P.LANG_ZH, "，在路上了"),
+    (P.LANG_ZH, "；您的订单已签收"),
+    (P.LANG_EN, " It ships today."),
+    (P.LANG_EN, " It will arrive in 2 days."),
+])
+def test_status_tacked_onto_the_wording_sentence_is_wrong_t175(cases_t175, lang, suffix):
+    """复核 L3-1（G3）：paid 轮说对了措辞表那句（挂着真观察），后面又接一句别的状态。"""
+    case, turn = next((c, i) for c, i, _, e in _all_turns_t175(cases_t175)
+                      if e.say == P.ORDER_PAID and e.lang == lang)
+    victim = f"{case.id}-{turn}"
+    report = run_eval_p13(_factory_t175(cases_t175, tweak=lambda m, e, f: {
+        "suffix": suffix} if m.msg_id == victim else None)[0], cases_t175)
+    assert report.wrong_status == 1 and report.wording_accuracy < 1.0
+    assert not report.meets(load_thresholds(P13_EVAL_PATH))
+    (miss,) = report.failures
+    assert {"wrong_status", "wording"} <= set(miss.problems), miss
+
+
+def test_tenant_map_is_honoured_t175(cases_t175):
+    """复核 L2-3：run_eval_p13 的 tenant_map 决定夹具核验的租户与引用 doc_id 的租户。"""
+    th = load_thresholds(P13_EVAL_PATH)
+    tmap = {DEFAULT_OPEN_KFID: "tnt-x"}
+    factory, _, got_ports = _factory_t175(cases_t175, tenant_map=tmap)
+    report = run_eval_p13(factory, cases_t175, tenant_map=tmap)
+    assert _perfect_t175(report), report.describe()
+    for case, ports in zip(cases_t175, got_ports):
+        if case.fixtures is not None:
+            assert ports["verifier"].tenant_id == tmap.get(case.effective_open_kfid, "")
+    assert any(p["verifier"] is not None and p["verifier"].tenant_id == "tnt-x" for p in got_ports)
+    # 前台按缺省映射（tnt-demo）答、评测按 tnt-x 判：核验对不上、引用对不上
+    mismatched = run_eval_p13(_factory_t175(cases_t175)[0], cases_t175, tenant_map=tmap)
+    assert mismatched.cite_accuracy < 1.0 and mismatched.wording_accuracy < 1.0
+    assert not mismatched.meets(th)
+    problems = {p for m in mismatched.failures for p in m.problems}
+    assert {"cite", "wording"} <= problems, problems
 
 
 def test_desk_without_store_cannot_back_any_status_t175(cases_t175):
@@ -862,13 +1052,36 @@ def test_desk_errors_are_recorded_not_raised_t175(cases_t175):
     ("您的订单已发货", {"shipped"}), ("订单已经取消了", {"cancelled"}), ("已为您支付", {"paid"}),
     ("Your order has shipped.", {"shipped"}), ("It was CANCELED.", {"cancelled"}),
     ("It is already paid.", {"paid"}),
-    ("It has not shipped yet.", set()), ("It hasn't shipped.", set()),
+    # 措辞表以外的说法：出门校验认的状态字眼没对上三种状态的（含英文否定句）记 off_table
+    ("It has not shipped yet.", {STATUS_OFF_TABLE}), ("It hasn't shipped.", {STATUS_OFF_TABLE}),
+    ("您的订单已签收", {STATUS_OFF_TABLE}), ("Your order was delivered.", {STATUS_OFF_TABLE}),
+    ("您的退款已到账", {STATUS_OFF_TABLE}), ("退款已到账", {STATUS_OFF_TABLE}),
+    ("Your order ships today.", {STATUS_OFF_TABLE}), ("预计3-5个工作日到账", {STATUS_OFF_TABLE}),
+    ("已发货已签收", {"shipped", STATUS_OFF_TABLE}),
+    ("Your order has been shipped.", {"shipped", STATUS_OFF_TABLE}),
+    # 评测侧补认的中文口语说法（出门校验还不认）
+    ("您的订单已经发了", {STATUS_OFF_TABLE}), ("包裹在路上了", {STATUS_OFF_TABLE}),
+    ("快递正在派送中", {STATUS_OFF_TABLE}), ("明天就能到", {STATUS_OFF_TABLE}),
+    ("退款成功", {STATUS_OFF_TABLE}), ("订单已被取消", {STATUS_OFF_TABLE}),
     ("您的包裹尚未发货", set()), ("请在订单页完成付款", set()), ("", set()),
+    ("物流由配送中心统一安排", set()), ("您的包裹发出去了吗？请提供单号", set()),
     (P.ORDER_STATUS_WORDING["zh"]["paid"] + "，" + P.ORDER_STATUS_WORDING["en"]["shipped"],
      {"paid", "shipped"}),
+    (P.ORDER_STATUS_WORDING["zh"]["paid"] + "，已经发了", {"paid", STATUS_OFF_TABLE}),
 ])
 def test_said_statuses_t175(text, said):
     assert said_statuses(text) == frozenset(said)
+
+
+def test_policy_scripts_say_no_status_under_the_judge_t175():
+    """话术库每篇 script 在评测的状态扫描下都什么状态都没说 —— 评测不冤枉正当的政策回答。"""
+    from maos.domain.cs.corpus import load_corpus
+    scripts = [json.loads(row["body"])["script"] for row in load_corpus()]
+    assert len(scripts) >= 19
+    for script in scripts:
+        assert said_statuses(script) == frozenset(), script
+    for reply in (REPLY_ZH_T175, REPLY_EN_T175):
+        assert said_statuses(reply) == frozenset(), reply
 
 
 def test_turn_observations_reads_only_this_turn_t175():

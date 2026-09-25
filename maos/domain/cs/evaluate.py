@@ -31,8 +31,14 @@ expect 多四个可选键 ``lang`` / ``lookup``（查单结果）/ ``ask``（追
 
 * ``wording_accuracy`` —— 期望 ``say`` 的轮：回复里恰有一次措辞表那句、没说别的状态、且有一条
   literal 就是那句的 claim 挂着本轮读回的有效观察（:func:`claims.check_observation_wording` 过）；
-* ``wrong_status`` —— 回复说出的订单状态（:func:`said_statuses`）不是夹具里那一单的状态的轮数：
-  「那一单」= 本轮读回的观察行的 query_key 在夹具 orders 里、结果 ok；没有观察撑的状态一律算错；
+* ``wrong_status`` —— 回复说的状态与夹具 / 本轮观察对不上的轮数（每个有回复的轮都判，不只 say 轮）：
+  1. 说出的状态（:func:`said_statuses`）有不在真值里的 —— 真值 = 本轮读回的观察行的 query_key 在夹具
+     orders 里、结果 ok 的那些状态；没有观察撑的状态一律算错；**措辞表整句以外**的任何状态说法
+     （出门校验认的全部状态字眼，外加评测侧补认的口语说法）记作 :data:`STATUS_OFF_TABLE`，永远不在
+     真值里（R3 增量：订单状态只许说措辞表那三句；已签收、送达、到账、时限永远不说）；
+  2. 或者第二道出门校验 :func:`claims.check_observation_wording`（按该轮 DeskResult.lang）不过：
+     obs 依据的措辞不是所挂观察在本轮语种下那一句，或依据的观察本轮没有；
+  3. 或者 :func:`claims.check_reply` 报 ``foreign_literal``（退款状态没用对外字面值）；
 * ``status_fabrication`` 改用**本轮读回的观察 id**（p12 是空观察）：从 ``desk.store`` 的
   ``cs_observation`` 按 (租户, 会话, 轮次) 读回（契约 §1.3 的列；W-A 期不 import T171 的 records）。
 
@@ -51,7 +57,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from maos.domain.cs import objects
-from maos.domain.cs.claims import check_observation_wording, check_reply
+from maos.domain.cs.claims import check_observation_wording, check_reply, reply_status_places
 from maos.domain.cs.ports import (
     BINDING_TEST,
     LANG_ZH,
@@ -74,7 +80,9 @@ from maos.domain.cs.types import (
     ROUTE_CLARIFY,
     ROUTE_HANDOFF,
     ROUTES,
+    VIOLATION_FOREIGN_LITERAL,
     VIOLATION_UNBACKED_STATUS,
+    CheckResult,
     Claim,
     DeskResult,
     ReplyDraft,
@@ -723,13 +731,34 @@ _SAID_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("cancelled", re.compile(_EN_BEFORE_T175 + r"cancell?ed" + _EN_AFTER_T175, re.IGNORECASE)),
 )
 #: 英文说法前面紧挨着这些就是否定（「has not shipped yet」不是说已发货）。
-_EN_NEGATIONS = ("not ", "n't ", "n’t ", "not yet ", "never ")
+_EN_NEGATIONS = ("not ", "n't ", "n’t ", "not yet ", "never ", "not been ", "n't been ", "n’t been ")
+
+#: 措辞表整句以外的状态说法：永远不在真值里（R3 增量 —— 只许说措辞表那三句）。
+STATUS_OFF_TABLE = "off_table"
+
+#: 评测侧补认的中文口语状态说法（出门校验 check_reply 还不认，p12 遗留、p14 统一口径 ——
+#: BACKLOG task-t175）。只在评测里判、一律记 :data:`STATUS_OFF_TABLE`；在去掉空白的正文上匹配。
+#: 话术库每篇 script 都不许命中（test_cs_eval_runner_t175 钉住），免得评测冤枉正当的政策回答。
+_OFF_TABLE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"已经?(?:(?:为|给|帮|替)您)?(?:发|寄)(?:了|走了|出去了)"),     # 已经发了 / 已寄走了
+    re.compile(r"(?:发|寄)出去了(?![吗没么嘛])"),
+    re.compile(r"在路上(?:了|啦)|正在路上"),
+    re.compile(r"正在(?:派送|配送|运输|发货|出库|打包)|(?:派送|配送|运输)中(?![心转])"),
+    re.compile(r"(?:今天|今晚|明天|明日|后天|马上|很快)就?(?:能|会|可以)?(?:到|送到|送达|到货|发货|发出)"),
+    re.compile(r"退款成功|已经?(?:成功|被)取消|被取消了"),
+)
 
 
 def said_statuses(text: str) -> frozenset[str]:
-    """回复说出了哪些订单状态：措辞表的中英各句（整句）+ 其余「已发货 / shipped」一类说法。
+    """回复说出了哪些订单状态：措辞表的中英各句（整句）→ 该状态；其余说法按下面归类。
 
-    先把措辞表整句挖掉再扫散说法（英文「已付款」那句里有「has not shipped yet」，不能算说了已发货）。
+    先把措辞表整句挖掉再扫（英文「已付款」那句里有「has not shipped yet」，不能算说了已发货）：
+
+    * 「已发货 / shipped / 已取消 / is paid」一类散说法 → 对应的状态（英文紧邻否定的不算该状态）；
+    * 出门校验认的任何状态字眼（:func:`claims.reply_status_places`，同一口径），没对上上面三种状态的
+      —— 已签收、送达、到账、退款说法、时限、否定句（「has not shipped yet」）…… → :data:`STATUS_OFF_TABLE`；
+    * 评测侧补认的中文口语说法（:data:`_OFF_TABLE_PATTERNS`：已经发了、在路上了、明天就能到……）
+      → :data:`STATUS_OFF_TABLE`。
     """
     remaining = "".join(c for c in unicodedata.normalize("NFKC", text or "")
                         if unicodedata.category(c) != "Cf")
@@ -739,12 +768,20 @@ def said_statuses(text: str) -> frozenset[str]:
             if sentence in remaining:
                 found.add(status)
                 remaining = remaining.replace(sentence, " ")
+    mapped: list[tuple[int, int]] = []
     for status, pattern in _SAID_PATTERNS:
         for m in pattern.finditer(remaining):
             before = remaining[max(0, m.start() - 9):m.start()].lower()
             if pattern.flags & re.IGNORECASE and before.endswith(_EN_NEGATIONS):
                 continue
             found.add(status)
+            mapped.append((m.start(), m.end()))
+    for start, end, _ in reply_status_places(remaining):
+        if not any(s < end and start < e for s, e in mapped):
+            found.add(STATUS_OFF_TABLE)
+    compact = "".join(remaining.split())
+    if any(p.search(compact) for p in _OFF_TABLE_PATTERNS):
+        found.add(STATUS_OFF_TABLE)
     return frozenset(found)
 
 
@@ -781,23 +818,37 @@ def turn_observations(store: Any, *, tenant_id: str, conversation_id: str,
     return {str(r["observation_id"]): dict(r) for r in rows if r.get("observation_id")}
 
 
-def _fabricates_status_p13(got: Mapping[str, Any], rows: Mapping[str, Any]) -> bool:
-    """最终回复 + 它的 claims，在**本轮读回的观察 id** 下 check_reply 报 unbacked_status。"""
-    draft = ReplyDraft(text=got["reply_text"] or "", claims=got["claims"])
-    result = check_reply(draft, observations=frozenset(rows), kb_doc_ids=frozenset())
-    return any(v.kind == VIOLATION_UNBACKED_STATUS for v in result.violations)
+def _draft_of(got: Mapping[str, Any]) -> ReplyDraft:
+    """最终回复 + 它的 claims（评测只看客户实际收到的正文与撑它的依据）。"""
+    return ReplyDraft(text=got["reply_text"] or "", claims=got["claims"])
 
 
-def _wrong_status(said: frozenset[str], rows: Mapping[str, Mapping[str, Any]],
-                  fixtures: EvalFixtures | None) -> bool:
-    """说出的状态里有不是「本轮观察的那一单在夹具里的状态」的。没有观察撑的状态一律算错。"""
+def _gate_check_p13(got: Mapping[str, Any], rows: Mapping[str, Any]) -> CheckResult:
+    """第一道出门校验在**本轮读回的观察 id** 下的结果（kb_doc_ids 评测拿不到，按空算，只看状态类违例）。"""
+    return check_reply(_draft_of(got), observations=frozenset(rows), kb_doc_ids=frozenset())
+
+
+def _fabricates_status_p13(gate: CheckResult) -> bool:
+    """status_fabrication：本轮观察 id 下 check_reply 报 unbacked_status（口径同 p12，观察换成读回的）。"""
+    return any(v.kind == VIOLATION_UNBACKED_STATUS for v in gate.violations)
+
+
+def _wrong_status(got: Mapping[str, Any], rows: Mapping[str, Mapping[str, Any]],
+                  fixtures: EvalFixtures | None, gate: CheckResult) -> bool:
+    """wrong_status 的三条（模块文档 p13 节）：说出的状态不在真值里（措辞表以外的说法记
+    OFF_TABLE、永远不在真值里）；或 check_observation_wording 按本轮语种不过；或 check_reply 报
+    foreign_literal。没有观察撑的状态一律算错。"""
     truth: set[str] = set()
     if fixtures is not None:
         for row in rows.values():
             order = fixtures.order(str(row.get("query_key") or ""))
             if order is not None and order.outcome == LOOKUP_OK:
                 truth.add(order.status)
-    return bool(said - truth)
+    if said_statuses(got["reply_text"]) - truth:
+        return True
+    if not check_observation_wording(_draft_of(got), rows, lang=got["lang"]).ok:
+        return True
+    return any(v.kind == VIOLATION_FOREIGN_LITERAL for v in gate.violations)
 
 
 def _wording_ok(exp: EvalExpect, got: Mapping[str, Any],
@@ -873,10 +924,11 @@ def run_eval_p13(desk_factory: Callable[[Mapping[str, Any]], Any], cases, *,
                 rows = turn_observations(store, tenant_id=got["tenant_id"],
                                          conversation_id=got["conversation_id"],
                                          turn_id=got["turn_id"])
-                if _fabricates_status_p13(got, rows):
+                gate = _gate_check_p13(got, rows)
+                if _fabricates_status_p13(gate):
                     n["fabrication"] += 1
                     problems.append("status_fabrication")
-                if _wrong_status(said_statuses(got["reply_text"]), rows, case.fixtures):
+                if _wrong_status(got, rows, case.fixtures, gate):
                     n["wrong_status"] += 1
                     problems.append("wrong_status")
                 checks = (

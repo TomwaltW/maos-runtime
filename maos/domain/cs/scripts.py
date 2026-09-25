@@ -131,7 +131,9 @@ CUES = (CUE_DURATION, CUE_PROGRESS)
 INTENT_CUES: dict[str, tuple[str, ...]] = {
     CUE_DURATION: (
         r"多久(?!了)", r"多长时间(?!了)", r"多少天(?!了)", r"(?<!好)几天(?!了)", r"几个工作日", r"几个小时",
-        r"多快", r"时效", r"一般要几", r"大概要几",
+        r"多快", r"(?<![尽赶])快(?:吗|嘛|么|不快)", r"时效", r"一般要几", r"大概要几",
+        # 同一类问法的别的说法（复核 L3-2）：几日 / 多少时间 / 周期是多长 / 多少个工作日
+        r"(?<!好)几日(?!了)", r"多少时间", r"多长(?![了时])", r"多少个?工作日",
         # 问「什么时候」（复核 L2-2 / L3-2）：查单只说得出状态、说不出到账 / 送达时间（p13 契约 §0
         # 不买），问时间的句子该由政策篇答，也不该被当成「要退款」
         r"什么时候", r"啥时候", r"何时", r"几时", r"几号", r"哪天", r"多会儿?",
@@ -144,10 +146,14 @@ INTENT_CUES: dict[str, tuple[str, ...]] = {
         r"发出了?吗", r"发出了?没", r"发走了?没", r"寄出了?吗", r"寄出了?没", r"寄了吗", r"出库了?吗",
         r"到哪了", r"到哪儿了", r"到哪里了", r"到哪一步", r"走到哪", r"进度", r"怎么样了",
         r"有结果了?吗", r"有结果了?没", r"处理了?没", r"处理好了?吗", r"处理好了?没",
-        r"审核了?吗", r"审核了?没", r"审核过了?没", r"审核过了?吗", r"通过了?没", r"通过了?吗", r"批下来",
+        # 「审核 / 通过 / 成功 + 吗」要带「了 / 过」才是问这一笔（复核 L3-2：「退款需要审核吗」是问规则）
+        r"审核(?:了|过了?|完了?|好了?)吗", r"审核了?没", r"审核过了?没", r"通过了?没", r"通过了吗",
+        r"批下来",
         r"了没有",
         r"还没到", r"还没收到", r"还没发", r"还没退", r"一直没", r"没动静", r"怎么还不", r"怎么还没",
-        r"成功了?吗", r"成功了?没", r"好了(?:吗|没)", r"是不是已经",
+        # 「到现在都没到 / 至今没收到 / 都一周了还没退」（复核 L3-2）
+        r"(?:还|都|一直|仍然?|至今|到现在|现在)(?:都|还)?没(?:有)?(?:到|收到|退|发|动|更新|消息|回|处理|结果)",
+        r"成功了吗", r"成功了?没", r"好了(?:吗|没)", r"是不是已经",
         # 「退 / 到 / 发 / 寄 / 收 / 回 …… 了吗 / 了没」：退到卡里了吗、寄出去了没、东西到了吗
         r"[退到发寄收回][^,，。?？!！]{0,4}了(?:吗|没|么)",
     ),
@@ -160,6 +166,7 @@ EN_INTENT_CUES: dict[str, tuple[str, ...]] = {
                    r"when (?:will|does|do|can|would|could|should|is|are)",
                    r"when (?:\w+ ){1,3}(?:will|arrive|arrives|come|comes)"),
     CUE_PROGRESS: (r"where(?:'s| is) my", r"has my", r"status of my", r"track my",
+                   r"(?:refund|order|return|exchange|delivery|shipping|shipment|package|parcel) status",
                    r"tracking (?:number|info|information)", r"not (?:arrived|received)",
                    r"still (?:not|hasn't|haven't|no)", r"did (?:you|it) (?:ship|arrive)",
                    r"is my \w+ (?:shipped|delivered|refunded|processed|approved|credited)",

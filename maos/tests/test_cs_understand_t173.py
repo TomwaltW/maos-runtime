@@ -5,12 +5,15 @@
 1. **语种**（``lang.detect_lang``）：有 CJK 即 zh；否则（拿掉单号这类编码串后）字母里 ASCII 字母
    严格过半即 en；否则 zh。
 2. **槽位**（``understand.extract_slots``）：订单号的几种平台形态认、手机号（含连字符 / +86）/ 日期 /
-   热线 / 型号不认；诉求与情绪只出闭集取值；明说要办的分句优先，问规则（含问「什么时候」）的句子
-   不给诉求；商品与问题只从词表来；跨轮合并新值覆盖旧值。
-3. **意图**：触发词 → 诉求 → 意图示例（数据表，实词上像才压过词表，句式像只在词表判不出时补位）→
-   关键词；顺序与示例的负例都钉住；输出恒在 ``types.INTENTS``。
-4. **触发词**：复合词（商品名、物件里夹着情绪词的两个字）不再误伤 —— 整词白名单之外还有上下文写法，
-   用一组不含任何白名单原串的留出式句子判；同一句里的真触发词、骂人的说法照认；英文触发词按词认。
+   热线 / 型号 / 卡号 / QQ 号 / 身份证号不认；诉求与情绪只出闭集取值；明说要办的分句优先，问规则
+   （含问「什么时候」、只带「退款」字眼的裸说法）的句子不给诉求，撤回的诉求（「不用退款了」）给 other；
+   商品与问题只从词表来；跨轮合并新值覆盖旧值。
+3. **意图**：触发词 → 诉求 → 意图示例（数据表，两边先按同义表归一；实词上像才压过词表，句式像只在
+   词表判不出时补位）→ 关键词；顺序、示例的负例、同义归一确实在起作用都钉住；输出恒在 ``types.INTENTS``。
+4. **触发词**：几个短词（滚、妈的、他妈、气炸、去死、什么破）只按骂人的句型认，其余词的成类复合词
+   （垃圾 + 物件、技术参数 + 补偿、身体不适的恶心……）遮掉；复核点名的句子与本轨事先写好的探针句都钉住
+   （这些句子作者看过，是回归判据，不是留出集）；同一句里的真触发词、骂人的说法照认；英文触发词按词认、
+   只认诉求的说法；中英混排按同一张优先级表取。
 5. **match_scripts 的 intent_hint**：缺省时与 p12（bf53df6 的 scripts.py）逐字节一致 —— 在 p12
    开发集全部轮上比对返回值与 KbRetrieved；给了提示时，时长 / 进度线索把政策篇与查单篇分开
    （自写 22 句正反例），开发集接上提示后满分（含 CS12-044#1）。
@@ -132,6 +135,9 @@ def _handoff_of_scheme_t173() -> dict[str, str]:
     ("こんにちは", "zh"),                                # 假名算 CJK（只有 zh / en 两种）
     ("「A1001」", "zh"),                                 # CJK 标点区的引号
     ("café latte", "en"),                               # é 算字母但不是 ASCII：8/9 仍过半
+    # 复核 L2-4：「严格过半」的边界 —— 恰好一半不是 en，多一个才是
+    ("aé", "zh"), ("Éa", "zh"), ("ok да", "zh"),       # 1/2、1/2、2/4
+    ("oké", "en"), ("ok да k", "en"),                   # 2/3、3/5
 ])
 def test_detect_lang_boundaries_t173(text, want):
     assert lang.detect_lang(text) == want
@@ -160,6 +166,14 @@ def test_detect_lang_constants_are_the_frozen_ones_t173():
     ("A1001，谢谢", "A1001"),                                     # 只报一个号 + 客套（复核 L2-9）
     ("A1001 thanks", "A1001"),
     ("电话138-1234-5678，单号2026092400123", "2026092400123"),     # 手机号跳过，取后面的单号
+    # 复核 L2-6：短形态后面紧跟单号字眼、或整句是「号 + 诉求词」
+    ("A1001 这单到哪了", "A1001"),
+    ("A1001退款", "A1001"),
+    ("订单号：A1001", "A1001"),
+    # 复核 L3-4：身份证 / 银行卡形态**有**单号字眼时照认（平台单号也可能长这样）
+    ("订单号 330102199001011234 到哪了", "330102199001011234"),
+    ("330102199001011234 这单到哪了", "330102199001011234"),
+    ("order id 20260924001234", "20260924001234"),
 ])
 def test_order_no_shapes_are_recognised_t173(text, want):
     assert U.extract_slots(text, lang=lang.detect_lang(text)).get(ports.SLOT_ORDER_NO) == want
@@ -186,9 +200,32 @@ def test_order_no_shapes_are_recognised_t173(text, want):
     "我打了12315",
     "GT-3 有货吗",                      # 连字符但数字太少
     "",
+    # 复核 L2-6：型号前面的「订单」不紧挨着、英文 order 是动词；离得最近的字眼说的是 QQ / 卡号
+    "我订单里的RTX4090显卡还没发",
+    "I'd like to order the MX5000, when will it ship?",
+    "查一下A1001",                      # 没有单号字眼、整句也不只是这个号
+    "我的QQ号是123456789，退款到了吗",
+    "退款退到银行卡6222021234567890123了吗",
+    "我的会员号 20260924001 能积分吗",
+    # 复核 L3-4：卡号 / 身份证号（有字眼的按字眼；没字眼的按形态：身份证、过 Luhn 的银行卡）
+    "退款退到这张卡 6222021234567890123 可以吗",
+    "我卡号是6222021234567890123，钱退了没",
+    "330102199001011234 这个是我的证件",
+    "6222021234567890128",
+    "请查一下 4111111111111111 到哪了",
 ])
 def test_order_no_negatives_t173(text):
     assert ports.SLOT_ORDER_NO not in U.extract_slots(text, lang=lang.detect_lang(text))
+
+
+def test_personal_number_shapes_are_real_near_misses_t173():
+    """卡号 / 身份证的形态判据不空转：差一位校验、月份不合法的同长数字串照旧当单号认。"""
+    assert U.extract_order_no("6222021234567890128") == ""              # 过 Luhn
+    assert U.extract_order_no("6222021234567890123") == "6222021234567890123"   # 不过 Luhn
+    assert U.extract_order_no("330102199001011234") == ""               # 合法年月日
+    assert U.extract_order_no("330102199013011234") == "330102199013011234"     # 13 月
+    # 离得最近的字眼说了算：卡号在前、单号紧挨着号 → 单号
+    assert U.extract_order_no("卡号不对，订单号2026092400123") == "2026092400123"
 
 
 @pytest.mark.parametrize("text,want", [
@@ -223,6 +260,21 @@ def test_order_no_negatives_t173(text):
     ("my refund hasn't arrived yet", ports.REQUEST_TRACK),
     ("i haven't received my refund", ports.REQUEST_TRACK),
     ("is my refund processed", ports.REQUEST_TRACK),
+    # 复核 r3 L3-2：没有「我要」时，指向自己那一单（本轮有单号 / 这单 / 我那单）或整句就是诉求才给
+    ("A1001退款", ports.REQUEST_REFUND),
+    ("我那单退款", ports.REQUEST_REFUND),
+    ("这单我要退货", ports.REQUEST_RETURN),
+    ("收到的杯子有裂纹，能给我换个新的吗", ports.REQUEST_EXCHANGE),
+    ("退款", ports.REQUEST_REFUND),
+    ("退货吧", ports.REQUEST_RETURN),
+    ("那就退货吧", ports.REQUEST_RETURN),
+    ("还是退款吧", ports.REQUEST_REFUND),
+    ("refund please", ports.REQUEST_REFUND),
+    ("麻烦帮我把钱退了", ports.REQUEST_REFUND),            # 「把钱退」是退款，不是退货
+    ("不要退款，给我换一件", ports.REQUEST_EXCHANGE),       # 撤回的是退款，换货照给
+    ("不需要换货，直接退款", ports.REQUEST_REFUND),
+    ("退款到现在都没到", ports.REQUEST_TRACK),
+    ("Refund status?", ports.REQUEST_TRACK),
 ])
 def test_request_closed_set_t173(text, want):
     got = U.extract_slots(text, lang=lang.detect_lang(text)).get(ports.SLOT_REQUEST)
@@ -246,10 +298,40 @@ def test_request_closed_set_t173(text, want):
     "申请退款后钱什么时候退回来",   # 「申请退款后」是个时间点，不是明说要办
     "when will my refund arrive",
     "when will i get my refund",
+    # 复核 r3 L3-2：只带「退款 / 退货 / 换货」字眼的裸说法是在问政策（复核意见点名的句子）
+    "退款会退运费吗", "退款有手续费吗", "退款要多少时间", "退款要等几日", "退款到账周期是多长", "退款快吗",
+    "退款是全额退吗", "退货会影响我的信用分吗", "换货要重新付运费吗", "退款需要审核吗", "退款到账要等多长",
+    "Is a refund free?", "Do refunds include shipping?",
+    # 本轨事先写好的探针句（r3 改实现之前写成）
+    "退款要扣手续费吗", "退货需要自己出运费吗", "退款一般几日到账", "退款会退到原来的卡上吗",
+    "退货包装需要完整吗", "Do I get a full refund?", "Is return shipping free?", "How fast is a refund?",
 ])
 def test_policy_questions_carry_no_request_t173(text):
     """问规则的句子不给诉求：否则前台会为一句政策问题去要单号。"""
     assert ports.SLOT_REQUEST not in U.extract_slots(text, lang=lang.detect_lang(text))
+
+
+#: 复核 L2-2：撤回诉求的说法。前 6 句是复核意见点名的，后 4 句是本轨事先写好的探针句。
+WITHDRAWN_T173 = ["不用退款了，东西我留着", "我不要退货了", "我不需要换货", "I don't want a refund",
+                  "no need to refund", "退款不用了，谢谢",
+                  "我不想退货了，东西挺好的", "算了不换了", "I don't need a refund anymore", "先不退了"]
+
+
+@pytest.mark.parametrize("text", WITHDRAWN_T173)
+def test_withdrawn_request_overwrites_the_earlier_one_t173(text):
+    """撤回的诉求不算诉求；本轮没有别的诉求时给 other，盖掉上一轮的 refund（跨轮合并新值覆盖旧值）。"""
+    assert U.extract_request(text) == ports.REQUEST_OTHER
+    u = U.understand(text, prior_slots={ports.SLOT_ORDER_NO: "A1001",
+                                        ports.SLOT_REQUEST: ports.REQUEST_REFUND})
+    assert u.slots[ports.SLOT_REQUEST] == ports.REQUEST_OTHER
+    assert u.slots[ports.SLOT_ORDER_NO] == "A1001"
+
+
+@pytest.mark.parametrize("text", ["为什么不给我退款", "you don't refund anything", "they won't refund me",
+                                  "我不想要了", "你们怎么还不退款"])
+def test_complaints_about_no_refund_are_not_withdrawals_t173(text):
+    """怪店家不退、「不想要了」（要退）都不是撤回。"""
+    assert U.extract_request(text) != ports.REQUEST_OTHER
 
 
 @pytest.mark.parametrize("text,want", [
@@ -479,6 +561,47 @@ def test_intent_examples_override_the_keyword_table_t173(monkeypatch):
         assert U.rule_intent(text) != want, text
 
 
+#: 复核 L3-3：示例表的同义改写（只差「啥 / 什么」「哪天 / 几号」「货 / 东西」「破的 / 坏的」
+#: 「came damaged / arrived broken」）。前 7 句是复核意见点名的，其余是本轨 r3 改实现之前写好的探针句
+#: 里由示例表判出的那几句（作者看过，是回归判据，不是留出集）。
+EXAMPLE_PARAPHRASES_T173 = [
+    ("东西啥时候能到呀", T.INTENT_LOGISTICS), ("我买的东西啥时候到", T.INTENT_LOGISTICS),
+    ("东西大概哪天能到啊", T.INTENT_LOGISTICS), ("货什么时候能送来", T.INTENT_LOGISTICS),
+    ("收到的衣服是破的", T.INTENT_RETURN_EXCHANGE), ("东西有毛病想换个", T.INTENT_RETURN_EXCHANGE),
+    ("my item came damaged", T.INTENT_RETURN_EXCHANGE),
+    ("买的东西什么时间能收到", T.INTENT_LOGISTICS), ("货大概几号能到", T.INTENT_LOGISTICS),
+    ("钱哪天能到账", T.INTENT_REFUND_PAYMENT), ("I got charged two times", T.INTENT_REFUND_PAYMENT),
+    ("when will my order get here", T.INTENT_LOGISTICS),
+]
+
+
+@pytest.mark.parametrize("text,want", EXAMPLE_PARAPHRASES_T173)
+def test_intent_examples_generalise_through_the_synonym_table_t173(text, want):
+    assert U.example_intent(text) == want
+    assert U.understand(text, prior_slots={}).intent == want
+
+
+def test_synonym_table_is_what_makes_the_examples_generalise_t173(monkeypatch):
+    """反向：把同义归一关掉（中英两张表都清空），上面那批改写至少一半认不出来；把示例表清空也一样
+    —— 这两样确实在起作用，不是摆设（r2 的示例表整张删掉指标不变，复核 L3-3）。"""
+    texts = [t for t, _ in EXAMPLE_PARAPHRASES_T173]
+    wants = [w for _, w in EXAMPLE_PARAPHRASES_T173]
+
+    def wrong() -> int:
+        return sum(U.understand(t, prior_slots={}).intent != w for t, w in zip(texts, wants))
+
+    assert wrong() == 0
+    with monkeypatch.context() as m:
+        m.setattr(U, "_EXAMPLE_SYNONYM_RES", ())
+        m.setattr(U, "_EXAMPLE_PRODUCT_RE", U.re.compile(r"(?!)"))
+        m.setattr(U, "EN_EXAMPLE_PHRASES", ())
+        m.setattr(U, "EN_EXAMPLE_SYNONYMS", {})
+        assert wrong() >= len(texts) // 2
+    with monkeypatch.context() as m:
+        m.setattr(U, "INTENT_EXAMPLES", ())
+        assert wrong() >= len(texts) // 2
+
+
 def test_intent_examples_table_is_well_formed_and_self_written_t173():
     dev = {"".join(kb.tokenize(t)) for c in evaluate.load_cases() for t in c.turns}
     seen = set()
@@ -500,7 +623,7 @@ def test_intent_is_always_in_the_enum_t173():
 
 
 # ---------------------------------------------------------------------------
-# 4. 触发词：复合词白名单、英文
+# 4. 触发词：骂人的句型、复合词白名单、英文
 # ---------------------------------------------------------------------------
 #: 自写：商品名 / 物件 / 功效说明里夹着触发词的两个字，整句是普通咨询。
 COMPOUND_NOT_TRIGGERS_T173 = [
@@ -535,25 +658,46 @@ def test_real_triggers_next_to_compounds_still_fire_t173(text, reason):
     assert triggers.detect(text) == (reason, triggers.INTENT_OF[reason])
 
 
-#: 复核 L3-3：**留出式**的复合词句 —— 没有一句含整词白名单（BENIGN_COMPOUNDS / EN_BENIGN_COMPOUNDS）
-#: 里的任何一个原串，p12 的触发词全都误伤（英文那几句 p12 没有英文触发词，改成「本轨的英文表不许
-#: 新添误伤」），只能靠上下文写法（BENIGN_PATTERNS / EN_BENIGN_PATTERNS）与英文的上下文要求认出来。
-#: 自写，不照抄复核意见里的探针句。
-HELDOUT_COMPOUNDS_T173 = [
-    "垃圾兜能挂在门后面吗", "请问垃圾罐的尺寸多大", "气炸一体机的说明书丢了",
-    "卧室空气死角多，这台风扇够用吗", "去死茧的锉刀发了吗", "五一想去死海玩，泳衣能加急吗",
+#: 复核 L3-1：只按骂人句型认的几个短词（滚 / 妈的 / 他妈 / 气炸 / 去死 / 什么破）夹在商品名、称谓、
+#: 地名、问句里。每句都含那个词的原串（p12 按子串匹配，全都误伤 —— 下面的测试逐句证明），现在不触发。
+#: 前一组是 r2 写的句子，中间是复核 L3-1 点名的句子，后一组是本轨 r3 改实现之前写好的探针句。
+#: 这些句子作者都看过，是回归判据、不是留出集；泛化由主会话在整合期用 p12 留出集量。
+SHAPE_WORDS_IN_BENIGN_T173 = [
+    "气炸一体机的说明书丢了", "去死茧的锉刀发了吗", "五一想去死海玩，泳衣能加急吗",
     "给我爸妈的按摩仪发错颜色了", "宝妈的奶粉什么时候发货", "奶妈的工作服能开发票吗",
     "孩子他妈让我问一下运费", "老公他妈买的鞋子码数不对", "其他妈咪包还有货吗",
-    "孕吐恶心吃什么好，有推荐的零食吗", "晕船恶心的贴片有吗", "这药吃了会不会恶心",
-    "黑店镇能发顺丰吗", "摇滚风的外套还有M码吗", "熊猫滚滚抱枕发货了吗", "滚梳和直板夹哪个好用",
+    "摇滚风的外套还有M码吗", "熊猫滚滚抱枕发货了吗", "滚梳和直板夹哪个好用",
+    # 复核 L3-1
+    "孕妈的防辐射服能开发票吗", "辣妈的连衣裙有S码吗", "广场舞大妈的音响什么时候能到",
+    "衣服为什么破了个洞，能换吗", "这个杯子为什么破了", "你们家有什么破壁机推荐",
+    "这款抱枕圆滚滚的好可爱", "粘毛滚的替换纸什么时候发货", "滚石乐队的黑胶唱片", "冰滚美容仪发货了吗",
+    "西瓜滚圆滚圆的", "气炸烤箱几天发", "我想去死海玩",
+    # 本轨 r3 事先写好的探针句
+    "胖滚滚的熊玩偶还有吗", "逗猫滚球能单买吗", "瑜伽滚压按摩棒发货了吗", "汤圆在锅里滚几分钟能熟",
+    "婴儿推车的前轮滚不动了", "准妈的防辐射服有XL吗", "舞蹈队大妈的扇子发错颜色了", "买给她妈的围巾颜色不对",
+    "二胎妈的待产包能开发票吗", "猫妈的罐头临期了能退吗", "为什么破了一个角能换吗", "有什么破窗器推荐吗",
+    "包裹里的纸箱为什么破成这样", "你们有什么破冰游戏道具", "这台多功能气炸电烤箱几天发货",
+    "这个清洁剂能去死垢吗", "我想去死亡谷旅游，冲锋衣能加急吗",
 ]
-HELDOUT_EN_COMPOUNDS_T173 = [
+
+#: 复核 L3-1：照旧按子串认的词（垃圾 / 恶心 / 补偿 / 人工 / 隐私 / 身份证）的**成类**无害复合词，靠
+#: 上下文写法（BENIGN_PATTERNS）遮掉。来源同上（r2 句、复核点名句、r3 事先写好的探针句）。
+CONTEXT_PATTERN_CASES_T173 = [
+    "垃圾兜能挂在门后面吗", "请问垃圾罐的尺寸多大", "卧室空气死角多，这台风扇够用吗",
+    "孕吐恶心吃什么好，有推荐的零食吗", "晕船恶心的贴片有吗", "这药吃了会不会恶心", "黑店镇能发顺丰吗",
+    "孕妇吃了恶心想吐", "吃完恶心反胃是正常的吗", "显示器有背光补偿吗", "逆光补偿怎么打开", "垃圾挂袋能挂在哪",
+    "吃了这个益生菌有点恶心正常吗", "孕早期恶心呕吐能用这个贴吗", "闻到这个香薰有点恶心头晕",
+    "投影仪的梯形补偿怎么设置", "这个稳压器带功率补偿吗", "耳机的低音补偿能关吗", "厨房垃圾架的螺丝少发了",
+    "宠物用的垃圾拾取器多少钱", "人工鱼饵套装发货了吗", "隐私门帘能定做尺寸吗", "身份证卡套有透明的吗",
+    "稳压器的补偿电容坏了",
+]
+EN_CONTEXT_PATTERN_CASES_T173 = [
     "Do you sell trash grabbers?", "What size is the rubbish chute cover?",
     "Is this picture representative of the color?", "What is the shop phone number?",
 ]
 
-#: 复核 L2-5：白名单撤掉的几条（「不泄漏」「垃圾站 / 垃圾车 / 垃圾处理」）与上下文写法**不许**
-#: 盖住的说法 —— 这些都要照旧触发（宁可多转、不可漏转）。
+#: 复核 L2-1 / L2-5：句型与白名单**不许**盖住的说法 —— 这些都要照旧触发（宁可多转、不可漏转）。
+#: 「你老妈的 / 你妈妈的 / 他妈妈的 / 去你妈」是复核 L2-1 点名的（r2 的整词白名单把它们遮掉了）。
 MUST_STILL_TRIGGER_T173 = [
     ("请保证不泄漏我的信息", T.HANDOFF_PRIVACY), ("你们能保证不泄漏我的数据吗", T.HANDOFF_PRIVACY),
     ("你们就是垃圾站", T.HANDOFF_ANGER), ("你们这垃圾车一样的服务", T.HANDOFF_ANGER),
@@ -563,43 +707,80 @@ MUST_STILL_TRIGGER_T173 = [
     ("滚滚滚", T.HANDOFF_ANGER), ("垃圾货", T.HANDOFF_ANGER),
     ("my phone number was leaked", T.HANDOFF_PRIVACY), ("I want a representative", T.HANDOFF_REQUESTED),
     ("let me speak to a representative", T.HANDOFF_REQUESTED),
+    # 复核 L2-1
+    ("去你老妈的，东西到底什么时候发", T.HANDOFF_ANGER), ("操你老妈的", T.HANDOFF_ANGER),
+    ("你妈妈的", T.HANDOFF_ANGER), ("去你妈妈的，退款呢", T.HANDOFF_ANGER),
+    ("你个老妈的，退款呢", T.HANDOFF_ANGER), ("你们客服他妈妈的就知道拖", T.HANDOFF_ANGER),
+    ("他妈的", T.HANDOFF_ANGER),
+    # 本轨 r3 事先写好的探针句（真骂人的各种句型）
+    ("你老妈的，什么时候发货", T.HANDOFF_ANGER), ("操你妈的什么时候退款", T.HANDOFF_ANGER),
+    ("你妈妈的，退款呢", T.HANDOFF_ANGER), ("他妈的等了一周了", T.HANDOFF_ANGER),
+    ("妈的，快递又没动", T.HANDOFF_ANGER), ("这快递妈的太慢了", T.HANDOFF_ANGER),
+    ("真他妈的服了", T.HANDOFF_ANGER), ("滚蛋吧你们", T.HANDOFF_ANGER), ("给我滚", T.HANDOFF_ANGER),
+    ("你们都滚", T.HANDOFF_ANGER), ("滚！", T.HANDOFF_ANGER), ("爱卖不卖，滚", T.HANDOFF_ANGER),
+    ("爱卖不卖 滚", T.HANDOFF_ANGER), ("什么破东西", T.HANDOFF_ANGER),
+    ("什么破快递三天不动", T.HANDOFF_ANGER), ("这是什么破手机", T.HANDOFF_ANGER),
+    ("你们真让人恶心", T.HANDOFF_ANGER), ("看到你们的回复就恶心", T.HANDOFF_ANGER),
+    ("吃了你们的东西恶心死了", T.HANDOFF_ANGER), ("必须给我补偿", T.HANDOFF_COMPENSATION),
+    ("这事你们得补偿我", T.HANDOFF_COMPENSATION), ("去你妈的", T.HANDOFF_ANGER),
+    ("滚你的吧", T.HANDOFF_ANGER), ("你他妈妈的就知道拖", T.HANDOFF_ANGER),
+    ("你们客服他妈就知道拖", T.HANDOFF_ANGER), ("我快气炸了", T.HANDOFF_ANGER),
+    ("你们怎么不去死", T.HANDOFF_ANGER),
 ]
 
+#: 只按句型认的几个词（p12 里都按子串认）。
+SHAPE_WORDS_T173 = ("滚", "妈的", "他妈", "气炸", "去死", "什么破")
 
-def test_heldout_compounds_are_fixed_by_the_context_patterns_t173():
-    """每句都夹着一个情绪类触发词的原串（p12 按子串匹配，全都判 anger —— scratchpad 里拿 bf53df6 的
-    triggers.py 实测 19 / 19），又不含整词白名单的任何一条：现在不触发，靠的是上下文写法。"""
-    literals = [w for ws in triggers.BENIGN_COMPOUNDS.values() for w in ws]
-    anger_words = triggers.CONTRACT_WORDS[T.HANDOFF_ANGER] + triggers._EXTRA_PATTERNS[T.HANDOFF_ANGER]
-    for text in HELDOUT_COMPOUNDS_T173:
+
+@pytest.mark.parametrize("text", SHAPE_WORDS_IN_BENIGN_T173)
+def test_shape_words_in_benign_compounds_do_not_trigger_t173(text):
+    """每句都含一个句型词的原串（p12 按子串匹配必然误伤），现在不触发：句型之外不算。"""
+    norm = triggers.normalize(text)
+    assert [w for w in SHAPE_WORDS_T173 if w in norm], text
+    assert triggers.detect(text) is None
+
+
+def test_shape_words_are_matched_only_as_insult_shapes_t173():
+    """设计钉子：句型词不在按子串认的词表里（不然句型白写），而在句型表里。"""
+    literal = set(triggers._EXTRA_PATTERNS[T.HANDOFF_ANGER])
+    assert not literal & {"他妈", "妈的", "气炸", "去死", "什么破"}
+    shapes = "".join(triggers.INSULT_SHAPES[T.HANDOFF_ANGER]) + triggers._GUN_RE
+    for word in ("滚", "妈的", "他妈", "气炸", "去死", "什么破"):
+        assert word in shapes, word
+
+
+def test_context_patterns_fix_their_classes_t173():
+    """照旧按子串认的词：每句都夹着一个触发词的原串，现在不触发，靠的是上下文写法。"""
+    for text in CONTEXT_PATTERN_CASES_T173:
         norm = triggers.normalize(text)
-        assert not [w for w in literals if w in norm], text          # 不靠整词白名单
-        assert [w for w in anger_words if w in norm], text           # 确实夹着触发词的原串
+        assert any(triggers._PATTERNS[r].search(norm) for r in triggers.PRIORITY), text
         assert triggers.detect(text) is None, text
-    for text in HELDOUT_EN_COMPOUNDS_T173:
+    for text in EN_CONTEXT_PATTERN_CASES_T173:
         words = triggers._spaced_words(text)
         assert not [w for w in triggers.EN_BENIGN_COMPOUNDS if w in words], text
         assert triggers.detect(text) is None, text
 
 
 def test_every_context_pattern_is_exercised_t173():
-    """每条上下文写法都至少被一句留出式句子用到（没用到的就是摆设），且它遮的那几个字确实压在
-    一处触发词上（与未遮的原文里某个触发词的位置有重叠）。"""
+    """每条上下文写法都至少被一句用到（没用到的就是摆设），且它遮的那几个字（写了命名组 w 的只算那一组）
+    确实压在一处触发词上（与未遮的原文里某个触发词的位置有重叠）。"""
     import re
 
     for group, pats in triggers.BENIGN_PATTERNS.items():
         assert group in triggers.PRIORITY
         for p in pats:
+            compiled = re.compile(p)
             used = 0
-            for text in HELDOUT_COMPOUNDS_T173:
+            for text in CONTEXT_PATTERN_CASES_T173:
                 norm = triggers.normalize(text)
                 spans = [m.span() for m in triggers._PATTERNS[group].finditer(norm)]
-                for m in re.finditer(p, norm):
+                for m in compiled.finditer(norm):
+                    s0, e0 = m.span("w") if "w" in compiled.groupindex else m.span()
                     used += 1
-                    assert any(s < m.end() and m.start() < e for s, e in spans), (p, text)
+                    assert any(s < e0 and s0 < e for s, e in spans), (p, text)
             assert used, p
     for p in triggers.EN_BENIGN_PATTERNS:
-        assert any(re.search(p, triggers._spaced_words(t)) for t in HELDOUT_EN_COMPOUNDS_T173), p
+        assert any(re.search(p, triggers._spaced_words(t)) for t in EN_CONTEXT_PATTERN_CASES_T173), p
 
 
 @pytest.mark.parametrize("text,reason", MUST_STILL_TRIGGER_T173)
@@ -608,7 +789,8 @@ def test_real_triggers_are_not_masked_t173(text, reason):
 
 
 def test_every_whitelisted_compound_really_contains_a_trigger_t173():
-    """白名单每一条都真的夹着触发词（否则这一条是摆设），而整条单说不触发。"""
+    """白名单每一条都真的夹着触发词（否则这一条是摆设），而整条单说不触发。英文的整词在「a + 整词」
+    里含触发词即可（human hair 单说不是在找人，real / a human hair 就是）。"""
     for group, words in triggers.BENIGN_COMPOUNDS.items():
         assert group in triggers.PRIORITY
         for word in words:
@@ -617,21 +799,25 @@ def test_every_whitelisted_compound_really_contains_a_trigger_t173():
             assert any(triggers._PATTERNS[r].search(norm) for r in triggers.PRIORITY), word
             assert triggers.detect(word) is None, word
     for word in triggers.EN_BENIGN_COMPOUNDS:
-        assert any(triggers._EN_RES[r].search(word) for r in triggers.PRIORITY), word
-        assert triggers.detect(word) is None, word
-    # 复核 L2-5：否定短语与骂人时也用的词不在白名单里。
+        assert any(triggers._EN_RES[r].search(word) or triggers._EN_RES[r].search(f"a {word}")
+                   for r in triggers.PRIORITY), word
+        assert triggers.detect(word) is None and triggers.detect(f"a {word}") is None, word
+    # 复核 L2-1 / L2-5：否定短语、骂人时也用的词、称谓 + 妈的 都不在白名单里。
     all_words = {w for ws in triggers.BENIGN_COMPOUNDS.values() for w in ws}
-    assert not all_words & {"不泄漏", "垃圾站", "垃圾车", "垃圾处理"}
+    assert not all_words & {"不泄漏", "垃圾站", "垃圾车", "垃圾处理", "他妈妈", "妈妈的", "老妈的"}
+    assert not [w for w in all_words if "妈" in w]
 
 
 #: 自写的英文触发句：每类至少两种说法。
 EN_TRIGGERS_T173 = {
     T.HANDOFF_REQUESTED: ["I want to talk to a human", "Can I speak to a real person?",
-                          "live agent please", "get me your manager", "I don't want a bot"],
+                          "live agent please", "get me your manager", "I don't want a bot",
+                          "human please", "connect me to an operator", "human"],
     T.HANDOFF_COMPLAINT: ["I will file a complaint", "My lawyer will contact you",
-                          "I'm going to sue you", "I'll report you to consumer protection"],
+                          "I'm going to sue you", "I'll report you to consumer protection",
+                          "I will report your store"],
     T.HANDOFF_ANGER: ["This is a scam", "What a rip-off", "your service is garbage",
-                      "WTF is going on"],
+                      "WTF is going on", "you ripped me off", "what a rip off"],
     T.HANDOFF_COMPENSATION: ["I demand compensation", "You need to compensate me"],
     T.HANDOFF_PRIVACY: ["delete my personal data", "why do you have my phone number",
                         "this is a privacy issue", "my mobile number got leaked"],
@@ -651,6 +837,26 @@ def test_english_triggers_keep_the_priority_and_match_inside_chinese_t173():
     assert triggers.detect("ＨＵＭＡＮ　ｐｌｅａｓｅ") == (T.HANDOFF_REQUESTED, T.INTENT_HANDOFF_REQUEST)
 
 
+#: 复核 L2-5：中英混排的一句 —— 中文低优先级 + 英文高优先级、英文低优先级 + 中文高优先级，两个方向都
+#: 按同一张优先级表取（不许「中文先、英文后」）。每句都先断言两类确实都中（判据不空转）。
+MIXED_PRIORITY_T173 = [
+    ("垃圾店, delete my personal data", T.HANDOFF_PRIVACY, T.HANDOFF_ANGER),
+    ("转人工, I will sue you", T.HANDOFF_COMPLAINT, T.HANDOFF_REQUESTED),
+    ("投诉! I demand compensation", T.HANDOFF_COMPENSATION, T.HANDOFF_COMPLAINT),
+    ("scam, 我的手机号被泄露了", T.HANDOFF_PRIVACY, T.HANDOFF_ANGER),
+    ("I want a human, 我要投诉", T.HANDOFF_COMPLAINT, T.HANDOFF_REQUESTED),
+    ("this is a scam, 你们得赔偿", T.HANDOFF_COMPENSATION, T.HANDOFF_ANGER),
+]
+
+
+@pytest.mark.parametrize("text,top,lower", MIXED_PRIORITY_T173)
+def test_mixed_language_sentences_follow_one_priority_table_t173(text, top, lower):
+    reasons = triggers.matched_reasons(text)
+    assert top in reasons and lower in reasons, reasons
+    assert list(reasons) == [r for r in triggers.PRIORITY if r in reasons]
+    assert triggers.detect(text) == (top, triggers.INTENT_OF[top])
+
+
 @pytest.mark.parametrize("text", [
     "How long does shipping take?", "Where is my parcel?", "Can I get my money back?",
     "Please refund me now", "Is there an issue with my order?", "This is inhumane packaging",
@@ -659,10 +865,14 @@ def test_english_triggers_keep_the_priority_and_match_inside_chinese_t173():
     "Do you sell a trash compactor?", "I bought a garbage truck toy for my son",
     "Is this color representative of the real product?", "Where is your privacy policy?",
     "What is your store phone number?",
+    # 复核 L2-7：operator / human / rip off / report 的普通用法
+    "Does this phone work with any operator?", "is this safe for humans?",
+    "rip off the tags, can I still return it?", "I want to report this issue with my order",
+    "Is this real human hair?", "The operator manual is missing",
 ])
 def test_ordinary_english_questions_do_not_trigger_t173(text):
     """「refund me now」这类要钱的说法不进触发词（退款诉求走核验 → 查单 → 预检卡）；
-    按词认：issue 里的 sue、inhumane 里的 human 不算。"""
+    按词认：issue 里的 sue、inhumane 里的 human 不算；只认诉求的说法（复核 L2-7）。"""
     assert triggers.detect(text) is None
 
 
@@ -916,10 +1126,34 @@ def test_real_model_is_called_only_when_rules_give_up_and_one_usage_row_is_recor
     assert (row["plan_id"], row["trace_id"], row["task_id"]) == (PLAN_T173, "", None)
     assert (row["agent_role"], row["model"], row["tier"]) == ("cs_front_desk", "stub-real-model", "light")
     assert store.list_model_call_failures() == []
-    # 规则判得出的句子：真模型也一次不调、一行不记。
-    res2 = _invoke_understand_t173(store, "包邮吗", model)
-    assert res2.output["source"] == "rule" and len(model.calls) == 1
-    assert len(store.list_model_usage()) == 1
+    # 规则判得出的句子：真模型也一次不调、一行不记 —— 含规则判成「通用」的问候与感谢（复核 L2-3：
+    # 通用是规则判出来的意图，不是「判不出」）。
+    for text, want in (("包邮吗", T.INTENT_LOGISTICS), ("你好呀", T.INTENT_GENERAL),
+                       ("thank you for your help", T.INTENT_GENERAL)):
+        res2 = _invoke_understand_t173(store, text, model)
+        assert (res2.output["intent"], res2.output["source"]) == (want, "rule"), text
+        assert len(model.calls) == 1, text
+        assert len(store.list_model_usage()) == 1, text
+
+
+def test_skill_passes_extras_plan_id_through_as_is_t173():
+    """复核 L1-1：plan_id 照契约取 extras["plan_id"]，extras 里没有就是空串 —— 与同一次调用的
+    SkillInvoked 行一致（invoker 也是 extras.get('plan_id', '')），不替调用方现算。"""
+    store = SqliteStore()
+    store.init_schema()
+    model = _StubModelT173('{"intent":"logistics"}')
+    ident = AgentIdentity(agent_id="t173-probe", role="cs_front_desk", duty="测试理解层",
+                          allowed_skills=frozenset({"cs.understand"}),
+                          allowed_tools=frozenset(), max_risk="L", model_tier=Tier.LIGHT)
+    res = SkillInvoker(ident, store).invoke("cs.understand", {
+        "tenant_id": TENANT_T173, "conversation_id": CONV_T173, "turn_id": TURN_T173,
+        "text": _OFF_TOPIC_T173}, extras={"task_id": TURN_T173, "trace_id": "", "model": model})
+    assert res.status == "ok" and res.output["source"] == "model"
+    (row,) = store.list_model_usage()
+    assert (row["plan_id"], row["trace_id"], row["task_id"]) == ("", "", None)
+    invoked = [e for e in store.list_event_log("") if e["event_type"] == "SkillInvoked"]
+    assert len(invoked) == 1 and invoked[0]["plan_id"] == row["plan_id"]
+    assert store.list_event_log(PLAN_T173) == []
 
 
 def test_model_failure_records_one_failure_row_and_falls_back_to_rules_t173():

@@ -79,9 +79,15 @@ class McpServerSpec:
     ports: tuple[str, ...] = ()                 # 这个 server 背书的**已有** ToolPort 名
     security_boundary: str = ""                 # 九要素同名项，登记时就要写清
     owner: str = ""
+    #: 不按 ``--root`` 起的 server（p14 · T179 的 cs 连接器要 ``--db``）在这里给出**发现用**的
+    #: 启动参数；空 = 照旧 ``--root <root>``。这里只写能在任何机器上起得来的值（``:memory:``），
+    #: 不写哪一台机器上的库路径 —— 理由同 ``root`` 必须是仓库相对路径。
+    launch_args: tuple[str, ...] = ()
 
     def argv(self) -> list[str]:
         """拉起子进程的命令行。``module`` 是载荷字段，不是装饰字段 —— 走这条路出去。"""
+        if self.launch_args:
+            return [sys.executable, "-m", self.module, *self.launch_args]
         return [sys.executable, "-m", self.module, "--root", _abs_root(self.root)]
 
 
@@ -104,8 +110,8 @@ KNOWN_PORTS: dict[str, ToolPort] = {
 }
 
 
-#: 全仓 MCP server 注册表。**当前只有一个，就只登记一个。**
-#: 不为了「展示扩展性」编第二条进来 —— 注册表里躺着一个拉不起来的条目，
+#: 全仓 MCP server 注册表。**有几个真 server 就登记几个**（p14 · T179 起两个）。
+#: 不为了「展示扩展性」编条目进来 —— 注册表里躺着一个拉不起来的条目，
 #: 比没有注册表更坏：它会让第一个信它的人白跑一趟，还查不出是声明假的。
 SERVERS: dict[str, McpServerSpec] = {
     "git-mcp-server": McpServerSpec(
@@ -126,6 +132,29 @@ SERVERS: dict[str, McpServerSpec] = {
             "⑤ 单帧上限 64KiB，超出显式标 truncated —— 静默截断等于伪造文件内容"
         ),
         owner="task-mcp",
+    ),
+    # p14 · T179：客服前台的只读连接器（方案 B）。不背书任何 ToolPort（ports 空 → reconcile
+    # 只对工具名、不做参数对账），也**不进** DEFAULT_ROLE_SERVERS（不给任何 agent 角色自动挂）。
+    # 发现用 ``--db :memory:`` 起：client 只把 PATH/LANG 传给子进程，查单没配，只列工具。
+    "cs-mcp-server": McpServerSpec(
+        name="cs-mcp-server",
+        module="maos.tools.mcp.cs_server",
+        root=".",
+        readonly=True,
+        exposes=("cs_order_status", "cs_refund_precheck", "cs_handoff_list"),
+        ports=(),
+        launch_args=("--db", ":memory:"),
+        security_boundary=(
+            "① 全部工具只读：唯一的写是查单端口经 invoke_tool 落的 ToolInvoked 审计行"
+            "（plan_id cs:mcp、task_id mcp-<n>、trace_id 空），不写 cs_ 表、不建工单、不发命令；"
+            "② 身份先于查单：BindingVerifier.resolve 不过就回 identity_unverified、不查单，"
+            "本连接器没有写绑定的入口；"
+            "③ 出参最小：不回 query_key / 金额 / 时间 / 平台原始状态 / 异常原文，"
+            "退款预检不回 command_line，转人工列表不回卡片正文与客户标识；"
+            "④ 凭据只读环境变量（由电商适配器在发请求时读），本模块不打印任何取值；"
+            "⑤ 单帧上限 64KiB，超长行直接回 E_INVALID_REQUEST"
+        ),
+        owner="task-t179",
     ),
 }
 

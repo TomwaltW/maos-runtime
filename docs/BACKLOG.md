@@ -3188,3 +3188,11 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 |---|---|---|---|---|
 | 2026-09-25 | p14 | **p14 留出集的误判类别**（主会话归纳，只写类别）：注入端口时，泛泛的「帮我查物流 / 查快递」经 LOG-004 那篇的转人工标记直接 needs_order_lookup，而不是先追问单号；英文「is order X on its way」没进查单；追问用尽后的第三轮「找不到单号，你就告诉我在哪」没按「追问两次仍缺 → needs_order_lookup」落；「#」打头的纯数字单号绑定核验不过；「要是退货的话运费谁出」这种假设句被当成要办、去追问单号；单号紧跟商品名（「XX1234 耳机」）抽不出；「太离谱了，让我找真人」判成 anger 而非 requested（两条触发词的先后） | route 0.84 / 措辞 0.82 达不到预登记门槛；全部是「没答 / 转人工」，零自信答错 | 下一期：拿**类别**开理解层 / 判定顺序轨，并另盲写一份新留出集量泛化（p14 这份已被主会话看过误判明细，不再是盲的） |
 | 2026-09-25 | p14 | p12 留出集 intent 0.8429 / handoff 0.8684 仍差门槛一点 | 同上 | 同上 |
+
+## task-t179（只读 MCP 连接器，2026-09-25）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | demo 查单（cs_ports.demo_order_system）认台账 order_snapshot 的 status 列，但退款预检读同一份台账走 custom_case 的严格读法：order_snapshot 多一列 status，预检实测回 preflight_error | 同一份台账没法既演示 shipped / cancelled 的查单措辞、又演示退款预检 ok；T179 的测试只好用两份台账 | 下一期碰 cs_ports 或台账形状时统一口径（预检忽略多出的列，或 demo 状态另放一张表） |
+| 2026-09-25 | p14 | cs:mcp 的 task_id 按「库里已有几个 + 1」编号，两个 cs_server 进程并发写同一个库时可能撞号 | 只影响审计行的 task_id 唯一性，不影响出参；单进程、串行调用下严格递增 | 真要多进程并发时改成带进程标识或请求 id |
+| 2026-09-25 | p14 | client.py 的 StdioMcpClient 只把 PATH / LANG 传给子进程，经它拉起的 cs_server 读不到 MAOS_CS_ORDER_SYSTEMS / MAOS_CS_LEDGER_TENANT，只能列工具、查单恒为 system_misconfigured | 注册表发现与对账够用；若以后要经 ToolPort 让 agent 真调这个连接器，需要按名放行这几个变量 | 真给某个角色挂上 cs 连接器时（当前 DEFAULT_ROLE_SERVERS 刻意不挂） |

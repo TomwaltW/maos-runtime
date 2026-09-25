@@ -3564,3 +3564,16 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | p14 留出集 CS14H-060 第 1 轮的问候含 p12 触发词地板里的说法（盲写者看不到触发词表），前台照契约转人工、其后三轮 silent —— 期望与 R1 地板冲突 | 留出集文件**不改**；账里记明这 4 轮是契约冲突，扣掉它们 route 为 84/96 ≈ 0.875 | 预登记之后改题等于改门槛；同类冲突 p13 在开发集上是改句，留出集不改 |
 | 2026-09-25 | p14 | T176 开着的：契约 §5 的整合命令 `verify.py --cs --db X` 里其余十项也读 X，整条命令退出码非 0 | 不加「只跑 cs」的开关；整合期只看 cs/claim-basis 那一行：`cs_eval.py --set dev13 --db X` 退 0，随后 verify 报 `[PASS] cs/claim-basis 142/142` | 加开关是新 CLI 面，收益只在整合期这一条命令 |
 | 2026-09-25 | p14 | T177 开着的：dev12 因 KNOWN_GAPS 那一轮（CS12-044#1，门槛 1.0）退 1，`--set all` 因此恒退 1；ERROR 归 1 | 维持 T177 的口径（不是全部 meets 就退 1），不改契约 | 退出码如实反映「有集没达标」；已知缺口由 test_cs_eval_p12_t169 的 KNOWN_GAPS 钉住 |
+
+## task-t179（只读 MCP 连接器，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | 契约只写了 --tenant-map JSON，没说语义 | 解释为 {调用方租户: 内部租户}：不给就原样用入参 tenant_id；给了就只认映射里的键，不认的租户按失败即关处理（查单 / 预检回 identity_unverified、不查单；转人工列表回空） | 成本最低、可逆；外部平台看到的租户名不必等于内部 tenant_id，且给了映射就不会被猜中内部租户名绕过 |
+| 2026-09-25 | p14 | 契约 CLI 面没有台账参数，但 demo 查单与退款预检都要台账 | cs_server 加可选 --ledger，缺省 scenarios/custom/ledger.json（与 router 的 DEFAULT_LEDGER 同一个文件，不 import router） | 口径同 run_ingress 的 --ledger；不给就是契约原样的两参数用法 |
+| 2026-09-25 | p14 | 契约给了 cs_refund_precheck 成功时的五个键，没给门槛不过时的形状 | 门槛不过（没配 / 身份不过 / 查单非 ok）一律只回 {"outcome": X}，与 cs_order_status 同口径；成功时在五个键之外多带 "outcome": "ok"。没配 MAOS_CS_LEDGER_TENANT（预检未装）也回 system_misconfigured，且在身份核验与查单**之前**判，不落审计行 | 调用方按一个 outcome 键分流；预检装不上时查了单也没用，多一行 ToolInvoked 只是噪声 |
+| 2026-09-25 | p14 | 退款预检的 order_no 取哪个号 | 取绑定行的 display_no（规范化后的客户单号），与 desk.py 的 _precheck_once 同口径 | 与前台一致；display_no 与台账单号不同的绑定会按 order_not_in_ledger 拒，与前台行为相同 |
+| 2026-09-25 | p14 | task_id 的「序号」怎么编 | mcp-<n>，n = 本库 cs:mcp 家族已有的不同 task_id 数 + 1（每次查单前现数），换进程接着递增 | 进程内计数器重启就从 1 重来、同库里撞号；现数一次 event_log 成本可忽略 |
+| 2026-09-25 | p14 | MAOS_CS_ORDER_SYSTEMS 配坏了（build_order_lookup_from_env 抛 ValueError） | 按没配处理：stderr 只报类名，服务照常起，两个查单工具回 system_misconfigured | 契约要求「不抛」；起不来的话注册表的 discover 也会跟着坏 |
+| 2026-09-25 | p14 | 注册表的 McpServerSpec.argv 写死 --root，cs 连接器要 --db | McpServerSpec 加带缺省的 launch_args 字段（空 = 旧行为逐字不变）；cs 条目 root 写 "."、launch_args=("--db", ":memory:")、ports=()，于是 discover / reconcile / reconcile_all 都能真起它；test_mcp_registry.py 只改两颗钉子（条目集合、reconcile_all 的键） | 不写哪台机器的库路径；:memory: 在任何机器上都起得来，发现只需 tools/list |
+| 2026-09-25 | p14 | 参数不对（缺键、多键、lang 不认、limit 越界）走哪条错误通道 | 照 server.py：工具级失败回 isError=True；未知工具回 E_INVALID_PARAMS；未知方法 E_METHOD_NOT_FOUND；超 64 KiB 的行不解析、回 E_INVALID_REQUEST；E_INTERNAL 只带异常类名 | 与现有 git server 同形；异常原文可能带订单号 |

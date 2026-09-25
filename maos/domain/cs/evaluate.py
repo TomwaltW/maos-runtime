@@ -19,6 +19,26 @@
 
 本模块不 import 前台、会话表、检索的任何实现：前台是注入的（``desk_factory``），
 评测既能跑真前台（T169），也能跑测试里的替身。
+
+## p13（review/p13-cs-contracts.md §1.4 T175 / §3）
+
+评测集 ``scenarios/cs/eval/p13_cases.json``：case 可带 ``fixtures``（绑定、订单、预检），
+expect 多四个可选键 ``lang`` / ``lookup``（查单结果）/ ``ask``（追问的槽位）/ ``say``（该轮
+应当说出的订单状态）。:func:`run_eval_p13` 每个 case 从 fixtures 造三个**夹具端口**
+（:class:`FixtureVerifier` / :class:`FixtureLookup` / :class:`FixturePrecheck`，实现
+``ports.py`` 的三个 Protocol），以 ``desk_factory({"verifier", "lookup", "precheck"})`` 造前台
+（不带 fixtures 的 p12 式用例三个都给 None）。指标在 p12 四项之外：
+
+* ``wording_accuracy`` —— 期望 ``say`` 的轮：回复里恰有一次措辞表那句、没说别的状态、且有一条
+  literal 就是那句的 claim 挂着本轮读回的有效观察（:func:`claims.check_observation_wording` 过）；
+* ``wrong_status`` —— 回复说出的订单状态（:func:`said_statuses`）不是夹具里那一单的状态的轮数：
+  「那一单」= 本轮读回的观察行的 query_key 在夹具 orders 里、结果 ok；没有观察撑的状态一律算错；
+* ``status_fabrication`` 改用**本轮读回的观察 id**（p12 是空观察）：从 ``desk.store`` 的
+  ``cs_observation`` 按 (租户, 会话, 轮次) 读回（契约 §1.3 的列；W-A 期不 import T171 的 records）。
+
+另记 ``lang_accuracy`` / ``lookup_accuracy`` / ``ask_accuracy`` / ``cite_accuracy``（给了才比）：
+p13 门槛文件里没写它们时**只报不拦**（DECISIONS task-t175）。p12 的 :func:`load_cases` /
+:func:`run_eval` 行为不变。
 """
 
 from __future__ import annotations
@@ -26,17 +46,36 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from maos.domain.cs.claims import check_reply
+from maos.domain.cs import objects
+from maos.domain.cs.claims import check_observation_wording, check_reply
+from maos.domain.cs.ports import (
+    BINDING_TEST,
+    LANG_ZH,
+    LANGS,
+    LOOKUP_NOT_FOUND,
+    LOOKUP_OK,
+    LOOKUP_OUTCOMES,
+    ORDER_STATUS_WORDING,
+    SLOT_KEYS,
+    Binding,
+    LookupResult,
+    PrecheckResult,
+)
 from maos.domain.cs.types import (
+    BASIS_OBS,
     CHANNEL_WECHAT_KF,
     HANDOFF_REASONS,
     INTENTS,
+    ROUTE_ANSWER,
+    ROUTE_CLARIFY,
     ROUTE_HANDOFF,
     ROUTES,
     VIOLATION_UNBACKED_STATUS,
+    Claim,
     DeskResult,
     ReplyDraft,
 )
@@ -54,6 +93,18 @@ DEFAULT_TENANT_MAP: Mapping[str, str] = {DEFAULT_OPEN_KFID: "tnt-demo"}
 THRESHOLD_KEYS = ("intent_accuracy", "route_accuracy", "handoff_recall",
                   "status_fabrication_max")
 
+#: p13 评测集的位置（仓库根下，p13 契约 §3）。
+P13_EVAL_PATH: pathlib.Path = EVAL_PATH.with_name("p13_cases.json")
+
+#: p13 门槛文件的六个键（p13 契约 §3）。
+P13_THRESHOLD_KEYS = THRESHOLD_KEYS + ("wording_accuracy", "wrong_status_max")
+
+#: 夹具预检缺项时的拒绝理由（p13 契约 §1.4 T175：缺项 ok=False）。
+REFUSED_NOT_IN_LEDGER = "order_not_in_ledger"
+
+#: 措辞表里有对外说法的状态（amended 不在其中：不说、转人工）。
+SAYABLE_STATUSES: tuple[str, ...] = tuple(ORDER_STATUS_WORDING[LANG_ZH])
+
 _SCHEME_RE = re.compile(r"^[A-Z]{3}-\d{3}$")
 
 
@@ -67,34 +118,86 @@ def cite_doc_id(tenant_id: str, scheme_no: str) -> str:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class EvalExpect:
-    """一轮的期望。``reason`` 只在 ``route == 'handoff'`` 时非空；``cite`` 是方案编号。"""
+    """一轮的期望。``reason`` 只在 ``route == 'handoff'`` 时非空；``cite`` 是方案编号。
+
+    p13 的四个可选键（空串 = 不比）：``lang``（语种）、``lookup``（查单结果）、``ask``
+    （追问的槽位，只在 clarify 轮）、``say``（该轮说出的订单状态，只在 answer 轮、查单 ok）。
+    """
     route: str
     intent: str
     reason: str = ""
     cite: str = ""
+    lang: str = ""
+    lookup: str = ""
+    ask: str = ""
+    say: str = ""
 
     def to_json(self) -> dict[str, str]:
         d = {"route": self.route, "intent": self.intent}
-        if self.reason:
-            d["reason"] = self.reason
-        if self.cite:
-            d["cite"] = self.cite
+        for key in ("reason", "cite", "lang", "lookup", "ask", "say"):
+            value = getattr(self, key)
+            if value:
+                d[key] = value
         return d
 
 
 @dataclass(frozen=True)
+class FixtureBinding:
+    """夹具里的一条绑定（挂在跑批客户 ``eval-<case.id>`` 名下）。"""
+    display_no: str
+    system_name: str
+    query_key: str
+
+
+@dataclass(frozen=True)
+class FixtureOrder:
+    """夹具里一单的查单结果（按 query_key 找）。``outcome == 'ok'`` 时 status 在措辞表里。"""
+    outcome: str
+    status: str = ""
+    version: int = 0
+    updated_at: str = ""
+    error_kind: str = ""
+
+
+@dataclass(frozen=True)
+class EvalFixtures:
+    """一个 case 的外部世界：谁能查哪单、每单查出来是什么、预检怎么答。"""
+    bindings: tuple[FixtureBinding, ...] = ()
+    orders: tuple[tuple[str, FixtureOrder], ...] = ()          # (query_key, 结果)
+    precheck: tuple[tuple[str, PrecheckResult], ...] = ()      # (订单号, 预检结果)
+
+    def binding(self, display_no: str) -> FixtureBinding | None:
+        return next((b for b in self.bindings if b.display_no == display_no), None)
+
+    def order(self, query_key: str) -> FixtureOrder | None:
+        return next((o for k, o in self.orders if k == query_key), None)
+
+    def precheck_for(self, order_no: str) -> PrecheckResult | None:
+        return next((p for k, p in self.precheck if k == order_no), None)
+
+
+@dataclass(frozen=True)
 class EvalCase:
-    """一段会话：``turns`` 与 ``expect`` 等长。``open_kfid`` 空串 = 用缺省账号。"""
+    """一段会话：``turns`` 与 ``expect`` 等长。``open_kfid`` 空串 = 用缺省账号。
+
+    ``fixtures`` 为 None = p12 式用例（不注入端口）。
+    """
     id: str
     turns: tuple[str, ...]
     expect: tuple[EvalExpect, ...]
     tags: tuple[str, ...] = ()
     open_kfid: str = ""
     synthetic: bool = True
+    fixtures: EvalFixtures | None = None
 
     @property
     def effective_open_kfid(self) -> str:
         return self.open_kfid or DEFAULT_OPEN_KFID
+
+    @property
+    def customer(self) -> str:
+        """跑批的客户（external_userid）：绑定一律挂在他名下。"""
+        return f"eval-{self.id}"
 
 
 @dataclass(frozen=True)
@@ -184,6 +287,78 @@ class EvalReport:
         return "\n".join(lines)
 
 
+#: p13 另记、门槛文件里没写就只报不拦的几项（给了期望才比）。
+P13_INFO_KEYS = ("cite_accuracy", "lang_accuracy", "lookup_accuracy", "ask_accuracy")
+
+
+@dataclass(frozen=True)
+class EvalReportP13(EvalReport):
+    """p13 跑批的报告：p12 四项 + ``wording_accuracy`` + ``wrong_status``（+ 只报不拦的几项）。
+
+    ``failures`` 的 problems 另可含 lang / lookup / ask / wording / wrong_status。
+    """
+    wording_expected: int = 0
+    wording_hits: int = 0
+    wrong_status: int = 0
+    lang_expected: int = 0
+    lang_hits: int = 0
+    lookup_expected: int = 0
+    lookup_hits: int = 0
+    ask_expected: int = 0
+    ask_hits: int = 0
+
+    @property
+    def wording_accuracy(self) -> float:
+        return _ratio(self.wording_hits, self.wording_expected)
+
+    @property
+    def lang_accuracy(self) -> float:
+        return _ratio(self.lang_hits, self.lang_expected)
+
+    @property
+    def lookup_accuracy(self) -> float:
+        return _ratio(self.lookup_hits, self.lookup_expected)
+
+    @property
+    def ask_accuracy(self) -> float:
+        return _ratio(self.ask_hits, self.ask_expected)
+
+    def metrics(self) -> dict[str, float | int]:
+        return {**super().metrics(),
+                "wording_accuracy": self.wording_accuracy,
+                "wrong_status": self.wrong_status,
+                "lang_accuracy": self.lang_accuracy,
+                "lookup_accuracy": self.lookup_accuracy,
+                "ask_accuracy": self.ask_accuracy}
+
+    def shortfalls(self, thresholds: Mapping[str, Any]) -> list[str]:
+        """p13 契约 §3 的六个门槛（缺省按最严）；另几项只在门槛里点了名才拦。
+
+        与 p12 不同：``cite_accuracy`` 不再缺省按 1.0 拦 —— p13 的意图 / 出口门槛是 0.9，
+        错一轮出口多半连带错引用 / 查单结果，缺省 1.0 会让 0.9 的门槛形同虚设。
+        """
+        out: list[str] = []
+        if self.turns == 0:
+            out.append(f"turns=0（cases={self.cases}）：评测空转，一轮都没跑")
+        for key in ("intent_accuracy", "route_accuracy", "handoff_recall", "wording_accuracy"):
+            want = float(thresholds.get(key, 1.0))
+            got = getattr(self, key)
+            if got < want:
+                out.append(f"{key}={got:.4f} < {want}")
+        for key, got in (("status_fabrication", self.status_fabrication),
+                         ("wrong_status", self.wrong_status)):
+            cap = int(thresholds.get(f"{key}_max", 0))
+            if got > cap:
+                out.append(f"{key}={got} > {cap}")
+        for key in P13_INFO_KEYS:
+            if key in thresholds:
+                want = float(thresholds[key])
+                got = getattr(self, key)
+                if got < want:
+                    out.append(f"{key}={got:.4f} < {want}")
+        return out
+
+
 # ---------------------------------------------------------------------------
 # 读评测集
 # ---------------------------------------------------------------------------
@@ -206,7 +381,98 @@ def _parse_expect(case_id: str, idx: int, raw: Any) -> EvalExpect:
         raise ValueError(f"{where} route={route} 不许带 reason")
     if cite and not _SCHEME_RE.match(cite):
         raise ValueError(f"{where} cite={cite!r} 不是方案编号")
-    return EvalExpect(route=route, intent=intent, reason=reason, cite=cite)
+    lang = str(raw.get("lang", "") or "")
+    lookup = str(raw.get("lookup", "") or "")
+    ask = str(raw.get("ask", "") or "")
+    say = str(raw.get("say", "") or "")
+    if lang and lang not in LANGS:
+        raise ValueError(f"{where} lang={lang!r} 不在 {LANGS}")
+    if lookup and lookup not in LOOKUP_OUTCOMES:
+        raise ValueError(f"{where} lookup={lookup!r} 不在 {LOOKUP_OUTCOMES}")
+    if ask and ask not in SLOT_KEYS:
+        raise ValueError(f"{where} ask={ask!r} 不在 {SLOT_KEYS}")
+    if (route == ROUTE_CLARIFY) != bool(ask):
+        raise ValueError(f"{where} clarify 轮必须带 ask、别的轮不许带（route={route}, ask={ask!r}）")
+    if say:
+        if say not in ORDER_STATUS_WORDING[lang or LANG_ZH]:
+            raise ValueError(f"{where} say={say!r} 在措辞表里没有对外说法")
+        if route != ROUTE_ANSWER or lookup != LOOKUP_OK:
+            raise ValueError(f"{where} say 只许出现在 answer 轮且 lookup=ok")
+    return EvalExpect(route=route, intent=intent, reason=reason, cite=cite,
+                      lang=lang, lookup=lookup, ask=ask, say=say)
+
+
+def _str_field(where: str, raw: Mapping[str, Any], key: str, *, required: bool) -> str:
+    value = raw.get(key, "")
+    if not isinstance(value, str) or (required and not value):
+        raise ValueError(f"{where}.{key} 必须是{'非空' if required else ''}字符串，收到 {value!r}")
+    return value
+
+
+def _parse_fixtures(case_id: str, raw: Any) -> EvalFixtures:
+    """``fixtures`` 的形状（p13 契约 §3）：bindings 数组、orders / precheck 两张表，都可缺省。"""
+    where = f"{case_id} fixtures"
+    if not isinstance(raw, dict) or not set(raw) <= {"bindings", "orders", "precheck"}:
+        raise ValueError(f"{where} 必须是对象，键 ⊆ bindings / orders / precheck")
+    bindings: list[FixtureBinding] = []
+    raw_bindings = raw.get("bindings", [])
+    if not isinstance(raw_bindings, list):
+        raise ValueError(f"{where}.bindings 必须是数组")
+    for i, b in enumerate(raw_bindings):
+        w = f"{where}.bindings[{i}]"
+        if not isinstance(b, dict) or set(b) != {"display_no", "system_name", "query_key"}:
+            raise ValueError(f"{w} 键必须恰好是 display_no / system_name / query_key")
+        bindings.append(FixtureBinding(*(_str_field(w, b, k, required=True)
+                                         for k in ("display_no", "system_name", "query_key"))))
+    if len({b.display_no for b in bindings}) != len(bindings):
+        raise ValueError(f"{where}.bindings 的 display_no 重复")
+
+    orders: list[tuple[str, FixtureOrder]] = []
+    raw_orders = raw.get("orders", {})
+    if not isinstance(raw_orders, dict):
+        raise ValueError(f"{where}.orders 必须是对象（query_key → 结果）")
+    for key, o in raw_orders.items():
+        w = f"{where}.orders[{key!r}]"
+        if (not key or not isinstance(o, dict)
+                or not set(o) <= {"outcome", "status", "version", "updated_at", "error_kind"}):
+            raise ValueError(f"{w} 形状不对")
+        outcome = _str_field(w, o, "outcome", required=True)
+        status = _str_field(w, o, "status", required=False)
+        if outcome not in LOOKUP_OUTCOMES:
+            raise ValueError(f"{w} outcome={outcome!r} 不在 {LOOKUP_OUTCOMES}")
+        if outcome == LOOKUP_OK and status not in SAYABLE_STATUSES:
+            raise ValueError(f"{w} ok 的 status 必须在措辞表里（{SAYABLE_STATUSES}），收到 {status!r}")
+        if outcome != LOOKUP_OK and status:
+            raise ValueError(f"{w} 非 ok 的结果不带 status")
+        version = o.get("version", 0)
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError(f"{w}.version 必须是整数")
+        orders.append((key, FixtureOrder(
+            outcome=outcome, status=status, version=version,
+            updated_at=_str_field(w, o, "updated_at", required=False),
+            error_kind=_str_field(w, o, "error_kind", required=False))))
+
+    prechecks: list[tuple[str, PrecheckResult]] = []
+    raw_pre = raw.get("precheck", {})
+    if not isinstance(raw_pre, dict):
+        raise ValueError(f"{where}.precheck 必须是对象（订单号 → 预检结果）")
+    keys = {"ok", "decision", "rule_ref", "reason_code", "command_line", "summary", "refused_why"}
+    for order_no, p in raw_pre.items():
+        w = f"{where}.precheck[{order_no!r}]"
+        if not order_no or not isinstance(p, dict) or not set(p) <= keys or not isinstance(
+                p.get("ok"), bool):
+            raise ValueError(f"{w} 形状不对（ok 必须是布尔）")
+        fields = {k: _str_field(w, p, k, required=False) for k in sorted(keys - {"ok"})}
+        if p["ok"]:
+            if not fields["reason_code"] or fields["refused_why"]:
+                raise ValueError(f"{w} ok=true 必须带 reason_code、不许带 refused_why")
+            # 契约 §1.4 T172：command_line 形如「/refund <订单号> <原因码>」；夹具没写就按这个形状补
+            fields["command_line"] = (fields["command_line"]
+                                      or f"/refund {order_no} {fields['reason_code']}")
+        elif not fields["refused_why"] or fields["command_line"]:
+            raise ValueError(f"{w} ok=false 必须带 refused_why、不许带 command_line")
+        prechecks.append((order_no, PrecheckResult(ok=p["ok"], **fields)))
+    return EvalFixtures(bindings=tuple(bindings), orders=tuple(orders), precheck=tuple(prechecks))
 
 
 def load_document(path: pathlib.Path | str = EVAL_PATH) -> dict[str, Any]:
@@ -245,6 +511,7 @@ def load_cases(path: pathlib.Path | str = EVAL_PATH) -> tuple[EvalCase, ...]:
             tags=tuple(str(t) for t in raw.get("tags") or ()),
             open_kfid=str(raw.get("open_kfid", "") or ""),
             synthetic=bool(raw.get("synthetic", False)),
+            fixtures=(_parse_fixtures(case_id, raw["fixtures"]) if "fixtures" in raw else None),
         ))
     return tuple(out)
 
@@ -357,3 +624,286 @@ def run_eval(desk_factory: Callable[[], Any], cases, *,
                       handoff_caught=handoff_caught, cite_expected=cite_expected,
                       cite_hits=cite_hits, status_fabrication=fabrication,
                       failures=tuple(failures))
+
+
+# ===========================================================================
+# p13：夹具端口（实现 ports.py 的三个 Protocol，从 case.fixtures 构造）
+# ===========================================================================
+class FixtureVerifier:
+    """IdentityVerifier：只认挂在本 case 跑批客户名下的绑定，按 (租户, 渠道, 客户, 单号) 精确匹配。
+
+    失败即关：租户为空、任何一项对不上、单号不在绑定里，都返回 None。
+    """
+
+    def __init__(self, fixtures: EvalFixtures, *, tenant_id: str, external_userid: str,
+                 channel: str = CHANNEL_WECHAT_KF):
+        self.fixtures = fixtures
+        self.tenant_id = tenant_id
+        self.external_userid = external_userid
+        self.channel = channel
+        self.calls: list[dict[str, str]] = []
+
+    def resolve(self, store: Any, *, tenant_id: str, channel: str, external_userid: str,
+                display_no: str) -> Binding | None:
+        self.calls.append({"tenant_id": tenant_id, "channel": channel,
+                           "external_userid": external_userid, "display_no": display_no})
+        if not self.tenant_id or (tenant_id, channel, external_userid) != (
+                self.tenant_id, self.channel, self.external_userid):
+            return None
+        found = self.fixtures.binding(display_no)
+        if found is None:
+            return None
+        return Binding(tenant_id=tenant_id, channel=channel, external_userid=external_userid,
+                       display_no=found.display_no, system_name=found.system_name,
+                       query_key=found.query_key, source=BINDING_TEST)
+
+
+class FixtureLookup:
+    """OrderLookup：恰好按 ``fixtures.orders[binding.query_key]`` 作答；表里没有 = not_found。永不抛。"""
+
+    def __init__(self, fixtures: EvalFixtures):
+        self.fixtures = fixtures
+        self.calls: list[dict[str, str]] = []
+
+    def lookup(self, store: Any, binding: Binding, *, plan_id: str,
+               task_id: str) -> LookupResult:
+        self.calls.append({"display_no": binding.display_no, "query_key": binding.query_key,
+                           "plan_id": plan_id, "task_id": task_id})
+        order = self.fixtures.order(binding.query_key)
+        if order is None:
+            return LookupResult(outcome=LOOKUP_NOT_FOUND, system_name=binding.system_name,
+                                query_key=binding.query_key, error_kind="KeyError")
+        return LookupResult(outcome=order.outcome, system_name=binding.system_name,
+                            query_key=binding.query_key, status=order.status,
+                            version=order.version, updated_at=order.updated_at,
+                            error_kind=order.error_kind)
+
+
+class FixturePrecheck:
+    """RefundPrecheck：按 ``fixtures.precheck[order_no]`` 作答；缺项 ok=False、order_not_in_ledger。"""
+
+    def __init__(self, fixtures: EvalFixtures):
+        self.fixtures = fixtures
+        self.calls: list[dict[str, str]] = []
+
+    def precheck(self, *, tenant_id: str, order_no: str, reason_text: str,
+                 now: str) -> PrecheckResult:
+        self.calls.append({"tenant_id": tenant_id, "order_no": order_no,
+                           "reason_text": reason_text, "now": now})
+        found = self.fixtures.precheck_for(order_no)
+        return found if found is not None else PrecheckResult(
+            ok=False, refused_why=REFUSED_NOT_IN_LEDGER)
+
+
+def fixture_ports(case: EvalCase, *, tenant_id: str) -> dict[str, Any]:
+    """一个 case 的三个端口。不带 fixtures 的 p12 式用例三个都是 None（前台走 p12 路径）。"""
+    if case.fixtures is None:
+        return {"verifier": None, "lookup": None, "precheck": None}
+    return {"verifier": FixtureVerifier(case.fixtures, tenant_id=tenant_id,
+                                        external_userid=case.customer),
+            "lookup": FixtureLookup(case.fixtures),
+            "precheck": FixturePrecheck(case.fixtures)}
+
+
+# ===========================================================================
+# p13：跑批
+# ===========================================================================
+_EN_BEFORE_T175 = r"(?<![A-Za-z])"
+_EN_AFTER_T175 = r"(?![A-Za-z])"
+
+#: 措辞表那几句之外、回复里「说出了某个订单状态」的说法（中文要带「已」，英文按词）。
+_SAID_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("paid", re.compile(r"已经?(?:为您)?(?:付款|支付)")),
+    ("paid", re.compile(_EN_BEFORE_T175 + r"(?:is|was|are|were|been|already|fully)\s+paid"
+                        + _EN_AFTER_T175, re.IGNORECASE)),
+    ("shipped", re.compile(r"已经?(?:为您)?(?:发货|发出|寄出)")),
+    ("shipped", re.compile(_EN_BEFORE_T175 + r"(?:shipped|dispatched)" + _EN_AFTER_T175,
+                           re.IGNORECASE)),
+    ("cancelled", re.compile(r"已经?(?:为您)?取消")),
+    ("cancelled", re.compile(_EN_BEFORE_T175 + r"cancell?ed" + _EN_AFTER_T175, re.IGNORECASE)),
+)
+#: 英文说法前面紧挨着这些就是否定（「has not shipped yet」不是说已发货）。
+_EN_NEGATIONS = ("not ", "n't ", "n’t ", "not yet ", "never ")
+
+
+def said_statuses(text: str) -> frozenset[str]:
+    """回复说出了哪些订单状态：措辞表的中英各句（整句）+ 其余「已发货 / shipped」一类说法。
+
+    先把措辞表整句挖掉再扫散说法（英文「已付款」那句里有「has not shipped yet」，不能算说了已发货）。
+    """
+    remaining = "".join(c for c in unicodedata.normalize("NFKC", text or "")
+                        if unicodedata.category(c) != "Cf")
+    found: set[str] = set()
+    for table in ORDER_STATUS_WORDING.values():
+        for status, sentence in table.items():
+            if sentence in remaining:
+                found.add(status)
+                remaining = remaining.replace(sentence, " ")
+    for status, pattern in _SAID_PATTERNS:
+        for m in pattern.finditer(remaining):
+            before = remaining[max(0, m.start() - 9):m.start()].lower()
+            if pattern.flags & re.IGNORECASE and before.endswith(_EN_NEGATIONS):
+                continue
+            found.add(status)
+    return frozenset(found)
+
+
+def _actual_of_p13(res: Any) -> dict[str, Any]:
+    """p12 的字段 + p13 的 lang / lookup_outcome / ask_slot / claims 与归属；类型不对抛 TypeError。"""
+    base = _actual_of(res)
+    claims = res.draft.claims
+    if (not all(isinstance(getattr(res, k), str)
+                for k in ("lang", "lookup_outcome", "ask_slot", "tenant_id",
+                          "conversation_id", "turn_id"))
+            or not isinstance(claims, (tuple, list))
+            or not all(isinstance(c, Claim) for c in claims)):
+        raise TypeError("DeskResult 的 p13 字段类型不对（lang / lookup_outcome / ask_slot / claims）")
+    return {**base, "lang": res.lang, "lookup": res.lookup_outcome, "ask": res.ask_slot,
+            "claims": tuple(claims), "tenant_id": res.tenant_id,
+            "conversation_id": res.conversation_id, "turn_id": res.turn_id}
+
+
+def turn_observations(store: Any, *, tenant_id: str, conversation_id: str,
+                      turn_id: str) -> dict[str, dict[str, Any]]:
+    """从前台的库里读回本轮的观察行（``cs_observation``，p13 契约 §1.3）：``id -> 行``。
+
+    没有 store、没有这张表（p12 的库）、读不出来：一律当本轮**没有观察**（失败即关 ——
+    这时回复里的任何状态都撑不住）。
+    """
+    if store is None or not turn_id:
+        return {}
+    try:
+        rows = objects.query(
+            store, "SELECT * FROM cs_observation WHERE tenant_id = ? AND conversation_id = ?"
+                   " AND turn_id = ?", (tenant_id, conversation_id, turn_id))
+    except Exception:                                  # noqa: BLE001 —— 读不回 = 没有观察
+        return {}
+    return {str(r["observation_id"]): dict(r) for r in rows if r.get("observation_id")}
+
+
+def _fabricates_status_p13(got: Mapping[str, Any], rows: Mapping[str, Any]) -> bool:
+    """最终回复 + 它的 claims，在**本轮读回的观察 id** 下 check_reply 报 unbacked_status。"""
+    draft = ReplyDraft(text=got["reply_text"] or "", claims=got["claims"])
+    result = check_reply(draft, observations=frozenset(rows), kb_doc_ids=frozenset())
+    return any(v.kind == VIOLATION_UNBACKED_STATUS for v in result.violations)
+
+
+def _wrong_status(said: frozenset[str], rows: Mapping[str, Mapping[str, Any]],
+                  fixtures: EvalFixtures | None) -> bool:
+    """说出的状态里有不是「本轮观察的那一单在夹具里的状态」的。没有观察撑的状态一律算错。"""
+    truth: set[str] = set()
+    if fixtures is not None:
+        for row in rows.values():
+            order = fixtures.order(str(row.get("query_key") or ""))
+            if order is not None and order.outcome == LOOKUP_OK:
+                truth.add(order.status)
+    return bool(said - truth)
+
+
+def _wording_ok(exp: EvalExpect, got: Mapping[str, Any],
+                rows: Mapping[str, Mapping[str, Any]]) -> bool:
+    """期望 say 的轮：恰有一次那句、没说别的状态、那句挂着本轮观察且措辞对得上观察。"""
+    lang = exp.lang or LANG_ZH
+    sentence = ORDER_STATUS_WORDING[lang][exp.say]
+    text = got["reply_text"] or ""
+    if text.count(sentence) != 1 or said_statuses(text) != {exp.say}:
+        return False
+    claims = got["claims"]
+    backed = any(
+        c.literal == sentence and c.basis_ref.startswith(BASIS_OBS)
+        and str((rows.get(c.basis_ref[len(BASIS_OBS):]) or {}).get("status") or "") == exp.say
+        for c in claims)
+    draft = ReplyDraft(text=text, claims=claims)
+    return backed and check_observation_wording(draft, rows, lang=lang).ok
+
+
+def run_eval_p13(desk_factory: Callable[[Mapping[str, Any]], Any], cases, *,
+                 tenant_map: Mapping[str, str] | None = None) -> EvalReport:
+    """p13 跑批：每个 case 从 fixtures 造三个夹具端口、``desk_factory(ports)`` 造一个新前台，
+    逐轮比对，返回 :class:`EvalReportP13`。
+
+    前台对象要有 ``.store``（观察从那里读回）；没有就当每轮都没有观察。其余约定同 :func:`run_eval`：
+    前台抛异常 / 返回不合形状记该轮 ``error``；case 不合形状抛 ValueError、一个前台都不造。
+    """
+    tmap = dict(DEFAULT_TENANT_MAP if tenant_map is None else tenant_map)
+    cases = tuple(cases)
+    _check_cases(cases)
+    n: dict[str, int] = {k: 0 for k in (
+        "turns", "intent", "route", "handoff_expected", "handoff_caught", "cite_expected", "cite",
+        "fabrication", "wording_expected", "wording", "wrong_status", "lang_expected", "lang",
+        "lookup_expected", "lookup", "ask_expected", "ask")}
+    failures: list[EvalMiss] = []
+
+    for case in cases:
+        tenant = tmap.get(case.effective_open_kfid, "")
+        desk = desk_factory(fixture_ports(case, tenant_id=tenant))
+        store = getattr(desk, "store", None)
+        for i, (text, exp) in enumerate(zip(case.turns, case.expect, strict=True), start=1):
+            n["turns"] += 1
+            problems: list[str] = []
+            got: dict[str, Any] | None
+            try:
+                got = _actual_of_p13(desk.handle(inbound_for(case, i, text)))
+            except Exception as exc:                 # noqa: BLE001 —— 评测记失败，不中断
+                got = None
+                actual: dict[str, Any] = {"error": f"{type(exc).__name__}: {exc}"}
+                problems.append("error")
+            else:
+                actual = {k: got[k] for k in ("route", "intent", "reason", "citations",
+                                               "lang", "lookup", "ask")}
+
+            if exp.route == ROUTE_HANDOFF:
+                n["handoff_expected"] += 1
+            for key, want in (("cite", exp.cite), ("lang", exp.lang), ("lookup", exp.lookup),
+                              ("ask", exp.ask), ("wording", exp.say)):
+                if want:
+                    n[f"{key}_expected"] += 1
+            if got is not None:
+                if got["intent"] == exp.intent:
+                    n["intent"] += 1
+                else:
+                    problems.append("intent")
+                if got["route"] == exp.route and (
+                        exp.route != ROUTE_HANDOFF or got["reason"] == exp.reason):
+                    n["route"] += 1
+                else:
+                    problems.append("route")
+                if exp.route == ROUTE_HANDOFF and got["route"] == ROUTE_HANDOFF:
+                    n["handoff_caught"] += 1
+                rows = turn_observations(store, tenant_id=got["tenant_id"],
+                                         conversation_id=got["conversation_id"],
+                                         turn_id=got["turn_id"])
+                if _fabricates_status_p13(got, rows):
+                    n["fabrication"] += 1
+                    problems.append("status_fabrication")
+                if _wrong_status(said_statuses(got["reply_text"]), rows, case.fixtures):
+                    n["wrong_status"] += 1
+                    problems.append("wrong_status")
+                checks = (
+                    ("cite", exp.cite, lambda: cite_doc_id(tenant, exp.cite) in got["citations"]),
+                    ("lang", exp.lang, lambda: got["lang"] == exp.lang),
+                    ("lookup", exp.lookup, lambda: got["lookup"] == exp.lookup),
+                    ("ask", exp.ask, lambda: got["ask"] == exp.ask),
+                    ("wording", exp.say, lambda: _wording_ok(exp, got, rows)),
+                )
+                for key, want, ok in checks:
+                    if not want:
+                        continue
+                    if ok():
+                        n[key] += 1
+                    else:
+                        problems.append(key)
+            if problems:
+                failures.append(EvalMiss(case_id=case.id, turn=i, text=text,
+                                         expected=exp.to_json(), actual=actual,
+                                         problems=tuple(problems)))
+
+    return EvalReportP13(
+        cases=len(cases), turns=n["turns"], intent_hits=n["intent"], route_hits=n["route"],
+        handoff_expected=n["handoff_expected"], handoff_caught=n["handoff_caught"],
+        cite_expected=n["cite_expected"], cite_hits=n["cite"],
+        status_fabrication=n["fabrication"], failures=tuple(failures),
+        wording_expected=n["wording_expected"], wording_hits=n["wording"],
+        wrong_status=n["wrong_status"], lang_expected=n["lang_expected"], lang_hits=n["lang"],
+        lookup_expected=n["lookup_expected"], lookup_hits=n["lookup"],
+        ask_expected=n["ask_expected"], ask_hits=n["ask"])

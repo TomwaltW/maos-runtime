@@ -3306,3 +3306,20 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-24 | p13 | 理解层要不要调模型 | 确定性优先，只在确定性判不出意图、且注入的是真模型时调；CALL_SITE 登记、model_usage 行 trace_id 空、task_id None、plan_id=cs:…；Scripted / None 下零 usage 行 | 测试与证据恒为 Scripted，行为要确定；verify 第 8 项的四条判据在这个口径下自然成立 |
 | 2026-09-24 | p13 | p13 的评测集算什么 | scenarios/cs/eval/p13_cases.json 定性为开发集（T174 会拿它调）；门槛预登记在文件里（intent 0.9 / route 0.9 / handoff 0.95 / 编造 0 / 措辞 1.0 / 错状态 0）；泛化由 p12 留出集与 p14 新写的留出集量 | 查单流程是规则驱动的，开发集调到满分合理；泛化另量 |
 | 2026-09-24 | p13 | 骨架里顺手动了 p12 各轨的文件（schema.sql、desk.py、两份测试） | 只动到「枚举增长后 p12 测试仍全绿」所需的最小面：CHECK 三处、原因表各四条、契约钉子、留出测试的失败消息 | 骨架是主会话的；让骨架提交本身全绿（除收集数），各轨从同一个绿基线出发 |
+
+## task-t175（校验、守卫白名单与 p13 评测集，2026-09-24）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-24 | p13 | 守卫改失败即关白名单，名单怎么认 | 名单 = p12 §2.3「明确允许」十一个模块 + maos.skills.registry.register_skill 一个名字；名单模块的成员放行、真子模块不放行（maos.kb.plan_advice 不跟着 maos.kb 放行）；本域两棵子树 maos.domain.cs（含 ports）与 maos.skills.builtin.cs 整片放行 | p12 §2.3 只禁「非 cs」的 builtin 子包，desk 惰性 import maos.skills.builtin.cs 注册 skill；子模块若随父包放行，白名单就退化成前缀黑名单 |
+| 2026-09-24 | p13 | 祖先包（maos、maos.domain、maos.skills.builtin 等八个）在白名单下怎么判 | 直接 import 或当值用（Y = maos、g(maos)）即判；在属性链上路过、落到名单里不报 | import maos.kb 绑定的名字是 maos：若把 maos 当「已报过的违例」，其后 maos.runtime.gate 的属性链会被整条跳过（守卫反而变松）；当值传出去后守卫看不见后续属性访问 |
+| 2026-09-24 | p13 | 「解析不了的判红」管到哪 | from-import 的目标一律要解析得了；本域子树外的 maos.* 名字（import、属性链）要解析得了；本域子树不要求（tmp 注入的本域文件在真仓库里没有，本域文件本身逐个被扫）；非 maos 的 plain import 不要求（出处就是它自己） | 判不了真实出处就不放行；本域与顶层模块没有「再导出」问题 |
+| 2026-09-24 | p13 | 字符串常量也按白名单判吗 | 黑名单照旧；白名单只管能解析到对象的串 | cs 代码里 logging.getLogger("maos.cs") 是日志名、不是加载目标；动态加载入口本来就整模块禁 |
+| 2026-09-24 | p13 | 接手的 T170 守卫测试里期望变了的几条 | 红绿不变、只改理由：允许清单里两个根本不存在的名字（split_sql、SkillSpec）换成真名，from maos.kb.retriever import * 挪进反向用例（它绑出 maos.config 的函数）；复核 b11 等三条的理由从「实为」变成「白名单」；段匹配那条改用黑名单函数断言、另断言白名单兜住 | 解析不了判红以后，写错的允许名正是这条要抓的；三条模块名本身在名单外，名字那一关就拦住 |
+| 2026-09-24 | p13 | 英文状态说法扫什么 | shipped / dispatched / delivered / refunded / cancel(l)ed、arrive 各词形、has / have / 's been、will [be] ship / deliver、in transit / out for delivery / on its way、is / was / already paid；另一份保留词间空格的规范化上认，词边界只看 ASCII 字母；否定不豁免 | 契约列的是下限；「has not shipped yet」同样是在替外部世界说状态（中文「尚未发货」放行是 p12 口径，不动）；没有英文命中时结果与 p12 逐字节一致 |
+| 2026-09-24 | p13 | 「已付款 / 已支付」放哪张表 | 付款、支付进规则 3 的「已 + 动词」表（订单类），不进规则 5 的退款触发 | 措辞表 paid 那句是订单状态，不是退款状态 |
+| 2026-09-24 | p13 | run_eval_p13 从哪读回本轮观察 | 从 desk.store 的 cs_observation 按（租户, 会话, 轮次）直查（契约 §1.3 的列），不 import T171 的 records；没有 .store、没有这张表、读失败一律当本轮没有观察 | W-A 期互不 import 对方的新模块；失败即关：读不回时回复里的状态都撑不住，指标当场掉 |
+| 2026-09-24 | p13 | wrong_status 与 wording_accuracy 的口径 | wrong_status：回复说出的状态（措辞表整句 + 「已发货 / shipped」一类散说法，英文紧邻否定不算）不全是「本轮观察行的 query_key 在夹具里 ok 的状态」就算一轮，没观察撑的状态一律算错；wording：恰一次那句、没说别的状态、那句挂着本轮观察且状态相符、check_observation_wording 过 | 契约只给了一句定义；两项各有只有它能判负的用例（观察记错说错状态只有 wrong_status 抓得到；说两遍 / 换语种只有 wording 抓得到） |
+| 2026-09-24 | p13 | p13 门槛文件没写的几项 | cite / lang / lookup / ask 四项只报不拦（门槛里点名才拦）；p12 run_eval 的 cite 缺省 1.0 不变；p13 报告是 EvalReport 的子类 EvalReportP13 | p13 意图 / 出口门槛是 0.9，错一轮出口多半连带错引用或查单结果，缺省 1.0 会让 0.9 形同虚设；_thresholds 必须照契约原样六个键 |
+| 2026-09-24 | p13 | 夹具端口的细节 | 核验按（租户, 渠道, eval-case.id, 单号）精确匹配、租户空即关；查单按 query_key 找、表里没有 = not_found（error_kind KeyError）；预检 ok 而夹具没写 command_line 时按「/refund 单号 原因码」补 | 契约只给了「恰好按夹具」「缺项拒绝」；补 command_line 让卡片形状与 T172 一致 |
+| 2026-09-24 | p13 | p13 评测集出题口径 | 为某个订单申请退货 / 退款记 return_exchange（p12 编号目录 RET-005）；只报单号不说诉求的那一轮期望 fallback / unknown；每轮都写 lang；「五种查单结果」按六个 LOOKUP_OUTCOMES 各 ≥2 覆盖；不出英文触发词（T173 的英文词表未定）；load_cases 对 p13 键加形状校验（clarify 当且仅当带 ask、say 只在 answer 且 lookup=ok） | 均按 §2 判定顺序可推；新句不抄 p12 开发集与话术库 examples（测试钉住） |

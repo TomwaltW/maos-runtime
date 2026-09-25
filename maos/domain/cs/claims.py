@@ -38,11 +38,28 @@
 **同一处只报一次**：「退款已到账」既是对外字面值、里面又含「已到账」，两段区间重叠，
 合成一处；否则同一句话会报两条 unbacked_status。紧挨着的两处（「已发货已签收」）不合并。
 
+## p13 增量（review/p13-cs-contracts.md §1.4 T175）
+
+* 补扫「已付款 / 已支付」：付款 / 支付进了「已 + 动词」表（p13 措辞表里有「您的订单已付款」，
+  不扫的话这句在空观察下原样放行）。
+* 补扫英文状态说法（:data:`EN_STATUS_PATTERNS`）：shipped / dispatched / delivered / refunded /
+  cancel(l)ed、arrive 的各词形（will arrive / arriving / arrived / arrives）、has / have / 's been …、
+  will [be] ship / deliver、in transit / out for delivery / on its way、is / was / already paid。
+  大小写不论；在**保留词间空格**的另一份规范化上认（NFKC、去零宽 / 软连字符 / 组合附加符 /
+  间隔号、空白压成一个），词边界只看 ASCII 字母，中英混排也认。**否定不豁免**：
+  「has not shipped yet」同样是在替外部世界说这一单的状态（中文「尚未发货」放行是 p12 口径，不动）。
+  于是英文状态句在空观察下被 :func:`check_reply` 拦下，措辞表里的中英各句挂着有效 obs 时放行。
+* :func:`check_observation_wording`：obs: claim 的 literal 必须**逐字**等于
+  ``ports.ORDER_STATUS_WORDING[lang][该观察的 status]`` —— 「挂着观察」之外再要求「说的就是那个观察」。
+
+没有英文状态字眼的正文，check_reply 的结果与 p12 逐字节一致（英文扫描一条都没命中时直接用 p12 的结果）。
+
 ## 这里不做的事
 
 * 不调模型、不读库（:func:`turn_kb_doc_ids` 除外，它只读 event_log 取本轮命中）；
 * 不改写回复 —— 拦下之后换什么话术是前台的事；
-* 不自己抄那五个字面值 —— 从 projection 取，抄一份就有了第二个产出处。
+* 不自己抄那五个字面值 —— 从 projection 取，抄一份就有了第二个产出处；订单状态的三句同理，
+  从 ``ports.ORDER_STATUS_WORDING`` 取。
 """
 
 from __future__ import annotations
@@ -50,8 +67,10 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import Any, Iterable
+from collections.abc import Mapping
+from typing import Any, Callable, Iterable
 
+from maos.domain.cs.ports import ORDER_STATUS_WORDING
 from maos.domain.cs.types import (
     BASIS_KB,
     BASIS_OBS,
@@ -88,8 +107,8 @@ _RANGE = rf"{_NUM}(?:(?:[-~～—–−]|至|到){_NUM})?"
 _UNIT = r"个?(?:工作日|自然日|天|日|小时|周|星期)"
 #: 退款 / 到账一类的完成态动词（规则 3 与规则 5 共用）。
 _REFUND_DONE_VERBS = r"到[账帐]|退款|退回|退还|打款|汇款"
-#: 物流 / 订单一类的完成态动词。
-_ORDER_DONE_VERBS = r"发货|发出|寄出|送达|到货|签收|揽收|出库|取消|驳回|补偿|赔偿"
+#: 物流 / 订单一类的完成态动词。付款 / 支付是 p13 补的（T175：措辞表里有「已付款」）。
+_ORDER_DONE_VERBS = r"发货|发出|寄出|送达|到货|签收|揽收|出库|取消|驳回|补偿|赔偿|付款|支付"
 #: 「已 / 已经 [为您] [原路] 动词」。
 _DONE_PREFIX = r"已经?(?:(?:为|给|帮|替)您)?(?:原路)?"
 
@@ -115,6 +134,33 @@ SUPPLEMENTARY_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
 #: 按类别丢，不在这里列。
 _DROP_CHARS = frozenset("·・‧•∙⋅")
 
+# ---------------------------------------------------------------------------
+# 英文状态说法（p13 · T175）：在保留词间空格的规范化上匹配，大小写不论
+# ---------------------------------------------------------------------------
+#: 词边界只看 ASCII 字母（NFKC 之后全角字母已是 ASCII）：「订单shipped了」这种中英混排也认，
+#: 「reshipped」「unshipped」里的 shipped 不认（前面紧贴字母）。
+_EN_L = r"(?<![A-Za-z])"
+_EN_R = r"(?![A-Za-z])"
+#: 撇号的两种写法（NFKC 不把弯撇号折成直撇号）。
+_APOS = "['’]"
+
+#: check_reply 规则 3 要认的英文状态说法（DECISIONS task-t175）。否定不豁免。
+EN_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # 完成态 / 到达：shipped / dispatched / delivered / refunded / cancel(l)ed / arrive 各词形
+    re.compile(_EN_L + r"(?:shipped|dispatched|delivered|refunded|cancell?ed"
+               r"|arriv(?:e|es|ed|ing))" + _EN_R, re.IGNORECASE),
+    # has / have / had been …、…'s been …（「Your order's been processed」）
+    re.compile(rf"(?:{_EN_L}(?:has|have|had)|{_APOS}s)\s*been{_EN_R}", re.IGNORECASE),
+    # will / 'll [be] ship / deliver / dispatch：时限承诺（will arrive 由上一条的 arrive 认）
+    re.compile(rf"(?:{_EN_L}will|{_APOS}ll)\s*(?:be\s*)?(?:ship|deliver|dispatch)(?:ped|ed)?{_EN_R}",
+               re.IGNORECASE),
+    # 在途
+    re.compile(_EN_L + r"(?:in\s*transit|out\s*for\s*delivery|on\s*(?:its|the)\s*way)" + _EN_R,
+               re.IGNORECASE),
+    # 付款完成（中文「已付款」的对应）
+    re.compile(_EN_L + r"(?:is|was|are|were|been|already|fully)\s*paid" + _EN_R, re.IGNORECASE),
+)
+
 
 def _normalize(text: str) -> tuple[str, list[int]]:
     """规范化正文：``(规范化后的串, 每个字符在原文里的下标)``。
@@ -135,14 +181,33 @@ def _normalize(text: str) -> tuple[str, list[int]]:
     return "".join(out), index
 
 
+def _normalize_words(text: str) -> tuple[str, list[int]]:
+    """英文用的规范化：同 :func:`_normalize`，但空白不丢、压成一个半角空格（词边界要靠它）。"""
+    out: list[str] = []
+    index: list[int] = []
+    for i, ch in enumerate(text or ""):
+        for c in unicodedata.normalize("NFKC", ch):
+            if c in _DROP_CHARS or unicodedata.category(c) in ("Cf", "Mn", "Me"):
+                continue
+            if c.isspace():
+                if out and out[-1] == " ":
+                    continue
+                c = " "
+            out.append(c)
+            index.append(i)
+    return "".join(out), index
+
+
 def _norm_only(text: str) -> str:
     return _normalize(text)[0]
 
 
 def _find_places(text: str, patterns: Iterable[re.Pattern[str]],
-                 literals: Iterable[str] = ()) -> list[tuple[int, int, str]]:
+                 literals: Iterable[str] = (), *,
+                 normalize: Callable[[str], tuple[str, list[int]]] = _normalize,
+                 ) -> list[tuple[int, int, str]]:
     """在规范化后的正文上找 ``patterns`` 与 ``literals`` 的出现处，合并后映射回原文偏移。"""
-    norm, index = _normalize(text)
+    norm, index = normalize(text)
     raw: list[tuple[int, int]] = []
     for pattern in patterns:
         raw.extend((m.start(), m.end()) for m in pattern.finditer(norm))
@@ -170,9 +235,19 @@ def status_spans(text: str) -> list[tuple[int, int, str]]:
 
 
 def _status_places(text: str) -> list[tuple[int, int, str]]:
-    """check_reply 要扫的全部「状态字眼」：STATUS_PATTERNS ∪ 补充模式 ∪ 五个对外字面值。"""
-    return _find_places(text or "", STATUS_PATTERNS + SUPPLEMENTARY_STATUS_PATTERNS,
-                        PUBLIC_STATUSES)
+    """check_reply 要扫的全部「状态字眼」：STATUS_PATTERNS ∪ 补充模式 ∪ 五个对外字面值
+    ∪ 英文状态说法（p13）。两套规范化各找各的，按原文偏移再合并一次。"""
+    places = _find_places(text or "", STATUS_PATTERNS + SUPPLEMENTARY_STATUS_PATTERNS,
+                          PUBLIC_STATUSES)
+    english = en_status_spans(text)
+    if not english:
+        return places                     # 没有英文状态说法：与 p12 逐字节一致
+    return _merge_spans(text, [(s, e) for s, e, _ in places + english])
+
+
+def en_status_spans(text: str) -> list[tuple[int, int, str]]:
+    """按 :data:`EN_STATUS_PATTERNS` 找出的英文状态说法：``[(起, 止, 原文)]``，原文偏移。"""
+    return _find_places(text or "", EN_STATUS_PATTERNS, normalize=_normalize_words)
 
 
 def _merge_spans(text: str, raw: Iterable[tuple[int, int]]) -> list[tuple[int, int, str]]:
@@ -282,6 +357,46 @@ def check_reply(draft: ReplyDraft, *, observations: frozenset[str] = frozenset()
                 VIOLATION_FOREIGN_LITERAL,
                 f"claim[{idx}] literal={literal!r} 不是 projection 的对外字面值"))
 
+    return CheckResult(ok=not violations, violations=tuple(violations))
+
+
+def check_observation_wording(draft: ReplyDraft, observations: Mapping[str, Mapping],
+                              *, lang: str) -> CheckResult:
+    """p13 第二道出门校验：obs: claim 说的就是那条观察（契约 §1.4 T175）。
+
+    ``observations`` 是本轮观察 ``id -> 行``（T171 的 ``observations_for_turn`` 读回，行里有
+    ``status``）。每条 basis 为 ``obs:`` 的 claim：
+
+    * 观察 id 不在 ``observations`` 里（含空 id）→ ``dangling_basis``；
+    * literal 与 ``ORDER_STATUS_WORDING[lang][该观察的 status]`` 不逐字相等、或该 status /
+      该语种在措辞表里没有对外说法（amended、平台不映射、未知语种）→ ``foreign_literal``。
+
+    ``kb:`` claim 与没有 claim 的正文不归这条管（前者 check_reply 管，后者 check_reply 的规则 3 管）。
+    纯函数、确定性；违例按 claim 序。
+    """
+    table = ORDER_STATUS_WORDING.get(lang) or {}
+    rows = observations if isinstance(observations, Mapping) else {}
+    violations: list[Violation] = []
+    for idx, claim in enumerate(tuple(draft.claims or ())):
+        basis = claim.basis_ref or ""
+        if not basis.startswith(BASIS_OBS):
+            continue
+        ref = basis[len(BASIS_OBS):]
+        row = rows.get(ref) if ref else None
+        if not isinstance(row, Mapping):
+            violations.append(Violation(
+                VIOLATION_DANGLING_BASIS, f"claim[{idx}] basis_ref={basis!r} 本轮没有这条观察"))
+            continue
+        status = str(row.get("status") or "")
+        wording = table.get(status)
+        if wording is None:
+            violations.append(Violation(
+                VIOLATION_FOREIGN_LITERAL,
+                f"claim[{idx}] 观察 {ref!r} 的状态 {status!r} 在措辞表 {lang!r} 里没有对外说法"))
+        elif (claim.literal or "") != wording:
+            violations.append(Violation(
+                VIOLATION_FOREIGN_LITERAL,
+                f"claim[{idx}] literal={claim.literal!r} 不是措辞表 {lang!r} 里 {status} 那一句"))
     return CheckResult(ok=not violations, violations=tuple(violations))
 
 

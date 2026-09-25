@@ -44,6 +44,7 @@ import pytest
 from maos.agents.base import (AgentIdentity, AgentOutput, BaseAgent, TaskContext,
                               CALL_SITE_ASK)
 from maos.core.store import SqliteStore, record_model_usage, usage_is_estimated
+from maos.domain.cs import understand as cs_understand_mod
 from maos.flows import scenario_1
 from maos.model.client import (GatewayModelClient, ModelResponse, ScriptedModelClient,
                                Tier)
@@ -564,6 +565,7 @@ def test_registered_call_sites_are_byte_for_byte_the_ones_in_the_source():
         reason_classify_mod.CALL_SITE,
         sheet_header_map_mod.CALL_SITE,
         roundtable_speaker_mod.CALL_SITE,
+        cs_understand_mod.CALL_SITE,
     }
     assert set(REGISTERED_CALL_SITES) == from_source, (
         "登记表与源头对不上了（漂了或漏登记）：\n"

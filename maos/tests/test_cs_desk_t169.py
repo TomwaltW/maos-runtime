@@ -782,7 +782,8 @@ def test_front_desk_identity_is_minimal_t169():
     assert not ident.allowed_skills & MONEY_SKILLS_T169
     assert all(name.startswith("cs.") for name in ident.allowed_skills)
     registered = {n for n in registry.names() if n.startswith("cs.")}
-    assert registered == set(ident.allowed_skills)
+    # p13 T173 改的钉子：cs.understand 已注册，W-B 由 T174 收进前台身份（desk.py 不归 T173）。
+    assert registered == set(ident.allowed_skills) | {"cs.understand"}
     for name in ident.allowed_skills:
         contract = registry.get(name).contract
         assert contract.owner_roles == [] and contract.depends_tools == []

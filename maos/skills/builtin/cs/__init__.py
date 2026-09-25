@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from . import answer  # noqa: F401 —— cs.answer（检索 + 组稿 + 后置校验）
 from . import handoff  # noqa: F401 —— cs.handoff（转人工卡片落库）
+from . import understand  # noqa: F401 —— cs.understand（p13：语种、槽位、意图）
 
 #: 本包 skill 的名字清单，测试按它做存在性断言。
-CS_SKILLS = ("cs.answer", "cs.handoff")
+CS_SKILLS = ("cs.answer", "cs.handoff", "cs.understand")

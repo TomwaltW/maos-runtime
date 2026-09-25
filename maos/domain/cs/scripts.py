@@ -19,13 +19,36 @@
 
 **客户原文不进审计行**（契约 R5）：落 ``KbRetrieved`` 时 ``detail.query.keyword``
 换成 ``types.text_digest(text)``；日志里也不打原文。
+
+## 意图提示（p13 契约 §1.4 T173：``intent_hint``）
+
+``match_scripts(..., intent_hint="")`` 缺省时**逐字节同 p12**（返回值、``KbRetrieved`` 都一样，
+测试在 p12 开发集全部轮上比对）。给了意图（理解层 ``cs.understand`` 判出的，取自 ``types.INTENTS``）
+就进「提示模式」，只改排序与分数，不改召回：
+
+1. **该意图的话术优先**：每篇该意图的话术在 p12 重排分上加 :data:`HINT_BONUS`。相近说法落在
+   同一意图的几篇之间时不受影响（同加），跨意图抢答时该意图的先上；p12 分数略低于门槛、但
+   理解层已认出意图的改写，由它推过门槛 —— 这是「换个说法就落兜底」那一类的解法之一。
+2. **时长线索 vs 进度线索**（:data:`INTENT_CUES`，数据表）：问规则时长（「多久 / 几天能 /
+   多长时间 / 什么时候」）与查某一笔进度（「到没到 / 退了吗 / 发了没 / 到哪了」）共享实词（「钱退回来」），
+   二元组重排分不开它们。提示模式下，原文带时长线索时，该意图里**不转人工**的政策篇加
+   :data:`CUE_BONUS`、带 ``needs_order_lookup`` 的查单篇减同样的量；带进度线索时反过来；两种都带
+   时按进度算（「好几天了还没到」是在催这一单）。开发集 CS12-044#1 就是这一类。
+3. 只加减**该意图**的话术；分数夹在 [0, 1]、六位小数。同分时先比 p12 原分（原样命中的那篇
+   仍然第一），再比知识层分、doc_id。``ScriptHit.score`` 与 ``KbRetrieved`` 里记的都是调整后的分，
+   ``detail.query`` 另记 ``intent_hint`` 与 ``cue``（都是枚举，不含客户原文）。
+
+``intent_hint`` 给 ``unknown`` 时没有可优先的话术，排序同缺省；给了 ``INTENTS`` 之外的值抛
+``ValueError``（上游该先夹到枚举里，悄悄当成缺省会把接线错误藏起来）。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
+import unicodedata
 from typing import Any
 
 from maos import kb
@@ -90,6 +113,115 @@ _TAIL_PARTICLES = frozenset("啊呀吗嘛呢吧哦哈啦拉呗哇亲么噢喔嗯
 #: ``KbRetrieved.detail.weights`` 仍是 ``retriever.weights_snapshot()`` 读到的配置值
 #: （``emit_kb_retrieved`` 不收权重参数，知识层不归本轨改），见 docs/DECISIONS.md。
 _RECALL_WEIGHTS = {"rule_no": 0.0, "gateway_code": 0.0, "fts": 1.0, "vector": 1.0}
+
+#: 提示模式下给 ``intent_hint`` 那一意图的每篇话术加的分（见模块头「意图提示」）。
+#: 取值依据见 docs/DECISIONS.md task-t173：T168 的 holdout 无关句 + 英文句在「理解层给什么提示
+#: 就按什么提示」下全部仍低于门槛，改写句过门槛且判对的比例上升。
+HINT_BONUS = 0.10
+
+#: 时长 / 进度线索在该意图内部把政策篇与查单篇拉开的量（一加一减，两篇之间差 2 倍）。
+CUE_BONUS = 0.08
+
+CUE_DURATION = "duration"   # 问规则时长：政策篇优先
+CUE_PROGRESS = "progress"   # 查某一笔进度：查单篇优先
+CUES = (CUE_DURATION, CUE_PROGRESS)
+
+#: 意图线索（数据表）：线索 → 规范化文本（NFKC、小写、空白压成一个空格）上的正则片段。
+#: 这里是中文片段（按字认），英文在 :data:`EN_INTENT_CUES`。**进度优先**：两类都中按进度算。
+INTENT_CUES: dict[str, tuple[str, ...]] = {
+    CUE_DURATION: (
+        r"多久(?!了)", r"多长时间(?!了)", r"多少天(?!了)", r"(?<!好)几天(?!了)", r"几个工作日", r"几个小时",
+        r"多快", r"(?<![尽赶])快(?:吗|嘛|么|不快)", r"时效", r"一般要几", r"大概要几",
+        # 同一类问法的别的说法（复核 L3-2）：几日 / 多少时间 / 周期是多长 / 多少个工作日
+        r"(?<!好)几日(?!了)", r"多少时间", r"多长(?![了时])", r"多少个?工作日",
+        # 问「什么时候」（复核 L2-2 / L3-2）：查单只说得出状态、说不出到账 / 送达时间（p13 契约 §0
+        # 不买），问时间的句子该由政策篇答，也不该被当成「要退款」
+        r"什么时候", r"啥时候", r"何时", r"几时", r"几号", r"哪天", r"多会儿?",
+        r"\bhow long\b", r"\bhow many days\b", r"\bhow soon\b", r"\bhow quickly\b",
+    ),
+    CUE_PROGRESS: (
+        r"到没到", r"到了没", r"到了吗", r"到账了?没", r"到账了吗", r"到帐了?没", r"到帐了吗",
+        r"退了没", r"退了吗", r"退回来没", r"退回来了吗", r"回来了没", r"回来了吗",
+        r"收到没", r"收到了没", r"收到了吗", r"发了没", r"发了吗", r"发货了?没", r"发货了吗",
+        r"发出了?吗", r"发出了?没", r"发走了?没", r"寄出了?吗", r"寄出了?没", r"寄了吗", r"出库了?吗",
+        r"到哪了", r"到哪儿了", r"到哪里了", r"到哪一步", r"走到哪", r"进度", r"怎么样了",
+        r"有结果了?吗", r"有结果了?没", r"处理了?没", r"处理好了?吗", r"处理好了?没",
+        # 「审核 / 通过 / 成功 + 吗」要带「了 / 过」才是问这一笔（复核 L3-2：「退款需要审核吗」是问规则）
+        r"审核(?:了|过了?|完了?|好了?)吗", r"审核了?没", r"审核过了?没", r"通过了?没", r"通过了吗",
+        r"批下来",
+        r"了没有",
+        r"还没到", r"还没收到", r"还没发", r"还没退", r"一直没", r"没动静", r"怎么还不", r"怎么还没",
+        # 「到现在都没到 / 至今没收到 / 都一周了还没退」（复核 L3-2）
+        r"(?:还|都|一直|仍然?|至今|到现在|现在)(?:都|还)?没(?:有)?(?:到|收到|退|发|动|更新|消息|回|处理|结果)",
+        r"成功了吗", r"成功了?没", r"好了(?:吗|没)", r"是不是已经",
+        # 「退 / 到 / 发 / 寄 / 收 / 回 …… 了吗 / 了没」：退到卡里了吗、寄出去了没、东西到了吗
+        r"[退到发寄收回][^,，。?？!！]{0,4}了(?:吗|没|么)",
+    ),
+}
+
+#: 英文的意图线索：写成不带边界的片段，统一包上「前后不挨 ASCII 字母数字」（中英混排也认得出）。
+EN_INTENT_CUES: dict[str, tuple[str, ...]] = {
+    CUE_DURATION: (r"how long", r"how many (?:business |working )?days", r"how soon",
+                   r"how quickly", r"how many hours",
+                   r"when (?:will|does|do|can|would|could|should|is|are)",
+                   r"when (?:\w+ ){1,3}(?:will|arrive|arrives|come|comes)"),
+    CUE_PROGRESS: (r"where(?:'s| is) my", r"has my", r"status of my", r"track my",
+                   r"(?:refund|order|return|exchange|delivery|shipping|shipment|package|parcel) status",
+                   r"tracking (?:number|info|information)", r"not (?:arrived|received)",
+                   r"still (?:not|hasn't|haven't|no)", r"did (?:you|it) (?:ship|arrive)",
+                   r"is my \w+ (?:shipped|delivered|refunded|processed|approved|credited)",
+                   r"(?:hasn't|has not|haven't|have not|didn't|did not) (?:arrived?|received?|come|got|"
+                   r"gotten|shown up|been (?:received|refunded|delivered|shipped|processed|credited))"),
+}
+
+_CUE_RES: dict[str, re.Pattern[str]] = {
+    cue: re.compile("|".join(
+        [f"(?:{p})" for p in INTENT_CUES[cue]]
+        + [f"(?<![a-z0-9])(?:{p})(?![a-z0-9])" for p in EN_INTENT_CUES[cue]]))
+    for cue in CUES
+}
+
+
+#: 进度线索那一条正则（理解层要知道线索落在句子哪儿：「都没收到货给我退款」里线索在办事说法前面）。
+PROGRESS_CUE_RE: re.Pattern[str] = _CUE_RES[CUE_PROGRESS]
+
+
+def _cue_text(text: str) -> str:
+    """线索匹配用的规范化：逐字 NFKC、小写、空白压成一个空格（英文要靠空格认词）。"""
+    s = unicodedata.normalize("NFKC", text or "").lower().replace("’", "'")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def detect_cue(text: str) -> str:
+    """原文带的意图线索：``progress`` / ``duration`` / ``""``。两类都中按进度算。"""
+    norm = _cue_text(text)
+    if _CUE_RES[CUE_PROGRESS].search(norm):
+        return CUE_PROGRESS
+    if _CUE_RES[CUE_DURATION].search(norm):
+        return CUE_DURATION
+    return ""
+
+
+def _cue_sign(cue: str, body: dict) -> int:
+    """线索与这篇话术对不对得上：+1 对上、-1 相反、0 不相干。"""
+    if not cue:
+        return 0
+    lookup = (body.get("handoff") or "") == T.HANDOFF_NEEDS_ORDER_LOOKUP
+    policy = not (body.get("handoff") or "")
+    if cue == CUE_DURATION:
+        return 1 if policy else (-1 if lookup else 0)
+    return 1 if lookup else (-1 if policy else 0)
+
+
+def hinted_score(score: float, body: dict, *, intent_hint: str, cue: str) -> float:
+    """提示模式下的分：该意图加 :data:`HINT_BONUS`，再按线索加减 :data:`CUE_BONUS`；夹到 [0, 1]。
+
+    不是该意图的话术原分返回（``intent_hint`` 为 unknown 时一篇都不动）。
+    """
+    if body.get("intent") != intent_hint:
+        return score
+    adj = score + HINT_BONUS + CUE_BONUS * _cue_sign(cue, body)
+    return round(min(1.0, max(0.0, adj)), 6)
 
 
 def _grams(text: str) -> frozenset[str]:
@@ -196,8 +328,11 @@ def _usable_body(doc: dict) -> dict | None:
 
 
 def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_id: str,
-                  limit: int = 3) -> list[T.ScriptHit]:
+                  limit: int = 3, intent_hint: str = "") -> list[T.ScriptHit]:
     """检索话术，按 score 降序返回至多 ``limit`` 篇（重排分为 0 的不返回）。
+
+    ``intent_hint``（p13）：缺省空串时逐字节同 p12；给了就进提示模式（见模块头「意图提示」），
+    不在 ``types.INTENTS`` 里抛 ``ValueError``。
 
     * 只检 ``kind='cs_script'`` 且 ``biz_type='cs'`` 的文档：查询带 ``biz_type='cs'``
       过阶段一，召回后再逐篇核一次 ``biz_type`` —— 阶段一把文档侧 NULL 当通配，
@@ -210,6 +345,8 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
       检不到也落（``docs: []``）—— 检索发生过本身就是事实。
     * ``detail.candidate_count`` 记的是知识层召回、进入重排的篇数。
     """
+    if intent_hint and intent_hint not in T.INTENTS:
+        raise ValueError(f"intent_hint 必须取自 types.INTENTS，收到 {intent_hint!r}")
     if store is None or not kb.kb_enabled():
         return []
     started = time.perf_counter()
@@ -218,8 +355,11 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
     # 权重点名给：召回不随退款侧的 MAOS_KB_WEIGHTS 漂（见 _RECALL_WEIGHTS）。
     recalled = retriever.retrieve(store, query, limit=retriever.MAX_CANDIDATES,
                                   weights=dict(_RECALL_WEIGHTS), kinds=(T.CS_KB_KIND,))
+    cue = detect_cue(text) if intent_hint else ""
 
-    scored: list[tuple[float, float, str, dict, dict]] = []
+    # (出门的分, p12 原分, 知识层分, doc_id, hit, body)。缺省模式下出门的分就是原分，
+    # 排序键退化成 p12 的 (-原分, -知识层分, doc_id)：逐字节同 p12。
+    scored: list[tuple[float, float, float, str, dict, dict]] = []
     for hit in recalled:
         doc = hit.get("doc") or {}
         if doc.get("biz_type") != T.BIZ_TYPE_CS:
@@ -230,9 +370,12 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
         score = script_score(text, body)
         if score <= 0:
             continue
-        scored.append((score, float(hit.get("score") or 0.0), hit["doc_id"], hit, body))
-    # 同分先看知识层的分，再看 doc_id：次序必须确定（「连跑两次输出一致」）。
-    scored.sort(key=lambda s: (-s[0], -s[1], s[2]))
+        final = hinted_score(score, body, intent_hint=intent_hint, cue=cue) \
+            if intent_hint else score
+        scored.append((final, score, float(hit.get("score") or 0.0), hit["doc_id"], hit, body))
+    # 同分先看 p12 原分（原样命中的那篇仍然第一），再看知识层的分，再看 doc_id：
+    # 次序必须确定（「连跑两次输出一致」）。
+    scored.sort(key=lambda s: (-s[0], -s[1], -s[2], s[3]))
     top = scored[:max(0, int(limit))]
 
     hits = [
@@ -240,19 +383,22 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
             doc_id=doc_id,
             scheme_no=str(body.get("scheme_no") or hit["doc"].get("rule_no") or ""),
             intent=str(body["intent"]),
-            score=score,
+            score=final,
             script=str(body["script"]),
             principle=str(body.get("principle") or ""),
             handoff=str(body.get("handoff") or ""),
         )
-        for score, _kb_score, doc_id, hit, body in top
+        for final, _score, _kb_score, doc_id, hit, body in top
     ]
+    logged_query = {**query, "keyword": T.text_digest(text)}
+    if intent_hint:
+        logged_query.update({"intent_hint": intent_hint, "cue": cue})
     retriever.emit_kb_retrieved(
         store,
         [{"doc_id": h.doc_id, "score": h.score, "title": hit.get("title", ""),
           "kind": hit.get("kind"), "channels": hit.get("channels", {})}
-         for h, (_s, _k, _d, hit, _b) in zip(hits, top)],
-        query={**query, "keyword": T.text_digest(text)},
+         for h, (_f, _s, _k, _d, hit, _b) in zip(hits, top)],
+        query=logged_query,
         plan_id=plan_id, task_id=task_id, trace_id="",
         duration_ms=(time.perf_counter() - started) * 1000,
         candidate_count=len(recalled),

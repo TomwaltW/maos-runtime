@@ -17,7 +17,7 @@
 req_normalize.py``、``maos/skills/builtin/code_repo_patch.py``、
 ``maos/skills/builtin/refund/reason_classify.py``、
 ``maos/skills/builtin/sheet_header_map.py``、
-``maos/roundtable/speaker.py``。而 ``maos/obs``
+``maos/roundtable/speaker.py``、``maos/domain/cs/understand.py``。而 ``maos/obs``
 只许 import ``maos.core.store``，不 import 任何业务域与上层模块（规矩立在
 ``obs/trace.py`` 的模块 docstring 末行）。从 agents / skills 里 import 常量会当场
 破掉那条边界，把可观测层变成上层模块的下游。
@@ -69,6 +69,12 @@ CALL_SITE_SHEET_HEADER_MAP = (
 #: 「归得上账」不是一回事**，两个数分开才看得出圆桌烧了多少。
 CALL_SITE_ROUNDTABLE_SPEAKER = "maos/roundtable/speaker.py::Speaker.complete"
 
+#: 客服前台的理解层（``maos/domain/cs/understand.py`` 的 ``CALL_SITE``，经 skill ``cs.understand``
+#: 调到，p13 T173）。只在规则（触发词 / 诉求 / 词表）判不出意图、且注入的是真模型时才烧
+#: token —— Scripted / None 下一行都没有。与圆桌同理 ``trace_id`` 恒为空串、``task_id`` 恒为 NULL
+#: （前台不属于任何 Run），``plan_id`` 是 ``cs:csc-…``：它只进 ``unattributed_usage``。
+CALL_SITE_CS_UNDERSTAND = "maos/domain/cs/understand.py::understand"
+
 #: 已登记的全部 ``call_site``。**穷举**：库里出现集合外的值即视为漏登记。
 REGISTERED_CALL_SITES: frozenset[str] = frozenset({
     CALL_SITE_AGENT_ASK,
@@ -77,6 +83,7 @@ REGISTERED_CALL_SITES: frozenset[str] = frozenset({
     CALL_SITE_REFUND_REASON_CLASSIFY,
     CALL_SITE_SHEET_HEADER_MAP,
     CALL_SITE_ROUNDTABLE_SPEAKER,
+    CALL_SITE_CS_UNDERSTAND,
 })
 
 #: 报错正文里统一带上这一句 —— 红灯要给出下一步动作，不然它只是一次打扰。

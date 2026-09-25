@@ -2131,12 +2131,17 @@ def check_cs_claim_basis(db_paths: list[str]) -> Check:
         for path in db_paths:
             conn = connect_ro(path)
             tables = table_names(conn)
-            if "cs_turn" in tables:
+            # 适用性：任一 cs_ 表，或 event_log 里有 CsTurnRecorded（复核 L3-1）。只看 cs_turn
+            # 会让「DROP TABLE cs_turn」把判据 1 的反向（审计行无主）整片绕成 SKIP。
+            has_rec = "event_log" in tables and conn.execute(
+                "SELECT 1 FROM event_log WHERE event_type=? LIMIT 1",
+                (EVENT_TURN_RECORDED,)).fetchone() is not None
+            if has_rec or any(t.startswith("cs_") for t in tables):
                 live.append((path, conn, tables))
             else:
                 conn.close()
         if not live:
-            chk.skip("客服前台未落地：所核的库里没有 cs_ 表（cs_turn）")
+            chk.skip("客服前台未落地：所核的库里没有 cs_ 表，也没有 CsTurnRecorded 审计行")
             return chk
         turns_total = 0
         for path, conn, tables in live:
@@ -2160,8 +2165,10 @@ def _cs_check_one_db(chk: Check, label: str, conn: sqlite3.Connection, tables: s
                      wording, default_lang, basis_obs, basis_kb, plan_prefix, turn_event,
                      route_answer, patterns, digest) -> int:
     """一个库上的六条判据。返回核了几轮。"""
+    # cs_turn 整表缺席 ≠ 不适用：按零轮处理，判据 1 的反向会把每条 CsTurnRecorded 判成无主。
     turns = _cs_rows(conn, "SELECT tenant_id, conversation_id, turn_id, route, reply_text,"
-                           " draft_json FROM cs_turn ORDER BY tenant_id, conversation_id, seq")
+                           " draft_json FROM cs_turn ORDER BY tenant_id, conversation_id, seq"
+                     ) if "cs_turn" in tables else []
     recorded: dict[tuple[str, str], list[dict]] = {}
     for r in _cs_rows(conn, "SELECT seq, plan_id, task_id, detail FROM event_log"
                             " WHERE event_type=? ORDER BY seq", (turn_event,)):

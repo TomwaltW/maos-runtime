@@ -277,6 +277,47 @@ def test_c6_kb_claim_cannot_back_status_t176(cs_db_t176):
     _assert_fails_t176(_check_t176(cs_db_t176), "6")
 
 
+def _set_reply_t176(db: pathlib.Path, turn_id: str, text: str) -> None:
+    """改 reply_text 并把审计摘要同步改掉（判据 2 照旧对得上，只让被测判据说话）。"""
+    assert _exec_t176(db, "UPDATE cs_turn SET reply_text=? WHERE turn_id=?", (text, turn_id)) == 1
+    row = _one_t176(db, "SELECT seq, detail FROM event_log WHERE event_type="
+                        "'CsTurnRecorded' AND task_id=?", (turn_id,))
+    detail = json.loads(row["detail"])
+    detail["reply_digest"] = text_digest(text)
+    _exec_t176(db, "UPDATE event_log SET detail=? WHERE seq=?",
+               (json.dumps(detail, ensure_ascii=False), row["seq"]))
+
+
+def test_c6_every_occurrence_of_literal_counts_t176(cs_db_t176):
+    """正例（复核 L2-2）：同一条有效 obs: claim 的 literal 在正文里出现两次，两处状态词都算覆盖。"""
+    turn = _turn_t176(cs_db_t176, 1)
+    literal = json.loads(turn["draft_json"])["claims"][0]["literal"]
+    assert literal and literal in turn["reply_text"]
+    _set_reply_t176(cs_db_t176, turn["turn_id"], turn["reply_text"] + literal)
+    chk = _check_t176(cs_db_t176)
+    assert chk.status == verify.PASS, chk.notes
+    assert (chk.passed, chk.total) == (13, 13), chk.notes      # 判据 6 从一处变两处
+
+
+def test_c1_drop_cs_turn_table_fails_not_skip_t176(cs_db_t176):
+    """反例（复核 L3-1）：整张 cs_turn 被删，别的 cs_ 表与 CsTurnRecorded 还在 —— 判负，不许 SKIP。"""
+    _exec_t176(cs_db_t176, "DROP TABLE cs_turn")
+    chk = _check_t176(cs_db_t176)
+    _assert_fails_t176(chk, "1")
+    assert sum("审计行无主" in n for n in chk.notes) == 3, chk.notes
+
+
+def test_audit_rows_without_any_cs_table_fail_t176(tmp_path):
+    """反例（复核 L3-1）：库里一张 cs_ 表都没有，却有 cs: 的 CsTurnRecorded —— 审计行无主，判负。"""
+    db = tmp_path / "orphan.db"
+    store = SqliteStore(str(db))
+    store.init_schema()
+    store.append_event_log({"event_id": "", "trace_id": "", "plan_id": "cs:csc-x",
+                            "task_id": "t1", "event_type": "CsTurnRecorded", "from_state": None,
+                            "to_state": None, "reason": "", "detail": {}})
+    _assert_fails_t176(_check_t176(db), "1")
+
+
 # ---------------------------------------------------------------------------
 # CLI：--cs 追加、缺省不跑
 # ---------------------------------------------------------------------------
@@ -434,6 +475,75 @@ def test_item4_cs_rows_exactly_once_t176(cs_db_t176):
         verify._check_cs_trees(chk, case)
         assert chk.status == verify.FAIL
         assert any("被数了两次" in n for n in chk.notes), chk.notes
+    finally:
+        case.conn.close()
+
+
+def _cs_tree_notes_t176(case: verify.Case) -> list[str]:
+    chk = verify.Check("trace-tree", "")
+    verify._check_cs_trees(chk, case)
+    assert chk.status == verify.FAIL, chk.notes
+    return chk.notes
+
+
+def test_item4_cs_tree_orphan_span_fails_t176(cs_db_t176):
+    """复核 L2-1(a)：cs 树里一条 span 的 parent 指到树外 —— 第 4 项报孤儿（按 cs= 那一族报）。"""
+    case = _case_t176(cs_db_t176)
+    try:
+        tree = case.trace["cs_traces"][0]
+        victim = next(s for s in tree["spans"] if s["kind"] == trace_mod.KIND_EVENT)
+        victim["parent_span_id"] = "nope-t176"
+        errs = trace_mod.check_span_tree(tree["spans"])
+        assert any("孤儿" in e for e in errs), errs
+        chk = verify.check_trace_tree([case])
+        assert chk.status == verify.FAIL
+        for e in errs:
+            assert f"{case.name} cs={tree['plan_id']}: {e}" in chk.notes, chk.notes
+    finally:
+        case.conn.close()
+
+
+def test_item4_cs_tree_event_count_is_reconciled_with_db_t176(cs_db_t176):
+    """复核 L2-1(b)：cs 树自报的 event_count 多报一条 —— 回库数对不上，判负。"""
+    case = _case_t176(cs_db_t176)
+    try:
+        case.trace["cs_traces"][0]["summary"]["event_count"] += 1
+        assert any("数对不上" in n for n in _cs_tree_notes_t176(case))
+    finally:
+        case.conn.close()
+
+
+def test_item4_cs_usage_counted_twice_fails_t176(cs_db_t176):
+    """复核 L2-1(c)：一条 cs 用量行既在 cs 树的 model_usage、又列进 unattributed_usage —— 判负。"""
+    seq = _add_cs_usage_t176(cs_db_t176, "cs:" + _turn_t176(cs_db_t176, 1)["conversation_id"])
+    case = _case_t176(cs_db_t176)
+    try:
+        chk = verify.Check("trace-tree", "")
+        verify._check_cs_trees(chk, case)
+        assert chk.status == verify.PASS, chk.notes
+        case.trace["unattributed_usage"].append({"seq": seq})
+        assert any("既算进 cs 树的 cost" in n for n in _cs_tree_notes_t176(case))
+        # 两头都不在也判负。
+        case.trace["unattributed_usage"].pop()
+        for t in case.trace["cs_traces"]:
+            t["model_usage"] = [r for r in t["model_usage"] if r["seq"] != seq]
+        assert any("既没归进 cs 树" in n for n in _cs_tree_notes_t176(case))
+    finally:
+        case.conn.close()
+
+
+def test_item4_cs_tree_with_foreign_event_fails_t176(cs_db_t176):
+    """复核 L2-1(d)：cs 树里混进一条库里不是 cs 家族行的事件 —— 判负。"""
+    case = _case_t176(cs_db_t176)
+    try:
+        tree = case.trace["cs_traces"][0]
+        victim = next(s for s in tree["spans"] if s["kind"] == trace_mod.KIND_EVENT)
+        foreign = json.loads(json.dumps(victim))
+        seq = 10_000 + max(_cs_event_seqs_t176(cs_db_t176))
+        foreign["span_id"] = "foreign-t176"
+        foreign["attributes"]["maos.event.seq"] = seq
+        tree["spans"].append(foreign)
+        assert any(f"seq={seq}" in n and "不是 cs 家族行" in n for n in _cs_tree_notes_t176(case))
     finally:
         case.conn.close()
 

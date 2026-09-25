@@ -3141,3 +3141,10 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-25 | p13 | tools/port.py 的 invoke_tool 仍把「类名: 原文」写进 ToolInvoked.detail.error（CS 查单已在 cs_ports 断掉原文，其余调用方照旧） | 别的工具的异常原文里若带客户数据，会进审计行 | p14 或以后：全仓统一改成只记类名要问用户（改所有 ToolInvoked 的形状） |
 | 2026-09-25 | p13 | desk.has_lang_signal 用了 lang 模块的私有函数 _drop_codes | 跨模块依赖私有名，lang.py 改名会静默断 | p14 顺手：lang.py 公开一个同义函数 |
 | 2026-09-25 | p13 | 「不退款，我就上网曝光」这类条件威胁没被识别成投诉 / 情绪（T174 复核 nit） | 该转人工的轮可能落兜底，两轮后照样 repeated_fallback 转人工 | p14 理解层泛化轨 |
+
+## task-t176（verify 认 cs 家族与 --cs 可选核验，2026-09-25）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | verify.py --cs --db X（X 是 cs_eval 落的独立库）时，其余十项也按 --db 的既有语义去读 X，大多判 FAIL / SKIP | 契约 §5 那条组合命令的整体退出码非 0，只有 cs/claim-basis 那一行有意义 | 整合期主会话：只看 cs/claim-basis 那一行，或另议一个只跑 cs 的开关（要改 CLI 口径，需拍板） |
+| 2026-09-25 | p14 | cs/claim-basis 判据 6 只用 types.STATUS_PATTERNS（中文七词 + 预计 N 天）；claims.py 里更宽的中英文状态说法 verify 不许 import | 英文回复里的状态说法、口语状态词不在判据 6 的扫描面上（出门校验照旧拦） | p15 或以后：把需要对账的补充模式升进冻结的 types（要改契约） |

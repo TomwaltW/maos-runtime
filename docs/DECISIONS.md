@@ -3585,3 +3585,17 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | 复核 L2-3：risk 座数 CsReplyRejected 不按轮次过滤，与其余三座「只算本轮及之前」口径不一 | risk 座也只数 task_id 属于本轮及之前的行；不删 docstring 的承诺，改为补一条「会诊非最新一轮」的测试钉四座口径 | router 永远在最新一轮开会，行为不变；统一口径后回放 / 并发写时四座读到的是同一段历史 |
 | 2026-09-25 | p14 | L1-1：契约 §4 没给 T178 改钉子的权，两处钉子因契约要求必然变红（roundtable 包文件数 5、refund_request 一轮内部房间只收一条） | 主会话在本分支亲手改两处钉子：文件数 5 → 6；那条 router 测试改钉「转人工卡片 → 会诊卡（【圆桌会诊】开头）→ 客户回话」三条 | 契约白名单的疏漏在主会话，不在实现者；钉子只改数与顺序，不放宽判据 |
 | 2026-09-25 | p14 | L3-1：policy 座把退款桥的 command_line 原样带进会诊卡正文，其中的单号是 query_key | 允许：会诊卡与转人工卡片一样只投内部房间，p13 的转人工卡片已经带「采纳命令 / 内部单号」两行；event_log 的 CsConferenceHeld.detail 不带 command_line 与 summary（契约 §2） | 内部同事要以自己的名义发这行命令；外部面（MCP、客户回话、审计行）一律不带 |
+
+## task-t179（只读 MCP 连接器，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | 契约只写了 --tenant-map JSON，没说语义 | 解释为 {调用方租户: 内部租户}：不给就原样用入参 tenant_id；给了就只认映射里的键，不认的租户按失败即关处理（查单 / 预检回 identity_unverified、不查单；转人工列表回空） | 成本最低、可逆；外部平台看到的租户名不必等于内部 tenant_id，且给了映射就不会被猜中内部租户名绕过 |
+| 2026-09-25 | p14 | 契约 CLI 面没有台账参数，但 demo 查单与退款预检都要台账 | cs_server 加可选 --ledger，缺省 scenarios/custom/ledger.json（与 router 的 DEFAULT_LEDGER 同一个文件，不 import router） | 口径同 run_ingress 的 --ledger；不给就是契约原样的两参数用法 |
+| 2026-09-25 | p14 | 契约给了 cs_refund_precheck 成功时的五个键，没给门槛不过时的形状 | 门槛不过（没配 / 身份不过 / 查单非 ok）一律只回 {"outcome": X}，与 cs_order_status 同口径；成功时在五个键之外多带 "outcome": "ok"。没配 MAOS_CS_LEDGER_TENANT（预检未装）也回 system_misconfigured，且在身份核验与查单**之前**判，不落审计行 | 调用方按一个 outcome 键分流；预检装不上时查了单也没用，多一行 ToolInvoked 只是噪声 |
+| 2026-09-25 | p14 | 退款预检的 order_no 取哪个号（复核 L2-1 更正：初版写成 display_no 并误称与前台同口径，实则前台 desk.py 取 query_key） | 取绑定解析出的 query_key（台账单号），为空才回落 display_no，与 desk.py（task-t174 复核 L2-1）同口径；这个号只进预检入参，不进出参 | 查单本来按 query_key 查、台账也认台账单号；客户报的号与台账号不同时按 display_no 预检必拒 order_not_in_ledger |
+| 2026-09-25 | p14 | task_id 的「序号」怎么编 | mcp-<n>，n = 本库 cs:mcp 家族已有的不同 task_id 数 + 1（每次查单前现数），换进程接着递增 | 进程内计数器重启就从 1 重来、同库里撞号；现数一次 event_log 成本可忽略 |
+| 2026-09-25 | p14 | MAOS_CS_ORDER_SYSTEMS 配坏了（build_order_lookup_from_env 抛 ValueError） | 按没配处理：stderr 只报类名，服务照常起，两个查单工具回 system_misconfigured | 契约要求「不抛」；起不来的话注册表的 discover 也会跟着坏 |
+| 2026-09-25 | p14 | 注册表的 McpServerSpec.argv 写死 --root，cs 连接器要 --db | McpServerSpec 加带缺省的 launch_args 字段（空 = 旧行为逐字不变）；cs 条目 root 写 "."、launch_args=("--db", ":memory:")、ports=()，于是 discover / reconcile / reconcile_all 都能真起它；test_mcp_registry.py 只改两颗钉子（条目集合、reconcile_all 的键） | 不写哪台机器的库路径；:memory: 在任何机器上都起得来，发现只需 tools/list |
+| 2026-09-25 | p14 | 参数不对（缺键、多键、lang 不认、limit 越界）走哪条错误通道 | 照 server.py：工具级失败回 isError=True；未知工具回 E_INVALID_PARAMS；未知方法 E_METHOD_NOT_FOUND；超 64 KiB 的行不解析、回 E_INVALID_REQUEST；E_INTERNAL 只带异常类名 | 与现有 git server 同形；异常原文可能带订单号 |
+| 2026-09-25 | p14 | 复核 L3-1 / L2-2：一帧非法 UTF-8 在量帧长时抛 UnicodeEncodeError、tools/call 的 name 不可哈希时 DISPATCH.get 抛 TypeError，都会打死连接器进程 | serve 改为按字节读 stdin（帧长直接量字节，解码交给 protocol.decode 的 errors=replace → -32700）；name 不是字符串回 E_INVALID_PARAMS；serve 里再给 handle 兜一层，意外异常回 E_INTERNAL 只带类名、连接照常服务 | 外部平台发来的一帧坏数据只许换来一个错误帧，不许让后续请求全部无人应答；server.py 同形问题不在本轨白名单，记 BACKLOG |

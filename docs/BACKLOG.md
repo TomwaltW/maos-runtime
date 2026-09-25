@@ -3197,3 +3197,12 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-25 | p14 | risk 座的赔偿 / 曝光词表（maos/roundtable/cs_conference.py）与 triggers 词表是两份口径；「曝光度假村」一类名词会误标 exposure_threat | 只影响内部 flag 与建议（偏向 supervisor_review），不影响客户路由 | 整合期或 p15 统一成 triggers 暴露的分类函数 |
 | 2026-09-25 | p14 | 本轨改动让两条白名单外的测试变红（契约 §4 没给本轨改钉子的权限，未改）：test_roundtable_team.py 的 test_roundtable_package_does_not_import_hiclaw 钉死 maos/roundtable 恰好 5 个 .py（契约指定的新文件 cs_conference.py 使它变 6；该文件不含任何被禁字样）；test_cs_router_t174.py 的 test_refund_bridge_card_is_delivered_with_slots_summary_and_command_t174 钉死 refund_request 轮内部房间只收一条（契约要求会诊卡紧随其后投到同一目标） | 全量除预期 8 条外多红 2 条，本轨按纪律未提交 | 主会话授权后只改这两处钉子（5 → 6；sent 列表在转人工卡之后加一条会诊文本），再提交 |
 | 2026-09-25 | p14 | 复核 L3-1：会诊文本（render_conference_text 的 policy 座）原样带退款桥 command_line，其中是内部 query_key；与复核口径「会诊文本不带 query_key」冲突，与契约 §2「有 command_line 就原样带上」一致 | 只进内部房间（同房间的转人工卡片本就带内部单号与采纳命令）；event_log detail 与日志不带 | 主会话裁定口径；若改为不带，policy 座只写「采纳命令见转人工卡片」+ bridge:<id>，同步改 t178 那条钉子 |
+
+## task-t179（只读 MCP 连接器，2026-09-25）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | demo 查单（cs_ports.demo_order_system）认台账 order_snapshot 的 status 列，但退款预检读同一份台账走 custom_case 的严格读法：order_snapshot 多一列 status，预检实测回 preflight_error | 同一份台账没法既演示 shipped / cancelled 的查单措辞、又演示退款预检 ok；T179 的测试只好用两份台账 | 下一期碰 cs_ports 或台账形状时统一口径（预检忽略多出的列，或 demo 状态另放一张表） |
+| 2026-09-25 | p14 | cs:mcp 的 task_id 按「库里已有几个 + 1」编号，两个 cs_server 进程并发写同一个库时可能撞号 | 只影响审计行的 task_id 唯一性，不影响出参；单进程、串行调用下严格递增 | 真要多进程并发时改成带进程标识或请求 id |
+| 2026-09-25 | p14 | client.py 的 StdioMcpClient 只把 PATH / LANG 传给子进程，经它拉起的 cs_server 读不到 MAOS_CS_ORDER_SYSTEMS / MAOS_CS_LEDGER_TENANT，只能列工具、查单恒为 system_misconfigured | 注册表发现与对账够用；若以后要经 ToolPort 让 agent 真调这个连接器，需要按名放行这几个变量 | 真给某个角色挂上 cs 连接器时（当前 DEFAULT_ROLE_SERVERS 刻意不挂） |
+| 2026-09-25 | p14 | server.py（git 只读 MCP server）与 cs_server 初版同形：tools/call 的 params.name 给列表 / 对象时 DISPATCH.get 抛 TypeError 冒出 serve，进程退出、同一连接后续请求无人应答（T179 复核 L2-2；cs_server 已修，server.py 不在本轨白名单没动） | 只影响经 stdio 连它的那一路客户端；本仓里调用方都是自家 StdioMcpClient，名字恒为字符串 | 下一期碰 server.py 时照 cs_server 加 name 类型检查与 handle 兜底 |

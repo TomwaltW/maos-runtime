@@ -88,7 +88,7 @@ def test_spec_security_boundary_covers_the_same_five_items():
 
 def test_registry_declares_only_servers_that_exist():
     """不许为了展示扩展性编一个拉不起来的条目：它会让第一个信它的人白跑一趟。"""
-    assert set(SERVERS) == {"git-mcp-server"}, "全仓当前只有一个 MCP server"
+    assert set(SERVERS) == {"git-mcp-server", "cs-mcp-server"}, "全仓当前有两个 MCP server（p14 · T179 加 cs）"
     for spec in SERVERS.values():
         for port_name in spec.ports:
             assert port_name in KNOWN_PORTS, f"背书了不存在的 ToolPort: {port_name}"
@@ -133,7 +133,7 @@ def test_reconcile_is_clean_for_the_real_server():
 
 
 def test_reconcile_all_is_clean():
-    assert reconcile_all() == {"git-mcp-server": []}
+    assert reconcile_all() == {"git-mcp-server": [], "cs-mcp-server": []}
 
 
 # ---------------------------------------------------------------------------

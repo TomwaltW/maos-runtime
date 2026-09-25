@@ -1,0 +1,3273 @@
+{
+ "_note": "p15 盲写留出集（T183）：照 review/p15-cs-contracts.md §2 T183 与 p13 契约 §2 判定顺序、p15 契约 §1 裁定与附录 A 触发词地板推期望，未读实现、开发集、话术正文与旧留出集，未用真前台跑。tags 里 cat:Cn 标 p15 契约 §1 的误判类别，daily 标日常客服流量。",
+ "_provenance": {
+  "synthetic": true,
+  "blind": true,
+  "written_by": "task-t183",
+  "set": "holdout",
+  "written_at": "2026-09-25",
+  "basis": "review/p15-cs-contracts.md §1 §2 附录 A；review/p13-cs-contracts.md §2 §3"
+ },
+ "_thresholds": {
+  "intent_accuracy": 0.85,
+  "route_accuracy": 0.85,
+  "handoff_recall": 0.9,
+  "status_fabrication_max": 0,
+  "wording_accuracy": 1.0,
+  "wrong_status_max": 0
+ },
+ "cases": [
+  {
+   "id": "CS15H-001",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy",
+    "greeting"
+   ],
+   "turns": [
+    "亲亲，这会儿有人在线不",
+    "我想问下你们这边下单以后一般多久能发出"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-001"
+    },
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-002",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy",
+    "greeting"
+   ],
+   "turns": [
+    "hello客服，打扰一下哈",
+    "你们家默认走哪个快递？偏远地区送不送"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-001"
+    },
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-003",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "满多少包邮来着",
+    "那凑不够的话运费大概收多少"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-003"
+    },
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-003"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-004",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "退款的话钱是退回原来付款的地方吗",
+    "我是用花呗付的，也是原路回去？"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-001"
+    },
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-005",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "你们支持哪几种付款方式，信用卡能刷不",
+    "微信付款可以吧"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-002"
+    },
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-006",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "买的东西能开票吗？要带公司抬头的那种",
+    "给的是电子票还是纸质的啊"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-005"
+    },
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-005"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-007",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "退货流程是咋样的，第一步干嘛",
+    "是先在订单页面点申请还是先把东西寄回来"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-002"
+    },
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-008",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "裤子洗过一回就褪色了，这种质量问题给不给换新的",
+    "换的话要先拍照发给你们看吗"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-003"
+    },
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-003"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-009",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "退货寄回去的快递费要我自己掏吗",
+    "质量有问题退回去的那种，邮费归谁"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-004"
+    },
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-004"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-010",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy",
+    "greeting"
+   ],
+   "turns": [
+    "你们客服晚上几点就不回消息了",
+    "周六周日有人值班不",
+    "懂了懂了，多谢多谢"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-003"
+    },
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-003"
+    },
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-011",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "撕了外面那层塑封还能七天无理由吗",
+    "一次都没穿过的衣服七天内是不是都能退"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-001"
+    },
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-012",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy",
+    "greeting"
+   ],
+   "turns": [
+    "早上好呀",
+    "你们开票一般开多久能收到",
+    "行，辛苦你啦拜拜"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-001"
+    },
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-005"
+    },
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-013",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "支付宝能付吗还是只能微信",
+    "可以分期付款不"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-002"
+    },
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-014",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "新疆那边能寄到吗，走的哪家物流"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-015",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "下午三点前付款当天能发走不"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-016",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy"
+   ],
+   "turns": [
+    "你们这个晚上还有客服在线吗，我下班才有空"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-003"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-017",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "requested"
+   ],
+   "turns": [
+    "转人工，别跟我绕圈子",
+    "喂？到底有人没"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "handoff_request",
+     "reason": "requested"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-018",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "requested"
+   ],
+   "turns": [
+    "我不想跟机器人说了，叫你们主管出来"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "handoff_request",
+     "reason": "requested"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-019",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "complaint"
+   ],
+   "turns": [
+    "等了一个礼拜都没人理，我要去12315投诉你们",
+    "到底管不管"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "complaint",
+     "reason": "complaint"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-020",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "complaint"
+   ],
+   "turns": [
+    "再拖着不处理我就发到网上曝光你们家"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "complaint",
+     "reason": "complaint"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-021",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "anger"
+   ],
+   "turns": [
+    "什么破店，发个东西磨磨唧唧的"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "complaint",
+     "reason": "anger"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-022",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "anger"
+   ],
+   "turns": [
+    "你们就是一帮骗子"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "complaint",
+     "reason": "anger"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-023",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "compensation"
+   ],
+   "turns": [
+    "东西坏了耽误我好几天工夫，总得赔我点吧"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "compensation",
+     "reason": "compensation"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-024",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "compensation"
+   ],
+   "turns": [
+    "这事儿的精神损失费你们出不出"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "compensation",
+     "reason": "compensation"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-025",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "privacy"
+   ],
+   "turns": [
+    "你们怎么会知道我的手机号的"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "privacy",
+     "reason": "privacy"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-026",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "privacy"
+   ],
+   "turns": [
+    "我的收件信息是不是被你们泄露了，天天有人打推销电话"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "privacy",
+     "reason": "privacy"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-027",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "priority"
+   ],
+   "turns": [
+    "黑店！不赔钱我就去消协告你们"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "compensation",
+     "reason": "compensation"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-028",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "priority"
+   ],
+   "turns": [
+    "给我找人工客服，你们这机器人太垃圾了"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "complaint",
+     "reason": "anger"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-029",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "priority"
+   ],
+   "turns": [
+    "我要投诉，还有把我的身份证信息给删掉"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "privacy",
+     "reason": "privacy"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-030",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "english"
+   ],
+   "turns": [
+    "I want to talk to a real person please"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "handoff_request",
+     "reason": "requested",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-031",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "english"
+   ],
+   "turns": [
+    "get me a human, this chat bot is going in circles",
+    "hello??"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "handoff_request",
+     "reason": "requested",
+     "lang": "en"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-032",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "trigger",
+    "english"
+   ],
+   "turns": [
+    "this is ridiculous, I'm talking to my lawyer about this order"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "complaint",
+     "reason": "complaint",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-033",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "tenant_unmapped"
+   ],
+   "open_kfid": "wk_unbound_shop",
+   "turns": [
+    "你好，想问问怎么退货",
+    "喂，有人回一下吗"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "unknown",
+     "reason": "tenant_unmapped"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-034",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "fallback",
+    "repeated_fallback"
+   ],
+   "turns": [
+    "这个蓝牙耳机防水不",
+    "那续航能撑几个小时",
+    "算了算了"
+   ],
+   "expect": [
+    {
+     "route": "fallback",
+     "intent": "unknown"
+    },
+    {
+     "route": "handoff",
+     "intent": "unknown",
+     "reason": "repeated_fallback"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-035",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "fallback"
+   ],
+   "turns": [
+    "今天好热啊",
+    "请问你们退货要满足啥条件",
+    "你会讲笑话不"
+   ],
+   "expect": [
+    {
+     "route": "fallback",
+     "intent": "unknown"
+    },
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-001"
+    },
+    {
+     "route": "fallback",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-036",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "fallback",
+    "repeated_fallback"
+   ],
+   "turns": [
+    "帮我编一首写秋天落叶的小诗",
+    "你到底是不是机器人啊"
+   ],
+   "expect": [
+    {
+     "route": "fallback",
+     "intent": "unknown"
+    },
+    {
+     "route": "handoff",
+     "intent": "unknown",
+     "reason": "repeated_fallback"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-037",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "fallback",
+    "repeated_fallback",
+    "english"
+   ],
+   "turns": [
+    "do you guys have this jacket in navy",
+    "ok whatever, which size would fit a 180cm guy"
+   ],
+   "expect": [
+    {
+     "route": "fallback",
+     "intent": "unknown",
+     "lang": "en"
+    },
+    {
+     "route": "handoff",
+     "intent": "unknown",
+     "reason": "repeated_fallback",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-038",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "fallback"
+   ],
+   "turns": [
+    "有没有XL码的连帽卫衣",
+    "那你们家有线下实体店吗",
+    "行吧那我自己再看看"
+   ],
+   "expect": [
+    {
+     "route": "fallback",
+     "intent": "unknown"
+    },
+    {
+     "route": "handoff",
+     "intent": "unknown",
+     "reason": "repeated_fallback"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-039",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "fallback"
+   ],
+   "turns": [
+    "推荐几部好看的电影呗",
+    "谢谢你哈"
+   ],
+   "expect": [
+    {
+     "route": "fallback",
+     "intent": "unknown"
+    },
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-040",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "ok"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "KT55821",
+      "system_name": "demo-orders",
+      "query_key": "q-kt55821"
+     }
+    ],
+    "orders": {
+     "q-kt55821": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "KT55821 这单到哪了",
+    "收到，谢谢你呀"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "zh"
+    },
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-041",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "ok"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "RB30719",
+      "system_name": "demo-orders",
+      "query_key": "q-rb30719"
+     }
+    ],
+    "orders": {
+     "q-rb30719": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "我昨天拍的 RB30719 怎么还没动静"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "paid",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-042",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "ok"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "PL88402",
+      "system_name": "demo-orders",
+      "query_key": "q-pl88402"
+     }
+    ],
+    "orders": {
+     "q-pl88402": {
+      "outcome": "ok",
+      "status": "cancelled",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "麻烦看下订单 PL88402 现在啥状态"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "cancelled",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-043",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "not_found"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "DS10442",
+      "system_name": "demo-orders",
+      "query_key": "q-ds10442"
+     }
+    ],
+    "orders": {}
+   },
+   "turns": [
+    "DS10442 我的快递到哪儿了"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "lookup_failed",
+     "lookup": "not_found",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-044",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "not_found",
+    "english"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "HJ22871",
+      "system_name": "demo-orders",
+      "query_key": "q-hj22871"
+     }
+    ],
+    "orders": {}
+   },
+   "turns": [
+    "where is order HJ22871 right now",
+    "ok, and?"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "lookup_failed",
+     "lookup": "not_found",
+     "lang": "en"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-045",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "amended"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "WQ60113",
+      "system_name": "demo-orders",
+      "query_key": "q-wq60113"
+     }
+    ],
+    "orders": {
+     "q-wq60113": {
+      "outcome": "amended"
+     }
+    }
+   },
+   "turns": [
+    "查一下 WQ60113 的发货情况"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "order_unmapped",
+     "lookup": "amended",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-046",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "amended"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "NR90456",
+      "system_name": "demo-orders",
+      "query_key": "q-nr90456"
+     }
+    ],
+    "orders": {
+     "q-nr90456": {
+      "outcome": "amended"
+     }
+    }
+   },
+   "turns": [
+    "帮忙看看 NR90456 有没有发出来"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "order_unmapped",
+     "lookup": "amended",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-047",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "unmapped"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "YT34029",
+      "system_name": "demo-orders",
+      "query_key": "q-yt34029"
+     }
+    ],
+    "orders": {
+     "q-yt34029": {
+      "outcome": "unmapped_status"
+     }
+    }
+   },
+   "turns": [
+    "YT34029 到底发货了没有"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "order_unmapped",
+     "lookup": "unmapped_status",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-048",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "unmapped",
+    "english"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "GE81523",
+      "system_name": "demo-orders",
+      "query_key": "q-ge81523"
+     }
+    ],
+    "orders": {
+     "q-ge81523": {
+      "outcome": "unmapped_status"
+     }
+    }
+   },
+   "turns": [
+    "has order GE81523 left the warehouse yet"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "order_unmapped",
+     "lookup": "unmapped_status",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-049",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "misconfigured"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "CC47711",
+      "system_name": "demo-orders",
+      "query_key": "q-cc47711"
+     }
+    ],
+    "orders": {
+     "q-cc47711": {
+      "outcome": "system_misconfigured"
+     }
+    }
+   },
+   "turns": [
+    "CC47711 帮我查查物流"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "lookup_failed",
+     "lookup": "system_misconfigured",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-050",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "misconfigured",
+    "english"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "LF30926",
+      "system_name": "demo-orders",
+      "query_key": "q-lf30926"
+     }
+    ],
+    "orders": {
+     "q-lf30926": {
+      "outcome": "system_misconfigured"
+     }
+    }
+   },
+   "turns": [
+    "could you track order LF30926 for me"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "lookup_failed",
+     "lookup": "system_misconfigured",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-051",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "platform_error"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "BK35620",
+      "system_name": "demo-orders",
+      "query_key": "q-bk35620"
+     }
+    ],
+    "orders": {
+     "q-bk35620": {
+      "outcome": "platform_error"
+     }
+    }
+   },
+   "turns": [
+    "BK35620 现在走到哪个环节了"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "lookup_failed",
+     "lookup": "platform_error",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-052",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "lookup",
+    "platform_error"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "GH71104",
+      "system_name": "demo-orders",
+      "query_key": "q-gh71104"
+     }
+    ],
+    "orders": {
+     "q-gh71104": {
+      "outcome": "platform_error"
+     }
+    }
+   },
+   "turns": [
+    "看下 GH71104 物流更新没"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "lookup_failed",
+     "lookup": "platform_error",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-053",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "identity"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "LM20001",
+      "system_name": "demo-orders",
+      "query_key": "q-lm20001"
+     }
+    ],
+    "orders": {
+     "q-lm20001": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "LM20087 这个单子发货了吗"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "identity_unverified",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-054",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "identity",
+    "english"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "TR55199",
+      "system_name": "demo-orders",
+      "query_key": "q-tr55199"
+     }
+    ],
+    "orders": {
+     "q-tr55199": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "check order TR55130 for me, is it coming"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "identity_unverified",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-055",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "identity"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "UV82301",
+      "system_name": "demo-orders",
+      "query_key": "q-uv82301"
+     }
+    ],
+    "orders": {
+     "q-uv82301": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "帮我查一下 UV82310 到哪了",
+    "查不了？"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "identity_unverified",
+     "lang": "zh"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-056",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "refund_bridge",
+    "ok"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "KM66012",
+      "system_name": "demo-orders",
+      "query_key": "q-km66012"
+     }
+    ],
+    "orders": {
+     "q-km66012": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    },
+    "precheck": {
+     "KM66012": {
+      "ok": true,
+      "decision": "approve",
+      "rule_ref": "R-quality",
+      "reason_code": "quality"
+     }
+    }
+   },
+   "turns": [
+    "KM66012 这个我要退货，用了两天就开不了机",
+    "那我等消息"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "refund_request",
+     "lookup": "ok",
+     "lang": "zh"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-057",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "refund_bridge",
+    "ok",
+    "english"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "WB90371",
+      "system_name": "demo-orders",
+      "query_key": "q-wb90371"
+     }
+    ],
+    "orders": {
+     "q-wb90371": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    },
+    "precheck": {
+     "WB90371": {
+      "ok": true,
+      "decision": "approve",
+      "rule_ref": "R-quality",
+      "reason_code": "quality"
+     }
+    }
+   },
+   "turns": [
+    "I'd like to return order WB90371, it arrived cracked"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "refund_request",
+     "lookup": "ok",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-058",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "refund_bridge",
+    "refused"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "SF12094",
+      "system_name": "demo-orders",
+      "query_key": "q-sf12094"
+     }
+    ],
+    "orders": {
+     "q-sf12094": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    },
+    "precheck": {
+     "SF12094": {
+      "ok": false,
+      "decision": "reject",
+      "refused_why": "outside_return_window"
+     }
+    }
+   },
+   "turns": [
+    "SF12094 申请退款，不想要了",
+    "那现在怎么弄"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "needs_order_lookup",
+     "lookup": "ok",
+     "lang": "zh"
+    },
+    {
+     "route": "silent",
+     "intent": "unknown"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-059",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "refund_bridge",
+    "refused"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "JP70388",
+      "system_name": "demo-orders",
+      "query_key": "q-jp70388"
+     }
+    ],
+    "orders": {
+     "q-jp70388": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "我要退 JP70388 这单"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "needs_order_lookup",
+     "lookup": "ok",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-060",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "slot_accumulate"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "HW30017",
+      "system_name": "demo-orders",
+      "query_key": "q-hw30017"
+     }
+    ],
+    "orders": {
+     "q-hw30017": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    },
+    "precheck": {
+     "HW30017": {
+      "ok": true,
+      "decision": "approve",
+      "rule_ref": "R-quality",
+      "reason_code": "quality"
+     }
+    }
+   },
+   "turns": [
+    "这个东西我想退掉",
+    "单号是HW30017"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "return_exchange",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "refund_request",
+     "lookup": "ok",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-061",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "mixed"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "QA70125",
+      "system_name": "demo-orders",
+      "query_key": "q-qa70125"
+     }
+    ],
+    "orders": {
+     "q-qa70125": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "客服还在线吗宝",
+    "七天无理由是从签收那天开始算吗",
+    "那我这单 QA70125 现在啥情况",
+    "好嘞谢了"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-001"
+    },
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-001"
+    },
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "zh"
+    },
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-062",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "mixed"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "EJ40368",
+      "system_name": "demo-orders",
+      "query_key": "q-ej40368"
+     }
+    ],
+    "orders": {
+     "q-ej40368": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "你们一般发什么快递",
+    "行，那帮我看看 EJ40368 发了没",
+    "ok 谢谢"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-002"
+    },
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "paid",
+     "lang": "zh"
+    },
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-063",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "policy_with_ports"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "AA10001",
+      "system_name": "demo-orders",
+      "query_key": "q-aa10001"
+     }
+    ],
+    "orders": {
+     "q-aa10001": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "开发票的话在哪里申请"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-005"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-064",
+   "synthetic": true,
+   "tags": [
+    "daily",
+    "fallback_with_ports"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "AA10002",
+      "system_name": "demo-orders",
+      "query_key": "q-aa10002"
+     }
+    ],
+    "orders": {
+     "q-aa10002": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "这个颜色实物偏黄吗",
+    "那尺码偏大还是偏小"
+   ],
+   "expect": [
+    {
+     "route": "fallback",
+     "intent": "unknown"
+    },
+    {
+     "route": "handoff",
+     "intent": "unknown",
+     "reason": "repeated_fallback"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-065",
+   "synthetic": true,
+   "tags": [
+    "cat:C1"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00101",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00101"
+     }
+    ],
+    "orders": {
+     "q-zz00101": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "麻烦帮忙查个快递呗"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-066",
+   "synthetic": true,
+   "tags": [
+    "cat:C1"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "VX44810",
+      "system_name": "demo-orders",
+      "query_key": "q-vx44810"
+     }
+    ],
+    "orders": {
+     "q-vx44810": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "看下我包裹到哪了",
+    "单号 VX44810"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-067",
+   "synthetic": true,
+   "tags": [
+    "cat:C1"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00102",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00102"
+     }
+    ],
+    "orders": {
+     "q-zz00102": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "我的快递咋还没到啊"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-068",
+   "synthetic": true,
+   "tags": [
+    "cat:C1"
+   ],
+   "fixtures": {},
+   "turns": [
+    "能帮我查一下物流信息吗，挺急的"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-069",
+   "synthetic": true,
+   "tags": [
+    "cat:C2"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZN40218",
+      "system_name": "demo-orders",
+      "query_key": "q-zn40218"
+     }
+    ],
+    "orders": {
+     "q-zn40218": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "hi, has order ZN40218 shipped yet?"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-070",
+   "synthetic": true,
+   "tags": [
+    "cat:C2"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "QF77310",
+      "system_name": "demo-orders",
+      "query_key": "q-qf77310"
+     }
+    ],
+    "orders": {
+     "q-qf77310": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "is my order QF77310 on its way"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "paid",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-071",
+   "synthetic": true,
+   "tags": [
+    "cat:C2"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "MV51296",
+      "system_name": "demo-orders",
+      "query_key": "q-mv51296"
+     }
+    ],
+    "orders": {
+     "q-mv51296": {
+      "outcome": "ok",
+      "status": "cancelled",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "can you check the status of order MV51296"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "cancelled",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-072",
+   "synthetic": true,
+   "tags": [
+    "cat:C2",
+    "cat:C1"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "DX63007",
+      "system_name": "demo-orders",
+      "query_key": "q-dx63007"
+     }
+    ],
+    "orders": {
+     "q-dx63007": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "where's my package? been waiting forever",
+    "oh it's DX63007"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "en"
+    },
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-073",
+   "synthetic": true,
+   "tags": [
+    "cat:C3"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00103",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00103"
+     }
+    ],
+    "orders": {
+     "q-zz00103": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "帮我查查快递到哪了",
+    "单号在哪看啊，我就想知道快递到哪了",
+    "找不到单号啊，你直接跟我说在哪不就完了"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "needs_order_lookup",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-074",
+   "synthetic": true,
+   "tags": [
+    "cat:C3"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00104",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00104"
+     }
+    ],
+    "orders": {
+     "q-zz00104": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "之前那笔退款到底退回来没有",
+    "订单号？我没记啊，退款进度能帮我查不",
+    "真没有单号，你们后台直接看一眼呗"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "refund_payment",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "clarify",
+     "intent": "refund_payment",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "handoff",
+     "intent": "refund_payment",
+     "reason": "needs_order_lookup",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-075",
+   "synthetic": true,
+   "tags": [
+    "cat:C3",
+    "cat:C2"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00105",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00105"
+     }
+    ],
+    "orders": {
+     "q-zz00105": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "yo where's my parcel at",
+    "not sure where to find the order number, can you just track it",
+    "no clue what the number is, can I just send it back"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "en"
+    },
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "en"
+    },
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "needs_order_lookup",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-076",
+   "synthetic": true,
+   "tags": [
+    "cat:C3"
+   ],
+   "fixtures": {},
+   "turns": [
+    "买的外套尺码不对，我要换一件",
+    "单号不记得了，反正就是上周买的那件外套要换",
+    "那你们帮我查呗，我在手机上翻不到"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "return_exchange",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "clarify",
+     "intent": "return_exchange",
+     "ask": "order_no",
+     "lang": "zh"
+    },
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "needs_order_lookup",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-077",
+   "synthetic": true,
+   "tags": [
+    "cat:C4"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00106",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00106"
+     }
+    ],
+    "orders": {
+     "q-zz00106": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "假如我收到了不喜欢想退，来回的邮费算谁的"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-004"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-078",
+   "synthetic": true,
+   "tags": [
+    "cat:C4"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00107",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00107"
+     }
+    ],
+    "orders": {
+     "q-zz00107": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "如果东西到手有点瑕疵，一般怎么处理，能换吗"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-003"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-079",
+   "synthetic": true,
+   "tags": [
+    "cat:C4"
+   ],
+   "fixtures": {},
+   "turns": [
+    "要是我退款的话，钱一般会退到哪里"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-080",
+   "synthetic": true,
+   "tags": [
+    "cat:C4"
+   ],
+   "fixtures": {},
+   "turns": [
+    "假设我下单以后后悔了，七天内都能退吗"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-081",
+   "synthetic": true,
+   "tags": [
+    "cat:C4"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00108",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00108"
+     }
+    ],
+    "orders": {
+     "q-zz00108": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "如果要退货的话流程是啥，需要先联系你们吗"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-082",
+   "synthetic": true,
+   "tags": [
+    "cat:C6"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "KD48213",
+      "system_name": "demo-orders",
+      "query_key": "q-kd48213"
+     }
+    ],
+    "orders": {
+     "q-kd48213": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    },
+    "precheck": {
+     "KD48213": {
+      "ok": true,
+      "decision": "approve",
+      "rule_ref": "R-quality",
+      "reason_code": "quality"
+     }
+    }
+   },
+   "turns": [
+    "KD48213耳机坏了想退"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "return_exchange",
+     "reason": "refund_request",
+     "lookup": "ok",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-083",
+   "synthetic": true,
+   "tags": [
+    "cat:C6"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "QZ7702",
+      "system_name": "demo-orders",
+      "query_key": "q-qz7702"
+     }
+    ],
+    "orders": {
+     "q-qz7702": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "订单QZ7702昨晚下的现在发了没"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "paid",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-084",
+   "synthetic": true,
+   "tags": [
+    "cat:C6"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "MX50817",
+      "system_name": "demo-orders",
+      "query_key": "q-mx50817"
+     }
+    ],
+    "orders": {
+     "q-mx50817": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "我那个MX50817蓝牙音箱的单子发货没"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-085",
+   "synthetic": true,
+   "tags": [
+    "cat:C6"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "HN60231",
+      "system_name": "demo-orders",
+      "query_key": "q-hn60231"
+     }
+    ],
+    "orders": {
+     "q-hn60231": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "查下HN60231到哪儿了谢谢"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-086",
+   "synthetic": true,
+   "tags": [
+    "cat:C7",
+    "cat:C2"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "88120937",
+      "system_name": "demo-orders",
+      "query_key": "q-88120937"
+     }
+    ],
+    "orders": {
+     "q-88120937": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "hey, order #88120937 — has it shipped?"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-087",
+   "synthetic": true,
+   "tags": [
+    "cat:C7"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "KP3302",
+      "system_name": "demo-orders",
+      "query_key": "q-kp3302"
+     }
+    ],
+    "orders": {
+     "q-kp3302": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "No.KP3302 这单现在什么情况"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "paid",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-088",
+   "synthetic": true,
+   "tags": [
+    "cat:C7"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "WX5512",
+      "system_name": "demo-orders",
+      "query_key": "q-wx5512"
+     }
+    ],
+    "orders": {
+     "q-wx5512": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "单号：WX5512，帮我看看到哪了"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-089",
+   "synthetic": true,
+   "tags": [
+    "cat:C7"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "TT90021",
+      "system_name": "demo-orders",
+      "query_key": "q-tt90021"
+     }
+    ],
+    "orders": {
+     "q-tt90021": {
+      "outcome": "ok",
+      "status": "cancelled",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "订单号#TT90021查一下发货没"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "cancelled",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-090",
+   "synthetic": true,
+   "tags": [
+    "cat:C7",
+    "cat:C2"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "RS41876",
+      "system_name": "demo-orders",
+      "query_key": "q-rs41876"
+     }
+    ],
+    "orders": {
+     "q-rs41876": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "could you check NO:RS41876 for me? wondering if it's out yet"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "en"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-091",
+   "synthetic": true,
+   "tags": [
+    "cat:C8"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00109",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00109"
+     }
+    ],
+    "orders": {
+     "q-zz00109": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "我用尾号4417的卡付的，退款会原路退回那张卡吗"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-092",
+   "synthetic": true,
+   "tags": [
+    "cat:C8"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00110",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00110"
+     }
+    ],
+    "orders": {
+     "q-zz00110": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "门牌号1203被我写成1302了，收货地址能改吗"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-093",
+   "synthetic": true,
+   "tags": [
+    "cat:C8"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00111",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00111"
+     }
+    ],
+    "orders": {
+     "q-zz00111": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "我28号申请的退款，现在到哪一步了"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "refund_payment",
+     "ask": "order_no",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-094",
+   "synthetic": true,
+   "tags": [
+    "cat:C8",
+    "cat:C4"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00112",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00112"
+     }
+    ],
+    "orders": {
+     "q-zz00112": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "一次买了3件，退其中1件的话运费谁出"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-004"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-095",
+   "synthetic": true,
+   "tags": [
+    "cat:C8"
+   ],
+   "fixtures": {},
+   "turns": [
+    "付了299块，这个能开发票不"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-005"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-096",
+   "synthetic": true,
+   "tags": [
+    "cat:C9"
+   ],
+   "turns": [
+    "吊牌都还在没拆，不想要了能退不"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-097",
+   "synthetic": true,
+   "tags": [
+    "cat:C9"
+   ],
+   "turns": [
+    "退东西咋操作啊，先寄还是先申请"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-098",
+   "synthetic": true,
+   "tags": [
+    "cat:C9"
+   ],
+   "fixtures": {},
+   "turns": [
+    "寄回去的邮费谁掏钱啊"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "return_exchange",
+     "cite": "RET-004"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-099",
+   "synthetic": true,
+   "tags": [
+    "cat:C9"
+   ],
+   "turns": [
+    "钱退回去是到微信零钱还是回银行卡"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "refund_payment",
+     "cite": "PAY-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-100",
+   "synthetic": true,
+   "tags": [
+    "cat:C9"
+   ],
+   "turns": [
+    "一般发啥快递，能指定顺丰不"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-002"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-101",
+   "synthetic": true,
+   "tags": [
+    "cat:C9"
+   ],
+   "turns": [
+    "今天拍的最快哪天能寄出去"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "cite": "LOG-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-102",
+   "synthetic": true,
+   "tags": [
+    "cat:C9"
+   ],
+   "turns": [
+    "哈喽哈喽，有人在吗~"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "general",
+     "cite": "GEN-001"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-103",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "turns": [
+    "包裹在中转站趴了四天了，一点更新都没有"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "needs_order_lookup"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-104",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "turns": [
+    "显示已经签收了，可我压根没拿到东西"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "needs_order_lookup"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-105",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "turns": [
+    "快递箱子被压瘪了，里面的玻璃杯碎了两个"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "needs_order_lookup"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-106",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "turns": [
+    "商家那边同意退款三天了，钱还没回来"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "refund_payment",
+     "reason": "needs_order_lookup"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-107",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "turns": [
+    "同一笔订单扣了我两回钱"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "refund_payment",
+     "reason": "needs_order_lookup"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-108",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "turns": [
+    "下完单才发现地址填错了，能帮我改一下吗"
+   ],
+   "expect": [
+    {
+     "route": "handoff",
+     "intent": "logistics",
+     "reason": "needs_order_lookup"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-109",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZK11380",
+      "system_name": "demo-orders",
+      "query_key": "q-zk11380"
+     }
+    ],
+    "orders": {
+     "q-zk11380": {
+      "outcome": "ok",
+      "status": "shipped",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "ZK11380 在中转站卡了三天没动"
+   ],
+   "expect": [
+    {
+     "route": "answer",
+     "intent": "logistics",
+     "lookup": "ok",
+     "say": "shipped",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-110",
+   "synthetic": true,
+   "tags": [
+    "cat:C10"
+   ],
+   "fixtures": {
+    "bindings": [
+     {
+      "display_no": "ZZ00113",
+      "system_name": "demo-orders",
+      "query_key": "q-zz00113"
+     }
+    ],
+    "orders": {
+     "q-zz00113": {
+      "outcome": "ok",
+      "status": "paid",
+      "version": 1
+     }
+    }
+   },
+   "turns": [
+    "同意退款好几天了钱还没到账"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "refund_payment",
+     "ask": "order_no",
+     "lang": "zh"
+    }
+   ]
+  },
+  {
+   "id": "CS15H-111",
+   "synthetic": true,
+   "tags": [
+    "cat:C10",
+    "cat:C1"
+   ],
+   "fixtures": {},
+   "turns": [
+    "刚下的单地址写错了想改一下"
+   ],
+   "expect": [
+    {
+     "route": "clarify",
+     "intent": "logistics",
+     "ask": "order_no",
+     "lang": "zh"
+    }
+   ]
+  }
+ ]
+}

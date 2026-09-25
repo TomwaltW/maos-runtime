@@ -3599,3 +3599,16 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | 注册表的 McpServerSpec.argv 写死 --root，cs 连接器要 --db | McpServerSpec 加带缺省的 launch_args 字段（空 = 旧行为逐字不变）；cs 条目 root 写 "."、launch_args=("--db", ":memory:")、ports=()，于是 discover / reconcile / reconcile_all 都能真起它；test_mcp_registry.py 只改两颗钉子（条目集合、reconcile_all 的键） | 不写哪台机器的库路径；:memory: 在任何机器上都起得来，发现只需 tools/list |
 | 2026-09-25 | p14 | 参数不对（缺键、多键、lang 不认、limit 越界）走哪条错误通道 | 照 server.py：工具级失败回 isError=True；未知工具回 E_INVALID_PARAMS；未知方法 E_METHOD_NOT_FOUND；超 64 KiB 的行不解析、回 E_INVALID_REQUEST；E_INTERNAL 只带异常类名 | 与现有 git server 同形；异常原文可能带订单号 |
 | 2026-09-25 | p14 | 复核 L3-1 / L2-2：一帧非法 UTF-8 在量帧长时抛 UnicodeEncodeError、tools/call 的 name 不可哈希时 DISPATCH.get 抛 TypeError，都会打死连接器进程 | serve 改为按字节读 stdin（帧长直接量字节，解码交给 protocol.decode 的 errors=replace → -32700）；name 不是字符串回 E_INVALID_PARAMS；serve 里再给 handle 兜一层，意外异常回 E_INTERNAL 只带类名、连接照常服务 | 外部平台发来的一帧坏数据只许换来一个错误帧，不许让后续请求全部无人应答；server.py 同形问题不在本轨白名单，记 BACKLOG |
+
+## task-t180（运营统计 cs_stats，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | 契约没说兜底率 / 转人工率的分母、意图 top-N 算不算 silent 轮 | 分母取应答轮（route ≠ silent），输出里明写分母并另报 answered_turns；意图 top-N 也不含 silent 轮 | silent 轮是已转人工会话的只记录轮，意图恒为 unknown、也没有「兜底 / 转人工」可言，算进去会把两个率与 unknown 的占比一起稀释 |
+| 2026-09-25 | p14 | 契约没说 --since 按哪一列截 | 轮按 cs_turn.created_at、会话按 cs_conversation.updated_at、拦截与会诊卡按 event_log.created_at；查单结果与追问跟着所属轮的窗口走；不带时区按 UTC，库里解析不了的时间戳不计入 | 各表各用自己的时刻，不跨表猜；ext 表没有时间列，只能跟轮走 |
+| 2026-09-25 | p14 | 后置校验拦下按 violation kind 怎么数 | 读 CsReplyRejected 的 detail.violation_kinds，同一次拦截里同种违例只计一次，另报拦截总次数 | 运营要看的是「这种原因拦下了几次回复」，一次拦截报两条同种违例不是两次拦截 |
+| 2026-09-25 | p14 | 转人工原因与查单结果取哪张表 | 转人工原因取 cs_turn.handoff_reason（非空的轮），查单结果与追问取 cs_turn_ext；不读 cs_handoff / cs_observation | 与轮数、route 分布同一张表同一个 --since 口径，数字能互相对账；cs_observation 只落成功查单，数不出失败的结果 |
+| 2026-09-25 | p14 | 库读不到（路径不存在 / 不是 sqlite 文件）怎么退 | 退 2，stderr 只报异常类名；mode=ro 不会凭空建库 | 契约只规定没有 cs_ 表退 0；路径打错是用法问题，照 replay_roundtable 的先例归到非零 |
+| 2026-09-25 | p14 | 从库里读出来会原样进输出的值（意图、违例种类、recommendation、doc_id）要不要过白名单 | 一律过白名单：枚举不在冻结集合里的归 other，doc_id 不合 kb- 形状的归 other；recommendation 的六个值抄 p14 契约 §2 的字面量，不 import maos/roundtable/cs_conference.py | intent 列没有 CHECK、event_log detail 是自由 JSON，库被写坏时原样输出就会漏原文；T178 与本轨并行，模块还不存在 |
+| 2026-09-25 | p14 | 测试怎么造库 | 进程内用 FrontDesk + evaluate.fixture_ports 把 p13 开发集整批跑进临时库（与 cs_eval.py --set dev13 --db 同口径），再用真前台跑一段哨兵会话与一个第二租户，最后用 SQL 把哨兵塞满原文 / 标识列；拦截用 conversation.record_reply_rejected 落、会诊卡按契约的 detail 形状直接落 event_log | 不依赖 T177 的 CLI 实现细节；dev13 本身不产生拦截与会诊卡（T178 并行），只能自己落 |
+| 2026-09-25 | p14 | 复核 L2-2：draft_json.citations 里有 dict 等不可哈希元素时 set() 抛 TypeError、退 1 | 先把每个元素映射成 doc_id（认不出的归 other）再按轮去重；同一轮里多个认不出的引用只给 other 记一次 | 退出码约定只有 0 / 2，库被写坏也要照常出统计；按轮去重与原口径一致（一轮引用同一文档只算一次） |

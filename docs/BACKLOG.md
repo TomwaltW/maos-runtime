@@ -3206,3 +3206,10 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-25 | p14 | cs:mcp 的 task_id 按「库里已有几个 + 1」编号，两个 cs_server 进程并发写同一个库时可能撞号 | 只影响审计行的 task_id 唯一性，不影响出参；单进程、串行调用下严格递增 | 真要多进程并发时改成带进程标识或请求 id |
 | 2026-09-25 | p14 | client.py 的 StdioMcpClient 只把 PATH / LANG 传给子进程，经它拉起的 cs_server 读不到 MAOS_CS_ORDER_SYSTEMS / MAOS_CS_LEDGER_TENANT，只能列工具、查单恒为 system_misconfigured | 注册表发现与对账够用；若以后要经 ToolPort 让 agent 真调这个连接器，需要按名放行这几个变量 | 真给某个角色挂上 cs 连接器时（当前 DEFAULT_ROLE_SERVERS 刻意不挂） |
 | 2026-09-25 | p14 | server.py（git 只读 MCP server）与 cs_server 初版同形：tools/call 的 params.name 给列表 / 对象时 DISPATCH.get 抛 TypeError 冒出 serve，进程退出、同一连接后续请求无人应答（T179 复核 L2-2；cs_server 已修，server.py 不在本轨白名单没动） | 只影响经 stdio 连它的那一路客户端；本仓里调用方都是自家 StdioMcpClient，名字恒为字符串 | 下一期碰 server.py 时照 cs_server 加 name 类型检查与 handle 兜底 |
+
+## task-t180（运营统计 cs_stats，2026-09-25）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | cs_turn.intent 列没有 CHECK（route / handoff_reason 都有），库里可以写进任意文本 | scripts/cs_stats.py 已按白名单归 other，不漏原文；别的读方若原样输出这一列会漏 | 下次动 cs schema 时考虑补 CHECK（要走旧库探针那条路） |
+| 2026-09-25 | p14 | cs_ 表的时间戳可由前台注入的时钟给出，event_log.created_at 恒为写入时的墙钟 | 注入了时钟的库（测试、回放）上，--since 截轮与截事件可能不一致；生产不注入时钟，无影响 | 需要时在统计口径里写明，或让事件也带业务时刻 |

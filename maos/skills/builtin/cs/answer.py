@@ -11,6 +11,8 @@
     过渡话术）；
   - 不带标记 → ``route=answer``、回标准话术；
   两种都 ``citations = (该篇 doc_id,)``；
+* 词法零命中时 match_scripts 再走近邻兜底（p15 T186，``nearest=True``；``KbRetrieved`` 标
+  ``channel: "similar"``）：近邻不弃权就按上面两条组稿，弃权照旧落下一条；
 * 没命中 → ``route=fallback``、意图 unknown、回前台的兜底话术；
 * 组好的稿子过 ``claims.check_reply``：observations 恒为空（p12 没有观察来源），
   kb_doc_ids 是从 event_log **读回**的本轮命中（``claims.turn_kb_doc_ids``），不信
@@ -101,14 +103,16 @@ class CsAnswerSkill(Skill):
         # match_scripts 优先该意图的话术；缺省 / 空串时调用形状与 p12 逐字节一致。这个可选键在
         # 整合期 p13 补进了 input_schema（不进 preconditions），docs/skill-catalog.md 随之重产。
         intent_hint = str(payload.get("intent_hint") or "")
+        # p15（T186）：近邻兜底通道在这里接进来 —— nearest=True 让 match_scripts 在词法零命中时
+        # 再问一次字符 n 元组近邻（弃权则一切照旧）；命中那篇照常组稿、带 kb:<doc_id> 引用、过后置校验。
         if intent_hint:
             hits = scripts.match_scripts(store, tenant_id=tenant_id, text=text,
                                          plan_id=plan_id, task_id=task_id,
-                                         intent_hint=intent_hint)
+                                         intent_hint=intent_hint, nearest=True)
         else:
-            # p12 的调用形状原样：缺省不带这个关键字参数。
+            # p12 的调用形状（缺省不带 intent_hint），加近邻通道的开关。
             hits = scripts.match_scripts(store, tenant_id=tenant_id, text=text,
-                                         plan_id=plan_id, task_id=task_id)
+                                         plan_id=plan_id, task_id=task_id, nearest=True)
         route, intent, reason, draft = compose(hits, min_score=scripts.MIN_SCRIPT_SCORE)
         check = claims.check_reply(
             draft, observations=frozenset(),

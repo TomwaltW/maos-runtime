@@ -2033,6 +2033,9 @@ class IngressRouter:
             return REPLY_DESK_UNAVAILABLE
         if card is not None:
             self._cs_deliver(card)
+            # INTEGRATION-POINT: p14 圆桌会诊（T178）：原因在 CONFERENCE_REASONS 里才开会；
+            # 只对内，`reply` 在这之前已定稿，会诊怎么失败都不碰它。
+            self._cs_conference(res)
         return reply
 
     def _cs_deliver(self, card: Any) -> None:
@@ -2073,6 +2076,40 @@ class IngressRouter:
                                           delivered_to=delivered_to)
         except Exception as exc:                        # noqa: BLE001
             log.warning("转人工卡片的投递回写失败：%s", type(exc).__name__)
+
+    def _cs_conference(self, res: Any) -> None:
+        """p14 · T178：复杂投诉的圆桌会诊卡，投到与转人工卡片同一个 ``handoff_target``。
+
+        ``should_convene`` 为假就什么都不做（连模块都不碰）。投递规则照 `_cs_deliver`：
+        没配目标、目标是外部渠道、同进程没有那个渠道的 adapter 一律不发；发送抛了只记日志。
+        会诊卡没有投递状态列（p14 不新增表），结果只进日志。**永不抛**。
+        """
+        try:
+            from maos.domain.cs.types import CONFERENCE_REASONS
+            if getattr(res, "handoff_reason", "") not in CONFERENCE_REASONS:
+                return
+            from datetime import datetime, timezone
+
+            from maos.roundtable import cs_conference as conf
+            if not conf.should_convene(res):
+                return
+            card = res.handoff
+            now = str(getattr(card, "created_at", "") or "") or datetime.now(
+                timezone.utc).isoformat()
+            held = conf.convene(getattr(self.cs, "store", None) or self.store, res, now=now)
+            target = self.cs.config.handoff_target
+            if not target:
+                return
+            channel, chat_id = target
+            adapter = self.adapters.get(channel)
+            if channel in EXTERNAL_CHANNELS or adapter is None:
+                log.warning("会诊卡 %s 没投：目标渠道 %s %s", held.handoff_id, channel,
+                            "是外部渠道" if channel in EXTERNAL_CHANNELS else "在本进程没有 adapter")
+                return
+            adapter.send(OutboundMessage(chat_id=chat_id,
+                                         text=conf.render_conference_text(held)))
+        except Exception as exc:                        # noqa: BLE001
+            log.warning("会诊卡处理失败：%s", type(exc).__name__)
 
     # -- 回帖 ---------------------------------------------------------------
     def _reply(self, msg: InboundMessage, text: str) -> str:

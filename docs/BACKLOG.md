@@ -3188,3 +3188,12 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 |---|---|---|---|---|
 | 2026-09-25 | p14 | **p14 留出集的误判类别**（主会话归纳，只写类别）：注入端口时，泛泛的「帮我查物流 / 查快递」经 LOG-004 那篇的转人工标记直接 needs_order_lookup，而不是先追问单号；英文「is order X on its way」没进查单；追问用尽后的第三轮「找不到单号，你就告诉我在哪」没按「追问两次仍缺 → needs_order_lookup」落；「#」打头的纯数字单号绑定核验不过；「要是退货的话运费谁出」这种假设句被当成要办、去追问单号；单号紧跟商品名（「XX1234 耳机」）抽不出；「太离谱了，让我找真人」判成 anger 而非 requested（两条触发词的先后） | route 0.84 / 措辞 0.82 达不到预登记门槛；全部是「没答 / 转人工」，零自信答错 | 下一期：拿**类别**开理解层 / 判定顺序轨，并另盲写一份新留出集量泛化（p14 这份已被主会话看过误判明细，不再是盲的） |
 | 2026-09-25 | p14 | p12 留出集 intent 0.8429 / handoff 0.8684 仍差门槛一点 | 同上 | 同上 |
+
+## task-t178（复杂投诉圆桌会诊卡，2026-09-25）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | 会诊卡没有投递状态（p14 不新增表），投递失败只进日志 | 房间没收到会诊卡时库里只看得到 CsConferenceHeld，看不出投没投到 | 要追投递时再加表（新增表，不动存量） |
+| 2026-09-25 | p14 | risk 座的赔偿 / 曝光词表（maos/roundtable/cs_conference.py）与 triggers 词表是两份口径；「曝光度假村」一类名词会误标 exposure_threat | 只影响内部 flag 与建议（偏向 supervisor_review），不影响客户路由 | 整合期或 p15 统一成 triggers 暴露的分类函数 |
+| 2026-09-25 | p14 | 本轨改动让两条白名单外的测试变红（契约 §4 没给本轨改钉子的权限，未改）：test_roundtable_team.py 的 test_roundtable_package_does_not_import_hiclaw 钉死 maos/roundtable 恰好 5 个 .py（契约指定的新文件 cs_conference.py 使它变 6；该文件不含任何被禁字样）；test_cs_router_t174.py 的 test_refund_bridge_card_is_delivered_with_slots_summary_and_command_t174 钉死 refund_request 轮内部房间只收一条（契约要求会诊卡紧随其后投到同一目标） | 全量除预期 8 条外多红 2 条，本轨按纪律未提交 | 主会话授权后只改这两处钉子（5 → 6；sent 列表在转人工卡之后加一条会诊文本），再提交 |
+| 2026-09-25 | p14 | 复核 L3-1：会诊文本（render_conference_text 的 policy 座）原样带退款桥 command_line，其中是内部 query_key；与复核口径「会诊文本不带 query_key」冲突，与契约 §2「有 command_line 就原样带上」一致 | 只进内部房间（同房间的转人工卡片本就带内部单号与采纳命令）；event_log detail 与日志不带 | 主会话裁定口径；若改为不带，policy 座只写「采纳命令见转人工卡片」+ bridge:<id>，同步改 t178 那条钉子 |

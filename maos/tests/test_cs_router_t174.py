@@ -247,8 +247,11 @@ def test_refund_bridge_card_is_delivered_with_slots_summary_and_command_t174():
     ((card, delivery),) = conversation.list_handoffs(store, "tnt-demo")
     assert (card.reason, delivery) == (T.HANDOFF_REFUND_REQUEST, T.DELIVERY_DELIVERED)
     sent = _sent_t174(router)
-    assert sent == [(CHANNEL_FEISHU, ROOM_T174, render_card_text(card)),
-                    (CHANNEL_WECHAT_KF, USER_T174, reply)]
+    # p14 · T178：refund_request ∈ CONFERENCE_REASONS，转人工卡片之后同一目标再收一张会诊卡（整合期改钉子）。
+    assert len(sent) == 3
+    assert sent[0] == (CHANNEL_FEISHU, ROOM_T174, render_card_text(card))
+    assert sent[1][:2] == (CHANNEL_FEISHU, ROOM_T174) and sent[1][2].startswith("【圆桌会诊】")
+    assert sent[2] == (CHANNEL_WECHAT_KF, USER_T174, reply)
     lines = sent[0][2].splitlines()
     # 复核 L2-1：预检与命令用绑定解析出的 query_key；客户报的单号留在槽位里。
     assert "采纳命令：/refund qk-A1001 quality_defect" in lines

@@ -1,0 +1,788 @@
+"""p13 T173 · 理解层：语种、槽位、意图（契约 review/p13-cs-contracts.md §1.4 T173、§2 第 0 / 4 / 7 步）。
+
+守七件事：
+
+1. **语种**（``lang.detect_lang``）：有 CJK 即 zh；否则字母数字里 ASCII 字母严格过半即 en；否则 zh。
+2. **槽位**（``understand.extract_slots``）：订单号的几种平台形态认、手机号 / 日期 / 热线 / 型号不认；
+   诉求与情绪只出闭集取值；问规则的句子不给诉求；商品与问题只从词表来；跨轮合并新值覆盖旧值。
+3. **意图**：触发词 → 意图示例（数据表，确实压过词表）→ 诉求 / 关键词；输出恒在 ``types.INTENTS``。
+4. **触发词**：复合词（商品名、物件里夹着情绪词的两个字）不再误伤，同一句里的真触发词照认；
+   英文触发词按词认。
+5. **match_scripts 的 intent_hint**：缺省时与 p12（bf53df6 的 scripts.py）逐字节一致 —— 在 p12
+   开发集全部轮上比对返回值与 KbRetrieved；给了提示时，时长 / 进度线索把政策篇与查单篇分开
+   （自写 20 句正反例），开发集接上提示后满分（含 CS12-044#1）。
+6. **模型路径**：只在规则判不出、且注入真模型时调；记一行 usage（plan_id 照传、trace_id 空、
+   task_id None）或一行 failure；Scripted / None 零行；输出夹到 INTENTS。
+7. **不退步**：真前台（desk 本轨不改）跑开发集，route_hits / intent_hits 不低于基线；
+   T168 的 holdout 在提示模式下，无关句仍全部低于门槛、问自己那一单状态的句子不被政策篇答掉。
+
+只用开发集（scenarios/cs/eval/p12_cases.json）、T168 的 cs_scripts_holdout.json 与本文件自写的句子；
+不读 p12 留出集。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import pathlib
+
+import pytest
+
+from maos import kb
+from maos.agents.base import AgentIdentity
+from maos.core.store import SqliteStore
+from maos.domain.cs import corpus, evaluate, lang, ports, scripts, triggers
+from maos.domain.cs import types as T
+from maos.domain.cs import understand as U
+from maos.domain.cs.corpus import seed_cs_kb
+from maos.domain.cs.desk import CsConfig, FrontDesk, retrieval_query
+from maos.model.client import ModelClient, ModelResponse, ScriptedModelClient, Tier
+from maos.obs.call_sites import CALL_SITE_CS_UNDERSTAND, REGISTERED_CALL_SITES
+from maos.skills import registry
+from maos.skills.invoker import SkillInvoker
+
+ROOT_T173 = pathlib.Path(__file__).resolve().parents[2]
+HOLDOUT_T168_PATH = ROOT_T173 / "scenarios" / "cs" / "kb" / "cs_scripts_holdout.json"
+TENANT_T173 = "tnt-demo"
+CONV_T173 = "csc-t173test00000000"
+PLAN_T173 = T.plan_id_for(CONV_T173)
+TURN_T173 = T.turn_id_for(CONV_T173, 1)
+
+
+# ---------------------------------------------------------------------------
+# 辅助
+# ---------------------------------------------------------------------------
+def _seeded_t173() -> SqliteStore:
+    store = SqliteStore()
+    store.init_schema()
+    kb.ensure_schema(store)
+    seed_cs_kb(store)
+    return store
+
+
+def _match_t173(store, text: str, *, hint: str | None = None):
+    kw = {} if hint is None else {"intent_hint": hint}
+    return scripts.match_scripts(store, tenant_id=TENANT_T173, text=text, plan_id=PLAN_T173,
+                                 task_id=TURN_T173, **kw)
+
+
+def _top_t173(store, text: str, *, hint: str | None = None) -> tuple[str, float]:
+    hits = _match_t173(store, text, hint=hint)
+    return (hits[0].scheme_no, hits[0].score) if hits else ("", 0.0)
+
+
+def _desk_factory_t173() -> FrontDesk:
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    return FrontDesk(store, CsConfig(tenants={"wk_eval": TENANT_T173}, handoff_target=None))
+
+
+def _hinted_match_scripts_t173(monkeypatch) -> None:
+    """模拟 §2 第 7 步的接线：检索时把 understand 的意图当 intent_hint 传给 match_scripts。
+    desk.py 不归本轨（W-B 由 T174 接），这里只在测试里把 cs.answer 调的那个函数包一层。"""
+    original = scripts.match_scripts
+
+    def hinted(store, **kw):
+        kw.setdefault("intent_hint", U.understand(kw["text"], prior_slots={}).intent)
+        return original(store, **kw)
+
+    monkeypatch.setattr(scripts, "match_scripts", hinted)
+
+
+def _intent_of_scheme_t173() -> dict[str, str]:
+    return {row["rule_no"]: json.loads(row["body"])["intent"] for row in corpus.load_corpus()}
+
+
+def _handoff_of_scheme_t173() -> dict[str, str]:
+    return {row["rule_no"]: json.loads(row["body"])["handoff"] for row in corpus.load_corpus()}
+
+
+# ---------------------------------------------------------------------------
+# 1. 语种
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,want", [
+    ("你好，我想问下退货", "zh"),                        # 纯中文
+    ("包邮吗", "zh"),
+    ("Where is my package?", "en"),                     # 纯英文
+    ("how long does shipping take", "en"),
+    ("ＨＩ，ｗｈｅｒｅ ｉｓ ｍｙ ｏｒｄｅｒ？", "en"),       # 全角字母与全角标点：NFKC 后是英文
+    ("Hi，where is my order？", "en"),                   # 中文输入法的逗号问号不算 CJK
+    ("我的 order A1001 到哪了", "zh"),                    # 混排：有一个汉字就是中文
+    ("order A1001 到了吗", "zh"),
+    ("A1001 where", "en"),                              # 混排无汉字：字母 6 个 > 数字 4 个
+    ("A1001", "zh"),                                    # 字母 1 个、数字 4 个：不过半
+    ("AB12", "zh"),                                     # 恰好一半：不算「占多数」
+    ("ABC12", "en"),
+    ("2026092400123", "zh"),                            # 纯数字
+    ("？？？！！！", "zh"),                              # 纯符号
+    ("😀😀", "zh"),                                      # 表情不计入分母
+    ("OK!!!", "en"),                                    # 标点不计入分母
+    ("", "zh"),                                         # 空串回缺省
+    ("   ", "zh"),
+    ("こんにちは", "zh"),                                # 假名算 CJK（只有 zh / en 两种）
+    ("「A1001」", "zh"),                                 # CJK 标点区的引号
+    ("café latte", "en"),                               # é 算字母但不是 ASCII：8/9 仍过半
+])
+def test_detect_lang_boundaries_t173(text, want):
+    assert lang.detect_lang(text) == want
+    assert lang.detect_lang(text) in ports.LANGS
+
+
+def test_detect_lang_constants_are_the_frozen_ones_t173():
+    assert (lang.LANG_ZH, lang.LANG_EN) == (ports.LANG_ZH, ports.LANG_EN)
+
+
+# ---------------------------------------------------------------------------
+# 2. 槽位
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,want", [
+    ("订单号：2026092412345678 帮我查一下", "2026092412345678"),   # 纯数字 ≥ 8 位
+    ("12345678到哪了", "12345678"),                                # 恰好 8 位
+    ("单号 200924-1234567890123 到哪了", "200924-1234567890123"),  # 数字 + 连字符（拼多多式）
+    ("SO-2026-000123 这单退了吧", "SO-2026-000123"),               # 字母数字混排带连字符
+    ("我那单 A1001 发了没", "A1001"),                              # 短形态 + 「那单」
+    ("order A1001 where is it", "A1001"),                          # 短形态 + order
+    ("A1001", "A1001"),                                           # 整句就是一个号（追问后的回答）
+    ("a1001。", "A1001"),                                         # 小写、带句号：转大写、去标点
+    ("Ａ１００１", "A1001"),                                       # 全角：NFKC
+    ("订单 #1001 能取消吗", "#1001"),                              # 「#」+ 数字 + 订单字眼
+    ("SO-2026-000123 和 2026092400123 两单", "SO-2026-000123"),    # 多个取第一个
+])
+def test_order_no_shapes_are_recognised_t173(text, want):
+    assert U.extract_slots(text, lang=lang.detect_lang(text)).get(ports.SLOT_ORDER_NO) == want
+
+
+@pytest.mark.parametrize("text", [
+    "我的手机号13812345678",            # 11 位手机号：隐私，不当单号存
+    "13812345678",
+    "2026-09-24 那天下的单",            # 日期
+    "客服电话400-123-4567打不通",       # 热线
+    "我买的iPhone15坏了",               # 型号
+    "RTX4090显卡什么时候发",            # 型号（没有订单字眼）
+    "1234567到哪了",                    # 7 位纯数字、没有订单字眼
+    "我打了12315",
+    "GT-3 有货吗",                      # 连字符但数字太少
+    "",
+])
+def test_order_no_negatives_t173(text):
+    assert ports.SLOT_ORDER_NO not in U.extract_slots(text, lang=lang.detect_lang(text))
+
+
+@pytest.mark.parametrize("text,want", [
+    ("帮我把这单退了", ports.REQUEST_RETURN),
+    ("我要退货", ports.REQUEST_RETURN),
+    ("我要退款", ports.REQUEST_REFUND),
+    ("给我退钱", ports.REQUEST_REFUND),
+    ("帮我换个大一码的", ports.REQUEST_EXCHANGE),
+    ("收到的是坏的，我要换货", ports.REQUEST_EXCHANGE),
+    ("帮我查下物流", ports.REQUEST_TRACK),
+    ("我的快递到哪了", ports.REQUEST_TRACK),
+    ("退款到了没", ports.REQUEST_TRACK),                  # 有「退款」但问的是进度：track 不是 refund
+    ("我的退货申请审核了没有", ports.REQUEST_TRACK),
+    ("地址写错了能改吗", ports.REQUEST_OTHER),
+    ("I want a refund for order SO-2026-000123", ports.REQUEST_REFUND),
+    ("where is my order A1001", ports.REQUEST_TRACK),
+    ("my headphones arrived broken, I want an exchange", ports.REQUEST_EXCHANGE),
+])
+def test_request_closed_set_t173(text, want):
+    got = U.extract_slots(text, lang=lang.detect_lang(text)).get(ports.SLOT_REQUEST)
+    assert got == want and got in ports.REQUEST_VALUES
+
+
+@pytest.mark.parametrize("text", [
+    "退款多久到账",                 # 问规则时长
+    "我想退货怎么弄",               # 问流程
+    "拆封了还能退吗",               # 问条件
+    "坏了能换吗",
+    "退货寄回去的运费是我出还是你们出",
+    "Can I return this item?",
+    "今天天气真好",
+])
+def test_policy_questions_carry_no_request_t173(text):
+    """问规则的句子不给诉求：否则前台会为一句政策问题去要单号。"""
+    assert ports.SLOT_REQUEST not in U.extract_slots(text, lang=lang.detect_lang(text))
+
+
+@pytest.mark.parametrize("text,want", [
+    ("气死了！！！东西还没到", ports.EMOTION_ANGRY),     # 情绪触发词
+    ("太过分了吧你们", ports.EMOTION_ANGRY),
+    ("这也太ridiculous了", ports.EMOTION_ANGRY),
+    ("等了好久了还没发，我挺着急的", ports.EMOTION_UPSET),
+    ("I'm really disappointed", ports.EMOTION_UPSET),
+    ("好的谢谢你", ports.EMOTION_CALM),
+    ("不着急，你们慢慢查", ports.EMOTION_CALM),
+])
+def test_emotion_closed_set_t173(text, want):
+    got = U.extract_slots(text, lang=lang.detect_lang(text)).get(ports.SLOT_EMOTION)
+    assert got == want and got in ports.EMOTION_VALUES
+
+
+def test_emotion_is_not_guessed_without_a_cue_t173():
+    assert ports.SLOT_EMOTION not in U.extract_slots("运费怎么算", lang="zh")
+
+
+def test_product_and_problem_come_only_from_the_lexicons_t173():
+    slots = U.extract_slots("收到的杯子杯口有一条裂纹", lang="zh")
+    assert (slots.get(ports.SLOT_PRODUCT), slots.get(ports.SLOT_PROBLEM)) == ("杯子", "裂纹")
+    slots = U.extract_slots("my headphones arrived broken", lang="en")
+    assert (slots.get(ports.SLOT_PRODUCT), slots.get(ports.SLOT_PROBLEM)) == ("headphones", "broken")
+    slots = U.extract_slots("空气炸锅不能用了", lang="zh")               # 最长的先认
+    assert slots.get(ports.SLOT_PRODUCT) == "空气炸锅"
+    # 取不到就不给：不自由抽取（住址、手机号进不了槽位），「手机号」不是手机。
+    for text in ("我住在杭州市西湖区文三路 100 号", "你们怎么拿到我手机号的", "运费怎么算"):
+        slots = U.extract_slots(text, lang="zh")
+        assert ports.SLOT_PRODUCT not in slots and ports.SLOT_PROBLEM not in slots, text
+
+
+def test_all_slot_values_stay_in_their_closed_sets_over_the_dev_set_t173():
+    for case in evaluate.load_cases():
+        for text in case.turns:
+            slots = U.extract_slots(text, lang=lang.detect_lang(text))
+            assert set(slots) <= set(ports.SLOT_KEYS), text
+            assert all(isinstance(v, str) and v for v in slots.values()), text
+            assert slots.get(ports.SLOT_REQUEST, "refund") in ports.REQUEST_VALUES, text
+            assert slots.get(ports.SLOT_EMOTION, "calm") in ports.EMOTION_VALUES, text
+
+
+def test_prior_slots_merge_new_values_win_t173():
+    prior = {ports.SLOT_ORDER_NO: "A1001", ports.SLOT_PRODUCT: "外套",
+             ports.SLOT_EMOTION: ports.EMOTION_CALM}
+    u = U.understand("气死了，外套和鞋子都没到，A2002 那单也查一下", prior_slots=prior)
+    assert u.slots[ports.SLOT_ORDER_NO] == "A2002"          # 新值覆盖
+    assert u.slots[ports.SLOT_EMOTION] == ports.EMOTION_ANGRY
+    assert u.slots[ports.SLOT_PRODUCT] == "外套"
+    # 本轮没说到的槽位原样带着。
+    u2 = U.understand("好的", prior_slots={ports.SLOT_ORDER_NO: "A1001",
+                                          ports.SLOT_REQUEST: ports.REQUEST_REFUND})
+    assert u2.slots[ports.SLOT_ORDER_NO] == "A1001"
+    assert u2.slots[ports.SLOT_REQUEST] == ports.REQUEST_REFUND
+    # 上一轮里不合契约的键 / 取值丢掉，不让它进 Understanding。
+    u3 = U.understand("你好", prior_slots={"address": "文三路", ports.SLOT_REQUEST: "chargeback",
+                                         ports.SLOT_PRODUCT: ""})
+    assert set(u3.slots) <= {ports.SLOT_EMOTION}
+
+
+def test_slot_fill_turn_inherits_the_earlier_request_t173():
+    """先说诉求、后补单号（追问之后的回答）：本轮只有单号，意图按之前的退款 / 退货诉求算。"""
+    first = U.understand("我要退款", prior_slots={})
+    assert (first.intent, first.slots.get(ports.SLOT_REQUEST)) == (
+        T.INTENT_RETURN_EXCHANGE, ports.REQUEST_REFUND)
+    second = U.understand("A1001", prior_slots=dict(first.slots))
+    assert second.intent == T.INTENT_RETURN_EXCHANGE
+    assert second.slots == {ports.SLOT_ORDER_NO: "A1001", ports.SLOT_REQUEST: ports.REQUEST_REFUND}
+    # 查进度查的是什么只有那一轮原文知道：不猜。
+    assert U.understand("A1001", prior_slots={ports.SLOT_REQUEST: ports.REQUEST_TRACK}).intent \
+        == T.INTENT_UNKNOWN
+    # 先报单号、后说诉求：单号留着，诉求补上。
+    third = U.understand("帮我退货", prior_slots={ports.SLOT_ORDER_NO: "A1001"})
+    assert third.slots == {ports.SLOT_ORDER_NO: "A1001", ports.SLOT_REQUEST: ports.REQUEST_RETURN}
+
+
+# ---------------------------------------------------------------------------
+# 3. 意图
+# ---------------------------------------------------------------------------
+def test_understanding_shape_is_validated_and_read_only_t173():
+    u = U.Understanding(lang="zh", intent=T.INTENT_LOGISTICS,
+                        slots={ports.SLOT_REQUEST: ports.REQUEST_TRACK, ports.SLOT_ORDER_NO: "A1"},
+                        source=ports.SLOT_SOURCE_RULE)
+    assert list(u.slots) == [ports.SLOT_ORDER_NO, ports.SLOT_REQUEST]   # 按 SLOT_KEYS 排
+    with pytest.raises(TypeError):
+        u.slots["order_no"] = "B2"                                      # type: ignore[index]
+    assert U.Understanding.from_json(json.loads(json.dumps(u.to_json()))) == u
+    bad = [dict(lang="fr"), dict(intent="chitchat"), dict(source="guess"),
+           dict(slots={"address": "x"}), dict(slots={ports.SLOT_REQUEST: "chargeback"}),
+           dict(slots={ports.SLOT_EMOTION: "happy"}), dict(slots={ports.SLOT_ORDER_NO: ""})]
+    base = dict(lang="zh", intent=T.INTENT_UNKNOWN, slots={}, source=ports.SLOT_SOURCE_RULE)
+    for override in bad:
+        with pytest.raises(ValueError):
+            U.Understanding(**{**base, **override})
+
+
+@pytest.mark.parametrize("text,want", [
+    ("帮我转人工", T.INTENT_HANDOFF_REQUEST),               # 触发词最先
+    ("我要投诉，还要退款", T.INTENT_COMPLAINT),
+    ("钱退回来要几天呀", T.INTENT_REFUND_PAYMENT),
+    ("帮我把这单退了", T.INTENT_RETURN_EXCHANGE),           # 诉求：要退 → 退换货（RET-005）
+    ("我要退款", T.INTENT_RETURN_EXCHANGE),
+    ("我的退款到了没", T.INTENT_REFUND_PAYMENT),             # 查进度查的是钱
+    ("我的退货申请审核了没有", T.INTENT_RETURN_EXCHANGE),     # 查的是售后单
+    ("我的快递到哪了", T.INTENT_LOGISTICS),                  # 查的是包裹
+    ("退货运费谁出", T.INTENT_RETURN_EXCHANGE),              # 平票：退换货先于物流
+    ("付款以后一般几天发货", T.INTENT_LOGISTICS),            # 「付款以后」只是时间点
+    ("能开发票吗", T.INTENT_REFUND_PAYMENT),
+    ("你好呀", T.INTENT_GENERAL),
+    ("how long does shipping take", T.INTENT_LOGISTICS),
+    ("帮我写一首关于秋天的诗", T.INTENT_UNKNOWN),
+])
+def test_rule_intent_t173(text, want):
+    assert U.understand(text, prior_slots={}).intent == want
+
+
+def test_intent_examples_override_the_keyword_table_t173(monkeypatch):
+    """意图示例是数据表、确实生效：这几句关键词词表判不出（或判错），靠示例钉住；
+    把示例表清空，同一句就回到词表的结果。"""
+    cases = [("东西大概什么时候能到呀", T.INTENT_LOGISTICS),
+             ("收到的东西怎么是坏的", T.INTENT_RETURN_EXCHANGE),
+             ("The item arrived broken.", T.INTENT_RETURN_EXCHANGE)]
+    for text, want in cases:
+        assert U.example_intent(text) == want, text
+        assert U.rule_intent(text) == want, text
+        assert U._vote_intent(U.keyword_votes(text)) != want, text      # 词表单独判不对
+    monkeypatch.setattr(U, "INTENT_EXAMPLES", ())
+    for text, want in cases:
+        assert U.rule_intent(text) != want, text
+
+
+def test_intent_examples_table_is_well_formed_and_self_written_t173():
+    dev = {"".join(kb.tokenize(t)) for c in evaluate.load_cases() for t in c.turns}
+    seen = set()
+    for example, intent in U.INTENT_EXAMPLES:
+        assert intent in T.INTENTS and intent != T.INTENT_UNKNOWN, example
+        assert U.example_intent(example) == intent, example      # 自己认得自己
+        norm = "".join(kb.tokenize(example))
+        assert norm not in dev and norm not in seen, example     # 不抄开发集、不重复
+        seen.add(norm)
+
+
+def test_intent_is_always_in_the_enum_t173():
+    texts = [t for c in evaluate.load_cases() for t in c.turns]
+    texts += ["", "   ", "!!!", "asdf", "A1001", "🙂", "谢谢", "hello there"]
+    for text in texts:
+        u = U.understand(text, prior_slots={})
+        assert u.intent in T.INTENTS and u.lang in ports.LANGS, text
+        assert u.source == ports.SLOT_SOURCE_RULE, text
+
+
+# ---------------------------------------------------------------------------
+# 4. 触发词：复合词白名单、英文
+# ---------------------------------------------------------------------------
+#: 自写：商品名 / 物件 / 功效说明里夹着触发词的两个字，整句是普通咨询。
+COMPOUND_NOT_TRIGGERS_T173 = [
+    "空气炸锅坏了能换吗", "这款气炸锅包邮吗", "垃圾袋什么时候发货", "垃圾桶的盖子裂了",
+    "去死皮膏怎么用", "给我妈的生日礼物什么时候能到", "他妈妈说东西少发了一件",
+    "麻烦看下有什么破损", "晕车贴能缓解恶心吗", "油漆滚刷发错颜色了",
+    "相机的曝光补偿在哪调", "温度补偿器是原装的吗", "人工草坪运费怎么算", "安装要另收人工费吗",
+    "有真人实拍图吗", "真人发假发能烫吗", "手机隐私膜贴歪了", "防泄漏水杯漏水了",
+    "Do you sell trash cans?", "Is this human hair?", "privacy screen protector for iphone",
+    "My name is Sue", "the bottle leaked in the box", "I need a cleaning agent",
+    "Do you have a passport holder?", "Please ship to my home address",
+]
+
+#: 同一句里既有白名单复合词、又有真触发词：真的照认。
+COMPOUND_WITH_REAL_TRIGGER_T173 = [
+    ("垃圾桶都比你们的东西结实，什么垃圾店", T.HANDOFF_ANGER),
+    ("人工费另算？转人工", T.HANDOFF_REQUESTED),
+    ("空气炸锅坏了，气死我了", T.HANDOFF_ANGER),
+    ("给我妈的礼物被你们搞砸了，他妈的", T.HANDOFF_ANGER),
+    ("曝光补偿坏了，你们得赔偿", T.HANDOFF_COMPENSATION),
+    ("隐私膜的订单里有我的身份证号", T.HANDOFF_PRIVACY),
+]
+
+
+@pytest.mark.parametrize("text", COMPOUND_NOT_TRIGGERS_T173)
+def test_compound_words_no_longer_trigger_t173(text):
+    assert triggers.detect(text) is None
+
+
+@pytest.mark.parametrize("text,reason", COMPOUND_WITH_REAL_TRIGGER_T173)
+def test_real_triggers_next_to_compounds_still_fire_t173(text, reason):
+    assert triggers.detect(text) == (reason, triggers.INTENT_OF[reason])
+
+
+def test_every_whitelisted_compound_really_contains_a_trigger_t173():
+    """白名单每一条都真的夹着触发词（否则这一条是摆设），而整条单说不触发。"""
+    for group, words in triggers.BENIGN_COMPOUNDS.items():
+        assert group in triggers.PRIORITY
+        for word in words:
+            norm = triggers.normalize(word)
+            assert norm == word, word                      # 写成规范化后的形态
+            assert any(triggers._PATTERNS[r].search(norm) for r in triggers.PRIORITY), word
+            assert triggers.detect(word) is None, word
+    for word in triggers.EN_BENIGN_COMPOUNDS:
+        assert any(triggers._EN_RES[r].search(word) for r in triggers.PRIORITY), word
+        assert triggers.detect(word) is None, word
+
+
+#: 自写的英文触发句：每类至少两种说法。
+EN_TRIGGERS_T173 = {
+    T.HANDOFF_REQUESTED: ["I want to talk to a human", "Can I speak to a real person?",
+                          "live agent please", "get me your manager", "I don't want a bot"],
+    T.HANDOFF_COMPLAINT: ["I will file a complaint", "My lawyer will contact you",
+                          "I'm going to sue you", "I'll report you to consumer protection"],
+    T.HANDOFF_ANGER: ["This is a scam", "What a rip-off", "your service is garbage",
+                      "WTF is going on"],
+    T.HANDOFF_COMPENSATION: ["I demand compensation", "You need to compensate me"],
+    T.HANDOFF_PRIVACY: ["delete my personal data", "why do you have my phone number",
+                        "this is a privacy issue"],
+}
+
+
+@pytest.mark.parametrize("reason", list(EN_TRIGGERS_T173))
+def test_english_triggers_t173(reason):
+    for text in EN_TRIGGERS_T173[reason]:
+        assert triggers.detect(text) == (reason, triggers.INTENT_OF[reason]), text
+
+
+def test_english_triggers_keep_the_priority_and_match_inside_chinese_t173():
+    assert triggers.detect("scam! I want compensation") == (
+        T.HANDOFF_COMPENSATION, T.INTENT_COMPENSATION)
+    assert triggers.detect("我要找human") == (T.HANDOFF_REQUESTED, T.INTENT_HANDOFF_REQUEST)
+    assert triggers.detect("ＨＵＭＡＮ　ｐｌｅａｓｅ") == (T.HANDOFF_REQUESTED, T.INTENT_HANDOFF_REQUEST)
+
+
+@pytest.mark.parametrize("text", [
+    "How long does shipping take?", "Where is my parcel?", "Can I get my money back?",
+    "Please refund me now", "Is there an issue with my order?", "This is inhumane packaging",
+    "Hi, how long does shipping usually take?", "Does it come with a user manual?",
+])
+def test_ordinary_english_questions_do_not_trigger_t173(text):
+    """「refund me now」这类要钱的说法不进触发词（退款诉求走核验 → 查单 → 预检卡）；
+    按词认：issue 里的 sue、inhumane 里的 human 不算。"""
+    assert triggers.detect(text) is None
+
+
+# ---------------------------------------------------------------------------
+# 5. match_scripts 的 intent_hint
+# ---------------------------------------------------------------------------
+#: p12（bf53df6 的 maos/domain/cs/scripts.py，同一份话术库）在开发集每一轮的检索形态
+#: （desk.retrieval_query）上：返回的 ScriptHit 全部字段 + 落的 KbRetrieved（event_type / plan_id /
+#: task_id / trace_id / detail，detail 去掉 duration_ms 与知识层配置的 weights）的 sha256 前 16 位。
+#: 由 scratchpad 里的一次性脚本拿 bf53df6 的 scripts.py 原样算出。话术库改了（主会话批准）要拿
+#: p12 的 scripts.py 重算这张表 —— 用本轨的 scripts.py 重算就等于拿被测物验被测物。
+P12_DEV_MATCH_DIGESTS_T173: dict[tuple[str, int], str] = {
+    ("CS12-001", 1): "50769f761340ffde",
+    ("CS12-002", 1): "d7a8dae36f641f36",
+    ("CS12-003", 1): "965e73bab8fe7e95",
+    ("CS12-004", 1): "cb5bb2dde3012455",
+    ("CS12-005", 1): "d2437b0e3bd326d8",
+    ("CS12-006", 1): "ef2df19727b1d442",
+    ("CS12-007", 1): "5a878c35622746c9",
+    ("CS12-008", 1): "2ee245d54fa9bd2c",
+    ("CS12-009", 1): "5c5bca11ceab7243",
+    ("CS12-010", 1): "3c897fa707cc3c43",
+    ("CS12-011", 1): "396e07bcd4125761",
+    ("CS12-012", 1): "8eb762764e0c036b",
+    ("CS12-013", 1): "03784ec958950af1",
+    ("CS12-014", 1): "8dd4fa643d8fef7d",
+    ("CS12-015", 1): "8b1dd2b3daf68eee",
+    ("CS12-016", 1): "2b319143ab05ccee",
+    ("CS12-017", 1): "32f10eeab7003a70",
+    ("CS12-018", 1): "b64cb70015d07373",
+    ("CS12-019", 1): "ea39bf4f29c73c7e",
+    ("CS12-020", 1): "06e8027d3b160dab",
+    ("CS12-021", 1): "9b401167d5e5e75e",
+    ("CS12-022", 1): "d5b1f28d222f0a80",
+    ("CS12-023", 1): "a040ef30fe50b30a",
+    ("CS12-024", 1): "4d123959e7464588",
+    ("CS12-025", 1): "52ca87d62c8b0013",
+    ("CS12-026", 1): "065e6c4b8d4930a3",
+    ("CS12-027", 1): "4aa381c17eec7141",
+    ("CS12-028", 1): "625374849693057d",
+    ("CS12-029", 1): "8d182daa4e7032d3",
+    ("CS12-030", 1): "cd980dd8a8dfcc77",
+    ("CS12-031", 1): "5f21a9b5a599a83c",
+    ("CS12-032", 1): "6594e93dfd6c9978",
+    ("CS12-033", 1): "f6f2faf486ab9200",
+    ("CS12-034", 1): "02ec6de49fbce0b6",
+    ("CS12-035", 1): "57cc2d6e0f67814a",
+    ("CS12-036", 1): "b987cc7e5c2675b9",
+    ("CS12-036", 2): "aedc60944d5cd6e4",
+    ("CS12-036", 3): "559940dbefdce5ba",
+    ("CS12-037", 1): "88899645881a75ba",
+    ("CS12-037", 2): "f0c051d7fcad3ea2",
+    ("CS12-038", 1): "3785b6874fb18a12",
+    ("CS12-038", 2): "4f166aa4577fcfdc",
+    ("CS12-038", 3): "ebaed88c56ff8f03",
+    ("CS12-039", 1): "d9aa9eb155e6d5b3",
+    ("CS12-039", 2): "905a94182c84ec9b",
+    ("CS12-039", 3): "a2abff701cb3bfaa",
+    ("CS12-040", 1): "5e558c7a058e23bc",
+    ("CS12-041", 1): "a61868dc1827104e",
+    ("CS12-042", 1): "4cbf330f2bac7daa",
+    ("CS12-043", 1): "e29db3de48278739",
+    ("CS12-044", 1): "d06c0c877d6b9ed3",
+    ("CS12-045", 1): "f92971ae0ce9eacf",
+    ("CS12-045", 2): "42ea54fb8ddc1dc3",
+}
+
+
+def _match_digest_t173(text: str, *, hint: str | None) -> str:
+    store = _seeded_t173()
+    kw = {} if hint is None else {"intent_hint": hint}
+    hits = scripts.match_scripts(store, tenant_id=TENANT_T173, text=text,
+                                 plan_id="cs:csc-t173golden", task_id="csc-t173golden-t0001", **kw)
+    rows = kb.query(store, "SELECT event_type, plan_id, task_id, trace_id, detail FROM event_log")
+    events = []
+    for row in rows:
+        detail = json.loads(row["detail"])
+        detail.pop("duration_ms", None)
+        detail.pop("weights", None)
+        events.append([row["event_type"], row["plan_id"], row["task_id"], row["trace_id"], detail])
+    blob = json.dumps({"hits": [[h.doc_id, h.scheme_no, h.intent, h.score, h.script, h.principle,
+                                 h.handoff] for h in hits], "events": events},
+                      ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def test_default_match_scripts_is_byte_identical_to_p12_on_the_dev_set_t173():
+    """缺省（不给 intent_hint、或给空串）时，开发集每一轮的返回值与 KbRetrieved 都与 p12 一致。"""
+    got = {}
+    for case in evaluate.load_cases():
+        for i, text in enumerate(case.turns, start=1):
+            query = retrieval_query(text)
+            omitted = _match_digest_t173(query, hint=None)
+            assert _match_digest_t173(query, hint="") == omitted, (case.id, i)
+            got[(case.id, i)] = omitted
+    assert got == P12_DEV_MATCH_DIGESTS_T173
+
+
+def test_intent_hint_is_validated_and_logged_without_customer_text_t173():
+    store = _seeded_t173()
+    with pytest.raises(ValueError):
+        _match_t173(store, "包邮吗", hint="shipping")
+    text = "钱退回来要几天呀"
+    hits = _match_t173(store, text, hint=T.INTENT_REFUND_PAYMENT)
+    assert hits and all(0.0 < h.score <= 1.0 for h in hits)
+    rows = kb.query(store, "SELECT detail FROM event_log WHERE event_type = 'KbRetrieved'")
+    detail = json.loads(rows[-1]["detail"])
+    assert detail["query"]["intent_hint"] == T.INTENT_REFUND_PAYMENT
+    assert detail["query"]["cue"] == scripts.CUE_DURATION
+    assert text not in rows[-1]["detail"]
+    assert [d["doc_id"] for d in detail["docs"]] == [h.doc_id for h in hits]
+    assert [d["score"] for d in detail["docs"]] == [h.score for h in hits]
+
+
+def test_hint_only_moves_the_hinted_intent_t173():
+    store = _seeded_t173()
+    text = "退货运费谁出"
+    plain = {h.scheme_no: h.score for h in _match_t173(store, text, hint=None)}
+    hinted = {h.scheme_no: h.score for h in _match_t173(store, text, hint=T.INTENT_LOGISTICS)}
+    intent_of = _intent_of_scheme_t173()
+    for scheme, score in hinted.items():
+        if scheme in plain and intent_of[scheme] != T.INTENT_LOGISTICS:
+            assert score == plain[scheme], scheme
+        elif scheme in plain:
+            assert score > plain[scheme], scheme
+    # unknown 没有可优先的话术：排序与分数同缺省。
+    unknown = [(h.doc_id, h.score) for h in _match_t173(store, text, hint=T.INTENT_UNKNOWN)]
+    assert unknown == [(h.doc_id, h.score) for h in _match_t173(store, text, hint=None)]
+
+
+@pytest.mark.parametrize("text,cue", [
+    ("退款一般要多久", scripts.CUE_DURATION), ("几天能发货", scripts.CUE_DURATION),
+    ("how long does a refund take", scripts.CUE_DURATION),
+    ("退款到了没", scripts.CUE_PROGRESS), ("发货了吗", scripts.CUE_PROGRESS),
+    ("好几天了还没到", scripts.CUE_PROGRESS),              # 两类都像：进度优先
+    ("退款多久了还没到", scripts.CUE_PROGRESS),
+    ("where is my refund", scripts.CUE_PROGRESS),
+    ("包邮吗", ""), ("你好", ""), ("你们店开了多久了", ""),
+])
+def test_detect_cue_t173(text, cue):
+    assert scripts.detect_cue(text) == cue
+
+
+#: 自写的 20 句（10 对）：问规则时长 vs 查某一笔进度，共享实词（钱退回来 / 退款 / 发货 / 寄出）。
+#: 期望的是提示模式下（意图取 understand 的结果）排第一且过门槛的方案编号。
+CUE_PAIRS_T173 = [
+    ("退款一般几天能退到卡上", "PAY-001"), ("退款退到卡上了没有", "PAY-003"),
+    ("钱退回来大概要多久", "PAY-001"), ("钱退回来了没有啊", "PAY-003"),
+    ("下单后多久能发货", "LOG-001"), ("我下的单发货了没", "LOG-004"),
+    ("退款多长时间能到账", "PAY-001"), ("我的退款现在到账没有", "PAY-003"),
+    ("付款后一般几天发出", "LOG-001"), ("付款好几天了还没发出", "LOG-004"),
+    ("退的钱几个工作日能回来", "PAY-001"), ("退的钱回来了吗", "PAY-003"),
+    ("钱退回卡里要几天", "PAY-001"), ("钱退回卡里了吗", "PAY-003"),
+    ("东西一般几天能寄出", "LOG-001"), ("东西寄出了吗", "LOG-004"),
+    ("退款退回来通常多久", "PAY-001"), ("退款退回来了没", "PAY-003"),
+    ("钱退回来要几天呀", "PAY-001"), ("钱到底退回来没有", "PAY-003"),
+]
+
+
+def test_duration_and_progress_cues_separate_policy_from_lookup_t173():
+    store = _seeded_t173()
+    handoff_of = _handoff_of_scheme_t173()
+    wrong_without_cue = []
+    for text, want in CUE_PAIRS_T173:
+        hint = U.understand(text, prior_slots={}).intent
+        scheme, score = _top_t173(store, text, hint=hint)
+        assert (scheme, score >= scripts.MIN_SCRIPT_SCORE) == (want, True), (text, scheme, score)
+        cue = scripts.detect_cue(text)
+        assert cue == (scripts.CUE_PROGRESS if handoff_of[want] else scripts.CUE_DURATION), text
+        if _top_t173(store, text)[0] != want:
+            wrong_without_cue.append(text)
+    # 判据不空转：这几句 p12 的缺省检索判错，是线索把它们分开的。
+    assert len(wrong_without_cue) >= 2, wrong_without_cue
+
+
+def test_cue_bonus_is_what_separates_them_t173(monkeypatch):
+    """反向：线索加减清零，CS12-044#1 那一类又被查单篇抢走。"""
+    store = _seeded_t173()
+    text = "钱退回来要几天呀"
+    assert _top_t173(store, text, hint=T.INTENT_REFUND_PAYMENT)[0] == "PAY-001"
+    monkeypatch.setattr(scripts, "CUE_BONUS", 0.0)
+    assert _top_t173(store, text, hint=T.INTENT_REFUND_PAYMENT)[0] == "PAY-003"
+
+
+# ---------------------------------------------------------------------------
+# 6. 模型路径
+# ---------------------------------------------------------------------------
+class _StubModelT173(ModelClient):
+    """桩「真模型」：不是 ScriptedModelClient，按给定文本回，或抛给定异常。"""
+
+    model = "stub-real-model"
+
+    def __init__(self, text: str = '{"intent":"logistics"}', exc: Exception | None = None):
+        self.text, self.exc = text, exc
+        self.calls: list[dict] = []
+
+    def complete(self, *, system: str, user: str, tier: str) -> ModelResponse:
+        self.calls.append({"system": system, "user": user, "tier": tier})
+        if self.exc is not None:
+            raise self.exc
+        return ModelResponse(text=self.text, tokens_in=40, tokens_out=6, model=self.model)
+
+
+_OFF_TOPIC_T173 = "帮我写一首关于秋天的诗"     # 规则判不出（unknown）
+
+
+def _invoke_understand_t173(store, text: str, model, *, prior=None):
+    ident = AgentIdentity(agent_id="t173-probe", role="cs_front_desk", duty="测试理解层",
+                          allowed_skills=frozenset({"cs.understand"}),
+                          allowed_tools=frozenset(), max_risk="L", model_tier=Tier.LIGHT)
+    return SkillInvoker(ident, store).invoke("cs.understand", {
+        "tenant_id": TENANT_T173, "conversation_id": CONV_T173, "turn_id": TURN_T173,
+        "text": text, "prior_slots": prior or {},
+    }, extras={"plan_id": PLAN_T173, "task_id": TURN_T173, "trace_id": "", "model": model})
+
+
+def test_real_model_is_called_only_when_rules_give_up_and_one_usage_row_is_recorded_t173():
+    store = SqliteStore()
+    store.init_schema()
+    model = _StubModelT173('{"intent":"logistics"}')
+    res = _invoke_understand_t173(store, _OFF_TOPIC_T173, model)
+    assert res.status == "ok"
+    assert res.output["intent"] == T.INTENT_LOGISTICS and res.output["source"] == "model"
+    assert len(model.calls) == 1 and model.calls[0]["tier"] == Tier.LIGHT
+    for intent in T.INTENTS:                       # system 段逐个列出意图
+        assert intent in model.calls[0]["system"]
+    (row,) = store.list_model_usage()
+    assert row["call_site"] == U.CALL_SITE == CALL_SITE_CS_UNDERSTAND
+    assert row["call_site"] in REGISTERED_CALL_SITES
+    assert (row["plan_id"], row["trace_id"], row["task_id"]) == (PLAN_T173, "", None)
+    assert (row["agent_role"], row["model"], row["tier"]) == ("cs_front_desk", "stub-real-model", "light")
+    assert store.list_model_call_failures() == []
+    # 规则判得出的句子：真模型也一次不调、一行不记。
+    res2 = _invoke_understand_t173(store, "包邮吗", model)
+    assert res2.output["source"] == "rule" and len(model.calls) == 1
+    assert len(store.list_model_usage()) == 1
+
+
+def test_model_failure_records_one_failure_row_and_falls_back_to_rules_t173():
+    store = SqliteStore()
+    store.init_schema()
+    model = _StubModelT173(exc=RuntimeError("gateway down"))
+    res = _invoke_understand_t173(store, _OFF_TOPIC_T173, model)
+    assert res.status == "ok"                      # 不抛：模型坏了不该让客户被转人工
+    assert (res.output["intent"], res.output["source"]) == (T.INTENT_UNKNOWN, "rule")
+    assert store.list_model_usage() == []
+    (row,) = store.list_model_call_failures()
+    assert row["call_site"] == U.CALL_SITE
+    assert (row["plan_id"], row["trace_id"], row["task_id"]) == (PLAN_T173, "", None)
+
+
+@pytest.mark.parametrize("model", [None, ScriptedModelClient({"": '{"intent":"logistics"}'})],
+                         ids=["none", "scripted"])
+def test_scripted_or_no_model_means_zero_rows_t173(model):
+    store = SqliteStore()
+    store.init_schema()
+    res = _invoke_understand_t173(store, _OFF_TOPIC_T173, model)
+    assert (res.output["intent"], res.output["source"]) == (T.INTENT_UNKNOWN, "rule")
+    assert store.list_model_usage() == [] and store.list_model_call_failures() == []
+    if model is not None:
+        assert model.calls == []
+
+
+@pytest.mark.parametrize("raw,want", [
+    ('{"intent":"refund_payment"}', T.INTENT_REFUND_PAYMENT),
+    ('{"intent":"refund"}', T.INTENT_UNKNOWN),           # 枚举外 → unknown
+    ('{"intent":"  general "}', T.INTENT_GENERAL),
+    ('["logistics"]', T.INTENT_UNKNOWN),
+    ("not json", T.INTENT_UNKNOWN),
+    ("", T.INTENT_UNKNOWN),
+])
+def test_model_output_is_clamped_to_intents_t173(raw, want):
+    store = SqliteStore()
+    store.init_schema()
+    u = U.understand(_OFF_TOPIC_T173, prior_slots={}, model=_StubModelT173(raw), store=store,
+                     plan_id=PLAN_T173)
+    assert (u.intent, u.source) == (want, "model")
+    assert len(store.list_model_usage()) == 1
+
+
+def test_skill_contract_and_output_shape_t173():
+    cls = registry.get("cs.understand")
+    assert cls is not None
+    contract = cls.contract
+    assert contract.version == "1.0.0" and contract.owner_roles == []
+    assert contract.depends_tools == [] and contract.failure_policy == "escalate"
+    assert contract.max_retries == 0
+    assert "只读" in contract.security_boundary and "不调任何工具" in contract.security_boundary
+    assert set(contract.output_schema) == {"lang", "intent", "slots", "source"}
+    store = SqliteStore()
+    store.init_schema()
+    text = "订单号2026092400123那件外套我不想要了，帮我申请退货"
+    res = _invoke_understand_t173(store, text, None, prior={ports.SLOT_EMOTION: "calm"})
+    assert res.status == "ok"
+    assert U.Understanding.from_json(res.output) == U.understand(
+        text, prior_slots={ports.SLOT_EMOTION: "calm"})
+    assert res.output["slots"][ports.SLOT_ORDER_NO] == "2026092400123"
+    # SkillInvoked 只有摘要：客户原文、订单号不进 event_log（R5）。
+    blob = json.dumps(store.list_event_log(PLAN_T173), ensure_ascii=False)
+    assert "SkillInvoked" in blob and "2026092400123" not in blob and "外套" not in blob
+
+
+# ---------------------------------------------------------------------------
+# 7. 不退步
+# ---------------------------------------------------------------------------
+#: 基线 bf53df6 上真前台跑开发集的实测（53 轮）：intent 53、route 52（CS12-044#1 是已知缺口）。
+BASELINE_DEV_T173 = {"turns": 53, "intent_hits": 53, "route_hits": 52}
+
+
+def test_dev_set_on_the_real_desk_is_not_worse_than_baseline_t173():
+    """desk 本轨不改；触发词（复合词白名单、英文）动过之后，开发集的指标不许比基线差。"""
+    report = evaluate.run_eval(_desk_factory_t173, evaluate.load_cases())
+    assert report.turns == BASELINE_DEV_T173["turns"]
+    assert report.route_hits >= BASELINE_DEV_T173["route_hits"], report.describe()
+    assert report.intent_hits >= BASELINE_DEV_T173["intent_hits"], report.describe()
+    assert report.status_fabrication == 0
+
+
+def test_dev_set_with_the_hint_wired_in_is_perfect_t173(monkeypatch):
+    """§2 第 7 步的接线（检索带 understand 的意图）：开发集全部对上，CS12-044#1 也对上。"""
+    _hinted_match_scripts_t173(monkeypatch)
+    report = evaluate.run_eval(_desk_factory_t173, evaluate.load_cases())
+    assert report.failures == (), report.describe()
+    assert report.route_hits == report.turns == BASELINE_DEV_T173["turns"]
+
+
+def test_t168_holdout_under_the_hint_t173():
+    """T168 的检索 holdout（不是 p12 留出集）在提示模式下：无关句与英文句仍全部低于门槛；
+    问自己那一单状态的句子不被政策篇以过门槛的分数答掉；改写句过门槛且判对的不少于缺省。"""
+    holdout = json.loads(HOLDOUT_T168_PATH.read_text(encoding="utf-8"))
+    store = _seeded_t173()
+    handoff_of = _handoff_of_scheme_t173()
+    for text in holdout["unrelated"] + holdout["english"]:
+        hint = U.understand(text, prior_slots={}).intent
+        assert _top_t173(store, text, hint=hint)[1] < scripts.MIN_SCRIPT_SCORE, text
+    for texts in holdout["status_lookup"].values():
+        for text in texts:
+            hint = U.understand(text, prior_slots={}).intent
+            scheme, score = _top_t173(store, text, hint=hint)
+            assert not (score >= scripts.MIN_SCRIPT_SCORE and not handoff_of[scheme]), text
+    plain = hinted = 0
+    for scheme_no, texts in holdout["rewrites"].items():
+        for text in texts:
+            top_plain = _top_t173(store, text)
+            top_hint = _top_t173(store, text, hint=U.understand(text, prior_slots={}).intent)
+            plain += top_plain[0] == scheme_no and top_plain[1] >= scripts.MIN_SCRIPT_SCORE
+            hinted += top_hint[0] == scheme_no and top_hint[1] >= scripts.MIN_SCRIPT_SCORE
+    assert hinted >= plain + 3, (plain, hinted)

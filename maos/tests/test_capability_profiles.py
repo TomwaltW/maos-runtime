@@ -74,6 +74,9 @@ BASELINE: frozenset[tuple[str, str]] = frozenset({
     # 前台不是可被派单的岗位），所以体检机看不到持有者。
     ("skill-unowned", "cs.answer"),
     ("skill-unowned", "cs.handoff"),
+    # T173（p13 理解层）：同一个理由 —— cs.understand 由前台的专用身份调（T174 把它收进
+    # CS_FRONT_DESK_IDENTITY），那个身份不进 AGENT_POOL。
+    ("skill-unowned", "cs.understand"),
     ("owner-roles-mismatch", "issue.aggregate"),
     ("owner-roles-mismatch", "policy.match"),
     ("owner-roles-mismatch", "req.normalize"),
@@ -205,7 +208,7 @@ def test_findings_group_counts() -> None:
         "tool-not-declared": 2,          # 甲：coding / testing 的 sandbox
         "depends-tool-missing": 2,       # 丙：code.repo-patch / test.verify（与甲同源）
         "owner-role-unknown": 1,         # 乙：ap.compensate -> ap_compensation
-        "skill-unowned": 8,              # 乙：八个 skill 没有任何角色持有（T116 +1、T117 +1、T169 +2）
+        "skill-unowned": 9,              # 乙：九个 skill 没有任何角色持有（T116 +1、T117 +1、T169 +2、T173 +1）
         "owner-roles-mismatch": 3,       # 乙：自述与实际持有者不等
         # 丁 depends-tool-not-allowed 当前 0 条，所以不出现在这张表里
     }

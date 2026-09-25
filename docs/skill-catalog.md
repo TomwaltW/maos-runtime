@@ -4,7 +4,7 @@
      改了代码就重跑 `python3 scripts/gen_docs.py`；
      `python3 scripts/gen_docs.py --check` 不一致即非零退出。 -->
 
-注册表里共 **44 个 skill / 44 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
+注册表里共 **45 个 skill / 45 个版本条目**。契约共 12 个字段（maos/skills/contract.py:19）：`name + version` 是注册表主键，其余 10 个字段合成 **9 项要素**（`failure_policy` 与 `max_retries` 同属「失败策略」一项）。字段与顺序取自 `dataclasses.fields(SkillContract)`，本文件不另抄。
 
 失败策略取值域冻结为 `retry`、`fallback`、`escalate`（maos/skills/contract.py:16）。
 
@@ -29,6 +29,7 @@
 | `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:154` |
 | `cs.answer` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/answer.py:52` |
 | `cs.handoff` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/handoff.py:24` |
+| `cs.understand` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/understand.py:28` |
 | `finance.settle` | `1.0.0` | 制造售后退款域 | `refund_finance` | escalate | （空） | `maos/skills/builtin/refund/finance.py:55` |
 | `investigation.cancel` | `1.0.0` | 软件交付域 | `investigation_cancel` | escalate | `clearing.cancel` | `maos/skills/builtin/investigation/cancel.py:43` |
 | `investigation.classify` | `1.0.0` | 软件交付域 | `investigation_classify` | escalate | （空） | `maos/skills/builtin/investigation/classify.py:67` |
@@ -314,6 +315,23 @@
 | `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
 | `security_boundary` | ⑦ 安全边界 | 只读、只落 cs_ 表、不调任何工具：唯一的写是 cs_handoff 一行 + 一条 CsHandoffRaised 审计行（只带摘要与枚举，不带客户原文与客户标识）；不调模型、不查单，不碰审批 / 放款 / 补偿 / 工单任何一条路。失败直接上报不重试：重试会撞同一轮卡片的主键、重复落事件。 |
 | `reuse_note` | ⑧ 复用说明 | 会话表口径在 maos/domain/cs/conversation.py（T167）；本 skill 只是经 SkillInvoker 调它，让转人工这一步也落一条 SkillInvoked |
+| `owner_roles` | ⑨ 归属角色 | （空） |
+
+### cs.understand @ 1.0.0
+
+实现：`CsUnderstandSkill` @ `maos/skills/builtin/cs/understand.py:28`
+
+| 要素 | 含义 | 值 |
+| :-- | :-- | :-- |
+| `purpose` | ① 用途 | 客服前台一轮的理解：判语种、抽槽位（订单号 / 商品 / 问题 / 诉求 / 情绪，跨轮合并）、判意图（触发词 → 意图示例 → 诉求与关键词词表；判不出且注入真模型才问模型） |
+| `input_schema` | ② 输入 | `tenant_id`: str —— 租户（客服账号映射得到）<br>`conversation_id`: str —— 会话 id（csc-…）<br>`turn_id`: str —— 本轮 id（<会话>-tNNNN）<br>`text`: str —— 客户本轮原文（只用于理解，审计行里只有摘要）<br>`prior_slots`: dict[str, str]? —— 会话已有的槽位（cs_slot 读回），缺省为空 |
+| `output_schema` | ③ 输出 | `lang`: zh \| en<br>`intent`: str —— types.INTENTS 之一（判不出为 unknown）<br>`slots`: dict[str, str] —— 合并后的全量槽位，键取自 ports.SLOT_KEYS<br>`source`: rule \| model —— 意图从哪来 |
+| `preconditions` | ④ 前置条件 | `tenant_id`、`conversation_id`、`turn_id`、`text` |
+| `depends_tools` | ⑤ 依赖工具 | （空） |
+| `failure_policy` | ⑥ 失败策略 | escalate |
+| `max_retries` | ⑥ 失败策略 · 重试上限 | 0 |
+| `security_boundary` | ⑦ 安全边界 | 只读、不调任何工具、不写任何业务表、不落事件：槽位只从词表与正则来（不自由抽取，客户的住址、手机号进不了槽位），11 位手机号形态不当单号；只在规则判不出意图且注入真模型时调一次模型，唯一的写是那一行模型账；模型出错记一行失败、按规则结果返回，不重试（重试会重复记账）。不碰审批 / 放款 / 补偿 / 工单 / 查单任何一条路。 |
+| `reuse_note` | ⑧ 复用说明 | 规则与词表在 maos/domain/cs/understand.py（语种在 lang.py，触发词在 triggers.py，时长 / 进度线索在 scripts.py）；本 skill 只把前台给的 extras 接过去 |
 | `owner_roles` | ⑨ 归属角色 | （空） |
 
 ### finance.settle @ 1.0.0
@@ -818,4 +836,4 @@
 - **回滚**：旧版本从不被覆盖，`get(name, "1.0.0")` 永远拿得到当年那一个。在册版本用 `versions(name)` 列（maos/skills/registry.py:84）。升级期间在跑的旧 Plan 因此行为可复现 —— 这是保留历史版本的**唯一**理由。
 - **质量评估**：每次调用落一条 `SkillInvoked`，`detail` 带 `status` / `duration_ms` / `input_digest` / `output_hash` / `usage`；按 `skill + version` 聚合 event_log 即可得到成功率与耗时分布，无需另建埋点。证据侧由 `scripts/verify.py` 第 1 项做哈希一致性重放。
 
-当前在册的 44 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。
+当前在册的 45 个 skill 中，有多版本的：**一个都没有** —— 各只有 1 个版本，回滚路径尚未在演示链路上被真实用过。机制本身有单测守着：`maos/tests/test_skills.py:76` 断言同名三版共存时 `versions()` 返回 `["1.0.0", "1.9.0", "1.10.0"]`（按数值序，非字符串序）。

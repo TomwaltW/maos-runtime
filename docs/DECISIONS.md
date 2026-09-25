@@ -3612,3 +3612,14 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | 从库里读出来会原样进输出的值（意图、违例种类、recommendation、doc_id）要不要过白名单 | 一律过白名单：枚举不在冻结集合里的归 other，doc_id 不合 kb- 形状的归 other；recommendation 的六个值抄 p14 契约 §2 的字面量，不 import maos/roundtable/cs_conference.py | intent 列没有 CHECK、event_log detail 是自由 JSON，库被写坏时原样输出就会漏原文；T178 与本轨并行，模块还不存在 |
 | 2026-09-25 | p14 | 测试怎么造库 | 进程内用 FrontDesk + evaluate.fixture_ports 把 p13 开发集整批跑进临时库（与 cs_eval.py --set dev13 --db 同口径），再用真前台跑一段哨兵会话与一个第二租户，最后用 SQL 把哨兵塞满原文 / 标识列；拦截用 conversation.record_reply_rejected 落、会诊卡按契约的 detail 形状直接落 event_log | 不依赖 T177 的 CLI 实现细节；dev13 本身不产生拦截与会诊卡（T178 并行），只能自己落 |
 | 2026-09-25 | p14 | 复核 L2-2：draft_json.citations 里有 dict 等不可哈希元素时 set() 抛 TypeError、退 1 | 先把每个元素映射成 doc_id（认不出的归 other）再按轮去重；同一轮里多个认不出的引用只给 other 记一次 | 退出码约定只有 0 / 2，库被写坏也要照常出统计；按轮去重与原口径一致（一轮引用同一文档只算一次） |
+
+## integrate-p14（p14 整合收尾：客服三期七轨 + 整合期修正，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | A2 三轨怎么合 | 以 A1 整合提交 82cdfd2 为前缀重建两本账，T178 / T179 / T180 按轨序合入；T178 的两处钉子由主会话在其分支上改（见 task-t178 小节末两行） | 同 p12 / p13 的口径 |
+| 2026-09-25 | p14 | 整合期组合核验 | `scripts/cs_eval.py --set dev13 --db X` 退 0（p13 开发集全部 meets）→ `scripts/verify.py --cs --db X` 报 `[PASS] cs/claim-basis 142/142` → `scripts/cs_stats.py --db X` 出统计且只有计数与 id；缺省 verify 的分母仍 10 | 契约 §5 |
+| 2026-09-25 | p14 | 真源怎么刷 | 收集 6560 -> 7096（+536）：pytest_passed_nopg 6454 -> 6990、skipped 仍 106；锚点同步（「两分多钟」改「三分多钟」，容器实跑 3 分 37 秒）；evidence_bundles 仍 8、verify_result_line 仍 `RESULT: 10/10 PASS` | 本期没加证据束，--cs 是可选旗；零 skip、零 PG 门控、零 xfail |
+| 2026-09-25 | p14 | expected-metrics 要不要加 cs 评测读数的键 | 不加：REQUIRED_KEYS 精确钉住，读数的门槛已预登记在各评测文件的 `_thresholds`、地板钉在各留出集测试里 | 一处真源；加键要动 demo_preflight 与检查单的取数，收益小 |
+| 2026-09-25 | p14 | 证据束 | 不在容器重产，留给 Mac（用户拍板 5 延续）；p14 改了 maos/obs/trace.py（无 cs 行时 trace.json 逐字节不变，T176 已在现有证据束上验证） | 同 integrate-p13 |
+| 2026-09-25 | p14 | p14 收在哪 | 收在 integrate/p14；快进会话分支 claude/ecstatic-bardeen-myl3au 并推送（用户拍板 4）；共享分支不动 | 同 integrate-p13 |

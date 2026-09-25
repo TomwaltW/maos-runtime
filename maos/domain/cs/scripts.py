@@ -182,6 +182,10 @@ _CUE_RES: dict[str, re.Pattern[str]] = {
 }
 
 
+#: 进度线索那一条正则（理解层要知道线索落在句子哪儿：「都没收到货给我退款」里线索在办事说法前面）。
+PROGRESS_CUE_RE: re.Pattern[str] = _CUE_RES[CUE_PROGRESS]
+
+
 def _cue_text(text: str) -> str:
     """线索匹配用的规范化：逐字 NFKC、小写、空白压成一个空格（英文要靠空格认词）。"""
     s = unicodedata.normalize("NFKC", text or "").lower().replace("’", "'")

@@ -34,7 +34,8 @@ Scripted / None 下一次模型都不调，零 ``model_usage`` 行：测试、�
   是 11 位手机号形态的；隐私，不能当单号存进槽位表）、座机（带连字符、括号、空格或不带分隔符的
   「0 + 区号 + 号码」）、400 / 800 热线、日期；离得最近的上下文字眼说的是别的号（银行卡 / 卡号 /
   QQ / 微信 / 身份证 / 电话 / 会员号）的；前后没有单号字眼、又是身份证号或过 Luhn 校验的银行卡号
-  形态的（复核 L3-4）；型号的两类写法（品牌驼峰「iPhone15」、紧跟品类名词「RTX4090显卡」）。
+  形态的（复核 L3-4）；型号的两类写法（品牌驼峰「iPhone15」、紧跟品类名词「RTX4090显卡」）——
+  紧挨着单号字眼的不算型号（「订单号 A1001 手机上显示已签收」，复核 L2-2）。
   紧挨单号字眼的优先，其余取原文里第一个；NFKC 后字母转大写。
 * ``request``（主会话裁定 R2，回到 3831987 的口径）：诉求闭集 refund / return / exchange / track /
   other。句子里有退款 / 退货 / 换货 / refund / return / exchange 这类诉求词就给对应的诉求，**除非**
@@ -43,9 +44,12 @@ Scripted / None 下一次模型都不调，零 ``model_usage`` 行：测试、�
   这时不给 —— 否则前台会为一句政策问题去要单号；或 (b) 是**客户自己撤回**（「不用 / 不要 /
   不需要 / 不想 / 先不 + 诉求词」「诉求词 + 就不用了 / 算了」「撤销 / 撤回 + 诉求词」、英文 no longer
   want / never mind / changed my mind），且前面不是在质问或转述商家不退（为什么 / 凭什么 / 怎么又 /
-  商家 / 店家 / 你们 + 不退）—— 撤回的那一段不算诉求，本轮没有别的诉求就给 ``other``（槽位跨轮合并、
+  商家 / 店家 / 你们 + 不退）、不是店家一直不办（还 / 一直 / 迟迟 + 不退）、不是 A 不 A 的催问
+  （退不退款）、不是第三方撤的（系统 / 谁 / 被）；裸的「不 + 诉求词」只在客户这一方开口时算
+  （复核 L3-1）—— 撤回的那一段不算诉求，本轮没有别的诉求就给 ``other``（槽位跨轮合并、
   新值覆盖旧值，给空就盖不掉上一轮的 refund）。明说要办的分句优先（「东西一直没收到，我要退款」
-  是要退款，复核 L2-1）；问进度（到没到 / 发了没）是 track，哪怕句子里有「退款」二字。
+  是要退款，复核 L2-1；同一分句里先抱怨没到、后明说要办的「都没收到货给我退款」也是，复核 L2-3）；
+  问进度（到没到 / 发了没）是 track，哪怕句子里有「退款」二字。
 * ``emotion``：calm / upset / angry，按词表（情绪触发词、「着急 / 失望 / 等了好久」、「谢谢 /
   不着急」），没有线索不给（不猜「平静」）。
 * ``product`` / ``problem``：商品名、问题描述**只从词表取**（:data:`PRODUCT_WORDS` /
@@ -136,7 +140,7 @@ MODEL_TIER = Tier.LIGHT
 class Understanding:
     """理解一句话的结果。``slots`` 是合并过上一轮之后的全量槽位（只读映射）。
 
-    ``source`` 说的是**意图**从哪来：``rule``（触发词 / 示例 / 词表，含判不出的 unknown）或
+    ``source`` 说的是**意图**从哪来：``rule``（触发词 / 诉求 / 词表，含判不出的 unknown）或
     ``model``（调了模型且用了它的输出，含它输出不合法被夹成的 unknown）。槽位恒来自规则。
     """
     lang: str
@@ -321,8 +325,15 @@ def _alnum_shaped(alnum: str) -> bool:
     return len(alnum) >= _ALNUM_MIN_LEN and sum(c.isdigit() for c in alnum) >= _ALNUM_MIN_DIGITS
 
 
-def _is_model_number(text: str, token: str, end: int) -> bool:
-    """型号的两类写法：驼峰（iPhone15）、紧跟品类名词（RTX4090显卡）。"""
+def _is_model_number(text: str, token: str, start: int, end: int) -> bool:
+    """型号的两类写法：驼峰（iPhone15）、紧跟品类名词（RTX4090显卡）。
+
+    紧挨着单号字眼的不算型号（复核 L2-2）：「订单号 A1001 手机上显示已签收」「我那单 E5005 耳机坏了」
+    里后面的「手机 / 耳机」是在说这单买的东西，单号字眼说了算。只是**窗口里有**单号字眼不够
+    （「我订单里的RTX4090显卡还没发」照旧是型号）。
+    """
+    if _adjacent_order_word(text, start, end):
+        return False
     return bool(_CAMEL_RE.search(token) or _MODEL_FOLLOWER_RE.match(text[end:]))
 
 
@@ -354,7 +365,7 @@ def _order_candidates(text: str) -> list[tuple[int, int, str]]:
             blocked.append(m.span())
             continue
         if tok[0].isalpha():
-            ok = _alnum_shaped(tok.replace("-", "")) and not _is_model_number(text, tok, m.end())
+            ok = _alnum_shaped(tok.replace("-", "")) and not _is_model_number(text, tok, m.start(), m.end())
         else:
             ok = sum(ch.isdigit() for ch in tok) >= _HYPHEN_MIN_DIGITS
         if ok:
@@ -374,7 +385,7 @@ def _order_candidates(text: str) -> list[tuple[int, int, str]]:
         tok = m.group(0)
         if not _alnum_shaped(tok) or not free(m.start()):
             continue
-        if _context_before(text, m.start()) == "other" or _is_model_number(text, tok, m.end()):
+        if _context_before(text, m.start()) == "other" or _is_model_number(text, tok, m.start(), m.end()):
             continue
         found.append((m.start(), m.end(), tok))
     for m in _HASH_RE.finditer(text):
@@ -527,16 +538,29 @@ def explicit_request(text: str) -> str:
     :func:`extract_request` 的行动标记认出来）。
     """
     for clause in _CLAUSE_SPLIT_RE.split(_nfkc(text)):
-        if not clause.strip() or scripts.detect_cue(clause):
+        if not clause.strip():
+            continue
+        cue = scripts.detect_cue(clause)
+        if cue == scripts.CUE_DURATION:
             continue
         zh, en = _compact(clause), _spaced(clause)
         if (_HOWTO_ZH.search(zh) or _HOWTO_EN.search(en)
                 or _YESNO_ZH.search(zh) or _YESNO_EN.search(en)):
             continue
+        # 进度线索只挡住它**后面**没有办事说法的分句（复核 L2-3）：「都没收到货给我退款」是先抱怨、
+        # 再明说要办；「给我退了没」的线索在办事说法后面，是在查
+        zh_after = _after_progress(zh) if cue else zh
+        en_after = _after_progress(en) if cue else en
         for key in (REQUEST_EXCHANGE, REQUEST_RETURN, REQUEST_REFUND):
-            if _EXPLICIT_ZH_RES[key].search(zh) or _EXPLICIT_EN_RES[key].search(en):
+            if _EXPLICIT_ZH_RES[key].search(zh_after) or _EXPLICIT_EN_RES[key].search(en_after):
                 return key
     return ""
+
+
+def _after_progress(text: str) -> str:
+    """最后一处进度线索后面的那截（:data:`scripts.INTENT_CUES` 的 progress 那一类）；没有线索原样返回。"""
+    last = max((m.end() for m in scripts.PROGRESS_CUE_RE.finditer(text)), default=0)
+    return text[last:]
 
 
 # ---- 客户撤回（R2 (b)）：「不用退款了」「退款的事就算了」「撤销退款申请」「I no longer want a refund」 ----
@@ -545,16 +569,19 @@ def explicit_request(text: str) -> str:
 #: 给空就盖不掉上一轮的 refund，前台照旧会去出退款预检卡。
 _WITHDRAW_CORE = r"(?:退款|退货|换货|退钱|退换货?)"
 WITHDRAWN_REQUEST_ZH: tuple[str, ...] = (
-    # 不用 / 不要 / 不需要 / 不想 / 先不 / 别 +（再 / 了）+（给我 / 帮我 / 申请）+ 诉求词
-    r"(?:不用|不要|不需要|不想要?|不打算|无需|没必要|不必|先不|暂时不|暂不|别)(?:再|了)?(?:给我|帮我|申请|办)?"
+    # 不用 / 不要 / 不需要 / 不想 / 先不 / 别 +（再）+（给我 / 帮我 / 申请）+ 诉求词。中间不许夹「了」：
+    # 「不要了 / 不想要了」自己就是退货的说法（「这件衣服不想要了退货」是要退，复核 L3-1）
+    r"(?:不用|不要|不需要|不想要?|不打算|无需|没必要|不必|先不|暂时不|暂不|别)(?:再)?(?:给我|帮我|申请|办)?"
     r"(?:退款|退货|换货|退钱|退换货?|退|换)",
-    # 不 + 诉求词 + 了（这单我不退了、算了不换了）
+    # 裸的「不 + 诉求词」（不带 用 / 要 / 需要 / 想）：+ 了（这单我不退了、算了不换了），或在分句末
+    # （我改主意了，不退货）。只在客户这一方开口时算，见 :data:`_OWN_SUBJECT_RE`
     r"不(?:退款|退货|换货|退钱|退|换)(?:了|啦|咯)",
-    # 分句末的「不退货 / 不退款」（我改主意了，不退货）
     r"不(?:退款|退货|换货|退钱)(?=$|[，,。.!！~～…;；])",
-    # 诉求词（的事 / 申请）+ 就不用了 / 算了 / 取消吧 / 撤回了（「退货不要运费吗」不是：后面还有字）
-    _WITHDRAW_CORE + r"(?:的事|这事|申请)?(?:我|已经)?(?:就|也|先|还是)?"
-    r"(?:不用|不要|不需要|不办|算了|不必|取消|撤销|撤回)(?:了|吧|掉|啦)*(?=$|[，,。.!！~～…;；?？ ])",
+    # 诉求词（的事 / 申请）+ 就不用了 / 算了 / 取消吧 / 撤回了（「退货不要运费吗」不是：后面还有字）。
+    # 「已经」只许跟在「我」后面：「退款申请已经取消了」是在说状态，谁取消的不知道（复核 L3-1）
+    _WITHDRAW_CORE + r"(?:的事|这事|申请)?(?:我(?:已经)?)?(?:就|也|先|还是)?"
+    r"(?:不用|不要|不需要|不办|算了|不必|取消|撤销|撤回)(?:了|吧|掉|啦)*"
+    r"(?=$|[，,。.!！~～…;；?？ ]|谢|多谢|感谢|[哈啊哦呢嗯])",
     # 撤销 / 撤回 / 取消 + 诉求词（申请）
     r"(?:撤销|撤回|取消)(?:掉)?(?:这个|这笔|我的|那个)?" + _WITHDRAW_CORE + r"(?:申请)?",
 )
@@ -568,27 +595,54 @@ WITHDRAWN_REQUEST_EN: tuple[str, ...] = (
     r"no (?:refunds?|returns?|exchanges?) (?:needed|necessary|required|please)",
     r"(?:refunds?|returns?|exchanges?) (?:is |are )?(?:not|no longer) (?:needed|necessary|required)",
     r"cancel (?:my |the |this )?(?:refund|return|exchange)(?: request)?",
-    # never mind / changed my mind …… refund（中间不许夹 want / need：「never mind, I want a refund」是要）
-    r"(?:never ?mind|changed my mind)(?:(?!want|need|like|please)[^.!?]){0,30}?(?:refunds?|returns?|exchanges?)",
+    # never mind / changed my mind：诉求词要是它的**宾语**（never mind the refund、changed my mind about
+    # the return），或紧跟着「no + 诉求词」（changed my mind, no refund）。「Never mind, just refund me」
+    # 「changed my mind about the color, can I get a refund」里的诉求词不是它撤的（复核 L3-1）
+    r"(?:never ?mind|changed my mind)(?: (?:about|on))?(?: (?:the|my|this|that|a|an))* (?:refunds?|returns?|exchanges?)",
+    r"(?:never ?mind|changed my mind)[,;.]? no (?:refunds?|returns?|exchanges?)",
 )
 _WITHDRAWN_ZH_RE = _zh_re(WITHDRAWN_REQUEST_ZH)
 _WITHDRAWN_EN_RE = _en_re(WITHDRAWN_REQUEST_EN)
-#: 质问 / 转述商家不退（R2 (b)）：撤回的说法前面（同一分句）有这些，就不是客户自己撤回
-#: （「为什么不退了」「凭什么不退款了」「商家说不退了」「卖家说退款不用了」「店家不换了怎么办」）。
-_BLAME_ZH_RE = re.compile(r"为什么|为啥|凭什么|怎么|咋|商家|店家|卖家|客服|他们|她们|平台|厂家|店铺|老板|说好")
+#: 质问 / 转述商家不退、第三方撤的（R2 (b)）：撤回的说法前面（同一分句）有这些，就不是客户自己撤回
+#: （「为什么不退了」「凭什么不退款了」「商家说不退了」「卖家说退款不用了」「店家不换了怎么办」
+#: 「系统自动取消退款申请了」「谁撤销我的退款申请」「被取消退款了」）。
+_BLAME_ZH_RE = re.compile(r"为什么|为啥|凭什么|怎么|咋|商家|店家|卖家|客服|他们|她们|平台|厂家|店铺|老板|说好"
+                          r"|系统|自动|谁|被")
 #: 「你们 + 不退」是在怪店家；「你们不用退了」是客户在放弃 —— 「你们」只在紧挨着直接拒绝时算质问。
 _BLAME_YOU_ZH_RE = re.compile(r"你们(?:就|都|也|还|又|竟然|居然)?\s*$")
 #: 前一分句是第三方在说（「商家说了，不退了」）。
 _REPORTED_ZH_RE = re.compile(r"(?:商家|店家|卖家|客服|他们|平台|厂家|老板)[^，,。.!！?？]{0,4}说[^，,。.!！?？]*[，,]\s*$")
+#: 「不」前面紧挨着抱怨的副词：说的是店家一直不办（「都三天了还不退款」「迟迟不退款」「到现在都不退」），
+#: 不是客户撤回（复核 L3-1）。「还是不退了」是客户拿主意，「我一直不想退」主语是客户，都不算。
+_COMPLAINT_ADVERB_RE = re.compile(
+    r"(?<!我)(?<!我们)(?:还(?!是)|一直|迟迟|始终|老是|总是|就是|硬是|死活|偏偏|根本|从来|到现在|至今|一再|又"
+    r"|仍然?|依然|依旧)(?:都|也|还)?\s*$")
+#: 裸的「不 + 诉求词」要是客户这一方开的口：在分句开头，或紧跟着客户这一方的主语 / 拿主意的说法
+#: （我 / 我们 / 这单 / 那单 / 这件 / 单号 / 算了 / 改主意了 / 决定 / 那），中间可夹「就 / 也 / 还是 / 先 /
+#: 暂时 / 干脆 / 都 / 已经」。「你们不退了是吧」「都三天了不退款」「你们到底退不退款」都不是。
+_OWN_SUBJECT_RE = re.compile(
+    r"(?:^|我们?|咱们?|这单|那单|这件|那件|这个|那个|[a-z]*\d[a-z0-9-]*|算了|改主意了|想了想|决定|那)\s*"
+    r"(?:就|也|还是|先|暂时|干脆|都|已经)?\s*$")
+#: 裸的「不 + 诉求词」。
+_BARE_NOT_RE = re.compile(r"不(?:退|换)")
 
 
 def _blamed(text: str, start: int, matched: str) -> bool:
-    """撤回说法前面是在质问 / 转述商家不退（见 :data:`_BLAME_ZH_RE`）。"""
+    """这一处撤回的说法不是客户自己撤的：前面是在质问 / 转述商家、第三方撤的（:data:`_BLAME_ZH_RE`）、
+    「不」前面是抱怨副词（:data:`_COMPLAINT_ADVERB_RE`）、A 不 A 的问法（退不退 / 需不需要）、
+    或裸的「不 + 诉求词」前面不是客户这一方（:data:`_OWN_SUBJECT_RE`）。"""
     prefix = text[:start]
     clause = _CLAUSE_SPLIT_RE.split(prefix)[-1]
     if _BLAME_ZH_RE.search(clause) or _REPORTED_ZH_RE.search(prefix):
         return True
-    return matched.startswith(("不退", "不换")) and bool(_BLAME_YOU_ZH_RE.search(clause))
+    if matched.startswith("不"):
+        if _COMPLAINT_ADVERB_RE.search(clause):
+            return True
+        if start > 0 and len(matched) > 1 and text[start - 1] == matched[1]:     # A 不 A
+            return True
+    if _BARE_NOT_RE.match(matched):
+        return (not _OWN_SUBJECT_RE.search(clause)) or bool(_BLAME_YOU_ZH_RE.search(clause))
+    return False
 
 
 def _mask_withdrawn(text: str) -> tuple[str, bool]:

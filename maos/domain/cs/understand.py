@@ -37,6 +37,9 @@ Scripted / None 下一次模型都不调，零 ``model_usage`` 行：测试、�
   形态的（复核 L3-4）；型号的两类写法（品牌驼峰「iPhone15」、紧跟品类名词「RTX4090显卡」）——
   紧挨着单号字眼的不算型号（「订单号 A1001 手机上显示已签收」，复核 L2-2）。
   紧挨单号字眼的优先，其余取原文里第一个；NFKC 后字母转大写。
+  p15 T185：边界只按字母数字串判（与中文 / 商品名紧贴照样切开，C6）；「#」「No.」「单号：」一类前缀
+  过 ``identity.normalize_display_no`` 去掉（与绑定写入、核验同一个函数，C7）；紧挨强单号字眼的
+  4–7 位纯数字也认；尾号（:func:`extract_order_tail`，只作提示）、金额、数量、日期、门牌楼层不认（C8）。
 * ``request``（主会话裁定 R2，回到 3831987 的口径）：诉求闭集 refund / return / exchange / track /
   other。句子里有退款 / 退货 / 换货 / refund / return / exchange 这类诉求词就给对应的诉求，**除非**
   (a) 是问规则的问法（怎么 / 流程 / 能不能 / ……吗 / 多久 / 几天 / 什么时候 / how / when / 问号）
@@ -78,6 +81,7 @@ from typing import Any, Mapping
 
 from maos.core.store import record_model_failure, record_model_usage
 from maos.domain.cs import scripts, triggers
+from maos.domain.cs.identity import normalize_display_no
 from maos.domain.cs.lang import detect_lang
 from maos.domain.cs.ports import (
     EMOTION_ANGRY,
@@ -220,20 +224,48 @@ _DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])\d{8,}(?![0-9A-Za-z])")
 _HYPHEN_RE = re.compile(r"(?<![0-9A-Za-z-])[0-9A-Za-z]+(?:-[0-9A-Za-z]+)+(?![0-9A-Za-z-])")
 #: 字母开头、字母数字混排的串（「A1001」「AB12345」「JD20260001」）：总长够 :data:`_ALNUM_MIN_LEN`、
 #: 数字够 :data:`_ALNUM_MIN_DIGITS` 位才认（型号、制式常常只带一两位数：Mate60、wifi6、Note12）。
-_ALNUM_RE = re.compile(r"(?<![0-9A-Za-z#-])[A-Za-z][A-Za-z0-9]*\d[A-Za-z0-9]*(?![0-9A-Za-z-])")
+#: p15 T185（C7）：前面紧挨「#」也认（「order #A1001」「订单号#A1001」）—— 「#」是前缀，不是单号的一部分，
+#: 抽出来的值过 ``identity.normalize_display_no`` 去掉。边界只看字母数字串（C6：与中文紧贴也照样切得开）。
+_ALNUM_RE = re.compile(r"(?<![0-9A-Za-z-])[A-Za-z][A-Za-z0-9]*\d[A-Za-z0-9]*(?![0-9A-Za-z-])")
 _ALNUM_MIN_LEN = 5
 _ALNUM_MIN_DIGITS = 3
 #: 「#」+ 数字（「订单 #1001」）：太短，只在紧挨着单号字眼时认。
 _HASH_RE = re.compile(r"(?<![0-9A-Za-z#])#\d{3,}(?![0-9A-Za-z])")
+#: p15 T185（C6）：4–7 位的短纯数字，只在**紧挨着强单号字眼**（订单号 / 单号 / 订单 / order no. /
+#: No. / #，见 :data:`_STRONG_ORDER_WORD_RE`）时认（「单号8812093前天拍的」）。「这单 / 那单」不算强字眼。
+_SHORT_DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])\d{4,7}(?![0-9A-Za-z])")
+_STRONG_ORDER_WORD_RE = re.compile(
+    r"订单(?:编?号|号码)?|单号|(?<![a-z])order(?:\s*(?:no\.?|number|num|id))?(?![a-z])"
+    r"|(?<![a-z])no\s*[.:#]")
+#: p15 T185（C8）：尾号 —— 「尾数 / 尾号 / 后四位 / last four」后面的数字只是单号（或卡、手机）的
+#: 末几位，不是单号，不拿去查单（可以当提示，见 :func:`extract_order_tail`）。
+_TAIL_WORD_RE = re.compile(
+    r"(?:尾数|尾号|末尾|末[三四五六几3-6]位|后[三四五六几3-6]位|最后[三四五六几3-6]位"
+    r"|(?<![a-z])last\s*(?:[3-6]|three|four|five|six)(?:\s*digits?)?|(?<![a-z])ending\s*(?:in|with))"
+    r"[\s:是为]*$")
+_TAIL_DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])\d{3,6}(?![0-9A-Za-z])")
+#: p15 T185（C8）：8 位纯数字、恰好是合法的「年月日」（19xx / 20xx 年、01–12 月、01–31 日）→ 日期，
+#: 不当单号（紧挨单号字眼的除外）。
+_YMD_RE = re.compile(r"^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$")
+#: p15 T185（C8）：纯数字后面紧跟单位 → 金额 / 数量 / 日期 / 门牌楼层，不是单号。
+_DIGIT_UNIT_AFTER_RE = re.compile(
+    r"\s*(?:元|块|毛|角|rmb|yuan|dollars?|usd|件|个|台|只|双|套|箱|包|瓶|盒|条|张|份|斤|克|千克|公斤|kg"
+    r"|毫升|ml|米|公里|km|平|室|房|楼|层|栋|幢|座|单元|号(?!码)|年|月|日|天|点|分钟|小时|周"
+    r"|pcs|pieces|units|items)(?![a-z])")
+#: 字母开头的串后面紧跟门牌 / 楼层单位（「B1203室」）→ 房号，不是单号。
+_ALNUM_UNIT_AFTER_RE = re.compile(r"\s*(?:室|房|楼|层|栋|幢|单元)")
+#: 纯数字前面紧挨货币记号 / 金额字眼（「¥12345678」「金额 199」）→ 金额。
+_MONEY_BEFORE_RE = re.compile(r"(?:[¥$]|rmb|人民币|金额|价格|价钱|花了|付了|退了|扣了)\s*$")
 #: 候选串前面的上下文字眼（复核 L2-6 / L3-4）：**离候选串最近的那一个**说了算 ——
 #: 说单号的（订单号 / 单号 / 那单 / order #）与说别的号的（卡号 / QQ / 微信 / 身份证 / 电话 / 会员号）。
 #: 在 NFKC、小写、保留空白的文本上找，只看候选串前面 :data:`_CONTEXT_WINDOW` 个字符。
 _ORDER_WORD_RE = re.compile(
     r"订单(?:编?号|号码)?|单号|那一?单|这一?单|单子|我的单|下的单|拍的单"
-    r"|(?<![a-z])order(?:\s*(?:no\.?|number|num|id|#))?(?![a-z])")
+    r"|(?<![a-z])order(?:\s*(?:no\.?|number|num|id|#))?(?![a-z])|(?<![a-z])no\s*[.:#]")
 _OTHER_NUMBER_RE = re.compile(
     r"银行卡|卡号|信用卡|储蓄卡|借记卡|这张卡|qq|微信|身份证|证件|护照|工号|会员|账号|账户|支付宝"
-    r"|手机|电话|座机|热线|(?<![a-z])(?:card|account|wechat|passport|phone|mobile|tel|id)(?![a-z])")
+    r"|手机|电话|座机|热线|门牌|房号|房间|室号"
+    r"|(?<![a-z])(?:card|account|wechat|passport|phone|mobile|tel|id)(?![a-z])")
 _CONTEXT_WINDOW = 12
 #: 紧挨着单号字眼：中间只许空白、冒号、「#」、「是 / 为」。
 _ADJACENT_GAP_RE = re.compile(r"[\s:#是为]*")
@@ -266,6 +298,12 @@ MODEL_FOLLOWERS: tuple[str, ...] = (
     "机型", "款", "系列",
 )
 _MODEL_FOLLOWER_RE = re.compile(r"\s*(?:" + "|".join(map(re.escape, MODEL_FOLLOWERS)) + ")")
+#: 分句开头：前面什么都没有，或只有标点 / 空白。
+_CLAUSE_START_RE = re.compile(r"(?:^|[，,。.!！?？;；~～:：])\s*$")
+#: 品类名词后面紧跟的问题说法（坏了 / 碎了 / 发错了……）。
+_DEFECT_AFTER_RE = re.compile(
+    r"\s*(?:的)?(?:屏幕|外壳|壳子?|包装|盒子)?(?:坏|碎|裂|破|烂|断|不亮|不响|没声|没反应|开不了机|开不机|充不进|充不上"
+    r"|用不了|不能用|有问题|出问题|有瑕疵|划痕|发错|错发|少发|漏发|质量)")
 
 
 def _is_phone_shaped(token: str) -> bool:
@@ -334,7 +372,18 @@ def _is_model_number(text: str, token: str, start: int, end: int) -> bool:
     """
     if _adjacent_order_word(text, start, end):
         return False
-    return bool(_CAMEL_RE.search(token) or _MODEL_FOLLOWER_RE.match(text[end:]))
+    if _CAMEL_RE.search(token):
+        return True
+    follower = _MODEL_FOLLOWER_RE.match(text[end:])
+    if follower is None:
+        return False
+    # p15 T185（C6）：品类名词跟单号之间隔着空白（「XX1234 耳机坏了」）是在报单号、再说这单买的东西；
+    # 型号是跟品类名词写成一个词的（「RTX4090显卡」）。写成一个词、但串在分句开头、品类名词后面
+    # 紧跟着坏了 / 碎了一类问题（「XX1234耳机坏了」）也是在报单号 —— 说型号的人会先说「我买的」。
+    if follower.group(0)[:1].isspace():
+        return False
+    return not (_CLAUSE_START_RE.search(text[:start])
+                and _DEFECT_AFTER_RE.match(text, end + len(follower.group(0))))
 
 
 def _order_candidates(text: str) -> list[tuple[int, int, str]]:
@@ -372,13 +421,15 @@ def _order_candidates(text: str) -> list[tuple[int, int, str]]:
             found.append((m.start(), m.end(), tok))
     for m in _DIGITS_RE.finditer(text):
         tok = m.group(0)
-        if _is_phone_shaped(tok) or not free(m.start()):
+        if _is_phone_shaped(tok) or not free(m.start()) or _not_an_order_number(text, m.start(), m.end()):
             continue
         context = _context_before(text, m.start())
         if context == "other":
             continue
         if (context != "order" and _is_personal_number(tok)
                 and not _FOLLOWING_ORDER_RE.match(text[m.end():].lower())):
+            continue
+        if (_YMD_RE.match(tok) and not _adjacent_order_word(text, m.start(), m.end())):
             continue
         found.append((m.start(), m.end(), tok))
     for m in _ALNUM_RE.finditer(text):
@@ -387,21 +438,65 @@ def _order_candidates(text: str) -> list[tuple[int, int, str]]:
             continue
         if _context_before(text, m.start()) == "other" or _is_model_number(text, tok, m.start(), m.end()):
             continue
+        if _ALNUM_UNIT_AFTER_RE.match(text, m.end()):
+            continue
         found.append((m.start(), m.end(), tok))
     for m in _HASH_RE.finditer(text):
-        if free(m.start()) and _adjacent_order_word(text, m.start(), m.end()):
+        if free(m.start()) and free(m.start() + 1) and _adjacent_order_word(text, m.start(), m.end()):
+            found.append((m.start(), m.end(), m.group(0)))
+    for m in _SHORT_DIGITS_RE.finditer(text):
+        if (free(m.start()) and _strong_order_word_before(text, m.start())
+                and not _not_an_order_number(text, m.start(), m.end())):
             found.append((m.start(), m.end(), m.group(0)))
     return sorted(found)
 
 
+def _strong_order_word_before(text: str, start: int) -> bool:
+    """候选串前面紧挨着强单号字眼（订单号 / 单号 / 订单 / order no. / No.），中间只许 :data:`_ADJACENT_GAP_RE`。"""
+    before = text[max(0, start - _CONTEXT_WINDOW):start].lower()
+    return any(_ADJACENT_GAP_RE.fullmatch(before[m.end():])
+               for m in _STRONG_ORDER_WORD_RE.finditer(before))
+
+
+def _tail_word_before(text: str, start: int) -> bool:
+    """候选串前面紧挨着尾号字眼（尾数 / 尾号 / 后四位 / last four……）。"""
+    return bool(_TAIL_WORD_RE.search(text[max(0, start - 2 * _CONTEXT_WINDOW):start].lower()))
+
+
+def _not_an_order_number(text: str, start: int, end: int) -> bool:
+    """纯数字串的 C8 反例（p15 T185）：尾号、金额（前面是货币记号 / 金额字眼）、后面紧跟单位
+    （金额 / 数量 / 日期 / 门牌楼层）。"""
+    before = text[max(0, start - _CONTEXT_WINDOW):start].lower()
+    return bool(_tail_word_before(text, start) or _MONEY_BEFORE_RE.search(before)
+                or _DIGIT_UNIT_AFTER_RE.match(text[end:].lower()))
+
+
 def extract_order_no(text: str) -> str:
-    """订单号：见模块头「槽位」。紧挨单号字眼的优先，其余取原文里第一个；取不到返回空串。"""
-    s = _nfkc(text)
+    """订单号：见模块头「槽位」。紧挨单号字眼的优先，其余取原文里第一个；取不到返回空串。
+
+    抽出来的串过 :func:`maos.domain.cs.identity.normalize_display_no`（与绑定写入、核验同一个函数，
+    p15 契约 §1 C7），「#」一类前缀不进槽位；再转大写。「№」在 NFKC 下会变成贴着数字的「No」，
+    所以先写成「No.」（前缀字眼）再规范化。
+    """
+    s = _nfkc((text or "").replace("№", "No."))
     candidates = _order_candidates(s)
     if not candidates:
         return ""
     adjacent = [c for c in candidates if _adjacent_order_word(s, c[0], c[1])]
-    return (adjacent or candidates)[0][2].upper()
+    return normalize_display_no((adjacent or candidates)[0][2]).upper()
+
+
+def extract_order_tail(text: str) -> str:
+    """尾号提示（p15 契约 §1 C8）：「尾数 / 尾号 / 后四位 / last four」后面的 3–6 位数字；没有返回空串。
+
+    **只是提示**：不进 ``order_no`` 槽位、不拿去核验与查单（尾号对不上唯一一单）。槽位键是冻结的
+    ``ports.SLOT_KEYS``，本期不给它开新槽位；前台要用（例如写进转人工卡片）由调用方决定。
+    """
+    s = _nfkc(text)
+    for m in _TAIL_DIGITS_RE.finditer(s):
+        if _tail_word_before(s, m.start()):
+            return m.group(0)
+    return ""
 
 
 # ---------------------------------------------------------------------------

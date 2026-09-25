@@ -268,7 +268,7 @@ def test_light_chars_are_down_weighted_t186():
 
 
 @pytest.mark.parametrize("text", [
-    "where is my parcel",          # 没有汉字
+    "where is my parcel",          # 没有汉字（本索引无 ASCII，这里只是冒烟；真判据见下一条测试）
     "发票",                         # 太短
     "不用开发票了",                  # 否定所需
     "我不是要开发票",
@@ -278,6 +278,23 @@ def test_light_chars_are_down_weighted_t186():
 def test_hard_abstain_rules_t186(text):
     index = _toy_index_t186()
     assert similar.nearest(index, text, min_similarity=0.0, min_margin=0.0) is None
+
+
+def test_no_cjk_abstains_even_when_ascii_grams_match_t186():
+    """「没有汉字」这条硬弃权单独判：索引里放一条纯 ASCII 说法，让英文原文与它确有共享 n 元组、
+    rank 给出满分；nearest 仍弃权，只可能是 has_cjk 那一道拦下的（其余几道对这句都不成立）。"""
+    index = similar.SimilarIndex([("D", ["where is my parcel"]), ("B", ["能开发票吗"])])
+    text = "where is my parcel"
+    assert index.rank(text)[0] == ("D", 1.0)
+    assert len(similar.normalize(text)) >= similar.MIN_QUERY_CHARS
+    assert similar.abstain_cue(text) == ""
+    assert not similar.has_cjk(text)
+    assert similar.nearest(index, text, min_similarity=0.0, min_margin=0.0) is None
+    # 对照：同一索引上带汉字的一句照常出近邻 —— 弃权不是索引本身造成的。
+    mixed = "where is my parcel 包裹"
+    assert similar.has_cjk(mixed)
+    found = similar.nearest(index, mixed, min_similarity=0.0, min_margin=0.0)
+    assert found is not None and found.key == "D"
 
 
 def test_threshold_and_margin_decide_t186():
@@ -389,6 +406,33 @@ def test_handoff_marked_doc_via_similar_still_hands_off_t186(monkeypatch):
                                                           T.HANDOFF_NEEDS_ORDER_LOOKUP)
     assert res.draft.citations == (doc_id,) and res.handoff is not None
     assert res.reply_text == _bodies_t186()["LOG-006"]["script"]
+
+
+def test_handoff_marked_doc_via_similar_on_p13_path_t186(monkeypatch):
+    """C10 · p13 路径（注入端口）：近邻落到带转人工标记的查单篇、原文里没有单号 → 现状是照旧
+    needs_order_lookup 转人工、引用那一篇、不追问、不调任何端口（不凭空查单）。
+
+    契约 C10 对 p13 路径期望「进查单 / 追问」；是否先追问单号由判定顺序决定（desk.py，T184 轨），
+    match_scripts 这一层交不出来 —— 本条钉现状，整合期按 T184 的顺序改钉子（BACKLOG task-t186）。"""
+    doc_id = _force_neighbor_t186(monkeypatch, "LOG-006")
+    fixtures = evaluate.EvalFixtures()
+    user = "wm_t186_p13"
+    ports = {"verifier": evaluate.FixtureVerifier(fixtures, tenant_id=TENANT_T186,
+                                                  external_userid=user),
+             "lookup": evaluate.FixtureLookup(fixtures),
+             "precheck": evaluate.FixturePrecheck(fixtures)}
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    desk = FrontDesk(store, CsConfig(tenants={KFID_T186: TENANT_T186}, handoff_target=None),
+                     clock=lambda: "2026-09-25T08:00:00+00:00", **ports)
+    res = desk.handle(_msg_t186("今天天气真好", user=user))
+    assert _similar_fired_t186(_kb_rows_t186(store, res.conversation_id))
+    assert (res.route, res.intent, res.handoff_reason) == (_HO, T.INTENT_LOGISTICS,
+                                                          T.HANDOFF_NEEDS_ORDER_LOOKUP)
+    assert res.draft.citations == (doc_id,) and res.handoff is not None
+    assert (res.ask_slot, res.lookup_outcome) == ("", "")
+    assert ports["verifier"].calls == [] and ports["lookup"].calls == []
+    assert ports["precheck"].calls == []
 
 
 def test_similar_is_only_tried_when_lexical_misses_t186(monkeypatch):

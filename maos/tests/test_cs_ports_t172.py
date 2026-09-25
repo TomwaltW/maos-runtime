@@ -425,9 +425,10 @@ def test_keyerror_text_listing_other_orders_does_not_leak_t172(caplog):
     # 日志里查单键只打码后的末 4 位，不打全。
     assert "Q-MISSING-0001" not in caplog.text
     assert cs_ports.mask_query_key("Q-MISSING-0001") in caplog.text
-    # 存量行为（DECISIONS / BACKLOG task-t172 已记，p14 处理）：invoke_tool 自己把
-    # 「类名: 原文」写进 ToolInvoked.detail.error。这里只钉住它确实是失败行。
-    _assert_one_tool_row_t172(store, status="failed")
+    # 整合期 p13 修：invoke_tool 把「类名: 原文」写进 ToolInvoked.detail.error，所以 cs_ports
+    # 调的端口入口先把异常换成只带原类名的 OrderQueryFailed —— 审计行里没有原文。
+    row = _assert_one_tool_row_t172(store, status="failed")
+    assert row["detail"]["error"] == "OrderQueryFailed: KeyError"
 
 
 def test_custom_exception_text_does_not_leak_t172(caplog):

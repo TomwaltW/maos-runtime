@@ -3131,3 +3131,13 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-25 | p13 | run_ingress 的 --simulate 不装前台 | 本机演示不了 p13 的查单与退款桥链路，只能起 serve 或跑测试 | 证据束重产前加一个模拟外部渠道的开关 |
 | 2026-09-25 | p13 | 「A1001 耳机坏了」「A1001 耳机」抽不出订单号（understand.extract_order_no 为空），「A1001 杯子裂了」可以 | 单号后面紧跟「耳机」时客户报了单号也会被追问一次 | 归 T173 理解层，整合期查单号正则的后置排除（本轨白名单只许修 major-1，没动） |
 | 2026-09-25 | p13 | T174 复核 L3-1：真查单端口查单失败时，maos/tools/port.py 的 invoke_tool 把异常原文写进 ToolInvoked.detail.error；MockOrderSystem 的 KeyError 原文列着本单与该系统里所有别的客户的 query_key，真适配器的 HTTP 错误也可能带 URL 或响应体 | 违反契约 §2' R5（订单号、query_key 不进 event_log；查单异常原文不出 cs_ports）：会话的 event_log 里读得到本客户与别的客户的单号；查单成功路径只落参数摘要，不漏 | 归 T172 / 整合期：CommerceOrderLookup 走 order.query 时审计行只写异常类名（或 invoke_tool 加只记类名的开关）；修好后 maos/tests/test_cs_eval_p13_t174.py 的 test_real_lookup_not_found_path_keeps_order_numbers_out_of_event_log_t174 会 XPASS 变红，届时摘掉 xfail |
+
+## integrate-p13（p13 整合收尾时留下的事，2026-09-25）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-25 | p13 | **证据束没有按 p13 重产**（用户拍板留给 Mac） | 本分支上 verify 第 9 项在重产前判负 | 作者 Mac：`python3 scripts/make_evidence.py` 后单独一个提交 |
+| 2026-09-25 | p13 | **p12 留出集预登记门槛仍没达到**，p13 理解层上线后读数与 p12 首跑逐项相同（intent 0.6857 / route 0.6429 / handoff 0.7368）；安全面（编造 0、零自信答错）守住 | 客户换个说法仍多半落兜底（安全但体验差） | p14：单开一轨只拿**误判类别**（不给句子）做理解层泛化；p14 盲写的新留出集同时量 |
+| 2026-09-25 | p13 | tools/port.py 的 invoke_tool 仍把「类名: 原文」写进 ToolInvoked.detail.error（CS 查单已在 cs_ports 断掉原文，其余调用方照旧） | 别的工具的异常原文里若带客户数据，会进审计行 | p14 或以后：全仓统一改成只记类名要问用户（改所有 ToolInvoked 的形状） |
+| 2026-09-25 | p13 | desk.has_lang_signal 用了 lang 模块的私有函数 _drop_codes | 跨模块依赖私有名，lang.py 改名会静默断 | p14 顺手：lang.py 公开一个同义函数 |
+| 2026-09-25 | p13 | 「不退款，我就上网曝光」这类条件威胁没被识别成投诉 / 情绪（T174 复核 nit） | 该转人工的轮可能落兜底，两轮后照样 repeated_fallback 转人工 | p14 理解层泛化轨 |

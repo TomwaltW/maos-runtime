@@ -17,8 +17,10 @@
   其它异常 → platform_error。空系统名 / 空查单键 / 系统没注入 → system_misconfigured，**不调用**。
 * **异常原文一个字都不出这个函数**：``MockOrderSystem`` 的 KeyError 里列着账本上**别的**
   订单号。``LookupResult.error_kind`` 只放类名；日志只打类名与打码后的查单键。
-  （存量行为：``invoke_tool`` 自己会把 ``类名: 原文`` 写进 ToolInvoked 的 ``detail.error``，
-  那一处不归本模块改，记在 BACKLOG ``task-t172``，p14 处理。）
+  ``invoke_tool`` 会把 ``类名: 原文`` 写进 ToolInvoked 的 ``detail.error`` —— 所以本模块调的
+  不是裸 ``ORDER_QUERY_PORT``，而是 `_ORDER_QUERY_PORT_CS`：同名同 schema，入口在异常冒出去
+  之前换成只带原类名的 `OrderQueryFailed`，审计行里只剩 ``OrderQueryFailed: KeyError``。
+  （整合期 p13 修，``tools/port.py`` 一字不动。）
 * 永不抛。
 
 ## 退款预检：`LedgerRefundPrecheck`
@@ -38,6 +40,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 import logging
@@ -84,6 +87,42 @@ class OrderReplyInvalid(ValueError):
     只作为 ``LookupResult.error_kind`` 的类名出现：本模块自己判出来的形状错，
     也要有一个能按名字认出来的归类，而不是空串。
     """
+
+
+class OrderQueryFailed(Exception):
+    """查单工具抛了异常；只带原异常的**类**，不带原文。
+
+    ``invoke_tool`` 把 ``str(exc)`` 写进审计行，``MockOrderSystem`` 的 KeyError 原文里列着
+    账本上别的订单号 —— 原文在这里就断掉，审计行只见 ``OrderQueryFailed: <原类名>``。
+    """
+
+    def __init__(self, original: type) -> None:
+        super().__init__(original.__name__)
+        self.original = original
+
+
+def _order_query_entry_cs(**params: Any) -> Any:
+    try:
+        return ORDER_QUERY_PORT.entry(**params)
+    except Exception as exc:                             # noqa: BLE001 —— 换成只带类名的异常
+        raise OrderQueryFailed(type(exc)) from None
+
+
+#: 与 ``ORDER_QUERY_PORT`` 同名同 schema（审计行的 tool 名不变），只换入口。
+_ORDER_QUERY_PORT_CS = dataclasses.replace(ORDER_QUERY_PORT, entry=_order_query_entry_cs)
+
+
+def _outcome_for(kind: type) -> str:
+    """契约的异常翻译顺序：先窄后宽（UnmappedOrderStatus ⊂ ValueError，KeyError ⊂ LookupError）。"""
+    if issubclass(kind, UnmappedOrderStatus):
+        return P.LOOKUP_UNMAPPED
+    if issubclass(kind, ValueError):
+        return P.LOOKUP_PLATFORM_ERROR
+    if issubclass(kind, KeyError):
+        return P.LOOKUP_NOT_FOUND
+    if issubclass(kind, LookupError):
+        return P.LOOKUP_MISCONFIGURED
+    return P.LOOKUP_PLATFORM_ERROR
 
 
 def cs_system_name(system_name: str) -> str:
@@ -148,23 +187,16 @@ class CommerceOrderLookup:
         try:
             self._register()
             reply = invoke_tool(
-                ORDER_QUERY_PORT,
+                _ORDER_QUERY_PORT_CS,
                 {"system_name": cs_system_name(system_name), "order_id": query_key},
                 store=store, extras=extras)
-        # 顺序即契约：UnmappedOrderStatus 是 ValueError 的子类、KeyError 是 LookupError
-        # 的子类，先窄后宽。异常对象只取类名，原文不进任何出参、不进日志。
-        except UnmappedOrderStatus as exc:
-            return self._failed(P.LOOKUP_UNMAPPED, type(exc).__name__, system_name, query_key)
-        except ValueError as exc:
-            return self._failed(P.LOOKUP_PLATFORM_ERROR, type(exc).__name__,
-                                system_name, query_key)
-        except KeyError as exc:
-            return self._failed(P.LOOKUP_NOT_FOUND, type(exc).__name__, system_name, query_key)
-        except LookupError as exc:
-            return self._failed(P.LOOKUP_MISCONFIGURED, type(exc).__name__,
+        # 顺序即契约，见 `_outcome_for`。异常对象只取类名，原文不进任何出参、不进日志、
+        # 也不进审计行（`OrderQueryFailed` 只带原类）。
+        except OrderQueryFailed as exc:
+            return self._failed(_outcome_for(exc.original), exc.original.__name__,
                                 system_name, query_key)
         except Exception as exc:                         # noqa: BLE001
-            return self._failed(P.LOOKUP_PLATFORM_ERROR, type(exc).__name__,
+            return self._failed(_outcome_for(type(exc)), type(exc).__name__,
                                 system_name, query_key)
 
         try:

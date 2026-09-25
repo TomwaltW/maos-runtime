@@ -290,7 +290,7 @@
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |
 | `purpose` | ① 用途 | 客服前台一轮的检索 + 组稿 + 后置校验：按客户原文检索话术库（kind=cs_script），命中就照标准话术组稿（带引用），没命中给兜底话术，再过确定性后置校验 |
-| `input_schema` | ② 输入 | `tenant_id`: str —— 租户（客服账号映射得到，非空）<br>`conversation_id`: str —— 会话 id（csc-…）<br>`turn_id`: str —— 本轮 id（<会话>-tNNNN）<br>`text`: str —— 客户本轮原文的检索用形态（前台去掉长数字串、截短后给；只用于检索，审计行里只落摘要） |
+| `input_schema` | ② 输入 | `tenant_id`: str —— 租户（客服账号映射得到，非空）<br>`conversation_id`: str —— 会话 id（csc-…）<br>`turn_id`: str —— 本轮 id（<会话>-tNNNN）<br>`text`: str —— 客户本轮原文的检索用形态（前台去掉长数字串、截短后给；只用于检索，审计行里只落摘要）<br>`intent_hint`: str（可选，p13）—— 理解层判出的意图，检索时优先该意图的话术；缺省 / 空串时与 p12 行为一致 |
 | `output_schema` | ③ 输出 | `draft`: ReplyDraft.to_json() —— 这一版回复（text / claims / citations）<br>`check`: CheckResult.to_json() —— 空观察下的后置校验结果<br>`hits`: list[str] —— 本次检出的话术 doc_id（按分数降序）<br>`route`: answer \| fallback \| handoff<br>`intent`: str —— 命中话术的意图；没命中为 unknown<br>`handoff_reason`: str —— route=handoff 时为话术的转人工标记，否则空串 |
 | `preconditions` | ④ 前置条件 | `tenant_id`、`conversation_id`、`turn_id`、`text` |
 | `depends_tools` | ⑤ 依赖工具 | （空） |

@@ -6,19 +6,14 @@
    not_found / system_misconfigured），换成 T172 的 ``CommerceOrderLookup`` + ``MockOrderSystem``
    （订单从夹具灌）+ T171 的 ``BindingVerifier``（绑定从夹具灌进库，source=test），结论与夹具端口一致。
 
-## 已知的一处出入：CS13-035（写进回执 open_issues，不在本轨改）
+## CS13-035（整合期 p13 已裁定）
 
-CS13-035 第 1 轮「嗨，客服小姐姐在吗」期望 answer / GEN-001，但「客服小姐姐」是 p12 触发词地板
-（``maos/domain/cs/triggers.py`` 的 ``_EXTRA_PATTERNS[requested]``，「逐字同 bf53df6，不许收窄」），
-契约 §2 第 3 步触发词先于一切 —— 前台照契约转人工，后两轮（含一轮 say=cancelled）随之 silent。
-评测集归 T175、触发词归 T173，都不在本轨白名单里。于是：
+原第 1 轮「嗨，客服小姐姐在吗」撞 p12 触发词地板（「客服小姐姐」→ requested，不许收窄），
+整合期裁定改评测句（开发集，改句不改地板）：现为「嗨，你好呀」。于是整份开发集应当全对：
 
-* :func:`test_p13_dev_set_misses_are_exactly_the_known_trigger_conflict_t174` 钉住「除 CS13-035
-  三轮外全对」，且去掉 CS13-035 后达到文件里的全部 ``_thresholds``；
-* :func:`test_p13_dev_set_meets_file_thresholds_t174` 是整份评测集的 meets，标 ``xfail(strict=True)``
-  —— 评测集或触发词哪天对齐了它就 XPASS 变红，提醒摘掉标记；
-* :func:`test_cs13_035_passes_when_the_greeting_is_not_a_trigger_t174` 证明这个 case 的其余两轮
-  前台都答得对（只把第 1 轮换成一句不含触发词的问候）。
+* :func:`test_p13_dev_set_has_no_misses_t174` 钉住零失误、措辞准确率 1.0；
+* :func:`test_p13_dev_set_meets_file_thresholds_t174` 是整份评测集的 meets；
+* :func:`test_cs13_035_old_greeting_still_hands_off_t174` 反向钉住：原句照旧转人工（地板没被收窄）。
 """
 
 from __future__ import annotations
@@ -64,34 +59,23 @@ def _describe_t174(report) -> str:
         for m in report.failures)
 
 
-def test_p13_dev_set_misses_are_exactly_the_known_trigger_conflict_t174():
-    cases = _cases_t174()
-    assert len(cases) >= 40 and sum(len(c.turns) for c in cases) >= 50
-    report = evaluate.run_eval_p13(_fixture_factory_t174, cases)
-    missed = sorted({(m.case_id, m.turn) for m in report.failures})
-    assert missed == [(KNOWN_CONFLICT_T174, 1), (KNOWN_CONFLICT_T174, 2),
-                      (KNOWN_CONFLICT_T174, 3)], _describe_t174(report)
+def test_p13_dev_set_has_no_misses_t174():
+    report = evaluate.run_eval_p13(_fixture_factory_t174, _cases_t174())
+    assert report.failures == (), _describe_t174(report)
     assert report.wrong_status == 0 and report.status_fabrication == 0
-    rest = tuple(c for c in cases if c.id != KNOWN_CONFLICT_T174)
-    clean = evaluate.run_eval_p13(_fixture_factory_t174, rest)
-    assert clean.meets(_thresholds_t174()), _describe_t174(clean)
-    assert clean.failures == ()
-    assert clean.metrics()["wording_accuracy"] == 1.0
+    assert report.metrics()["wording_accuracy"] == 1.0
 
 
-@pytest.mark.xfail(strict=True, reason="CS13-035#1「客服小姐姐」是 p12 触发词地板，与评测期望冲突"
-                                       "（评测集归 T175、触发词归 T173；见模块头与回执 open_issues）")
 def test_p13_dev_set_meets_file_thresholds_t174():
     report = evaluate.run_eval_p13(_fixture_factory_t174, _cases_t174())
     assert report.meets(_thresholds_t174()), _describe_t174(report)
 
 
-def test_cs13_035_passes_when_the_greeting_is_not_a_trigger_t174():
+def test_cs13_035_old_greeting_still_hands_off_t174():
     (case,) = [c for c in _cases_t174() if c.id == KNOWN_CONFLICT_T174]
-    variant = dataclasses.replace(case, turns=("你好呀",) + case.turns[1:])
+    variant = dataclasses.replace(case, turns=("嗨，客服小姐姐在吗",) + case.turns[1:])
     report = evaluate.run_eval_p13(_fixture_factory_t174, (variant,))
-    assert report.failures == (), _describe_t174(report)
-    assert report.metrics()["wording_accuracy"] == 1.0
+    assert (KNOWN_CONFLICT_T174, 1) in {(m.case_id, m.turn) for m in report.failures}
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +179,7 @@ def test_real_lookup_ok_path_keeps_order_numbers_out_of_event_log_t174():
         assert sentinel not in blob, sentinel
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "复核 L3-1：查单失败时 maos/tools/port.py 的 invoke_tool 把异常原文（MockOrderSystem 的 "
-    "KeyError 列着本单与别的客户的 query_key）写进 ToolInvoked.detail.error；归 T172 / 整合期修"
-    "（cs_ports 与 tools/port.py 不在 T174 白名单，见 docs/BACKLOG.md task-t174）。修好即 XPASS 变红，摘标记"))
+# 复核 L3-1：整合期 p13 在 cs_ports 修好（审计行只剩 OrderQueryFailed: <类名>），摘了 xfail。
 def test_real_lookup_not_found_path_keeps_order_numbers_out_of_event_log_t174():
     blob = _real_sentinel_run_t174(registered=False)
     assert "ToolInvoked" in blob

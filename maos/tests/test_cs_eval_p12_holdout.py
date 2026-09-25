@@ -464,3 +464,34 @@ def test_real_desk_holdout_does_not_regress_below_first_run_holdout(holdout_repo
     assert r.intent_hits >= MEASURED_P12_HOLDOUT["intent_hits"], _aggregate_only_holdout(r)
     assert r.route_hits >= MEASURED_P12_HOLDOUT["route_hits"], _aggregate_only_holdout(r)
     assert r.handoff_caught >= MEASURED_P12_HOLDOUT["handoff_caught"], _aggregate_only_holdout(r)
+
+
+# ---------------------------------------------------------------------------
+# p13 路径（整合期 p13 主会话实测，2026-09-25）
+# ---------------------------------------------------------------------------
+#: 注入夹具端口（空夹具）走 p13 的理解层路径，量出来与 p12 路径逐项相同：intent 48/70、
+#: route 45/70、handoff 28/38、编造 0 —— 预登记门槛仍**没达到**（DECISIONS integrate-p13）。
+#: 这里钉同一块地板与同样的安全不变量；变好了来这里抬地板。
+def _p13_desk_factory_holdout(ports):
+    from maos.core.store import SqliteStore
+    from maos.domain.cs.corpus import seed_cs_kb
+    from maos.domain.cs.desk import CsConfig, FrontDesk
+
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    return FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None),
+                     **ports)
+
+
+def test_p13_path_holdout_floor_and_safety_holdout():
+    from maos.domain.cs.evaluate import run_eval_p13
+
+    r = run_eval_p13(_p13_desk_factory_holdout, load_cases(HOLDOUT_PATH_HOLDOUT))
+    assert r.turns == MEASURED_P12_HOLDOUT["turns"]
+    assert r.status_fabrication == 0 and r.wrong_status == 0, _aggregate_only_holdout(r)
+    wrong_answers = [m for m in r.failures if m.actual.get("route") == ROUTE_ANSWER]
+    assert not wrong_answers, "p13 路径自信答错：" + ", ".join(
+        f"{m.case_id}#{m.turn}" for m in wrong_answers)
+    assert r.intent_hits >= MEASURED_P12_HOLDOUT["intent_hits"], _aggregate_only_holdout(r)
+    assert r.route_hits >= MEASURED_P12_HOLDOUT["route_hits"], _aggregate_only_holdout(r)
+    assert r.handoff_caught >= MEASURED_P12_HOLDOUT["handoff_caught"], _aggregate_only_holdout(r)

@@ -62,6 +62,8 @@ class CsAnswerSkill(Skill):
             "turn_id": "str —— 本轮 id（<会话>-tNNNN）",
             "text": "str —— 客户本轮原文的检索用形态（前台去掉长数字串、截短后给；"
                     "只用于检索，审计行里只落摘要）",
+            "intent_hint": "str（可选，p13）—— 理解层判出的意图，检索时优先该意图的话术；"
+                           "缺省 / 空串时与 p12 行为一致",
         },
         output_schema={
             "draft": "ReplyDraft.to_json() —— 这一版回复（text / claims / citations）",
@@ -96,9 +98,8 @@ class CsAnswerSkill(Skill):
         task_id = str(extras.get("task_id") or turn_id)
 
         # p13（契约 §2 第 7 步，T174）：入参可多带一个 intent_hint（理解层判出的意图），原样交给
-        # match_scripts 优先该意图的话术；缺省 / 空串时调用形状与 p12 逐字节一致。这个可选键没写进
-        # input_schema：那张表生成进 docs/skill-catalog.md，而那份生成文档不在本轨白名单里
-        # （DECISIONS task-t174；整合期重产时再补）。
+        # match_scripts 优先该意图的话术；缺省 / 空串时调用形状与 p12 逐字节一致。这个可选键在
+        # 整合期 p13 补进了 input_schema（不进 preconditions），docs/skill-catalog.md 随之重产。
         intent_hint = str(payload.get("intent_hint") or "")
         if intent_hint:
             hits = scripts.match_scripts(store, tenant_id=tenant_id, text=text,

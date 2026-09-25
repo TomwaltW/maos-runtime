@@ -9,6 +9,10 @@
   转人工后 silent / 连续兜底）；
 * 近重复棘轮：与两份开发集（p12_cases / p13_cases）的轮次、话术库每篇的 examples、以及本集内部，
   归一后相等或一字之差即红 —— **失败消息只报 id**，永不出句子（留出集与开发集都不外泄）。
+
+**PYTEST_DONT_REWRITE**：本模块关掉 pytest 的断言改写（整合期 p14）。改写会在断言失败时把
+``EvalMiss`` / ``EvalReport`` 的 repr（含留出句原文 ``text``）打进失败消息，实现轨跑全量就看见了
+（T182 复核时发生过一次）。关掉之后失败消息只剩断言自己写的那句 —— 那句一律只报聚合数与 id。
 """
 
 from __future__ import annotations
@@ -413,3 +417,48 @@ def test_near_duplicate_failure_message_carries_ids_only_t181():
     assert sentinel not in msg
 
 
+
+
+# ---------------------------------------------------------------------------
+# 真前台（整合期 p14 主会话接上，2026-09-25）
+# ---------------------------------------------------------------------------
+#: 首跑实测（integrate/p14 合入 A1 四轨之后，夹具端口、零模型）：intent 90/100 = 0.90、
+#: route 84/100 = 0.84、handoff 36/40 = 0.90、编造 0、错状态 0、措辞 9/11 ≈ 0.82、零「自信答错」。
+#: 预登记门槛 **route 与 wording 没达到**（DECISIONS integrate-p14）。其中 CS14H-060 第 1 轮的问候撞了
+#: p12 触发词地板（盲写者看不到触发词表），其后三轮随之 silent —— 照契约判定顺序这一条的期望与地板冲突，
+#: 文件照旧不改（预登记之后改题等于改门槛），在账里记明。这里钉安全不变量与「不许比首跑更差」的地板。
+MEASURED_P14_HOLDOUT = {"turns": 100, "intent_hits": 90, "route_hits": 84,
+                        "handoff_expected": 40, "handoff_caught": 36}
+
+
+def _real_desk_factory_p14h(ports):
+    from maos.core.store import SqliteStore
+    from maos.domain.cs.corpus import seed_cs_kb
+    from maos.domain.cs.desk import CsConfig, FrontDesk
+
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    return FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None),
+                     **ports)
+
+
+def _aggregate_only_p14h(r) -> str:
+    ids = sorted({f"{m.case_id}#{m.turn}" for m in r.failures})
+    return (f"intent {r.intent_hits}/{r.turns} route {r.route_hits}/{r.turns} "
+            f"handoff {r.handoff_caught}/{r.handoff_expected} fabrication {r.status_fabrication} "
+            f"wrong_status {r.wrong_status}; 没对上的轮（只列 id）：{', '.join(ids)}")
+
+
+def test_real_desk_p14_holdout_safety_and_floor_p14h():
+    r = evaluate.run_eval_p13(_real_desk_factory_p14h, _cases_t181())
+    turns, fab, wrong = r.turns, r.status_fabrication, r.wrong_status
+    assert turns == MEASURED_P14_HOLDOUT["turns"]
+    assert fab == 0 and wrong == 0, _aggregate_only_p14h(r)
+    confident_wrong = [f"{m.case_id}#{m.turn}" for m in r.failures
+                       if m.actual.get("route") == "answer"]
+    assert not confident_wrong, "真前台自信答错（只列 id）：" + ", ".join(confident_wrong)
+    hits = (r.intent_hits, r.route_hits, r.handoff_caught, r.handoff_expected)
+    assert hits[3] == MEASURED_P14_HOLDOUT["handoff_expected"], _aggregate_only_p14h(r)
+    assert hits[0] >= MEASURED_P14_HOLDOUT["intent_hits"], _aggregate_only_p14h(r)
+    assert hits[1] >= MEASURED_P14_HOLDOUT["route_hits"], _aggregate_only_p14h(r)
+    assert hits[2] >= MEASURED_P14_HOLDOUT["handoff_caught"], _aggregate_only_p14h(r)

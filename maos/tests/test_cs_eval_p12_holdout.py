@@ -19,6 +19,10 @@ review/p12-cs-contracts.md（含 §6 修订）、``maos/domain/cs/types.py`` 与
 标签约定：expect 不写 cite（evaluate 对门槛里没登记的 cite_accuracy 按 1.0 要求），
 方案编号记在 case 的 tags 里，形如 ``scheme:LOG-001@2``（第 2 轮对应 LOG-001）；
 被更高优先级的触发词压住的业务问题记成 ``also:LOG-004@1``（第 1 轮里还带着 LOG-004 的问题）。
+
+**PYTEST_DONT_REWRITE**：本模块关掉 pytest 的断言改写（整合期 p14）。改写会在断言失败时把
+``EvalMiss`` / ``EvalReport`` 的 repr（含留出句原文 ``text``）打进失败消息，实现轨跑全量就看见了
+（T182 复核时发生过一次）。关掉之后失败消息只剩断言自己写的那句 —— 那句一律只报聚合数与 id。
 """
 
 from __future__ import annotations
@@ -403,8 +407,10 @@ def test_holdout_does_not_overlap_dev_set_or_scripts_holdout():
 #: 主会话裁定（DECISIONS integrate-p12）：不拿留出集调 p12（调了它就不再是留出集），
 #: 预登记门槛原样保留、转成 p13 理解层的验收目标；p12 这里钉两件事 ——
 #: 安全不变量（零编造、零「自信答错」）与「不许比首跑更差」的地板。
-MEASURED_P12_HOLDOUT = {"turns": 70, "intent_hits": 48, "route_hits": 45,
-                        "handoff_expected": 38, "handoff_caught": 28}
+#: 整合期 p14 抬地板（T182 理解层泛化之后，两条路径同读数）：intent 48 → 59、route 45 → 59、
+#: handoff 28 → 33。route 0.8429 达到门槛 0.80；intent 0.8429 < 0.85、handoff 0.8684 < 0.90 仍没达到。
+MEASURED_P12_HOLDOUT = {"turns": 70, "intent_hits": 59, "route_hits": 59,
+                        "handoff_expected": 38, "handoff_caught": 33}
 
 
 def _aggregate_only_holdout(r) -> str:

@@ -30,7 +30,7 @@
    同一意图的几篇之间时不受影响（同加），跨意图抢答时该意图的先上；p12 分数略低于门槛、但
    理解层已认出意图的改写，由它推过门槛 —— 这是「换个说法就落兜底」那一类的解法之一。
 2. **时长线索 vs 进度线索**（:data:`INTENT_CUES`，数据表）：问规则时长（「多久 / 几天能 /
-   多长时间」）与查某一笔进度（「到没到 / 退了吗 / 发了没 / 到哪了」）共享实词（「钱退回来」），
+   多长时间 / 什么时候」）与查某一笔进度（「到没到 / 退了吗 / 发了没 / 到哪了」）共享实词（「钱退回来」），
    二元组重排分不开它们。提示模式下，原文带时长线索时，该意图里**不转人工**的政策篇加
    :data:`CUE_BONUS`、带 ``needs_order_lookup`` 的查单篇减同样的量；带进度线索时反过来；两种都带
    时按进度算（「好几天了还没到」是在催这一单）。开发集 CS12-044#1 就是这一类。
@@ -132,6 +132,9 @@ INTENT_CUES: dict[str, tuple[str, ...]] = {
     CUE_DURATION: (
         r"多久(?!了)", r"多长时间(?!了)", r"多少天(?!了)", r"(?<!好)几天(?!了)", r"几个工作日", r"几个小时",
         r"多快", r"时效", r"一般要几", r"大概要几",
+        # 问「什么时候」（复核 L2-2 / L3-2）：查单只说得出状态、说不出到账 / 送达时间（p13 契约 §0
+        # 不买），问时间的句子该由政策篇答，也不该被当成「要退款」
+        r"什么时候", r"啥时候", r"何时", r"几时", r"几号", r"哪天", r"多会儿?",
         r"\bhow long\b", r"\bhow many days\b", r"\bhow soon\b", r"\bhow quickly\b",
     ),
     CUE_PROGRESS: (
@@ -153,11 +156,15 @@ INTENT_CUES: dict[str, tuple[str, ...]] = {
 #: 英文的意图线索：写成不带边界的片段，统一包上「前后不挨 ASCII 字母数字」（中英混排也认得出）。
 EN_INTENT_CUES: dict[str, tuple[str, ...]] = {
     CUE_DURATION: (r"how long", r"how many (?:business |working )?days", r"how soon",
-                   r"how quickly", r"how many hours"),
+                   r"how quickly", r"how many hours",
+                   r"when (?:will|does|do|can|would|could|should|is|are)",
+                   r"when (?:\w+ ){1,3}(?:will|arrive|arrives|come|comes)"),
     CUE_PROGRESS: (r"where(?:'s| is) my", r"has my", r"status of my", r"track my",
                    r"tracking (?:number|info|information)", r"not (?:arrived|received)",
                    r"still (?:not|hasn't|haven't|no)", r"did (?:you|it) (?:ship|arrive)",
-                   r"is my \w+ (?:shipped|delivered|refunded)"),
+                   r"is my \w+ (?:shipped|delivered|refunded|processed|approved|credited)",
+                   r"(?:hasn't|has not|haven't|have not|didn't|did not) (?:arrived?|received?|come|got|"
+                   r"gotten|shown up|been (?:received|refunded|delivered|shipped|processed|credited))"),
 }
 
 _CUE_RES: dict[str, re.Pattern[str]] = {
@@ -251,6 +258,15 @@ def _dice(a: frozenset[str], b: frozenset[str]) -> float:
     if not inter:
         return 0.0
     return 2.0 * _mass(inter) / (_mass(a) + _mass(b))
+
+
+def weighted_similarity(a: str, b: str) -> float:
+    """两句话的加权字符二元组 Dice（实词二元组 1、虚词二元组 ``_FUNCTION_WEIGHT``），[0, 1]，六位小数。
+
+    重排不用它（重排是 :func:`script_score`）；理解层的意图示例拿它判「在实词上像不像」
+    （p13 T173 复核 L2-3 / L3-1：「退款什么时候能到」与「东西什么时候能到」的虚词骨架一样，实词不一样）。
+    """
+    return round(_dice(_grams(a), _grams(b)), 6)
 
 
 def _variants(body: dict) -> list[str]:

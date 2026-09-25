@@ -30,7 +30,10 @@ requested      转人工、人工客服、找人工、真人                hand
 「垃圾袋」里的「垃圾」、「去死皮」里的「去死」、「给我妈的礼物」里的「妈的」），一句普通咨询
 被判成情绪激烈、转了人工。三种手段里选**已知复合词白名单**（:data:`BENIGN_COMPOUNDS`，
 数据表、按原因分组只为可读）：规范化之后、匹配之前，先把白名单里的复合词整段**遮掉**
-（换成同长的占位符），再在剩下的文字上照旧匹配。
+（换成同长的占位符），再在剩下的文字上照旧匹配。整词只管列出来的那几个串，所以同一张白名单
+另有**上下文写法**（:data:`BENIGN_PATTERNS`，复核 L3-3）：「垃圾 + 桶 / 筒 / 袋 / 挂……」「气炸 +
+锅 / 烤箱」「称谓 + 妈的」「去死 + 皮 / 角 / 海」这类「触发词 + 前后文」的正则，只遮触发词那几个字，
+换个同类的商品名、地名也认得出。
 
 * 不选「词边界」：中文没有词边界，要边界就得分词，而分词本身就会把「气炸锅」切错；
 * 不选「否定语境」：误伤不是否定句（「不是垃圾」），是复合词，否定判不到它；
@@ -47,7 +50,8 @@ lawyer / sue / scam / compensation / personal data ……）。英文要按词�
 「前后不挨 ASCII 字母数字」—— 中英混排的「找human」也认得出（``\\b`` 在汉字与字母之间不成立）。
 「agent」单说不认（「cleaning agent」是清洁剂），要带冠词或 live / real / support 这类修饰。
 英文同样有复合词白名单（「human hair」是假发的品类、「trash can」是垃圾桶、「privacy screen」
-是防窥膜）。
+是防窥膜、「privacy policy」是问条款）与上下文写法（trash / garbage + 物件名）；「representative」
+要带冠词或修饰、「phone number」要是「my phone number」或说到泄露才认。
 
 「refund me now」这类要钱的说法**不**进触发词：p13 起退款诉求走「身份核验 → 查单 → 预检卡」
 （契约 §2 第 6 步），在第 3 步就转人工会把那条路整个绕开（见 docs/DECISIONS.md task-t173）。
@@ -124,8 +128,9 @@ _EXTRA_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-#: 「滚」单字：排除「滚筒 / 滚动 / 滚轮 / 滚烫 / 翻滚 / 打滚」这类与情绪无关的词。
-_GUN_RE = r"(?<![翻打])滚(?![筒动轮珠烫雪梯刀])"
+#: 「滚」单字：排除「滚筒 / 滚动 / 滚轮 / 滚烫 / 翻滚 / 打滚」这类与情绪无关的词；
+#: p13 T173 复核 L2-6 补「摇滚」（服饰图案、乐器）与「滚梳」（卷发梳）。
+_GUN_RE = r"(?<![翻打摇])滚(?![筒动轮珠烫雪梯刀梳])"
 
 #: 「12315」要前后都不挨着数字（复核 L2-3）：订单号、流水号、手机号里碰巧含这五位的
 #: （「20261231500」）不是投诉。规范化后全角数字已是半角。
@@ -156,9 +161,10 @@ _EXCLAIM_RE = re.compile(f"[{re.escape(EXCLAMATIONS)}]{{{EXCLAMATION_RUN},}}")
 #: 写成规范化后的形态（小写、无空白）。**只收拿得准的**：拿不准的留给「宁可多转」。
 BENIGN_COMPOUNDS: dict[str, tuple[str, ...]] = {
     HANDOFF_ANGER: (
-        # 垃圾：家居清洁类商品
-        "垃圾袋", "垃圾桶", "垃圾篓", "垃圾箱", "垃圾筐", "垃圾篮", "垃圾车", "垃圾站",
-        "垃圾分类", "垃圾处理", "垃圾粉碎", "垃圾夹", "垃圾铲", "垃圾收纳", "垃圾清运",
+        # 垃圾：家居清洁类商品（「垃圾车 / 垃圾站 / 垃圾处理」不收：「你们就是垃圾站」「垃圾处理方式」
+        # 是骂人的说法，复核 L2-5；厨下的「垃圾处理器」是商品，收整词）
+        "垃圾袋", "垃圾桶", "垃圾篓", "垃圾箱", "垃圾筐", "垃圾篮",
+        "垃圾分类", "垃圾处理器", "垃圾粉碎", "垃圾夹", "垃圾铲", "垃圾收纳", "垃圾清运",
         # 气炸 / 气死：厨房电器、老式马灯
         "空气炸", "气炸锅", "气死风灯",
         # 去死：美妆个护、清洁
@@ -194,8 +200,36 @@ BENIGN_COMPOUNDS: dict[str, tuple[str, ...]] = {
     HANDOFF_PRIVACY: (
         # 隐私：手机防窥膜、浴室隐私帘
         "隐私膜", "隐私保护膜", "隐私屏", "隐私帘", "隐私玻璃", "隐私贴",
-        # 泄漏：防漏的日用品
-        "防泄漏", "不泄漏",
+        # 泄漏：防漏的日用品（「不泄漏」不收：「请保证不泄漏我的信息」是隐私诉求，复核 L2-5）
+        "防泄漏",
+    ),
+}
+
+#: 复合词的**上下文写法**（p13 T173 复核 L2-6 / L3-3）：整词白名单只遮列出来的那几个串，换一个
+#: 同类的商品（「气炸烤箱」「垃圾筒」「垃圾挂袋」）、地名（「死海」「黑店村」）、称谓（「爸妈的」
+#: 「孩子他妈」）就又误伤。这里按「触发词两个字 + 前后是什么」写成正则片段，**只遮触发词那几个字**
+#: （前后文用环视判、不遮），在规范化后的正文上与 :data:`BENIGN_COMPOUNDS` 一起遮。
+#: 同样「只收拿得准的」：「他妈的」「你妈的」「去死吧」「恶心死了」一律不在内。
+BENIGN_PATTERNS: dict[str, tuple[str, ...]] = {
+    HANDOFF_ANGER: (
+        # 垃圾 + 盛放 / 清理的物件（垃圾筒、垃圾挂袋、垃圾兜）
+        r"垃圾(?=[袋桶筒篓箱筐篮夹铲兜盒挂罐])",
+        # 气炸 + 厨房电器（气炸锅、气炸烤箱、气炸一体机）；空气 + 炸 / 死（空气炸锅、空气死角）
+        r"气炸(?=锅|烤|机|一体)", r"空气(?=炸|死)",
+        # 去死 + 皮 / 角 / 细胞 / 茧（美妆清洁）；去 + 死海（地名）
+        r"去死(?=皮|角|细胞|茧|海)",
+        # 妈的：前面是称谓、自称或「给 / 帮 / 替」（给爸妈的、宝妈的、奶妈的、妈妈的）；
+        # 前面是「你 / 他 / 她」的（你妈的、他妈的）不在内
+        r"(?<=[我俺咱爸老给帮替姑舅姨干后宝奶岳妈])妈的",
+        # 他妈：「他妈妈 / 他妈咪」、其他妈咪包、孩子他妈、老公他妈；后面跟「的 / 逼」的不在内
+        r"他妈(?=妈|咪)", r"(?<=[其子公婆])他妈(?![的逼])",
+        # 恶心：药品 / 孕期用品的功效与副作用问法（缓解恶心、孕吐恶心、吃了会恶心吗）
+        r"(?:缓解|止|防|预防|减轻|孕吐|晕车|晕船|反胃)恶心",
+        r"会(?:不会)?恶心(?=[吗么嘛呢不啊呀]|$)",
+        # 黑店 + 村镇街路（地名）
+        r"黑店(?=村|镇|乡|街|路|庄|屯|寨|桥|湾)",
+        # 滚滚：熊猫的昵称、玩偶
+        r"(?<=熊猫)滚滚", r"滚滚(?=玩偶|公仔|抱枕|周边)",
     ),
 }
 
@@ -206,9 +240,12 @@ EN_PATTERNS: dict[str, tuple[str, ...]] = {
         r"humans?", r"real (?:person|people|human)", r"live (?:agent|person|chat|support)",
         r"(?:an?|the|real|live|human|support|service) agent",
         r"(?:customer service|customer support|support) (?:rep|representative|agent|staff)",
-        r"representative", r"operator",
+        # 「representative」要带冠词或修饰才是「客服代表」（「Is this color representative of …」
+        # 是「有代表性」，复核 L3-4）
+        r"(?:a|an|the|your|customer|service|sales|support|real|human|live|company) representatives?",
+        r"representatives? please", r"operator",
         r"(?:talk|speak|chat) (?:to|with) (?:a |an |the |your )?"
-        r"(?:person|someone|somebody|manager|supervisor|staff)",
+        r"(?:person|someone|somebody|manager|supervisor|staff|representative)",
         r"(?:your|a|the) (?:manager|supervisor)",
         r"(?:not|no) (?:a )?(?:bot|robot)s?", r"don'?t want (?:to talk to )?(?:a |the )?(?:bot|robot|machine)",
     ),
@@ -228,7 +265,11 @@ EN_PATTERNS: dict[str, tuple[str, ...]] = {
         r"compensat(?:e|ed|es|ion|ing)", r"pay (?:me )?for (?:my|the) (?:loss|losses|damages?|trouble)",
     ),
     HANDOFF_PRIVACY: (
-        r"personal (?:data|info|information|details)", r"privacy", r"phone numbers?",
+        # 「phone number」要是**客户自己的**号（my phone number）或说到泄露；「your store phone
+        # number」是问店铺电话（复核 L3-4）。「privacy policy」在 EN_BENIGN_COMPOUNDS 里遮掉
+        r"personal (?:data|info|information|details)", r"privacy",
+        r"my (?:phone|mobile|cell)(?: phone)? numbers?",
+        r"(?:phone|mobile) numbers? (?:was |were |got |has been |have been )?(?:leaked|exposed|sold|stolen|shared)",
         r"(?:id|identity) card", r"passport", r"social security", r"ssn",
         r"delete my (?:data|account|info|information|details)", r"gdpr",
         # 「leaked」单说多半是瓶子漏了，只认泄露信息的说法；「home address」多半是收货地址，不收
@@ -242,9 +283,16 @@ EN_BENIGN_COMPOUNDS: tuple[str, ...] = (
     "garbage bag", "garbage bags", "garbage can", "garbage cans", "garbage bin", "garbage bins",
     "garbage disposal", "rubbish bag", "rubbish bags", "rubbish bin", "rubbish bins",
     "privacy screen", "privacy filter", "privacy film", "privacy protector", "privacy glass",
-    "privacy curtain", "privacy fence",
+    "privacy curtain", "privacy fence", "privacy policy",
     "passport holder", "passport cover", "passport case", "passport wallet", "passport bag",
     "id card holder", "id card case",
+)
+
+#: 英文复合词的上下文写法（复核 L3-4）：trash / garbage / rubbish 后面跟着盛放、清理、运输的物件名
+#: （trash compactor、garbage truck toy、rubbish chute）是商品，整段遮掉。
+EN_BENIGN_PATTERNS: tuple[str, ...] = (
+    r"(?:trash|garbage|rubbish) (?:cans?|bags?|bins?|compactors?|disposals?|trucks?|liners?|"
+    r"containers?|pickers?|grabbers?|chutes?|lids?|baskets?|sacks?)",
 )
 
 #: 英文按词认：前后不挨 ASCII 字母数字。
@@ -267,13 +315,15 @@ _EN_RES: dict[str, re.Pattern[str]] = {
     for reason in PRIORITY
 }
 
-#: 中文白名单：长的先遮（「隐私保护膜」先于「隐私膜」无关紧要，但「垃圾处理」与更长的写法
-#: 并存时长的先吃掉，结果与顺序无关）。
+#: 中文白名单：整词（长的先遮）在前、上下文写法在后，一条正则一趟遮完。环视看的是**遮之前**的
+#: 原文（``re.sub`` 的语义），所以「他妈妈的」里「他妈」遮掉之后，「妈的」前面仍是「妈」、照样遮。
 _BENIGN_RE = re.compile("|".join(
-    re.escape(w) for w in sorted({w for ws in BENIGN_COMPOUNDS.values() for w in ws},
-                                 key=lambda w: (-len(w), w))))
+    [re.escape(w) for w in sorted({w for ws in BENIGN_COMPOUNDS.values() for w in ws},
+                                  key=lambda w: (-len(w), w))]
+    + [f"(?:{p})" for ps in BENIGN_PATTERNS.values() for p in ps]))
 _EN_BENIGN_RE = re.compile(_EN_BOUNDARY.format("|".join(
-    re.escape(w) for w in sorted(set(EN_BENIGN_COMPOUNDS), key=lambda w: (-len(w), w)))))
+    [re.escape(w) for w in sorted(set(EN_BENIGN_COMPOUNDS), key=lambda w: (-len(w), w))]
+    + [f"(?:{p})" for p in EN_BENIGN_PATTERNS])))
 
 
 def _mask(pattern: re.Pattern[str], text: str) -> str:

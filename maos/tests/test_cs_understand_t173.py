@@ -1520,4 +1520,6 @@ def test_t168_holdout_under_the_hint_t173():
             top_hint = _top_t173(store, text, hint=U.understand(text, prior_slots={}).intent)
             plain += top_plain[0] == scheme_no and top_plain[1] >= scripts.MIN_SCRIPT_SCORE
             hinted += top_hint[0] == scheme_no and top_hint[1] >= scripts.MIN_SCRIPT_SCORE
-    assert hinted >= plain + 3, (plain, hinted)
+    # p14 T182：原句检不到时的同义归一把缺省检索也抬了（63 → 67），提示模式 68 → 69；
+    # 提示自己的增益钉成 +2，另钉提示模式不比 T173 时差（68）
+    assert hinted >= plain + 2 and hinted >= 68, (plain, hinted)

@@ -448,7 +448,11 @@ _REQUEST_RES: dict[str, tuple[re.Pattern[str], re.Pattern[str]]] = {
 #: 问办法、条件、规则。
 _HOWTO_ZH = _zh_re((r"怎么", r"怎样", r"如何", r"咋", r"流程", r"步骤", r"条件", r"规则", r"要求",
                     r"政策", r"规定", r"谁出", r"谁来出", r"我出", r"你们出", r"谁承担", r"谁付", r"在哪",
-                    r"哪里", r"哪儿", r"入口", r"需要什么", r"要什么", r"什么情况", r"哪些"))
+                    r"哪里", r"哪儿", r"入口", r"需要什么", r"要什么", r"什么情况", r"哪些",
+                    # p14 T182（误判类别 3）：问先后顺序的选择问（「要先申请还是直接寄回来」「第一步干嘛」）
+                    r"先.{0,10}还是", r"还是先", r"先后", r"顺序", r"第一步",
+                    # 问退到哪个账户（「退款退回哪个账户」「退到哪」；「到哪了」是查进度，线索先判）
+                    r"哪个", r"哪种", r"退(?:到|回)哪(?![了一])"))
 _HOWTO_EN = _en_re((r"how", r"what(?:'s| is| are)? (?:the|your) (?:policy|process|rules?)", r"policy",
                     r"process", r"who pays", r"which"))
 #: 是非问（能退吗 / 可以换吗 / 会退运费吗 / 有手续费吗）。
@@ -632,7 +636,9 @@ _BARE_NOT_RE = re.compile(r"不(?:退|换)")
 #: 不认裸的「就 / 会 / 去」：「不退款，我就继续用吧」「我就收下了」「我会自己处理」「我去送人」是撤回
 #: （T174 复核 L2-1）。
 _THREAT_ACT = (r"(?:中?差评|投诉|举报|曝光|起诉|告你们|报警|打\s*(?:12315|110)|12315|消协|工商|维权|仲裁"
-               r"|找(?:你们|平台|消协|律师|媒体|工商|记者|领导|老板)|拒收|拒签|不收|发(?:微博|抖音|小红书|网上))")
+               r"|找(?:你们|平台|消协|律师|媒体|工商|记者|领导|老板)|拒收|拒签|不收|发(?:微博|抖音|小红书|网上)"
+               # p14 T182：「不退款，我就上网曝光」「……我就去网上说」「……挂网上」「……去黑猫」
+               r"|上网|网上|挂网|黑猫)")
 _THREAT_TAIL_RE = re.compile(
     r"(?:的话)?[\s，,、:：]*(?:那|那么)?\s*(?:我们?|咱们?)?\s*"
     r"(?:(?:就|会|要|肯定|一定|直接|立刻|马上|去|到|上|给你们|给|打)\s*)*" + _THREAT_ACT +
@@ -718,7 +724,7 @@ def extract_request(text: str) -> str:
 
 def _request_of(text: str) -> str:
     explicit = explicit_request(text)
-    if explicit:
+    if explicit and not (explicit == REQUEST_EXCHANGE and "address" in scripts.synonym_hits(text)):
         return explicit
     zh, en = _compact(text), _spaced(text)
     kind, at = "", None
@@ -727,9 +733,18 @@ def _request_of(text: str) -> str:
         if m or ere.search(en):
             kind, at = key, (m.span() if m else None)
             break
+    if kind == REQUEST_EXCHANGE and "address" in scripts.synonym_hits(text):
+        # p14 T182：「地址写错了想换一个」换的是地址，不是换货（改地址那一类，诉求 other）。
+        kind = REQUEST_OTHER
+        m = _REQUEST_RES[REQUEST_OTHER][0].search(zh)
+        at = m.span() if m else None
     cue = scripts.detect_cue(text)
     on_topic = bool(kind or _TRACK_TOPIC_ZH.search(zh) or _TRACK_TOPIC_EN.search(en))
     if cue == scripts.CUE_PROGRESS and on_topic:
+        return REQUEST_TRACK
+    if not kind and scripts.order_anomaly(text):
+        # p14 T182（误判类别 2）：某一单的进度 / 异常说法里没有「发货 / 物流 / 退款」这类诉求词
+        # （包裹卡在中转站不动、签收了没收到、拆开碎了、重复扣款）—— 同样是在办这一单，按查进度算。
         return REQUEST_TRACK
     if not kind or kind == REQUEST_TRACK:
         return kind
@@ -1019,6 +1034,8 @@ _TRACK_AFTERSALE_ZH = _zh_re((r"售后", r"退货", r"换货", r"退换"))
 _TRACK_AFTERSALE_EN = _en_re((r"return", r"exchange"))
 _TRACK_MONEY_ZH = _zh_re((r"钱", r"到账", r"到帐"))
 _TRACK_APPLY_ZH = _zh_re((r"申请", r"审核"))
+#: 查的是钱的那几类订单异常（``scripts.SYNONYM_RULES`` 的规则名）。
+_MONEY_ANOMALY_RULES = frozenset({"refund_missing", "double_charge", "paid_unpaid"})
 
 
 def _request_intent(request: str, text: str) -> str:
@@ -1033,6 +1050,9 @@ def _request_intent(request: str, text: str) -> str:
     if request != REQUEST_TRACK:
         return INTENT_UNKNOWN
     zh, en = _compact(text), _spaced(text)
+    if _MONEY_ANOMALY_RULES & set(scripts.synonym_hits(text)):
+        # p14 T182：重复扣款、扣了钱订单没付上、退款没到 —— 查的是钱（「付了两次」里没有「钱」字）。
+        return INTENT_REFUND_PAYMENT
     money = bool(_TRACK_REFUND_ZH.search(zh) or _TRACK_REFUND_EN.search(en))
     goods = bool(_TRACK_AFTERSALE_ZH.search(zh) or _TRACK_AFTERSALE_EN.search(en))
     if money and goods:

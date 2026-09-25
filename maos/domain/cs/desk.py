@@ -453,7 +453,7 @@ def has_lang_signal(text: str) -> bool:
     norm = unicodedata.normalize("NFKC", text or "")
     if any(cs_lang.is_cjk(ch) for ch in norm):
         return True
-    return any(unicodedata.category(ch).startswith("L") for ch in cs_lang._drop_codes(norm))
+    return any(unicodedata.category(ch).startswith("L") for ch in cs_lang.drop_codes(norm))
 
 
 def only_order_no(fresh: Mapping[str, str]) -> bool:

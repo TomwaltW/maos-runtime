@@ -66,6 +66,17 @@ skill、零工具、最高风险 L。前台不 import 审批、放款、补偿�
 
 给客户的话一个状态字都不说，唯一的例外是第 6 步那三句（措辞表、挂本轮观察）。订单号、
 query_key、槽位值不进日志与 event_log（R5）。
+
+## p15：判定顺序（review/p15-cs-contracts.md §1 C1–C4，T184）
+
+只动注入了端口的路径（p12 路径逐字节不变，测试按基线指纹钉）：
+
+* C4 最先判：假设 / 泛问句（:func:`hypothetical_question`）不进查单、不追问，走政策检索；
+* C1 / C2：:func:`order_need` 认中文「查物流一类」与英文订单状态问法（:func:`asks_order_status`，
+  英文按词认）→ track；检索落到「看这一单」的查单篇（:data:`ORDER_VIEW_SCHEMES`）时也改走查单分支，
+  不凭话术篇的转人工标记直接 needs_order_lookup；
+* C3：上一轮在追问单号，本轮只回了单号、或仍没给但仍在说这一单（:func:`still_on_order`）→ 查单分支
+  （追问没用尽再问，用尽 needs_order_lookup）。触发词仍在这几处之前；连续兜底规则不动。
 """
 
 from __future__ import annotations
@@ -421,13 +432,24 @@ def order_need(text: str, *, fresh: Mapping[str, str], merged: Mapping[str, str]
 
     本轮的诉求是 other（撤回、改地址一类）→ 不看订单。只报了单号、没说要办什么（「我的订单号是
     B2727」）也不看：单号记进槽位，下一轮说了诉求再查。
+
+    p15 T184（review/p15-cs-contracts.md §1 / §2 T184）在上面这套之外再定两条：
+
+    * C4：假设 / 泛问句（「要是退货的话运费谁出」「如果包裹一直没到怎么办」「what if …」）问的是
+      规则，**最先**判、一律不看订单（:func:`hypothetical_question`）—— 哪怕句子里有诉求词或进度线索；
+    * C1 / C2：没有诉求词也没有进度线索、但在要看这一单（「看下我包裹」「物流查一下」「is order
+      A1001 on its way」「has my parcel shipped」，:func:`asks_order_status`）→ track。
     """
+    if hypothetical_question(text):
+        return ""
     req = str(fresh.get(SLOT_REQUEST) or "")
     if req in ORDER_REQUESTS:
         return req
     if req:
         return ""
     if scripts.detect_cue(text) == scripts.CUE_PROGRESS:
+        return REQUEST_TRACK
+    if asks_order_status(text):
         return REQUEST_TRACK
     if fresh.get(SLOT_ORDER_NO):
         prior = str(merged.get(SLOT_REQUEST) or "")
@@ -442,6 +464,139 @@ def order_need(text: str, *, fresh: Mapping[str, str], merged: Mapping[str, str]
 _ORDER_QUERY_RE = re.compile(
     r"查|看看|看下|看一下|到哪|物流|快递|状态"
     r"|(?<![A-Za-z])(?:where|track|tracking|check|status)(?![A-Za-z])", re.IGNORECASE)
+
+
+# ---- p15 T184：判定顺序的几张说法表（只在注入了端口的路径上用；p12 路径一个字不看）----------------
+def _t184_norm(text: str) -> str:
+    """说法表用的规范化：NFKC、小写、弯引号换直引号、空白压成一个空格。"""
+    s = unicodedata.normalize("NFKC", text or "").lower().replace("’", "'").replace("‘", "'")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _t184_compact(text: str) -> str:
+    """中文说法表用：:func:`_t184_norm` 再去掉空白。"""
+    return _t184_norm(text).replace(" ", "")
+
+
+#: 英文按词认：前后不挨 ASCII 字母数字（「checkout」「tracksuit」「shipping」里认不出 check / track / ship）。
+_EN_B = r"(?<![a-z0-9])"
+_EN_E = r"(?![a-z0-9])"
+
+#: C4：假设的说法。「如果可以的话 / 方便的话 / if possible」是客气话，不是假设，先抹掉再判。
+_ZH_POLITE_IF_RE = re.compile(
+    r"(?:如果|要是|假如|若是)?(?:可以|方便|能|行|不麻烦)的话|(?:如果|要是)(?:可以|方便|能行|不麻烦|有空)")
+_EN_POLITE_IF_RE = re.compile(
+    _EN_B + r"if (?:possible|you (?:can|could|may|don't mind|do not mind|have time)|it's possible|"
+    r"that's ok(?:ay)?|convenient)" + _EN_E)
+_ZH_HYPOTHETICAL_RE = re.compile(
+    r"如果|要是|假如|假设|假使|万一|若是|倘若|如若|的话"
+    # 泛问：「一般 / 通常 / 正常情况下」问的是常规（「我一般……」是在说自己，不算）
+    r"|(?<!我)(?:一般|通常|正常)(?:来说|来讲|情况下?)")
+_EN_HYPOTHETICAL_RE = re.compile(
+    _EN_B + r"(?:what if|if|in case|suppose|supposing|hypothetically|generally|in general|usually|normally"
+    r"|typically)" + _EN_E)
+#: C4：问句的形状（问办法 / 谁出 / 是非 / 时长）。假设之后跟着要办的祈使句（「要是今天不发货就给我
+#: 退款」）不是在问规则，不算。
+_ZH_QUESTION_RE = re.compile(
+    r"怎么|怎样|如何|咋|谁出|谁付|谁承担|谁来|哪|什么|啥|多久|多长|几天|几个|多少|能不能|可不可以|能否|是否"
+    r"|有没有|会不会|要不要|需不需要|是不是|可以吗|能吗|行吗|[吗嘛么呢][?!.~。…]*$|[吗嘛么呢](?=[,，。.!！?？;；~～…])"
+    r"|[?？]")
+_EN_QUESTION_RE = re.compile(
+    r"\?|" + _EN_B + r"(?:how|what|who|which|when|where|why|can|could|will|would|do|does|is|are|should|"
+    r"may|am)" + _EN_E)
+
+
+def hypothetical_question(text: str) -> bool:
+    """C4：假设 / 泛问句 —— 问的是规则，不是这一单（「要是退货的话运费谁出」「如果我想换货要怎么弄」
+    「what if my parcel gets lost」）。要同时有假设说法与问句形状；客气话里的「如果可以」不算假设。"""
+    norm = _t184_norm(text)
+    zh = _ZH_POLITE_IF_RE.sub("，", norm.replace(" ", ""))
+    en = _EN_POLITE_IF_RE.sub(",", norm)
+    if _ZH_HYPOTHETICAL_RE.search(zh) and _ZH_QUESTION_RE.search(zh):
+        return True
+    return bool(_EN_HYPOTHETICAL_RE.search(en) and _EN_QUESTION_RE.search(en))
+
+
+#: C1：中文「查物流一类」的说法 —— 查 / 看 / 追踪 +（一下 / 个 / 我的）+ 物流 / 快递 / 包裹 / 订单，
+#: 或倒过来「物流查一下」「快递帮我看看」。「快递费」「快递公司」是问规则，不算。
+_ZH_LOOKUP_NOUN = r"(?:物流|快递|包裹|订单|单子|运单)(?!费|公司|员|柜|点|单号?规则)"
+_ZH_LOOKUP_ASK_RE = re.compile(
+    r"(?:查询|查查|查|看看|看|瞅瞅|瞅|瞧瞧|瞧|追踪|跟踪|跟进)(?:一下|一查|一看|下|个)?"
+    r"(?:我|俺|咱)?(?:的|那个|这个|那|这)?" + _ZH_LOOKUP_NOUN
+    + r"|(?:物流|快递|包裹|订单|单子)(?:信息|情况|状态|进度|动态)?(?:帮我|给我|麻烦|帮忙)?"
+      r"(?:查询|查查|查|看看|看|瞅瞅|瞅)(?:一下|一查|一看|下)?(?![a-z0-9])(?!费|运费)")
+#: 问怎么查（「怎么查物流」「在哪里看快递」）是在问办法，不算要看这一单。
+_ZH_HOWTO_LOOKUP_RE = re.compile(
+    r"(?:怎么|怎样|如何|咋|在哪|哪里|哪儿|去哪|哪个页面|哪个地方)(?:里|儿)?(?:可以|能|才能|去|才)?"
+    r"(?:查询|查看|查|看)")
+
+#: C2：英文的订单状态问法。宾语是「我的 / 这个」订单、包裹，代词 it，或一个单号形状的串。
+_EN_OBJ = (r"(?:(?:my|the|this|that|our|your) )?(?:(?:order|package|parcel|shipment|delivery|item|items|stuff"
+           r"|purchase|goods|box)(?: (?:no\.?|number|#))?(?: ?#?[a-z]*\d[a-z0-9-]*)?|it|#?[a-z]*\d[a-z0-9-]{2,})")
+_EN_STATUS_PATTERNS: tuple[str, ...] = (
+    # is order A1001 on its way / is my parcel still in transit / is it coming
+    r"(?:is|are|was) " + _EN_OBJ + r" (?:still |already |even )?(?:on (?:its|the|their) way|coming|shipped"
+    r"|dispatched|sent(?: out)?|out for delivery|in transit|delivered|arriving|here yet|en route|on route"
+    r"|processed|packed)",
+    # has A1001 shipped / did my package ship / has my order been dispatched yet / did it arrive
+    r"(?:has|have|did) " + _EN_OBJ + r" (?:been |already |even |actually )*(?:ship|shipped|dispatch|dispatched"
+    r"|sent|send|left|leave|gone out|go out|arrive|arrived|deliver|delivered|come|came|get sent|got sent)",
+    # where's my package / where is order A1001 / where my order is
+    r"where(?:'s| is| are|s) (?:my |the |this |that |our )?(?:order|package|parcel|shipment|delivery|item|items"
+    r"|stuff|purchase|goods|box|#?[a-z]*\d[a-z0-9-]{2,})",
+    r"where (?:my|the|this|that|our) (?:order|package|parcel|shipment|delivery|item|items|stuff|purchase|goods"
+    r"|box)s? (?:is|are|went|has gone|got to)",
+    # any update on my order / the status of order A1001
+    r"(?:any|an|the latest|latest) (?:update|updates|news|progress) (?:on|about|for|regarding|with) " + _EN_OBJ,
+    r"status (?:of|on|for) " + _EN_OBJ,
+    # check / track my order, look up order A1001
+    r"(?:check|track|trace|look up|lookup|look into|follow up on|find) (?:on )?" + _EN_OBJ,
+)
+_EN_STATUS_RE = re.compile("|".join(f"{_EN_B}(?:{p}){_EN_E}" for p in _EN_STATUS_PATTERNS))
+
+
+def asks_order_status(text: str) -> bool:
+    """C1 / C2：没有诉求词也没有进度线索、但在要看这一单：中文「看下我包裹」「物流查一下」
+    （问怎么查不算），英文按词认的订单状态问法（「is order A1001 on its way」「has my parcel shipped」
+    「where's my package」「any update on my order」）。"""
+    norm = _t184_norm(text)
+    if _EN_STATUS_RE.search(norm):
+        return True
+    zh = norm.replace(" ", "")
+    return bool(_ZH_LOOKUP_ASK_RE.search(zh) and not _ZH_HOWTO_LOOKUP_RE.search(zh))
+
+
+def asks_how_to_look(text: str) -> bool:
+    """问怎么查 / 在哪看（「在哪里可以看物流」）：问的是办法，不是这一单。"""
+    return bool(_ZH_HOWTO_LOOKUP_RE.search(_t184_compact(text)))
+
+
+#: C3：上一轮在追问单号，本轮没给单号、但仍在说这一单（给不出单号、让我们直接查 / 直接办）。
+_ZH_STILL_ON_ORDER_RE = re.compile(
+    r"单号|订单|单子|这单|那单|这一单|找不到|不知道|不清楚|不记得|记不得|记不住|忘了|忘记|没有号|查不到|看不到|"
+    r"没存|删了|直接|告诉我|在哪|到哪|查|看|帮我|快递|物流|包裹|没收到|没到")
+_EN_STILL_ON_ORDER_RE = re.compile(
+    _EN_B + r"(?:order|number|no idea|don't know|dont know|do not know|not sure|can't find|cannot find"
+    r"|can not find|couldn't find|could not find|forgot|forget|lost|don't have|dont have|do not have|just"
+    r"|where|track|check|package|parcel|shipment|delivery)" + _EN_E)
+
+
+def still_on_order(text: str) -> bool:
+    """C3：本轮（上一轮刚追问过单号）仍在说这一单 —— 给不出单号、要我们直接查 / 直接办。"""
+    norm = _t184_norm(text)
+    return bool(_ZH_STILL_ON_ORDER_RE.search(norm.replace(" ", ""))
+                or _EN_STILL_ON_ORDER_RE.search(norm))
+
+
+#: C1：话术库里「看这一单的进度 / 异常」那几篇（带 needs_order_lookup 标记的篇里，除了改地址
+#: LOG-005 与为某单申请退换 RET-005 —— 那两篇是要办事，不是要看状态）。注入端口时检索落到这几篇，
+#: 不再凭话术篇的转人工标记直接转人工，改走查单分支（缺单号就追问）。
+ORDER_VIEW_SCHEMES = frozenset({"LOG-004", "LOG-006", "PAY-003", "PAY-004"})
+
+
+def cites_order_view(citations: tuple[str, ...]) -> bool:
+    """本轮检索命中的是 :data:`ORDER_VIEW_SCHEMES` 里的一篇（doc_id 形如 ``kb-cs-<租户>-<编号>``）。"""
+    return any("-".join(str(c).split("-")[-2:]) in ORDER_VIEW_SCHEMES for c in citations)
 
 
 def has_lang_signal(text: str) -> bool:
@@ -678,17 +833,53 @@ class FrontDesk:
 
         # 6. 要看具体订单。
         need = order_need(text, fresh=fresh, merged=understood.slots, intent=understood.intent)
+        hypothetical = hypothetical_question(text)
+        if (not need and not hypothetical and not fresh.get(SLOT_REQUEST)
+                and (only_order_no(fresh) if fresh.get(SLOT_ORDER_NO) else still_on_order(text))
+                and self._pending_order_ask(turn)):
+            # p15 T184 C3：上一轮刚追问过单号，本轮仍没给、但仍在说这一单（「找不到单号，你直接告诉我
+            # 在哪」）→ 还是查单分支：没追问够就再问一次，追问已用尽就 needs_order_lookup 转人工。
+            # 本轮只回了单号（追问的回答）同理进查单 —— C1 / C2 那几类说法的诉求不进槽位，
+            # 回答那一轮要靠「上一轮在追问」接上。
+            prior = str(understood.slots.get(SLOT_REQUEST) or "")
+            need = prior if prior in ORDER_REQUESTS else REQUEST_TRACK
         if need:
             return self._order(msg, turn, text, extras, now, need=need,
                                understood=understood, slots=slots)
 
         # 7. 其余同 p12；英文不检中文话术，回英文兜底。只报了单号、没说要办什么：兜底请客户说明
         #    （单号已进槽位，下一轮说了诉求就查）—— 不拿「订单号」三个字去检索查单篇转人工。
-        if turn.lang == LANG_EN or only_order_no(fresh):
+        #    p15 T184 C4：假设 / 泛问句带着单号（「A1001 要是退货运费谁出」）问的也是规则，照样检索。
+        if turn.lang == LANG_EN or (only_order_no(fresh) and not hypothetical):
             plan = _Plan(ROUTE_FALLBACK, INTENT_UNKNOWN,
                          ReplyDraft(text=reply_for(turn.say, "fallback")))
             return self._finish(msg, turn, self._streak(turn, plan), extras, now)
-        return self._policy(msg, turn, text, extras, now, intent_hint=understood.intent)
+        plan = self._answer(turn, retrieval_query(text), extras, intent_hint=understood.intent)
+        if (plan.route == ROUTE_HANDOFF and plan.reason == HANDOFF_NEEDS_ORDER_LOOKUP
+                and not hypothetical and not fresh.get(SLOT_REQUEST)
+                and not asks_how_to_look(text) and cites_order_view(plan.draft.citations)):
+            # p15 T184 C1：检索落到「看这一单的进度 / 异常」那几篇 —— 注入了端口就不凭话术篇的转人工
+            # 标记直接转人工，改走查单分支（缺单号先追问；会话里已有单号就查）。
+            intent = plan.intent if plan.intent in ORDER_INTENTS else understood.intent
+            return self._order(msg, turn, text, extras, now, need=REQUEST_TRACK,
+                               understood=cs_understand.Understanding(
+                                   lang=understood.lang, intent=intent, slots=understood.slots,
+                                   source=understood.source),
+                               slots=slots)
+        turn.intent = plan.intent
+        return self._finish(msg, turn, self._streak(turn, plan), extras, now)
+
+    def _pending_order_ask(self, turn: _Turn) -> bool:
+        """会话上一轮（按 seq）是不是在追问单号（cs_turn_ext.ask_slot == order_no）。"""
+        objects.ensure_schema(self.store)
+        rows = objects.query(
+            self.store,
+            "SELECT e.ask_slot AS ask_slot FROM cs_turn_ext e JOIN cs_turn t"
+            " ON t.tenant_id = e.tenant_id AND t.turn_id = e.turn_id"
+            " WHERE e.tenant_id=? AND e.conversation_id=? AND e.turn_id<>?"
+            " ORDER BY t.seq DESC LIMIT 1",
+            (turn.tenant_id, turn.conv.conversation_id, turn.turn_id))
+        return bool(rows) and str(rows[0]["ask_slot"]) == SLOT_ORDER_NO
 
     # ------------------------------------------------------------ 各步
     def _policy(self, msg: Any, turn: _Turn, text: str, extras: dict, now: str, *,

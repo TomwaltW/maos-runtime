@@ -610,6 +610,74 @@ def test_step6d_precheck_unconfigured_is_refused_t174():
     assert (row["ok"], row["refused_why"]) == (0, D.REFUSED_PRECHECK_UNCONFIGURED)
 
 
+class _ReasonPrecheck_t174(_Precheck_t174):
+    """原因文本里没有 ``need`` 就按 reason_missing 拒（模拟真预检对原因的要求）。"""
+
+    def __init__(self, need: str):
+        super().__init__({})
+        self.need = need
+
+    def precheck(self, *, tenant_id, order_no, reason_text, now):
+        self.calls.append((tenant_id, order_no, reason_text, now))
+        if self.need not in reason_text:
+            return PrecheckResult(ok=False, refused_why="reason_missing")
+        return PRE_OK_T174
+
+
+def test_step6d_reason_text_carries_problem_slot_from_an_earlier_turn_t174():
+    """复核 L2-2：原因在上一轮说（「A1001 杯子裂了」）、诉求在这一轮说 —— 原因文本 = 本轮原文 + 问题槽位。"""
+    problem = U.extract_slots("A1001 杯子裂了", lang=LANG_ZH)[U.SLOT_PROBLEM]
+    store = _store_t174()
+    ports = _Ports_t174()
+    ports.precheck = _ReasonPrecheck_t174(problem)
+    talk = _Talk_t174(_desk_t174(store, ports))
+    talk.say("A1001 杯子裂了")
+    res = talk.say("我要退款")
+    (call,) = ports.precheck.calls
+    assert "我要退款" in call[2] and problem in call[2]
+    assert res.handoff_reason == T.HANDOFF_REFUND_REQUEST
+    (row,) = objects.query(store, "SELECT ok FROM cs_refund_bridge")
+    assert row["ok"] == 1
+
+
+def test_step6d_reason_text_does_not_repeat_a_problem_already_in_this_turn_t174():
+    text = "A1001 杯子裂了，帮我退款"
+    problem = U.extract_slots(text, lang=LANG_ZH)[U.SLOT_PROBLEM]
+    ports = _Ports_t174()
+    ports.precheck = _ReasonPrecheck_t174(problem)
+    res = _Talk_t174(_desk_t174(ports=ports)).say(text)
+    (call,) = ports.precheck.calls
+    assert call[2].count(problem) == text.count(problem) == 1
+    assert res.handoff_reason == T.HANDOFF_REFUND_REQUEST
+
+
+def test_step6d_precheck_ok_without_command_line_fails_closed_t174():
+    """复核 L2-3：ok=True 却没有采纳命令 → 按 precheck_error 拒，卡片不出「采纳命令」行。"""
+    store = _store_t174()
+    empty = PrecheckResult(ok=True, decision="approve", reason_code="quality_defect",
+                           command_line="", summary="只读预检：命令缺失")
+    ports = _Ports_t174(prechecks={"A1001": empty})
+    res = _Talk_t174(_desk_t174(store, ports)).say("A1001 质量有问题，帮我退款")
+    assert res.handoff_reason == T.HANDOFF_NEEDS_ORDER_LOOKUP
+    card_text = render_card_text(res.handoff)
+    assert f"{D.CARD_SECTION_REFUSED}{D.REFUSED_PRECHECK_ERROR}" in card_text
+    assert not any(line.startswith(D.CARD_SECTION_COMMAND) for line in card_text.splitlines())
+    (row,) = objects.query(store, "SELECT ok, refused_why, command_line FROM cs_refund_bridge")
+    assert (row["ok"], row["refused_why"], row["command_line"]) == (
+        0, D.REFUSED_PRECHECK_ERROR, "")
+
+
+@pytest.mark.parametrize("text", ["A1001 质量问题，不退款，我就继续用吧", "A1001 不退款，我就收下了"])
+def test_withdrawal_with_acceptance_tail_never_raises_a_refund_card_t174(text):
+    """复核 L2-1：「不退款，我就继续用 / 收下了」是撤回，不是条件威胁 —— 不预检、不出退款卡。"""
+    store = _store_t174()
+    ports = _Ports_t174()
+    res = _Talk_t174(_desk_t174(store, ports)).say(text)
+    assert res.handoff_reason != T.HANDOFF_REFUND_REQUEST
+    assert ports.precheck.calls == []
+    assert objects.query(store, "SELECT * FROM cs_refund_bridge") == []
+
+
 def test_step6_exchange_after_lookup_hands_off_with_the_observation_t174():
     store = _store_t174()
     ports = _Ports_t174()
@@ -736,7 +804,10 @@ def test_order_number_query_key_and_slots_never_reach_event_log_t174():
     blob = json.dumps(store.list_event_log(T.plan_id_for(first.conversation_id)),
                       ensure_ascii=False)
     assert blob and "CsTurnRecorded" in blob
-    for sentinel in (SENTINEL_NO_T174, SENTINEL_KEY_T174, "蓝牙耳机", "quality_defect"):
+    # 复核 L1-1：客户标识、客服号、回复原文也不许进 event_log（查单路径）。
+    assert first.reply_text and second.reply_text
+    for sentinel in (SENTINEL_NO_T174, SENTINEL_KEY_T174, "蓝牙耳机", "quality_defect",
+                     USER_T174, KFID_T174, first.reply_text, second.reply_text):
         assert sentinel not in blob, sentinel
 
 
@@ -791,11 +862,17 @@ THREATS_T174 = [
     ("不退款，否则我不会罢休", "refund"), ("不退款的话，我就去投诉", "refund"),
     ("不退货，不然我去平台投诉", "return"), ("不换货，我们就去工商", "exchange"),
     ("不退钱，跟你们没完", "refund"),
+    ("不退款，我就给你们差评", "refund"), ("不退款，我马上打12315", "refund"),
+    ("不退货，我就拒收", "return"), ("不退款，我会去投诉", "refund"),
 ]
 WITHDRAWALS_T174 = [
     "不用退款了", "这单我不退了", "算了不换了", "我改主意了，不退货", "退款就不用了，谢谢",
     "不退款了，我就留着用吧", "不退了，我就自己修一下", "不退货了，这事就这样吧",
     "我改主意了，不退货，我就自己留着", "不退货，就这样吧",
+    # 复核 L2-1：「就 / 会 / 去」后面是接受、自己处理，不是后果动作 —— 撤回
+    "不退款，我就用着吧", "不退款，我就收下了", "不退款，那我就接受了", "不换货，我就凑合穿吧",
+    "不退货，我会自己处理", "不退货，我去送人", "不退款，我就继续用", "不退款，我就凑合用吧",
+    "不退款，我就当买个教训",
 ]
 
 

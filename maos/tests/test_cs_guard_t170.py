@@ -47,6 +47,50 @@
 扫描逻辑是可注入根目录的函数 :func:`scan_cs_guard_t170`；反向验证全部在 tmp 目录里
 造违规文件喂给它，不落仓库。守卫仍只认字面量：拼接 / f-string / 运行时算出来的字符串、
 运行时对象图上的可达性（实例属性、闭包里的对象）判不到（BACKLOG task-t170）。
+
+## p13 增量（T175，review/p13-cs-contracts.md §1.4 T175）：``maos.*`` 改失败即关白名单
+
+上面的禁前缀是黑名单：名单外的 ``maos.*``（例如 ``maos.obs.trace``、``maos.config``）一律放行。
+p13 起扫描范围里的 ``maos.*`` 名字（import、from-import、属性链、字符串常量、按真实出处
+还原出来的名字）**只许**落在 :data:`MAOS_ALLOWED_MODULES_T175` / :data:`MAOS_ALLOWED_NAMES_T175`
+里（p12 契约 §2.3「明确允许」那几项 + ``maos.domain.cs.ports``；本域两棵子树
+``maos.domain.cs`` / ``maos.skills.builtin.cs`` 整片放行 —— 它们自己就在扫描范围里）：
+
+* 白名单模块的**成员**放行、白名单模块的**子模块**不放行（``maos.kb.plan_advice`` 不因
+  ``maos.kb`` 在名单里就放行）；成员是别处的模块 / 函数 / 类时照旧按真实出处再判一次；
+* 名单模块的祖先包（``maos`` / ``maos.domain`` / ``maos.skills.builtin`` ……）只能在属性链上
+  **路过**：直接 import 它、或把它当值用（``Y = maos``，之后 ``Y.runtime.gate`` 守卫看不见）即判；
+* **解析不了的判红**：from-import 的目标、以及本域子树外的 ``maos.*`` 名字，在测试进程里拿不到
+  对象就判不了真实出处 —— 以前「拿不到就不判」，现在失败即关。本域子树里的名字不要求解析
+  （tmp 里注入的本域文件在真仓库里不存在；本域文件本身逐个被扫）。
+
+### p13 修复轮（复核 L2-6 / L3-2 / L3-3，DECISIONS task-t175）
+
+* **模块对象只许紧接着取属性**：import 来的模块（白名单模块、本域模块、标准库模块、祖先包）被当值用
+  （``_m = invoker``、``h(invoker)``、``[invoker][0]``、``return r``）即判 —— 换名之后的
+  ``_m.registry`` 守卫看不见；``attrgetter`` / ``methodcaller`` / ``getmembers`` /
+  ``getattr_static`` / ``__getattribute__`` 这几个按名字取属性的入口出现即判。
+* **仓库里 maos 以外的一方代码**（run.py、scripts/、client/ …… 由仓库根目录列出）一律判红：
+  它们自己定义的函数出处不在 maos，按出处判会放行，里面却装配 router / flows / 工具。
+* **改模块搜索路径**：``sys.path``、``site`` 并进动态加载的禁口子，``__path__`` 出现即判。
+
+### p13 修复轮二（复核 L2-1 / L3R2-2 / L3R2-3，DECISIONS task-t175）
+
+* **星号绑出的名字照样判**：``from base import *`` 绑出的每个名字记成 ``base.<名字>`` 的绑定，之后的
+  属性链、真实出处、「模块对象当值用」照常判（``from <本域模块> import *`` 之后的 ``kb.plan_advice`` /
+  ``os.system`` / ``x = os``）；base 解析不了（绑了什么无从知道）即判。
+* **起进程与内建的其余入口**：``os.*`` 那几个口子的真身 ``posix.*`` / ``nt.*`` 同名单禁，``pty`` /
+  ``_posixsubprocess`` 整模块禁，``asyncio.subprocess`` / ``concurrent.futures.process`` 按真实出处禁，
+  ``create_subprocess_*`` / ``subprocess_exec`` / ``ProcessPoolExecutor`` 等名字出现即判；``__self__``
+  （``len.__self__`` 就是 builtins）与 ``getmodule`` 出现即判；``exec`` / ``eval`` / ``compile`` 当
+  字符串键或调用参数用（``d['exec']``、``getattr(b, 'eval')``、``d.get('exec')``）即判，当路径段
+  （``/ "eval" /``）不判；字节串 ``b'exec'`` 出现即判。
+* **入口脚本目录里的裸名**：``python scripts/run_ingress.py`` 让 ``scripts/`` 进 ``sys.path[0]``，
+  ``import run_ingress`` 就拿到 ``cmd_simulate``。仓库里放着 ``if __name__ == "__main__":`` 的每个目录
+  （scripts、client、hiclaw、maos 本身与几个子目录……，动态找）里能当顶层名 import 的名字一律按一方
+  代码判红（撞标准库名的除外）。
+* 仍不做的（需主会话定口径，BACKLOG task-t175）：非 maos、非一方的普通 import（第三方包）按
+  「标准库 + 名单」失败即关 —— p13 契约只写了 ``maos.*`` 白名单。
 """
 
 from __future__ import annotations
@@ -99,7 +143,20 @@ SYS_OS_HOLES_T170: tuple[str, ...] = (
     "system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp",
     "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
     "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe"))
-DYNAMIC_PREFIXES_T170 = LOADER_MODULES_T170 + SYS_OS_HOLES_T170
+#: p13（T175 复核 L3-3）：改模块搜索路径的口子 —— 改了 sys.path 以后能用非 maos 的名字加载 maos 的
+#: 源码；site 会处理 .pth。``__path__`` 是名字，见 :data:`ESCAPE_NAMES_T175`。
+PATH_HOLES_T175: tuple[str, ...] = ("sys.path", "site")
+#: p13（T175 复核 L3R2-2）：起进程的其余入口。``os.system`` 等的真身在 ``posix``（Windows 是 ``nt``）——
+#: ``import posix; posix.system(...)`` 是同一个函数，按同一张名单禁（``posix.getpid`` 这类照旧放行）；
+#: ``pty`` / ``_posixsubprocess`` 整模块禁；asyncio 的子进程与 concurrent.futures 的进程池按真实出处
+#: （``asyncio.subprocess.*`` / ``concurrent.futures.process.*``）判，``asyncio.create_subprocess_exec``、
+#: ``from concurrent.futures import ProcessPoolExecutor`` 都经「按真实出处再判一次」落到这里。
+OS_PROCESS_NAMES_T175: tuple[str, ...] = tuple(
+    h.split(".", 1)[1] for h in SYS_OS_HOLES_T170 if h.startswith("os."))
+PROCESS_HOLES_T175: tuple[str, ...] = tuple(
+    f"{mod}.{name}" for mod in ("posix", "nt") for name in OS_PROCESS_NAMES_T175) + (
+    "pty", "_posixsubprocess", "asyncio.subprocess", "concurrent.futures.process")
+DYNAMIC_PREFIXES_T170 = LOADER_MODULES_T170 + SYS_OS_HOLES_T170 + PATH_HOLES_T175 + PROCESS_HOLES_T175
 
 #: maos.domain 下允许的一级名（共享底座与本域）；另有 refund.projection 一处。
 DOMAIN_ALLOWED_T170 = frozenset({"cs", "_dbport", "_schema_util"})
@@ -142,6 +199,22 @@ INTROSPECTION_NAMES_T170 = frozenset({
 })
 #: 对导入的模块 / 对象做这几种反射即判（``getattr(sys, "modules")``、``vars(sys)``）。
 REFLECTIVE_CALLS_T170 = frozenset({"getattr", "vars", "setattr", "delattr"})
+#: p13（T175 复核 L3-2 / L3-3）：按名字取属性的其余入口、包的搜索路径 —— 名字出现即判（扫描范围里
+#: 没有正当用途；``getattr`` 仍只在作用于导入名时判，因为对自己的对象取字段是日常用法）。
+ESCAPE_NAMES_T175 = frozenset({
+    "attrgetter", "methodcaller", "getmembers", "getmembers_static", "getattr_static",
+    "__getattribute__", "__path__",
+    # 复核 L3R2-2：``len.__self__`` 就是 builtins 模块（内建函数的绑定对象）；``inspect.getmodule``
+    # 按对象交出模块对象（``getmodule(getmodule).__dict__['sys']`` 就是 sys）—— 两条都通向「模块对象只许
+    # 紧接着取属性」管不到的地方
+    "__self__", "getmodule",
+})
+#: p13（T175 复核 L3R2-2）：起进程的入口名，不论从哪拿到（事件循环的方法、别名、参数）出现即判。
+#: ``system`` / ``popen`` 这类太常见的词不在这里（它们按 ``os.*`` / ``posix.*`` 的点分名判）。
+PROCESS_NAMES_T175 = frozenset({
+    "create_subprocess_exec", "create_subprocess_shell", "subprocess_exec", "subprocess_shell",
+    "ProcessPoolExecutor", "posix_spawn", "posix_spawnp", "forkpty", "fork_exec",
+})
 #: 扫描范围里一律不许的动态执行：名字出现即判（调用、引用都算；``re.compile`` 是属性，不算）。
 DYNAMIC_EXEC_T170 = frozenset({"exec", "eval", "compile"})
 #: 属性写法只认 exec / eval（``builtins.exec``、参数传进来的 ``b.eval``）；``.compile`` 是 re 的日常用法。
@@ -167,6 +240,95 @@ _SET_BUILDERS_T170 = frozenset({"frozenset", "set", "tuple", "list", "sorted"})
 
 _MISSING_T170 = object()
 
+#: p13（T175）：cs 扫描范围里 ``maos.*`` 的失败即关白名单 —— p12 契约 §2.3「明确允许」逐项，
+#: 外加 p13 契约 §1.4 T175 点名的 ``maos.domain.cs.ports``（它在本域子树里，见下一张表）。
+#: 名单模块的成员放行、子模块不放行；``maos.skills.registry`` 只许 ``register_skill`` 一个名字。
+MAOS_ALLOWED_MODULES_T175: tuple[str, ...] = (
+    "maos.domain.refund.projection",   # 唯一允许的跨域 import（五个对外字面值，零依赖）
+    "maos.domain._dbport",             # 共享底座，不是域
+    "maos.domain._schema_util",
+    "maos.kb",
+    "maos.kb.retriever",
+    "maos.core.store",
+    "maos.skills.contract",
+    "maos.skills.invoker",
+    "maos.agents.base",
+    "maos.ingress.contracts",
+    "maos.model.client",
+)
+MAOS_ALLOWED_NAMES_T175 = frozenset({"maos.skills.registry.register_skill"})
+#: 本域两棵子树：本身就在扫描范围里（逐文件扫），整片放行、不要求解析。
+#: ``maos.domain.cs.ports`` 在这里（p13 契约点名；ports 零依赖，也由上面的扫描钉住）。
+CS_OWN_PACKAGES_T175: tuple[str, ...] = ("maos.domain.cs", "maos.skills.builtin.cs")
+
+
+def _first_party_tops_t175(root: pathlib.Path) -> frozenset[str]:
+    """仓库根下 maos 以外、能当顶层名 import 的一方代码：标识符命名的目录（含命名空间包）与 ``*.py``。
+
+    撞标准库名的不算（防御：根目录下不该有，有了也不该把标准库判红）。
+    """
+    return _importable_names_in_t175(root, skip_private=True)
+
+
+def _importable_names_in_t175(d: pathlib.Path, *, skip_private: bool = False) -> frozenset[str]:
+    """``d`` 在 ``sys.path`` 上时能当顶层名 import 的名字：``*.py`` 的主名与标识符命名的子目录
+    （含命名空间包）。``maos`` 与标准库名不算（有了也不该把标准库判红）。"""
+    import sys
+
+    out: set[str] = set()
+    for p in d.iterdir():
+        name = p.stem if (p.is_file() and p.suffix == ".py") else p.name if p.is_dir() else ""
+        if (name and name.isidentifier() and not name.startswith("__") and name != "maos"
+                and not (skip_private and name.startswith("_"))
+                and name not in sys.stdlib_module_names):
+            out.add(name)
+    return frozenset(out)
+
+
+#: 可执行入口脚本的标志（``if __name__ == "__main__":``）。
+_MAIN_GUARD_RE_T175 = re.compile(r"^if\s+__name__\s*==\s*['\"]__main__['\"]\s*:", re.M)
+
+
+def _entry_dirs_t175(root: pathlib.Path) -> list[pathlib.Path]:
+    """仓库里放着可执行入口脚本的目录（``python <目录>/x.py`` 会把该目录放进 ``sys.path[0]``）。
+
+    跳过点开头的目录（``.git``、``.worktrees`` ……）、``__pycache__`` 与 ``node_modules``。
+    """
+    found: set[pathlib.Path] = set()
+    for dirpath, dirnames, filenames in os.walk(root):          # followlinks=False
+        dirnames[:] = sorted(n for n in dirnames
+                             if not n.startswith(".") and n not in ("__pycache__", "node_modules"))
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            try:
+                text = (pathlib.Path(dirpath) / name).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if _MAIN_GUARD_RE_T175.search(text):
+                found.add(pathlib.Path(dirpath))
+                break
+    return sorted(found)
+
+
+def _entry_dir_names_t175(root: pathlib.Path) -> frozenset[str]:
+    """放着入口脚本的每个目录里能当顶层名 import 的名字（复核 L3R2-3）：生产入口
+    ``python scripts/run_ingress.py`` 让 ``sys.path[0] = scripts/``，``import run_ingress`` 就拿到
+    ``cmd_simulate``；``python maos/main.py`` 让 ``import runtime`` 拿到 maos/runtime（绕开 maos.* 名单）。"""
+    out: set[str] = set()
+    for d in _entry_dirs_t175(root):
+        out |= _importable_names_in_t175(d)
+    return frozenset(out)
+
+
+#: p13（T175 复核 L2-6 / L3-3 / L3R2-3）：仓库里 maos 以外的一方代码（run.py、scripts/、client/ ……），
+#: 以及放着入口脚本的目录里的裸名（scripts/*.py 的 run_ingress / run_requests / verify ……、hiclaw/、
+#: client/、maos/ 本身等）。它们自己定义的函数出处不在 maos，按真实出处判会放行，里面却装配 router /
+#: flows / 工具 / 网关（``run_ingress.cmd_simulate`` 以内部人名义把 /refund 喂进 router）。一律判红。
+#: 下限几个名字写死，防仓库布局变了以后这张表悄悄变空。
+FIRST_PARTY_TOPS_T175 = (_first_party_tops_t175(ROOT_T170) | _entry_dir_names_t175(ROOT_T170)
+                         | frozenset({"run", "scripts", "client", "run_ingress", "run_requests"}))
+
 
 # ---------------------------------------------------------------------------
 # 规则
@@ -176,7 +338,78 @@ def _has_prefix_t170(name: str, prefix: str) -> bool:
 
 
 def import_violation_t170(name: str) -> str | None:
-    """绝对模块名（或 ``模块.属性``）触犯哪条禁令；放行返回 None。"""
+    """绝对模块名（或 ``模块.属性``）触犯哪条禁令；放行返回 None。
+
+    先按 p12 的禁前缀判（报的理由更具体），再判仓库里 maos 以外的一方代码，最后按 p13 的
+    ``maos.*`` 白名单判（失败即关）。
+    """
+    return (blacklist_violation_t175(name) or first_party_violation_t175(name)
+            or whitelist_violation_t175(name))
+
+
+def first_party_violation_t175(name: str) -> str | None:
+    """顶层名是仓库里 maos 以外的一方代码（run / scripts / client ……）就判（复核 L2-6 / L3-3）。"""
+    top = name.split(".")[0]
+    if top in FIRST_PARTY_TOPS_T175:
+        return (f"失败即关：{top} 是仓库里 maos 以外的一方代码（run.py / scripts / client ……），"
+                f"会装配 router / flows / 工具，不在允许清单里")
+    return None
+
+
+def is_cs_own_t175(name: str) -> bool:
+    """名字落在本域两棵子树里（``maos.domain.cs`` / ``maos.skills.builtin.cs``）。"""
+    return any(_has_prefix_t170(name, pkg) for pkg in CS_OWN_PACKAGES_T175)
+
+
+def _ancestors_t175(name: str) -> list[str]:
+    parts = name.split(".")
+    return [".".join(parts[:i]) for i in range(1, len(parts))]
+
+
+def whitelist_violation_t175(name: str) -> str | None:
+    """p13 失败即关：``maos.*`` 名字不在白名单里就判；非 ``maos`` 名字不归这条管。"""
+    if name.split(".")[0] != "maos":
+        return None
+    if (is_cs_own_t175(name) or name in MAOS_ALLOWED_NAMES_T175
+            or name in MAOS_ALLOWED_MODULES_T175):
+        return None
+    for mod in sorted(MAOS_ALLOWED_MODULES_T175, key=len, reverse=True):
+        if not name.startswith(mod + "."):
+            continue
+        first = f"{mod}.{name[len(mod) + 1:].split('.')[0]}"
+        obj = _resolve_t170(first)
+        if isinstance(obj, types.ModuleType) and obj.__name__ == first:
+            return f"失败即关：{first} 是 {mod} 的子模块，不在 maos.* 白名单里"
+        return None                        # 名单模块的成员；真实出处另由 value 规则判
+    return f"失败即关：{name} 不在 maos.* 白名单里"
+
+
+#: 名单模块的祖先包：属性链上可以路过，直接 import 或当值用即判（见 :func:`_scan_file_t170`）。
+#: 被黑名单点名的祖先（``maos.domain.refund``、``maos.skills.registry``）不算路过 —— 走到它就报。
+MAOS_TRANSIT_PACKAGES_T175 = frozenset(
+    anc for name in MAOS_ALLOWED_MODULES_T175 + tuple(MAOS_ALLOWED_NAMES_T175)
+    + CS_OWN_PACKAGES_T175 for anc in _ancestors_t175(name)
+) - frozenset(MAOS_ALLOWED_MODULES_T175) - frozenset(CS_OWN_PACKAGES_T175) - frozenset(
+    {"maos.domain.refund", "maos.skills.registry"})
+
+
+def unresolved_violation_t175(dotted: str, *, from_import: bool) -> str | None:
+    """p13 失败即关：判不了真实出处就不放行。
+
+    管两类：from-import 的目标（``from A import b`` 的 ``A.b``），以及本域子树外的 ``maos.*``
+    名字。本域子树不要求解析（逐文件扫；tmp 里注入的本域文件在真仓库里没有）。
+    """
+    if is_cs_own_t175(dotted):
+        return None
+    if not (from_import or dotted.split(".")[0] == "maos"):
+        return None
+    if _resolve_t170(dotted) is _MISSING_T170:
+        return f"失败即关：{dotted} 解析不了（拿不到对象就判不了真实出处）"
+    return None
+
+
+def blacklist_violation_t175(name: str) -> str | None:
+    """p12 的禁令（契约 §2.3 禁前缀 + task-t170 复核补的），原样保留；放行返回 None。"""
     parts = name.split(".")
     for prefix in FORBIDDEN_PREFIXES_T170:
         if _has_prefix_t170(name, prefix):
@@ -263,8 +496,10 @@ def _real_violation_t170(real: str) -> str | None:
     return import_violation_t170(real)
 
 
-def target_violation_t170(dotted: str) -> str | None:
-    return import_violation_t170(dotted) or value_violation_t170(dotted)
+def target_violation_t170(dotted: str, *, from_import: bool = False) -> str | None:
+    """名字（黑名单 + p13 白名单）→ 真实出处 → 解析得了（p13 失败即关），依次判。"""
+    return (import_violation_t170(dotted) or value_violation_t170(dotted)
+            or unresolved_violation_t175(dotted, from_import=from_import))
 
 
 def _name_violation_t170(name: str) -> tuple[str, str] | None:
@@ -277,6 +512,10 @@ def _name_violation_t170(name: str) -> tuple[str, str] | None:
         return "import", f"失败即关：动态加载入口 {name}"
     if name in INTROSPECTION_NAMES_T170:
         return "escape", f"内省口子 {name}"
+    if name in ESCAPE_NAMES_T175:
+        return "escape", f"按名字取属性 / 改包搜索路径 / 拿模块对象的口子 {name}"
+    if name in PROCESS_NAMES_T175:
+        return "import", f"失败即关：起进程的入口 {name}"
     return None
 
 
@@ -285,7 +524,16 @@ def module_string_violation_t170(text: str) -> str | None:
     name = text[:-3] if text.endswith(".py") else text
     if not _MODULE_STRING_RE_T170.match(name):
         return None
-    return import_violation_t170(name.replace("/", ".").replace(":", "."))
+    dotted = name.replace("/", ".").replace(":", ".")
+    why = blacklist_violation_t175(dotted)
+    if why:
+        return why
+    # p13 白名单只管**真能加载到东西**的串：``logging.getLogger("maos.cs")`` 这种日志名
+    # 不对应任何模块，不是加载目标（DECISIONS task-t175）。
+    why = whitelist_violation_t175(dotted)
+    if why and _resolve_t170(dotted) is not _MISSING_T170:
+        return why
+    return None
 
 
 def star_violation_t170(base: str) -> str | None:
@@ -298,18 +546,22 @@ def star_violation_t170(base: str) -> str | None:
     return None
 
 
-def star_reexports_t170(base: str) -> list[str]:
-    """``from <base> import *`` 实际绑出来的公开名里触犯禁令的（名字、真实出处都判）。"""
+def star_names_t175(base: str) -> list[str] | None:
+    """``from <base> import *`` 实际绑出来的名字（``__all__``，没有就是全部公开名）；base 解析不了
+    （拿不到模块）返回 None —— 绑了哪些名字无从知道。"""
     mod = _resolve_t170(base)
     if not isinstance(mod, types.ModuleType):
-        return []
+        return None
     names = getattr(mod, "__all__", None)
     if not isinstance(names, (list, tuple)):
         names = [n for n in vars(mod) if not n.startswith("_")]
+    return [n for n in names if isinstance(n, str)]
+
+
+def star_reexports_t170(base: str) -> list[str]:
+    """``from <base> import *`` 实际绑出来的公开名里触犯禁令的（名字、真实出处都判）。"""
     out: list[str] = []
-    for name in names:
-        if not isinstance(name, str):
-            continue
+    for name in star_names_t175(base) or ():
         why = target_violation_t170(f"{base}.{name}")
         hit = _name_violation_t170(name)
         if why or hit:
@@ -339,6 +591,12 @@ def _resolve_from_t170(module_name: str, is_pkg: bool, level: int,
     return ".".join(base)
 
 
+def _exec_key_t175(node: ast.AST) -> bool:
+    """节点是不是字符串常量 exec / eval / compile（当键或参数用时判，见 :func:`_scan_file_t170`）。"""
+    return (isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and node.value in DYNAMIC_EXEC_T170)
+
+
 def _call_name_t170(func: ast.expr) -> str | None:
     if isinstance(func, ast.Name):
         return func.id
@@ -348,7 +606,13 @@ def _call_name_t170(func: ast.expr) -> str | None:
 
 
 def _bindings_t170(tree: ast.AST, module_name: str, is_pkg: bool) -> dict[str, str]:
-    """文件里 import 绑定的名字 -> 绝对点分名（``import a.b`` 绑 ``a``；``as`` 绑全名）。"""
+    """文件里 import 绑定的名字 -> 绝对点分名（``import a.b`` 绑 ``a``；``as`` 绑全名）。
+
+    ``from base import *`` 绑出的每个名字也记成 ``base.<名字>``（复核 L2-1）：否则
+    ``from maos.domain.cs.scripts import *`` 之后的 ``kb.plan_advice``、``from maos.domain.cs.desk
+    import *`` 之后的 ``os.system`` / ``x = os`` 根名没有绑定，属性链、真实出处、「模块对象当值用」
+    三条规则一条都轮不到。
+    """
     out: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -365,6 +629,9 @@ def _bindings_t170(tree: ast.AST, module_name: str, is_pkg: bool) -> dict[str, s
             for alias in node.names:
                 if alias.name != "*":
                     out[alias.asname or alias.name] = f"{base}.{alias.name}" if base else alias.name
+                elif base:
+                    for name in star_names_t175(base) or ():
+                        out[name] = f"{base}.{name}"
     return out
 
 
@@ -472,15 +739,34 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
     bound = _bound_names_t170(tree)
     consts = _module_consts_t170(tree, bound)
     call_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    #: 作为属性链中间一截被继续取属性的节点（``maos.domain`` 在 ``maos.domain.cs`` 里）。
+    deref_ids = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     out: list[str] = []
 
     def bad(node: ast.AST, kind: str, detail: str) -> None:
         out.append(f"{rel}:{getattr(node, 'lineno', 0)}: {kind}: {detail}")
 
-    def check_import(node: ast.AST, target: str, how: str) -> None:
-        why = target_violation_t170(target)
+    def check_import(node: ast.AST, target: str, how: str, *, from_import: bool = False) -> None:
+        why = target_violation_t170(target, from_import=from_import)
         if why:
             bad(node, "import", f"{how}{target} —— {why}")
+
+    def check_transit_value(node: ast.AST, dotted: str | None) -> None:
+        """p13：import 来的**模块对象**只许紧接着取属性，被当值用（赋值、传参、返回、放进容器）即判。
+
+        名单模块的祖先包（``maos`` / ``maos.domain`` ……）是一例；复核 L3-2 起扩到一切模块对象
+        （白名单模块、本域模块、标准库模块）：``_m = invoker`` 之后的 ``_m.registry``、
+        ``h(os).system`` 这类访问守卫看不见，只能在「当值用」这一步拦。
+        """
+        if dotted is None or id(node) in deref_ids:
+            return
+        if dotted in MAOS_TRANSIT_PACKAGES_T175:
+            bad(node, "import", f"包命名空间 {dotted} 被当值用 —— 失败即关："
+                                f"拿到它就能走到白名单外的任何子模块")
+        elif (target_violation_t170(dotted) is None           # 名字本身已判红的，import 那处报过
+              and isinstance(_resolve_t170(dotted), types.ModuleType)):
+            bad(node, "import", f"模块对象 {dotted} 被当值用 —— 失败即关："
+                                f"换名 / 传参之后的属性访问守卫看不见（复核 L3-2）")
 
     def check_name(node: ast.AST, name: str, how: str) -> None:
         hit = _name_violation_t170(name)
@@ -511,10 +797,16 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
                     if why:
                         bad(node, "import", f"from {base} import * —— {why}")
                         continue
+                    if star_names_t175(base) is None:
+                        # 复核 L2-1：绑出哪些名字无从知道，之后的属性链一条都判不了 —— 失败即关
+                        bad(node, "import", f"from {base} import * —— 失败即关：{base} 解析不了，"
+                                            f"绑出哪些名字无从判")
+                        continue
                     for hit in star_reexports_t170(base):
                         bad(node, "import", f"from {base} import * 绑出 {hit}")
                     continue
-                check_import(node, f"{base}.{alias.name}" if base else alias.name, "")
+                check_import(node, f"{base}.{alias.name}" if base else alias.name, "",
+                             from_import=True)
                 check_name(node, alias.name, "import 名 ")
         elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = (node.value if isinstance(node.value, str)
@@ -527,6 +819,8 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
             why = module_string_violation_t170(text)
             if why:
                 bad(node, "import", f"字符串 {text!r} 是禁区模块名 —— {why}")
+            if isinstance(node.value, bytes) and text in DYNAMIC_EXEC_T170:
+                bad(node, "import", f"字节串 {text!r} —— 动态执行入口名，扫描范围里一律不许")
         elif isinstance(node, ast.Name):
             if node.id in FORBIDDEN_CALLS_T170:
                 if id(node) not in call_funcs:
@@ -535,6 +829,8 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
                 check_name(node, node.id, "")
             if node.id in DYNAMIC_EXEC_T170:
                 bad(node, "import", f"动态执行 {node.id} —— 扫描范围里一律不许")
+            if isinstance(node.ctx, ast.Load):
+                check_transit_value(node, bindings.get(node.id))
         elif isinstance(node, ast.Attribute):
             if node.attr in FORBIDDEN_CALLS_T170:
                 if id(node) not in call_funcs:
@@ -547,8 +843,16 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
                 bad(node, "escape", f"反射 {_dotted_t170(node.value, bindings)}.__dict__")
             full = _dotted_t170(node, bindings)
             inner = _dotted_t170(node.value, bindings)
-            if full and not (inner and target_violation_t170(inner)):
-                check_import(node, full, "属性链 ")
+            # 只报最短的那一截：里一截已经报过（且不是只许路过的祖先包）就不再报。
+            inner_reported = bool(inner) and inner not in MAOS_TRANSIT_PACKAGES_T175 and (
+                target_violation_t170(inner) is not None)
+            if full and not inner_reported:
+                if full in MAOS_TRANSIT_PACKAGES_T175:
+                    check_transit_value(node, full)
+                else:
+                    check_import(node, full, "属性链 ")
+                    if isinstance(node.ctx, ast.Load):
+                        check_transit_value(node, full)
 
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -563,7 +867,18 @@ def _scan_file_t170(root: pathlib.Path, path: pathlib.Path) -> list[str]:
                     elif node.value is not None:
                         check_identity_value(node, field, node.value)
 
+        # 复核 L3R2-2：exec / eval / compile 当字符串键用（``b.__dict__['exec']``、``getattr(b, 'eval')``、
+        # ``d.get('exec')``、``itemgetter('exec')``）即判。不是「出现即判」：evaluate.py 用 "eval" 当路径段
+        # （``/ "eval" /``），那是 BinOp 的操作数，不是键也不是参数。
+        if isinstance(node, ast.Subscript) and _exec_key_t175(node.slice):
+            bad(node, "import", f"按字符串键 {node.slice.value!r} 取东西 —— 动态执行入口名，"
+                                f"扫描范围里一律不许")
+
         if isinstance(node, ast.Call):
+            for arg in list(node.args) + [k.value for k in node.keywords]:
+                if _exec_key_t175(arg):
+                    bad(node, "import", f"把 {arg.value!r} 当参数传 —— 动态执行入口名"
+                                        f"（getattr / .get / itemgetter ……），扫描范围里一律不许")
             name = _call_name_t170(node.func)
             if name in FORBIDDEN_CALLS_T170:
                 bad(node, "call", name)
@@ -869,14 +1184,15 @@ def test_allowed_list_is_not_flagged_t170(tmp_path):
             from ..refund.projection import PUBLIC_STATUSES
             from maos.domain import _dbport, _schema_util
             from maos.domain._dbport import DomainConn
-            from maos.domain._schema_util import split_sql
+            from maos.domain._schema_util import has_column
             import maos.kb
             import maos.kb.retriever
             from maos import kb
             from maos.kb import retriever
             from maos.kb.retriever import emit_kb_retrieved, retrieve
             from maos.core.store import SqliteStore
-            from maos.skills.contract import SkillSpec
+            from maos.skills.contract import SkillContract
+            from maos.domain.cs.ports import ORDER_STATUS_WORDING, OrderLookup
             from maos.skills.registry import register_skill
             from maos.skills.invoker import SkillInvoker
             from maos.agents.base import AgentIdentity
@@ -887,7 +1203,6 @@ def test_allowed_list_is_not_flagged_t170(tmp_path):
             import maos.domain.cs.types
             from maos.domain.cs.types import *
             from . import *
-            from maos.kb.retriever import *
             from maos.domain.refund.projection import *
             import re as _re
 
@@ -898,11 +1213,12 @@ def test_allowed_list_is_not_flagged_t170(tmp_path):
             SAME = AgentIdentity("cs-2", "cs_front_desk", "d", frozenset({"cs.answer"}), frozenset())
             PAT = _re.compile("x")
             V = (projection.PUBLIC_SETTLED, maos.kb.retriever.retrieve, maos.domain.cs.types.Claim,
-                 retriever.emit_kb_retrieved, base.AgentIdentity, types.plan_id_for, kb.retriever)
+                 retriever.emit_kb_retrieved, base.AgentIdentity, types.plan_id_for,
+                 kb.retriever.retrieve)
 
             def lazy():
                 from maos.kb import retriever as r
-                return r
+                return r.retrieve
 
             # 失败即关只关动态加载的口子，sys / os / logging 的日常用法不误报
             import sys
@@ -932,13 +1248,18 @@ def test_allowed_list_is_not_flagged_t170(tmp_path):
 
 
 def test_import_rule_matches_segments_not_string_prefixes_t170():
-    assert import_violation_t170("maos.tools") is not None
-    assert import_violation_t170("maos.tools.gateway") is not None
-    assert import_violation_t170("maos.toolsmith") is None
-    assert import_violation_t170("maos.runtimes") is None
+    # 黑名单按点分段匹配（p12 口径）
+    assert blacklist_violation_t175("maos.tools") is not None
+    assert blacklist_violation_t175("maos.tools.gateway") is not None
+    assert blacklist_violation_t175("maos.toolsmith") is None
+    assert blacklist_violation_t175("maos.runtimes") is None
     assert import_violation_t170("hiclawx") is None
     assert import_violation_t170("maos.domain.refund.projection") is None
     assert import_violation_t170("maos.domain.refund.projectionx") is not None
+    # p13 起名单外的 maos.* 由白名单兜住（T175）：不是禁前缀，照样不放行
+    for name in ("maos.toolsmith", "maos.runtimes"):
+        why = import_violation_t170(name)
+        assert why is not None and "白名单" in why and "maos.tools " not in why, why
 
 
 def test_unparseable_file_is_a_violation_t170(tmp_path):
@@ -1044,7 +1365,8 @@ def test_star_import_from_ancestor_package_is_caught_t170(tmp_path, src):
     "import maos.kb\nX = maos.runtime.gate\n",
     "from maos import agents\nX = agents.manager\n",
     "from maos import domain\nX = domain.refund.objects\n",
-    "import maos.domain.cs as cs\nX = cs.types\nY = maos\n",
+    # 对照：链落在允许区里不报（p13 起模块对象不许当值用，所以取到成员为止 —— 复核 L3-2）
+    "import maos.domain.cs as cs\nX = cs.types.Claim\nY = maos\n",
 ])
 def test_attribute_chain_to_forbidden_module_is_caught_t170(tmp_path, src):
     v = _violations_t170(tmp_path, {"maos/domain/cs/chain.py": src})
@@ -1220,19 +1542,20 @@ def test_harmless_strings_are_not_module_names_t170(text):
     assert module_string_violation_t170(text) is None
 
 
-@pytest.mark.parametrize("src,line", [
-    ("from maos.skills.invoker import registry\n", 1),                   # 复核 b09
-    ("from maos.skills.invoker import *\n", 1),                          # 复核 b10
-    ("from maos.skills.version_demo import guard, objects\n", 1),        # 复核 b11
-    ("from maos.ingress.classify import needs_human\n", 1),              # 函数出处在 refund 域
-    ("from maos.skills import invoker\nR = invoker.registry.SKILL_REGISTRY\n", 2),
-    ("import maos.skills.invoker\nR = maos.skills.invoker.registry\n", 2),
-    ("from maos.skills.version_demo import *\n", 1),
+@pytest.mark.parametrize("src,line,marker", [
+    ("from maos.skills.invoker import registry\n", 1, "实为"),                   # 复核 b09
+    ("from maos.skills.invoker import *\n", 1, "实为"),                          # 复核 b10
+    # 下面三条的模块名本身在 p13 白名单外（T175），名字那一关就拦住，轮不到按出处判
+    ("from maos.skills.version_demo import guard, objects\n", 1, "白名单"),      # 复核 b11
+    ("from maos.ingress.classify import needs_human\n", 1, "白名单"),            # 函数出处在 refund 域
+    ("from maos.skills import invoker\nR = invoker.registry.SKILL_REGISTRY\n", 2, "实为"),
+    ("import maos.skills.invoker\nR = maos.skills.invoker.registry\n", 2, "实为"),
+    ("from maos.skills.version_demo import *\n", 1, "白名单"),
 ])
-def test_reexported_forbidden_objects_are_caught_t170(tmp_path, src, line):
+def test_reexported_forbidden_objects_are_caught_t170(tmp_path, src, line, marker):
     v = _violations_t170(tmp_path, {"maos/domain/cs/reexp.py": src})
     hits = [x for x in v if x.startswith(f"maos/domain/cs/reexp.py:{line}: import: ")]
-    assert hits and all("实为" in x for x in hits), v
+    assert hits and all(marker in x for x in hits), v
     assert len([x for x in v if "属性链" in x]) <= 1, v          # 属性链只报最短那一截
 
 
@@ -1325,3 +1648,376 @@ def test_identity_static_values_that_are_cs_only_pass_t170(tmp_path, src):
 def test_bytes_constants_are_caught_t170(tmp_path, src, kind):
     v = _violations_t170(tmp_path, {"maos/domain/cs/b.py": src})
     _one_t170(v, "maos/domain/cs/b.py", kind)
+
+
+# ---------------------------------------------------------------------------
+# p13（T175）：cs 扫描范围的 maos.* 改失败即关白名单
+# ---------------------------------------------------------------------------
+def test_whitelist_is_the_p12_allowed_list_plus_ports_t175():
+    """名单逐项等于 p12 契约 §2.3「明确允许」+ 唯一跨域 + 共享底座；ports 在本域子树里。"""
+    assert set(MAOS_ALLOWED_MODULES_T175) == {
+        "maos.domain.refund.projection", "maos.domain._dbport", "maos.domain._schema_util",
+        "maos.kb", "maos.kb.retriever", "maos.core.store", "maos.skills.contract",
+        "maos.skills.invoker", "maos.agents.base", "maos.ingress.contracts", "maos.model.client"}
+    assert MAOS_ALLOWED_NAMES_T175 == {"maos.skills.registry.register_skill"}
+    assert is_cs_own_t175("maos.domain.cs.ports") and is_cs_own_t175("maos.skills.builtin.cs")
+    assert not is_cs_own_t175("maos.domain.csx") and not is_cs_own_t175("maos.skills.builtin")
+    # 名单里每一项都是真实存在的模块（写错一个字，名单就悄悄少一项）
+    for mod in MAOS_ALLOWED_MODULES_T175:
+        obj = _resolve_t170(mod)
+        assert isinstance(obj, types.ModuleType) and obj.__name__ == mod, mod
+    assert MAOS_TRANSIT_PACKAGES_T175 == {
+        "maos", "maos.domain", "maos.core", "maos.skills", "maos.skills.builtin",
+        "maos.agents", "maos.ingress", "maos.model"}
+
+
+@pytest.mark.parametrize("stmt", [
+    "from maos.obs.trace import KIND_PLAN",          # 任务点名的例子
+    "import maos.obs.trace",
+    "from maos.obs import trace",
+    "from maos import obs",
+    "from maos.config import get_config_source",
+    "import maos.kb.plan_advice",                    # 名单模块的子模块不跟着放行
+    "from maos.kb import plan_advice",
+    "from maos.kb.plan_advice import advice_enabled",
+    "import maos.core.eventbus",
+    "from maos.core import eventbus",
+    "import maos",                                   # 祖先包只许路过，不许直接拿
+    "from maos import domain",
+    "import maos.domain",
+    "from maos.skills import builtin",
+    "import maos.agents",
+    "from maos.kb.retriever import *",               # 星号绑出 maos.config 的函数
+])
+def test_maos_modules_outside_whitelist_are_caught_t175(tmp_path, stmt):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/wl.py": stmt + "\n"})
+    hits = [x for x in v if x.startswith("maos/domain/cs/wl.py:1: import: ")]
+    assert hits and any("白名单" in x for x in hits), v
+
+
+def test_whitelist_rule_is_fail_closed_by_name_t175():
+    for name in ("maos.obs.trace", "maos.obs.trace.KIND_PLAN", "maos.config", "maos.kb.plan_advice",
+                 "maos.kb.plan_advice.advice_enabled", "maos", "maos.domain", "maos.nonexistent_t175"):
+        assert whitelist_violation_t175(name) is not None, name
+    for name in ("maos.kb", "maos.kb.tokenize", "maos.kb.retriever.retrieve",
+                 "maos.domain.cs.ports.ORDER_STATUS_WORDING", "maos.domain.cs.not_written_yet",
+                 "maos.skills.builtin.cs.answer", "maos.skills.registry.register_skill",
+                 "maos.model.client.Tier", "json", "os.path.join"):
+        assert whitelist_violation_t175(name) is None, name
+
+
+@pytest.mark.parametrize("src,line", [
+    ("from maos.kb import no_such_name_t175\n", 1),
+    ("from maos.kb.retriever import no_such_name_t175\n", 1),
+    ("import maos.kb.no_such_sub_t175\n", 1),
+    ("from json import no_such_name_t175\n", 1),         # from-import 一律要解析得了
+    ("from no_such_pkg_t175 import thing\n", 1),
+    ("from maos import kb\nX = kb.no_such_attr_t175\n", 2),
+])
+def test_unresolvable_targets_are_caught_t175(tmp_path, src, line):
+    """以前「解析不了的不判」，p13 失败即关：判不了真实出处就不放行。"""
+    v = _violations_t170(tmp_path, {"maos/domain/cs/unres.py": src})
+    hits = [x for x in v if x.startswith(f"maos/domain/cs/unres.py:{line}: import: ")]
+    assert hits and any("解析不了" in x for x in hits), v
+
+
+@pytest.mark.parametrize("src,line", [
+    ("import maos.kb\nY = maos\n", 2),
+    ("import maos.kb\ndef f(g):\n    return g(maos)\n", 3),
+    ("import maos.domain.cs.types\nY = maos.domain\n", 2),
+    ("import maos.skills.builtin.cs\nY = maos.skills.builtin\n", 2),
+])
+def test_transit_package_used_as_value_is_caught_t175(tmp_path, src, line):
+    """祖先包只能在属性链上路过；当值传出去以后 ``Y.runtime.gate`` 守卫就看不见了。"""
+    v = _violations_t170(tmp_path, {"maos/domain/cs/transit.py": src})
+    hits = [x for x in v if x.startswith(f"maos/domain/cs/transit.py:{line}: import: ")]
+    assert hits and all("被当值用" in x for x in hits), v
+
+
+def test_cs_own_and_passing_chains_stay_green_t175(tmp_path):
+    """反面：本域子树不要求解析；祖先包在属性链上路过、落到名单里不报；日志名不是加载目标。"""
+    v = _violations_t170(tmp_path, {
+        "maos/domain/cs/own.py": """
+            import logging
+            import maos.kb
+            import maos.domain.cs.types
+            from maos.domain.cs.not_written_yet_t175 import helper
+            from .also_not_written_t175 import other
+            from maos.domain.cs import ports
+            from maos.skills.builtin.cs import answer
+
+            X = (maos.kb.tokenize, maos.domain.cs.types.Claim, ports.ORDER_STATUS_WORDING)
+            LOG = logging.getLogger("maos.cs")
+        """,
+    })
+    assert v == [], "\n".join(v)
+
+
+@pytest.mark.parametrize("text,red", [
+    ("maos.obs.trace", True),
+    ("maos.config:get_config_source", True),
+    ("maos/kb/plan_advice.py", True),
+    ("maos.cs", False),                  # 日志名：不对应任何模块
+    ("maos.domain.cs.desk", False),
+    ("maos.kb.retriever", False),
+])
+def test_module_strings_follow_the_whitelist_t175(text, red):
+    assert (module_string_violation_t170(text) is not None) is red, text
+
+
+# ---------------------------------------------------------------------------
+# p13 修复轮（T175 复核 L2-6 / L3-2 / L3-3）
+# ---------------------------------------------------------------------------
+_OPEN_TICKET_ALIASED_T175 = (                       # 复核 L3-2 原样：换名之后绕过 allowed_skills
+    "import maos.skills.invoker as inv\n"
+    "_m = inv\n"
+    "def open_ticket(payload, ctx):\n"
+    "    return _m.registry.get('refund.intake')().run(payload, ctx)\n"
+)
+
+
+@pytest.mark.parametrize("src,line", [
+    (_OPEN_TICKET_ALIASED_T175, 2),
+    ("import maos.skills.invoker as inv\n_m = inv\nR = _m.registry\n", 2),
+    ("from maos.skills import invoker\ndef h(mod):\n    return mod.registry\nR = h(invoker)\n", 4),
+    ("from maos.skills import invoker\nR = [invoker][0].registry\n", 2),
+    ("import maos.kb\n_m = maos.kb\nP = _m.plan_advice\n", 2),
+    ("import maos.kb as kb\n_m = kb\nP = getattr(_m, 'plan_advice')\n", 2),
+    ("from maos.kb import retriever\nX = retriever\n", 2),
+    ("def f():\n    from maos.kb import retriever as r\n    return r\n", 3),
+    ("from maos.domain.cs import types\nX = types\n", 2),              # 本域模块同理
+    ("import os\n_o = os\n_o.system('echo')\n", 2),                  # 标准库的口子同理
+    ("import sys\n_s = sys\nm = _s.modules\n", 2),
+])
+def test_module_objects_used_as_values_are_caught_t175(tmp_path, src, line):
+    """复核 L3-2：import 来的模块对象只许紧接着取属性；换名 / 传参 / 放进容器即判。"""
+    v = _violations_t170(tmp_path, {"maos/domain/cs/mv.py": src})
+    hits = [x for x in v if x.startswith(f"maos/domain/cs/mv.py:{line}: import: ")]
+    assert hits and any("被当值用" in x for x in hits), v
+
+
+def test_direct_attribute_access_on_the_same_module_stays_as_before_t175(tmp_path):
+    """对照：同一个攻击写成直接取属性，p12 起就按真实出处判红；取白名单模块的成员不报。"""
+    direct = _violations_t170(tmp_path / "a", {"maos/domain/cs/d.py": (
+        "import maos.skills.invoker as inv\n"
+        "def open_ticket(payload, ctx):\n"
+        "    return inv.registry.get('refund.intake')().run(payload, ctx)\n")})
+    assert any("实为" in x for x in direct), direct
+    ok = _violations_t170(tmp_path / "b", {"maos/domain/cs/ok.py": (
+        "import os\nimport maos.kb\nfrom maos.skills import invoker\n"
+        "X = (maos.kb.tokenize, invoker.SkillInvoker, os.path.join('a', 'b'), os.environ.get('X'))\n")})
+    assert ok == [], ok
+
+
+@pytest.mark.parametrize("src,line", [
+    ("import inspect\nimport maos.kb as kb\nP = dict(inspect.getmembers(kb))['plan_advice']\n", 3),
+    ("import operator\nfrom maos.skills import invoker\nR = operator.attrgetter('registry')(invoker)\n", 3),
+    ("import maos.kb as kb\nP = kb.__getattribute__('plan_advice')\n", 2),
+    ("from operator import methodcaller\n", 1),
+    ("import inspect\ndef f(o):\n    return inspect.getattr_static(o, 'x')\n", 3),
+    ("import inspect\ndef f(o):\n    return inspect.getmembers_static(o)\n", 3),
+])
+def test_other_reflection_entry_points_are_caught_t175(tmp_path, src, line):
+    """复核 L3-2：attrgetter / methodcaller / getmembers / __getattribute__ 出现即判。"""
+    v = _violations_t170(tmp_path, {"maos/domain/cs/refl.py": src})
+    assert line in _lines_t170(v, "maos/domain/cs/refl.py"), v
+
+
+def test_first_party_tops_cover_the_repo_layout_t175():
+    """一方代码的顶层名表：含 run / scripts / client，不含 maos 与标准库名；判据按段不按前缀。"""
+    import sys
+
+    assert {"run", "scripts", "client"} <= FIRST_PARTY_TOPS_T175
+    assert "maos" not in FIRST_PARTY_TOPS_T175
+    assert not FIRST_PARTY_TOPS_T175 & set(sys.stdlib_module_names)
+    for name in ("run", "run.main", "scripts.run_ingress.cmd_simulate", "client.preflight"):
+        assert first_party_violation_t175(name) is not None, name
+    for name in ("runpy_x", "json", "os.path", "maos.kb", "scriptsx", "clients"):
+        assert first_party_violation_t175(name) is None, name
+
+
+@pytest.mark.parametrize("src,line", [
+    # 复核 L3-3 (a)：以内部人的名义把 /refund 喂进 router
+    ("import types\nfrom scripts import run_ingress\n"
+     "def relay(text, ledger):\n"
+     "    args = types.SimpleNamespace(simulate=[text], sender='ops-lead', ledger=ledger, photo=None)\n"
+     "    return run_ingress.cmd_simulate(args)\n", 2),
+    # (b)：跑整条退款 case
+    ("from scripts import run_case\ndef go(argv):\n    return run_case.main(argv)\n", 1),
+    # 复核 L2-6：run.py / scripts / client
+    ("import run\ndef go():\n    return run.main()\n", 1),
+    ("from run import main\n", 1),
+    ("from scripts.run_ingress import main\n", 1),
+    ("import scripts\n", 1),
+    ("import client.preflight\n", 1),
+    ("def f():\n    from scripts import run_case\n    return run_case.run_file\n", 2),
+])
+def test_first_party_code_outside_maos_is_caught_t175(tmp_path, src, line):
+    """复核 L2-6 / L3-3：仓库里 maos 以外的一方代码不按「真实出处」放行，名字那一关就拦。"""
+    v = _violations_t170(tmp_path, {"maos/domain/cs/fp.py": src})
+    hits = [x for x in v if x.startswith(f"maos/domain/cs/fp.py:{line}: import: ")]
+    assert hits and any("一方代码" in x for x in hits), v
+
+
+@pytest.mark.parametrize("files,rel,line,kind", [
+    # 复核 L3-3 (c)：改 sys.path 之后用非 maos 的名字加载 maos 的源码
+    ({"maos/domain/cs/sp.py": "import os, sys\n"
+      "sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'skills', 'builtin', 'refund'))\n"
+      "import payment_execute\n"}, "maos/domain/cs/sp.py", 2, "import"),
+    ({"maos/domain/cs/sp.py": "from sys import path\npath.append('x')\n"}, "maos/domain/cs/sp.py", 1, "import"),
+    ({"maos/domain/cs/sp.py": "import site\nsite.addsitedir('x')\n"}, "maos/domain/cs/sp.py", 1, "import"),
+    # (d)：cs/__init__ 往 __path__ 里追加别的域的目录
+    ({"maos/domain/cs/__init__.py": "import os\n"
+      "__path__.append(os.path.join(os.path.dirname(__file__), '..', 'refund'))\n",
+      "maos/domain/cs/x.py": "from maos.domain.cs.guard import update_biz_status\n"},
+     "maos/domain/cs/__init__.py", 2, "escape"),
+])
+def test_search_path_holes_are_caught_t175(tmp_path, files, rel, line, kind):
+    v = _violations_t170(tmp_path, files)
+    assert any(x.startswith(f"{rel}:{line}: {kind}: ") for x in v), v
+
+
+# ---------------------------------------------------------------------------
+# p13 修复轮二（T175 复核 L2-1 / L3R2-2 / L3R2-3）
+# ---------------------------------------------------------------------------
+_RELAY_T175 = "maos.domain.cs.zz_relay_t175"
+
+
+@pytest.fixture
+def cs_relay_t175(monkeypatch):
+    """本域里一个把 os / logging / maos.kb / 本域模块绑在自己名字空间里的模块（真实的 desk / scripts
+    今天就是这样：desk 有 os、claims，scripts 有 kb、logging）。合成在 sys.modules 里，不依赖
+    T174 以后怎么改 desk.py。"""
+    import logging as _logging
+    import os as _os
+    import sys as _sys
+
+    import maos.kb as _kb
+    from maos.domain.cs import claims as _claims
+
+    relay = types.ModuleType(_RELAY_T175)
+    relay.os, relay.logging, relay.kb, relay.claims, relay.OK = _os, _logging, _kb, _claims, 1
+    monkeypatch.setitem(_sys.modules, _RELAY_T175, relay)
+    _resolve_t170.cache_clear()
+    yield relay
+    _resolve_t170.cache_clear()
+
+
+@pytest.mark.parametrize("src,line", [
+    # 复核 L2-1 原样：直写 ``from maos import kb; kb.plan_advice`` 是红的，星号绕一手不能变绿
+    (f"from {_RELAY_T175} import *\nP = kb.plan_advice\n", 2),
+    (f"from {_RELAY_T175} import *\nos.system('echo pwned')\n", 2),
+    (f"from {_RELAY_T175} import *\nout = os.popen('id').read()\n", 2),
+    (f"from {_RELAY_T175} import *\nm = logging.sys.modules\n", 2),
+    (f"from {_RELAY_T175} import *\nx = os\n", 2),                  # 模块对象当值用
+    (f"from {_RELAY_T175} import *\nc = claims\n", 2),
+    ("from maos.domain.cs.zz_missing_t175 import *\n", 1),         # 绑了什么无从知道：失败即关
+])
+def test_names_bound_by_star_import_are_checked_t175(tmp_path, cs_relay_t175, src, line):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/star2.py": src})
+    assert any(x.startswith(f"maos/domain/cs/star2.py:{line}: import: ") for x in v), v
+
+
+def test_star_bound_names_used_normally_stay_green_t175(tmp_path, cs_relay_t175):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/star3.py": (
+        f"from {_RELAY_T175} import *\n"
+        "X = (OK, claims.check_reply, kb.tokenize, os.path.join('a', 'b'), os.environ.get('K'))\n"
+        "LOG = logging.getLogger('maos.cs')\n")})
+    assert v == [], "\n".join(v)
+
+
+@pytest.mark.parametrize("src,line", [
+    # 复核 L3R2-2 (b)：内建函数的绑定对象就是 builtins 模块，再按字符串键取 exec / eval
+    ("def go(code):\n    return len.__self__.__dict__['exec'](code)\n", 2),
+    ("def go(code):\n    return getattr(len.__self__, 'exec')(code)\n", 2),
+    ("X = print.__self__.__dict__['eval']('1+1')\n", 1),
+    ("B = len.__self__\n", 1),                                       # dunder self 本身也判（不靠键）
+    ("def go(f):\n    return f.__self__\n", 2),
+    ("def go(ns):\n    return ns['exec']\n", 2),                     # 键本身也判（不靠 __self__）
+    ("def go(ns):\n    return ns.get('eval')\n", 2),
+    ("import operator\ndef go(ns):\n    return operator.itemgetter('exec')(ns)\n", 3),
+    ("X = b'exec'\n", 1),
+    # (c)：inspect.getmodule 交出模块对象
+    ("import inspect\ndef go():\n    s = inspect.getmodule(inspect.getmodule).__dict__['sys']\n"
+     "    return s.modules\n", 3),
+    # (a)：os.* 口子的真身 posix、pty、asyncio 子进程、进程池
+    ("import posix\ndef go(cmd):\n    return posix.system(cmd)\n", 3),
+    ("from posix import system\n", 1),
+    ("import posix\ndef go(a):\n    return posix.posix_spawn(a[0], a, {})\n", 3),
+    ("from posix import *\n", 1),
+    ("import pty\ndef go(argv):\n    return pty.spawn(argv)\n", 1),
+    ("import _posixsubprocess\n", 1),
+    ("import asyncio\nasync def go(*argv):\n    return await asyncio.create_subprocess_exec(*argv)\n", 3),
+    ("import asyncio.subprocess\n", 1),
+    ("import asyncio\nasync def go(cmd):\n    loop = asyncio.get_running_loop()\n"
+     "    return await loop.subprocess_shell(None, cmd)\n", 4),
+    ("from concurrent.futures import ProcessPoolExecutor\nP = ProcessPoolExecutor\n", 1),
+    ("import concurrent.futures\nP = concurrent.futures.ProcessPoolExecutor\n", 2),
+])
+def test_more_process_and_builtins_entry_points_are_caught_t175(tmp_path, src, line):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/proc.py": src})
+    assert line in _lines_t170(v, "maos/domain/cs/proc.py"), v
+
+
+def test_everyday_os_asyncio_inspect_and_path_segments_stay_green_t175(tmp_path):
+    """对照：posix 只按起进程的那几个名字判；"eval" 当路径段（BinOp 操作数）不是键也不是参数。"""
+    v = _violations_t170(tmp_path, {"maos/domain/cs/ok2.py": (
+        "import asyncio\nimport inspect\nimport os\nimport pathlib\n"
+        "HERE = pathlib.Path(__file__).resolve().parents[3] / 'scenarios' / 'cs' / 'eval' / 'x.json'\n"
+        "PID = os.getpid()\n"
+        "def sig(f):\n    return inspect.signature(f)\n"
+        "async def nap():\n    await asyncio.sleep(0)\n"
+        "def pick(d):\n    return d['route'], d.get('lang')\n")})
+    assert v == [], "\n".join(v)
+
+
+def test_entry_script_dirs_are_found_t175(tmp_path):
+    """放着 ``if __name__ == "__main__":`` 的目录（含 maos 里的）都算入口目录；点开头的目录跳过。"""
+    files = {
+        "tools/entry.py": "def main():\n    pass\n\n\nif __name__ == '__main__':\n    main()\n",
+        "tools/helper.py": "X = 1\n",
+        "tools/pkgdir/__init__.py": "",
+        "lib/plain.py": "X = 1\n",
+        "maos/sub/runner.py": 'if __name__ == "__main__":\n    pass\n',
+        "maos/sub/sibling.py": "",
+        ".hidden/evil.py": "if __name__ == '__main__':\n    pass\n",
+    }
+    for rel, src in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(src, encoding="utf-8")
+    assert _entry_dirs_t175(tmp_path) == [tmp_path / "maos" / "sub", tmp_path / "tools"]
+    assert _entry_dir_names_t175(tmp_path) == {"entry", "helper", "pkgdir", "runner", "sibling"}
+
+
+def test_entry_dir_names_of_the_repo_are_first_party_t175():
+    """复核 L3R2-3：生产入口 ``python scripts/run_ingress.py`` 让 scripts/ 进 sys.path[0]，scripts/*.py 的
+    每个主名都能当顶层名 import；client/、hiclaw/ 与 maos/ 本身（maos/main.py）同理。"""
+    import sys
+
+    scripts = {p.stem for p in (ROOT_T170 / "scripts").glob("*.py")} - set(sys.stdlib_module_names)
+    assert scripts and scripts <= FIRST_PARTY_TOPS_T175, sorted(scripts - FIRST_PARTY_TOPS_T175)
+    assert {"run_ingress", "run_requests", "verify", "preflight", "room_agent", "runtime",
+            "flows"} <= FIRST_PARTY_TOPS_T175
+    assert not FIRST_PARTY_TOPS_T175 & set(sys.stdlib_module_names)
+    assert "maos" not in FIRST_PARTY_TOPS_T175
+
+
+@pytest.mark.parametrize("src,line", [
+    # 复核 L3R2-3 原样
+    ("import types\nimport run_ingress\n"
+     "def relay(text, ledger):\n"
+     "    args = types.SimpleNamespace(simulate=[text], sender='ops-lead', ledger=ledger, photo=None)\n"
+     "    return run_ingress.cmd_simulate(args)\n", 2),
+    ("import run_requests\ndef go(a):\n    return run_requests.main(a)\n", 1),
+    ("from run_case import main\n", 1),
+    ("import verify\n", 1),
+    ("import room_agent\n", 1),                       # hiclaw/ 下的入口
+    ("import preflight\n", 1),                        # client/ 下的入口
+    ("import runtime.gate\n", 1),                     # python maos/main.py：maos/ 进 sys.path[0]
+    ("from flows import scenario_7\n", 1),
+])
+def test_bare_names_from_entry_script_dirs_are_caught_t175(tmp_path, src, line):
+    v = _violations_t170(tmp_path, {"maos/domain/cs/bare.py": src})
+    hits = [x for x in v if x.startswith(f"maos/domain/cs/bare.py:{line}: import: ")]
+    assert hits and any("一方代码" in x for x in hits), v

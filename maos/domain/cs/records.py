@@ -122,7 +122,11 @@ _BINDING_OPTIONAL = ("source", "bound_at")
 
 
 def _validated_binding(binding: Binding) -> Binding:
-    """校验并规范化一条绑定：必填项非空、source 在 BINDING_SOURCES、单号取规范形。"""
+    """校验并规范化一条绑定：必填项非空、source 在 BINDING_SOURCES、单号取规范形。
+
+    报错只说哪个键不对，**不回显值**（值里可能是订单号、客户标识，种子文件填错列时
+    source 里也可能是）——这些消息会被 ``load_bindings_file`` 原样包进启动日志。
+    """
     required = (("tenant_id", binding.tenant_id), ("channel", binding.channel),
                 ("external_userid", binding.external_userid),
                 ("display_no", binding.display_no), ("system_name", binding.system_name),
@@ -131,7 +135,7 @@ def _validated_binding(binding: Binding) -> Binding:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"绑定缺 {name}（必须是非空字符串）")
     if binding.source not in BINDING_SOURCES:
-        raise ValueError(f"未知的绑定来源 {binding.source!r}，只认 {BINDING_SOURCES}")
+        raise ValueError(f"绑定的 source 不认（只认 {BINDING_SOURCES}）")
     no = normalize_display_no(binding.display_no)
     if not no:
         raise ValueError("绑定的 display_no 规范化后为空")

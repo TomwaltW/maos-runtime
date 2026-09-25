@@ -656,6 +656,37 @@ def test_resolve_is_closed_across_tenant_channel_and_customer_t171():
     assert _resolve_t171(s, "A1001", tenant_id="") is None
 
 
+@pytest.mark.parametrize("empty_key", ["tenant_id", "channel", "external_userid", "display_no"])
+def test_resolve_refuses_empty_keys_even_when_the_db_holds_such_a_row_t171(empty_key):
+    """失败即关不靠写入侧兜：库里真有一行空键（生写、手改库、以后别的内部路径），
+    拿同样的空键来问也只能是 ``None``——空租户尤其不许查单。"""
+    s = _store_t171()
+    objects.ensure_schema(s)
+    key = dict(tenant_id=TENANT_T171, channel=T.CHANNEL_WECHAT_KF,
+               external_userid="wm_t171_a", display_no="A1001")
+    key[empty_key] = ""
+    _raw_insert_t171(s, "cs_order_binding", **key)
+    # 判据不空转（一）：这行就在库里，按原样四键直接查得到——挡住它的只剩核验器自己的空键闸。
+    hits = objects.query(s, "SELECT query_key FROM cs_order_binding WHERE tenant_id=?"
+                            " AND channel=? AND external_userid=? AND display_no=?",
+                         (key["tenant_id"], key["channel"], key["external_userid"],
+                          key["display_no"]))
+    assert len(hits) == 1
+    # 判据不空转（二）：同样生写的非空行，核验器照常认。
+    _raw_insert_t171(s, "cs_order_binding")
+    ctl = _RAW_ROWS_T171["cs_order_binding"]
+    got = I.BindingVerifier().resolve(s, tenant_id=ctl["tenant_id"], channel=ctl["channel"],
+                                      external_userid=ctl["external_userid"],
+                                      display_no=ctl["display_no"])
+    assert got is not None and got.query_key == ctl["query_key"]
+
+    typed = key.pop("display_no")
+    typed_variants = ("", "  ", "　") if empty_key == "display_no" else (typed,)
+    for display_no in typed_variants:
+        assert I.BindingVerifier().resolve(s, display_no=display_no, **key) is None, \
+            (empty_key, display_no)
+
+
 def test_resolve_on_an_empty_db_is_none_not_an_error_t171():
     s = _store_t171()
     assert _resolve_t171(s, "A1001") is None
@@ -747,6 +778,38 @@ def test_load_bindings_file_missing_file_is_a_value_error_t171(tmp_path):
     with pytest.raises(ValueError) as exc:
         R.load_bindings_file(_store_t171(), path)
     assert str(path) in str(exc.value)
+
+
+#: 哨兵：每个值都带它；报错消息里一个都不许出现（只许说第几条、哪个键）。
+_SECRET_ENTRY_T171 = {"tenant_id": TENANT_T171, "channel": "wechat_kf",
+                      "external_userid": "wm-SECRET-t171-user",
+                      "display_no": "ORDER-SECRET-t171-no",
+                      "system_name": "sys-SECRET-t171", "query_key": "qk-SECRET-t171",
+                      "source": "seed"}
+
+
+@pytest.mark.parametrize("over", [
+    {"source": "ORDER-SECRET-t171-src"},                 # 运维把单号填进了 source 列
+    {"source": "SECRET-t171-Seed"},
+    {"system_name": ""},
+    {"query_key": 1001},
+    {"display_no": "　 "},
+    {"bound_at": 7},
+])
+def test_load_bindings_file_errors_do_not_echo_values_t171(tmp_path, over):
+    entry = {**_SECRET_ENTRY_T171, **over}
+    path = _write_seed_t171(tmp_path, {"bindings": [entry]}, name="seed_secret_t171.json")
+    with pytest.raises(ValueError) as exc:
+        R.load_bindings_file(_store_t171(), path)
+    msg = str(exc.value)
+    assert str(path) in msg                                              # 判据不空转：确实是这条报的
+    assert "SECRET" not in msg, msg
+
+
+def test_upsert_binding_error_does_not_echo_the_source_value_t171():
+    with pytest.raises(ValueError) as exc:
+        R.upsert_binding(_store_t171(), _binding_t171(source="ORDER-SECRET-t171-src"))
+    assert "source" in str(exc.value) and "SECRET" not in str(exc.value)
 
 
 # ====================================================================== 槽位

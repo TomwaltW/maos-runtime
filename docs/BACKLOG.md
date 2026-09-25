@@ -3141,3 +3141,10 @@ Planner 建议与 R8 顺手发现的账。**都没当场改**（铁律 4）。
 | 2026-09-25 | p13 | tools/port.py 的 invoke_tool 仍把「类名: 原文」写进 ToolInvoked.detail.error（CS 查单已在 cs_ports 断掉原文，其余调用方照旧） | 别的工具的异常原文里若带客户数据，会进审计行 | p14 或以后：全仓统一改成只记类名要问用户（改所有 ToolInvoked 的形状） |
 | 2026-09-25 | p13 | desk.has_lang_signal 用了 lang 模块的私有函数 _drop_codes | 跨模块依赖私有名，lang.py 改名会静默断 | p14 顺手：lang.py 公开一个同义函数 |
 | 2026-09-25 | p13 | 「不退款，我就上网曝光」这类条件威胁没被识别成投诉 / 情绪（T174 复核 nit） | 该转人工的轮可能落兜底，两轮后照样 repeated_fallback 转人工 | p14 理解层泛化轨 |
+
+## task-t177（评测批量化 cs_eval，2026-09-25）
+
+| 日期 | Phase | 现象 | 影响 | 建议处理时机 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | dev12 按 p12_cases.json 的门槛（全 1.0）不达标：只差已知缺口 CS12-044#1（T169 的 KNOWN_GAPS，route 与 cite），所以 --set dev12 现在退 1 | --set all 的退出码 1 分不出「p12 留出集不达标」与「开发集已知缺口」，要看每集的 status | 整合期主会话：CS12-044 修好（重排）或给开发集门槛定口径 |
+| 2026-09-25 | p14 | 「cs_eval --set dev13 --db X 之后 verify --cs --db X 应当 PASS」本轨没法实测（verify 的 --cs 在 T176 并行做） | 组合口径要到合流后才验证 | 整合期主会话跑这条组合 |

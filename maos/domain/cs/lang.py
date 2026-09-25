@@ -49,10 +49,30 @@ def is_cjk(ch: str) -> bool:
     return any(lo <= cp <= hi for lo, hi in CJK_RANGES)
 
 
-def _drop_codes(text: str) -> str:
-    """夹着数字的编码串换成一个空格；不含数字的（普通英文单词）原样留下。"""
+def drop_codes(text: str) -> str:
+    """夹着数字的编码串换成一个空格；不含数字的（普通英文单词）原样留下。
+
+    公开名（p14 T182，BACKLOG integrate-p13）：``desk.has_lang_signal`` 原先调的是私有的
+    ``_drop_codes``，跨模块依赖私有名、改名会静默断。私有名留作同一个函数的别名。
+    """
     return _CODE_RE.sub(
         lambda m: " " if any(c.isdigit() for c in m.group(0)) else m.group(0), text)
+
+
+#: 旧的私有名：同一个函数对象。
+_drop_codes = drop_codes
+
+
+def has_lang_signal(text: str) -> bool:
+    """原文有没有语种信号：有 CJK，或拿掉编码串（单号、型号）后还剩字母。
+
+    与 ``desk.has_lang_signal`` 同义（p14 T182 公开在本模块）：只回一个单号（「A1001」）、
+    纯数字、纯符号时没有信号，:func:`detect_lang` 只是回了缺省 zh。
+    """
+    norm = unicodedata.normalize("NFKC", text or "")
+    if any(is_cjk(ch) for ch in norm):
+        return True
+    return any(unicodedata.category(ch).startswith("L") for ch in drop_codes(norm))
 
 
 def detect_lang(text: str) -> str:
@@ -61,7 +81,7 @@ def detect_lang(text: str) -> str:
     if any(is_cjk(ch) for ch in norm):
         return LANG_ZH
     letters = ascii_letters = 0
-    for ch in _drop_codes(norm):
+    for ch in drop_codes(norm):
         if unicodedata.category(ch)[0] == "L":
             letters += 1
             if ch.isascii():

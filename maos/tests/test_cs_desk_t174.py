@@ -951,6 +951,8 @@ def test_real_withdrawal_is_still_withdrawal_t174(text):
 
 def test_conditional_threat_goes_to_refund_bridge_at_the_desk_t174():
     ports = _Ports_t174()
-    res = _Talk_t174(_desk_t174(ports=ports)).say("A1001 质量问题，不退款，我就去差评")
+    # p14 T182：「……我就去差评」起改由触发词判 complaint（条件威胁，见 test_cs_understand_t182.py），
+    # 这里换一个不进触发词的后果动作（拒收），钉的仍是「条件威胁不是撤回、照旧走退款桥」
+    res = _Talk_t174(_desk_t174(ports=ports)).say("A1001 质量问题，不退款，我就拒收")
     assert res.handoff_reason == T.HANDOFF_REFUND_REQUEST
     assert len(ports.precheck.calls) == 1

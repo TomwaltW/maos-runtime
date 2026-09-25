@@ -1,0 +1,451 @@
+"""T182 · 理解层泛化（p14 契约 §2「T182」，p13 欠账）。
+
+主会话从 p12 留出集归纳了五个误判**类别**（不给句子）；本文件的例句全部是本轨按类别自写的
+（没有打开任何留出集与它的测试），每类 ≥ 8 种说法，另配「相近但不该命中」的反例。
+
+1. 寒暄开场的口语变体（叠字、波浪号、语气词、「打扰一下」、称呼）→ 问候篇 GEN-001；
+2. 具体订单的进度 / 异常、不带「发货 / 物流 / 退款」一类诉求词 → p12 路径 needs_order_lookup 转人工，
+   p13 路径进查单（缺单号就追问）；
+3. 政策问答的口语说法 → 对应的政策篇；
+4. 辱骂客服质量 → 情绪激烈（anger）；
+5. 连续兜底连带打成 silent —— 修好 1–4 自然消解，**不改**连续兜底规则（本文件钉住规则没动）。
+
+另有契约点名的两件顺手活：条件威胁（「不 X，我就 <真后果动作>」）判 complaint；``lang`` 公开
+``drop_codes`` / ``has_lang_signal``，``desk.has_lang_signal`` 不再调私有名。
+
+不变量（每条都有测试）：p12 / p13 开发集照旧；编造 0；零「自信答错」（route=answer 的轮意图必对）；
+触发词只加不减（R1）；连续兜底规则不动；同义归一只在原句检不到时启用（开发集检索逐字节同 p12，
+由 test_cs_understand_t173 的摘要表钉）；归一表不抄开发集。
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+
+import pytest
+
+from maos import kb
+from maos.core.store import SqliteStore
+from maos.domain.cs import desk as D
+from maos.domain.cs import evaluate, lang, scripts, triggers
+from maos.domain.cs import types as T
+from maos.domain.cs import understand as U
+from maos.domain.cs.corpus import seed_cs_kb
+from maos.domain.cs.desk import CsConfig, FrontDesk
+
+_ANS, _HO, _FB, _CLAR = T.ROUTE_ANSWER, T.ROUTE_HANDOFF, T.ROUTE_FALLBACK, T.ROUTE_CLARIFY
+_LOG, _PAY, _RET, _GEN = (T.INTENT_LOGISTICS, T.INTENT_REFUND_PAYMENT, T.INTENT_RETURN_EXCHANGE,
+                          T.INTENT_GENERAL)
+_LOOKUP = T.HANDOFF_NEEDS_ORDER_LOOKUP
+TENANT_T182 = "tnt-demo"
+
+# ---------------------------------------------------------------------------
+# 自写例句（按类别）
+# ---------------------------------------------------------------------------
+#: 类别 1：整句寒暄。期望：两条路径都答问候篇。
+GREETINGS_T182 = [
+    "在嘛在嘛", "亲在不在呀", "嗨～", "哈喽哈喽亲～", "喂喂", "亲，在吗？", "有人没", "老板在吗",
+    "早呀", "亲亲在嘛~~", "打扰一下哈", "小姐姐在不在", "掌柜的在吗", "上午好", "哎 有人吗～",
+    "在不在啊老板",
+]
+#: 类别 1 的反例：带真问题、或只有称呼 / 笑声 —— 不许被问候篇答掉。
+GREETING_NEGATIVES_T182 = [
+    ("在吗，包邮吗", _ANS, _LOG), ("你好，我要退货", _HO, _RET), ("哈哈哈", _FB, T.INTENT_UNKNOWN),
+    ("老板", _FB, T.INTENT_UNKNOWN), ("你好，这件衣服有没有大码", _FB, T.INTENT_UNKNOWN),
+    ("打扰一下，这款有现货吗", _FB, T.INTENT_UNKNOWN), ("亲在吗，能便宜点不", _FB, T.INTENT_UNKNOWN),
+    ("老板在吗 我想买两件", _FB, T.INTENT_UNKNOWN),
+]
+
+#: 类别 2：具体订单的进度 / 异常（不带发货 / 物流 / 退款这类诉求词为主）。
+#: (句子, 意图, p12 该转的查单篇)。p13 路径（空夹具端口、句中无单号）期望追问单号。
+ORDER_ANOMALIES_T182 = [
+    ("快递卡在转运中心三天了不更新", _LOG, "LOG-004"),
+    ("我的件在分拣中心放了五天", _LOG, "LOG-004"),
+    ("快递一直显示运输中不动", _LOG, "LOG-004"),
+    ("我买的衣服在转运中心躺了四天", _LOG, "LOG-004"),
+    ("上面写已签收，可家里没人收到", _LOG, "LOG-006"),
+    ("快递说放驿站了可我去找没有", _LOG, "LOG-006"),
+    ("快递员说放门口了但我回家没看到", _LOG, "LOG-006"),
+    ("拆开一看东西碎了", _LOG, "LOG-006"),
+    ("杯子寄过来就是碎的", _LOG, "LOG-006"),
+    ("外包装全湿了", _LOG, "LOG-006"),
+    ("商家同意退了，钱呢", _PAY, "PAY-003"),
+    ("卖家答应退了可一直没见到钱", _PAY, "PAY-003"),
+    ("支付的时候扣了两遍钱", _PAY, "PAY-004"),
+    ("同一笔订单付了两次", _PAY, "PAY-004"),
+]
+#: 类别 2 里的改地址：两条路径都是 needs_order_lookup 转人工（p13 的诉求是 other，不进查单，
+#: 见 docs/DECISIONS.md task-t182）。
+ADDRESS_CHANGES_T182 = ["下完单发现地址填成老家的了", "地址写错了想换一个", "下单的时候地址选错了",
+                        "收件人电话写错了能改吗", "我要把地址改成学校", "能不能帮我把收货地址换成公司的",
+                        "我刚下的单想改一下收货地址", "收货人信息填错了要改一下"]
+#: 类别 2 的反例：说到物流 / 签收 / 扣款的字眼，但不是在说自己那一单出了事。
+ANOMALY_NEGATIVES_T182 = ["签收需要本人吗", "中转站在哪", "驿站几点关门", "快递员态度很好",
+                          "重复购买有优惠吗", "物流信息一般多久更新", "包装盒好看吗", "这个杯子碎了能赔吗",
+                          "物流公司是哪家的"]
+
+#: 类别 3：政策问答的口语说法。(句子, 意图, 该答的政策篇)。
+POLICY_T182 = [
+    ("衣服没穿过标签也没剪可以退吗", _RET, "RET-001"),
+    ("吊牌没摘可以退货不", _RET, "RET-001"),
+    ("试穿了一下不喜欢能退吗", _RET, "RET-001"),
+    ("退东西要先寄回去还是先申请", _RET, "RET-002"),
+    ("退货第一步干嘛", _RET, "RET-002"),
+    ("退货应该先干嘛", _RET, "RET-002"),
+    ("寄回来的运费要我承担吗", _RET, "RET-004"),
+    ("退回去的钱谁出", _RET, "RET-004"),
+    ("洗完褪色严重可以换一件吗", _RET, "RET-003"),
+    ("衣服洗过之后缩水了能换吗", _RET, "RET-003"),
+    ("耳机一边没声音可以换吗", _RET, "RET-003"),
+    ("你们发货到西藏吗", _LOG, "LOG-002"),
+    ("乡下能送到吗", _LOG, "LOG-002"),
+    ("大件家具走什么物流", _LOG, "LOG-002"),
+    ("冰箱这种大件发什么物流", _LOG, "LOG-002"),
+    ("今天买今天能发吗", _LOG, "LOG-001"),
+    ("退款退回哪个账户", _PAY, "PAY-001"),
+    ("用支付宝付的退款退到哪", _PAY, "PAY-001"),
+    ("零钱付的退款要几天", _PAY, "PAY-001"),
+]
+#: 类别 3 的反例：碰到吊牌 / 膜 / 掉色 / 大件 / 钱包这些字眼，但不是在问售后政策 —— 落兜底。
+POLICY_NEGATIVES_T182 = ["吊牌上的价格是多少", "标签上写的什么面料", "这个膜是送的吗", "这个颜色会不会掉色",
+                         "洗了会不会缩水", "大件的有优惠吗", "钱包有现货吗", "没穿过这种款式好看吗",
+                         "花呗能分几期"]
+
+#: 类别 4：辱骂客服质量 → anger。
+ANGER_T182 = ["破客服有什么用", "你们这破客服", "被你们气疯了", "真是气疯我了", "什么鬼客服啊", "废物客服",
+              "烂客服", "你们客服是不是有病", "你们客服是死人吗", "客服就是个摆设", "你是白痴吗",
+              "这是什么烂系统", "气得我要死"]
+#: 类别 4 的反例：商品名、日常说法里夹着这些字。
+ANGER_NEGATIVES_T182 = ["废物利用的收纳盒有吗", "破洞牛仔裤有吗", "这件衣服是破洞款吗", "狗粮什么时候发货",
+                        "气垫梳有吗", "摆设用的花瓶有吗", "包装破了", "鬼节有活动吗"]
+
+#: 顺手：条件威胁（真后果动作）→ complaint。
+THREATS_T182 = ["不退我就给差评", "不处理的话我就去黑猫", "不退款我就发微博", "今天不解决我就找媒体",
+                "要是还不发货我就去网上说", "再拖着不处理我就报警", "不处理我就挂网上", "再不发货我就给差评",
+                "今天不给我退款我就报警"]
+#: 条件威胁的反例：表态、拿主意、纯发泄、拒收（拒收不是向外升级，照旧走退款诉求）。
+THREAT_NEGATIVES_T182 = ["我不会给差评的", "不退款我就自己留着用吧", "不退就不退吧，我认了",
+                         "不退款的话我会很失望", "不退的话我就去朋友家拿", "不退款，我就拒收",
+                         "为什么这么多差评", "好评返现吗"]
+
+
+# ---------------------------------------------------------------------------
+# 辅助
+# ---------------------------------------------------------------------------
+def _desk_t182(ports: dict | None = None) -> FrontDesk:
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    return FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None),
+                     **(ports or {}))
+
+
+def _empty_ports_t182(customer: str) -> dict:
+    empty = evaluate.EvalFixtures()
+    return {"verifier": evaluate.FixtureVerifier(empty, tenant_id=TENANT_T182, external_userid=customer),
+            "lookup": evaluate.FixtureLookup(empty), "precheck": evaluate.FixturePrecheck(empty)}
+
+
+def _run_t182(texts, *, p13: bool, cid: str = "T182"):
+    """一段会话里依次说 ``texts``，返回每轮的 DeskResult。p13=True 注入空夹具端口。"""
+    case = evaluate.EvalCase(id=cid, turns=tuple(texts),
+                             expect=tuple(evaluate.EvalExpect(_FB, T.INTENT_UNKNOWN) for _ in texts))
+    desk = _desk_t182(_empty_ports_t182(case.customer) if p13 else None)
+    return [desk.handle(evaluate.inbound_for(case, i, t)) for i, t in enumerate(texts, start=1)]
+
+
+def _one_t182(text: str, *, p13: bool):
+    return _run_t182([text], p13=p13)[0]
+
+
+def _cite_t182(scheme_no: str) -> str:
+    return evaluate.cite_doc_id(TENANT_T182, scheme_no)
+
+
+def _all_sentences_t182() -> list[str]:
+    return (GREETINGS_T182 + [t for t, *_ in GREETING_NEGATIVES_T182]
+            + [t for t, *_ in ORDER_ANOMALIES_T182] + ADDRESS_CHANGES_T182 + ANOMALY_NEGATIVES_T182
+            + [t for t, *_ in POLICY_T182] + POLICY_NEGATIVES_T182 + ANGER_T182 + ANGER_NEGATIVES_T182
+            + THREATS_T182 + THREAT_NEGATIVES_T182)
+
+
+def _without_synonym_norm_t182(monkeypatch) -> None:
+    monkeypatch.setattr(scripts, "normalized_query", lambda text: ("", ()))
+
+
+# ---------------------------------------------------------------------------
+# 0. 例句表本身
+# ---------------------------------------------------------------------------
+def test_each_category_has_eight_distinct_phrasings_and_negatives_t182():
+    for table in (GREETINGS_T182, ORDER_ANOMALIES_T182, ADDRESS_CHANGES_T182, POLICY_T182, ANGER_T182,
+                  THREATS_T182):
+        assert len(table) >= 8 and len(set(map(str, table))) == len(table)
+    for table in (GREETING_NEGATIVES_T182, ANOMALY_NEGATIVES_T182, POLICY_NEGATIVES_T182,
+                  ANGER_NEGATIVES_T182, THREAT_NEGATIVES_T182):
+        assert len(table) >= 5
+    everything = _all_sentences_t182()
+    assert len(set(everything)) == len(everything)
+
+
+def test_sentences_are_not_dev_set_sentences_t182():
+    """自写句不取自开发集（p12 / p13），也不是话术库登记过的说法（否则重排直接给 1 分，测不出泛化）。"""
+    dev = {t for path in (evaluate.EVAL_PATH, evaluate.P13_EVAL_PATH)
+           for c in evaluate.load_cases(path) for t in c.turns}
+    registered = set()
+    for row in kb_rows_t182():
+        body = json.loads(row["body"])
+        for v in [body["scene"], *body["synonyms"], *body["examples"]]:
+            registered |= scripts.tail_forms(v)
+    for text in _all_sentences_t182():
+        assert text not in dev, text
+        assert not (scripts.tail_forms(text) & registered), text
+
+
+def kb_rows_t182() -> list[dict]:
+    from maos.domain.cs import corpus
+    return corpus.load_corpus()
+
+
+# ---------------------------------------------------------------------------
+# 1. 寒暄
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("p13", [False, True], ids=["p12", "p13"])
+@pytest.mark.parametrize("text", GREETINGS_T182)
+def test_greeting_variants_get_the_greeting_script_t182(text, p13):
+    assert scripts.greeting_only(text), text
+    res = _one_t182(text, p13=p13)
+    assert (res.route, res.intent) == (_ANS, _GEN), (text, res.route, res.intent)
+    assert res.draft.citations == (_cite_t182("GEN-001"),)
+
+
+@pytest.mark.parametrize("text,route,intent", GREETING_NEGATIVES_T182)
+def test_greeting_plus_real_question_is_not_a_greeting_t182(text, route, intent):
+    assert not scripts.greeting_only(text), text
+    res = _one_t182(text, p13=False)
+    assert (res.route, res.intent) == (route, intent), (text, res.route, res.intent)
+    assert _cite_t182("GEN-001") not in res.draft.citations
+
+
+def test_greetings_fall_back_without_the_synonym_norm_t182(monkeypatch):
+    """反向：关掉同义归一，这一类大半落兜底 —— 是归一在起作用，不是话术库本来就认。"""
+    _without_synonym_norm_t182(monkeypatch)
+    fell = [t for t in GREETINGS_T182 if _one_t182(t, p13=False).route == _FB]
+    assert len(fell) >= len(GREETINGS_T182) // 2, fell
+
+
+# ---------------------------------------------------------------------------
+# 2. 具体订单的进度 / 异常
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,intent,scheme", ORDER_ANOMALIES_T182)
+def test_order_anomalies_hand_off_for_lookup_on_the_p12_path_t182(text, intent, scheme):
+    res = _one_t182(text, p13=False)
+    assert (res.route, res.handoff_reason, res.intent) == (_HO, _LOOKUP, intent), (
+        text, res.route, res.handoff_reason, res.intent)
+    assert res.draft.citations == (_cite_t182(scheme),)
+
+
+@pytest.mark.parametrize("text,intent,scheme", ORDER_ANOMALIES_T182)
+def test_order_anomalies_enter_the_lookup_branch_on_the_p13_path_t182(text, intent, scheme):
+    """p13 路径：理解层把这一单的异常认成查进度（track），前台进查单分支；句中没有单号就追问。"""
+    assert scripts.order_anomaly(text), text
+    assert U.extract_request(text) == "track", text
+    res = _one_t182(text, p13=True)
+    assert (res.route, res.ask_slot, res.intent) == (_CLAR, "order_no", intent), (
+        text, res.route, res.ask_slot, res.intent)
+
+
+@pytest.mark.parametrize("p13", [False, True], ids=["p12", "p13"])
+@pytest.mark.parametrize("text", ADDRESS_CHANGES_T182)
+def test_address_changes_hand_off_for_lookup_t182(text, p13):
+    res = _one_t182(text, p13=p13)
+    assert (res.route, res.handoff_reason, res.intent) == (_HO, _LOOKUP, _LOG), (
+        text, res.route, res.handoff_reason, res.intent)
+    assert U.extract_request(text) in ("other", ""), text
+
+
+@pytest.mark.parametrize("text", ANOMALY_NEGATIVES_T182)
+def test_anomaly_negatives_are_not_order_anomalies_t182(text):
+    assert not scripts.order_anomaly(text), text
+
+
+def test_money_anomalies_are_refund_payment_even_without_money_words_t182():
+    """「付了两次」里没有「钱」字：查的仍是钱（支付退款），不是包裹。"""
+    for text in ("同一笔订单付了两次", "我付款成功了订单却显示未付款", "商家同意退了，钱呢"):
+        assert U.rule_intent(text, request=U.extract_request(text)) == _PAY, text
+
+
+# ---------------------------------------------------------------------------
+# 3. 政策问答的口语说法
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("p13", [False, True], ids=["p12", "p13"])
+@pytest.mark.parametrize("text,intent,scheme", POLICY_T182)
+def test_policy_colloquialisms_get_their_policy_script_t182(text, intent, scheme, p13):
+    res = _one_t182(text, p13=p13)
+    assert (res.route, res.intent) == (_ANS, intent), (text, res.route, res.intent)
+    assert res.draft.citations == (_cite_t182(scheme),), (text, res.draft.citations)
+
+
+@pytest.mark.parametrize("text", POLICY_NEGATIVES_T182)
+def test_policy_negatives_are_not_answered_t182(text):
+    res = _one_t182(text, p13=False)
+    assert res.route == _FB, (text, res.route, res.intent, res.draft.citations)
+
+
+def test_policy_colloquialisms_fall_back_without_the_synonym_norm_t182(monkeypatch):
+    """反向：关掉同义归一，这一类里有一批回到兜底。"""
+    _without_synonym_norm_t182(monkeypatch)
+    fell = [t for t, *_ in POLICY_T182 if _one_t182(t, p13=False).route == _FB]
+    assert len(fell) >= 5, fell
+
+
+def test_order_steps_question_is_not_a_return_request_t182():
+    """「要先申请还是直接寄回来」是问流程：p13 路径不许为它去要单号。"""
+    for text in ("退东西要先寄回去还是先申请", "退货要先申请还是直接寄回来", "退款退回哪个账户"):
+        assert U.extract_request(text) == "", text
+
+
+# ---------------------------------------------------------------------------
+# 4. 辱骂客服质量；顺手：条件威胁
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text", ANGER_T182)
+def test_insulting_the_service_is_anger_t182(text):
+    assert triggers.detect(text) == (T.HANDOFF_ANGER, T.INTENT_COMPLAINT), text
+    res = _one_t182(text, p13=False)
+    assert (res.route, res.handoff_reason, res.intent) == (_HO, T.HANDOFF_ANGER, T.INTENT_COMPLAINT)
+
+
+@pytest.mark.parametrize("text", ANGER_NEGATIVES_T182)
+def test_anger_negatives_do_not_trigger_t182(text):
+    assert triggers.detect(text) is None, text
+
+
+@pytest.mark.parametrize("text", THREATS_T182)
+def test_conditional_threats_are_complaints_t182(text):
+    assert triggers.detect(text) == (T.HANDOFF_COMPLAINT, T.INTENT_COMPLAINT), text
+    res = _one_t182(text, p13=True)
+    assert (res.route, res.handoff_reason) == (_HO, T.HANDOFF_COMPLAINT)
+
+
+@pytest.mark.parametrize("text", THREAT_NEGATIVES_T182)
+def test_venting_and_decisions_are_not_threats_t182(text):
+    assert triggers.detect(text) is None, text
+
+
+def test_threat_with_an_online_act_keeps_the_request_t182():
+    """「不退款，我就上网曝光」：诉求照旧是退款（不是撤回），转人工原因是投诉。"""
+    text = "不退款，我就上网曝光"
+    assert U.extract_request(text) == "refund"
+    assert triggers.detect(text)[0] == T.HANDOFF_COMPLAINT
+
+
+# ---------------------------------------------------------------------------
+# 5. 不变量
+# ---------------------------------------------------------------------------
+def test_no_fabrication_and_no_confident_wrong_answer_t182():
+    """编造 0；零「自信答错」：自写句里凡是 route=answer 的，意图都对（两条路径）。"""
+    expected = {t: _GEN for t in GREETINGS_T182}
+    expected.update({t: i for t, i, _s in ORDER_ANOMALIES_T182})
+    expected.update({t: i for t, i, _s in POLICY_T182})
+    expected.update({t: i for t, _r, i in GREETING_NEGATIVES_T182})
+    # 反例表里答了的两句：问快递公司、问发货时间，都答对了
+    expected.update({"物流公司是哪家的": _LOG, "狗粮什么时候发货": _LOG})
+    for p13 in (False, True):
+        for text in _all_sentences_t182():
+            res = _one_t182(text, p13=p13)
+            assert not evaluate._fabricates_status(res.reply_text), (text, p13)
+            if res.route == _ANS:
+                assert text in expected and res.intent == expected[text], (text, p13, res.intent)
+
+
+def test_trigger_floor_is_never_narrowed_t182():
+    """R1：p12 地板判出的原因，现在一个不少（开发集 + 本文件全部句子）；契约表的词照认。"""
+    dev = [t for path in (evaluate.EVAL_PATH, evaluate.P13_EVAL_PATH)
+           for c in evaluate.load_cases(path) for t in c.turns]
+    for text in dev + _all_sentences_t182():
+        assert set(triggers.matched_reasons(text)) >= set(triggers.p12_reasons(text)), text
+    for reason, words in triggers.CONTRACT_WORDS.items():
+        for word in words:
+            got = triggers.detect(word)
+            assert got is not None and triggers.PRIORITY.index(got[0]) <= triggers.PRIORITY.index(reason)
+
+
+def test_dev_sets_are_unchanged_t182():
+    """p12 开发集：只差 T169 登记的那一轮（CS12-044#1）；p13 开发集：零失误。编造 0。"""
+    r12 = evaluate.run_eval(lambda: _desk_t182(), evaluate.load_cases())
+    assert {(m.case_id, m.turn) for m in r12.failures} == {("CS12-044", 1)}, r12.describe()
+    assert r12.status_fabrication == 0
+    r13 = evaluate.run_eval_p13(lambda ports: _desk_t182(ports), evaluate.load_cases(evaluate.P13_EVAL_PATH))
+    assert r13.failures == (), r13.describe()
+    assert r13.status_fabrication == 0 and r13.wrong_status == 0
+
+
+def test_fallback_streak_rule_is_untouched_t182():
+    """不改连续兜底规则：门槛仍是 2，两轮判不准就 repeated_fallback；修好的类别不再连带。"""
+    assert T.FALLBACK_STREAK_HANDOFF == 2
+    got = _run_t182(["帮我写一首关于秋天的诗", "给我讲个笑话"], p13=False)
+    assert [(r.route, r.handoff_reason) for r in got] == [(_FB, ""), (_HO, T.HANDOFF_REPEATED_FALLBACK)]
+    got = _run_t182(["亲在不在呀", "吊牌没摘可以退货不", "打扰一下哈", "退货第一步干嘛"], p13=False)
+    assert [r.route for r in got] == [_ANS, _ANS, _ANS, _ANS], [(r.route, r.handoff_reason) for r in got]
+
+
+def test_synonym_norm_only_rescues_turns_below_the_threshold_t182():
+    """归一只在原句检不到时启用：原句本来就检得到的（开发集每一轮 answer / handoff 的检索），
+    KbRetrieved 里没有 synonym_norm；启用时只记规则名，不记客户原文与归一后的句子。"""
+    store = SqliteStore(":memory:")
+    store.init_schema()
+    seed_cs_kb(store)
+    hits = scripts.match_scripts(store, tenant_id=TENANT_T182, text="亲在不在呀", plan_id="cs:csc-t182",
+                                 task_id="csc-t182-t0001")
+    assert hits and hits[0].scheme_no == "GEN-001" and hits[0].score >= scripts.MIN_SCRIPT_SCORE
+    scripts.match_scripts(store, tenant_id=TENANT_T182, text="包邮吗亲", plan_id="cs:csc-t182",
+                          task_id="csc-t182-t0002")
+    rows = kb.query(store, "SELECT task_id, detail FROM event_log WHERE event_type='KbRetrieved' "
+                           "ORDER BY rowid")
+    first, second = (json.loads(r["detail"]) for r in rows)
+    assert first["query"]["synonym_norm"] == ["greeting"]
+    assert "亲在不在" not in rows[0]["detail"] and "你好" not in json.dumps(first["query"], ensure_ascii=False)
+    assert "synonym_norm" not in second["query"]
+
+
+def test_synonym_rule_names_and_canonicals_are_registered_phrases_t182():
+    """每条规则的规范说法都是话术库登记过的同义词（归一到的是库里的话，不是另编一套）。"""
+    registered = set()
+    for row in kb_rows_t182():
+        body = json.loads(row["body"])
+        registered.update(body["synonyms"])
+    names = [r[0] for r in scripts.SYNONYM_RULES]
+    assert len(set(names)) == len(names) and "greeting" not in names
+    assert scripts.ORDER_ANOMALY_RULES <= set(names)
+    for _name, _pat, canonical, _need, _avoid in scripts.SYNONYM_RULES:
+        assert canonical in registered, canonical
+    assert scripts.GREETING_CANONICAL in registered
+
+
+#: 归一表里与开发集句子重合的 ≥ 4 字说法：只许是契约 §2 T182 类别 1 点名的那一个。
+CONTRACT_NAMED_OVERLAPS_T182 = frozenset({"打扰一下"})
+
+
+def test_normalization_lexicon_does_not_copy_dev_sentences_t182():
+    """近重复棘轮（同 T169 片段棘轮的口径，≥ 4 字）：归一表里自写的问候词与称呼，规整后 ≥ 4 字的
+    不许是开发集任何一句的一段（契约点名的除外）。规范说法另由上一条钉成话术库已登记的同义词。"""
+    dev = ["".join(kb.tokenize(t)) for path in (evaluate.EVAL_PATH, evaluate.P13_EVAL_PATH)
+           for c in evaluate.load_cases(path) for t in c.turns]
+    overlaps = set()
+    for word in list(scripts.GREETING_WORDS) + list(scripts.GREETING_ADDRESS):
+        norm = "".join(kb.tokenize(word))
+        if len(norm) >= 4 and any(norm in t for t in dev):
+            overlaps.add(word)
+    assert overlaps <= CONTRACT_NAMED_OVERLAPS_T182, sorted(overlaps - CONTRACT_NAMED_OVERLAPS_T182)
+
+
+# ---------------------------------------------------------------------------
+# 6. lang 的公开函数（BACKLOG integrate-p13）
+# ---------------------------------------------------------------------------
+def test_desk_uses_the_public_lang_function_t182():
+    src = inspect.getsource(D.has_lang_signal)
+    assert "_drop_codes" not in src and "drop_codes" in src
+    assert lang.drop_codes is lang._drop_codes
+    for text in ("A1001", "SO-2026-000123", "2026092400123", "A1001 where", "到哪", "", "!!", "Hi",
+                 "iPhone15", "订单 A1001"):
+        assert D.has_lang_signal(text) == lang.has_lang_signal(text), text
+    assert lang.drop_codes("order A1001 now") == "order   now"

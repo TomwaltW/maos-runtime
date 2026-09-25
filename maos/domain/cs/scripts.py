@@ -40,6 +40,17 @@
 
 ``intent_hint`` 给 ``unknown`` 时没有可优先的话术，排序同缺省；给了 ``INTENTS`` 之外的值抛
 ``ValueError``（上游该先夹到枚举里，悄悄当成缺省会把接线错误藏起来）。
+
+## 同义归一（p14 T182：``SYNONYM_RULES`` / :func:`greeting_only`）
+
+**只在原句检不到时启用**（重排后的最高分低于 :data:`MIN_SCRIPT_SCORE`，本该落兜底）：原句本来就
+检得到的，返回值与 ``KbRetrieved`` 逐字节同 p12 / p13。启用时把口语说法换成话术库里**登记过的
+同义词**（整句寒暄 → 「你好」；「包裹在中转站躺了四天」→「物流没更新」；「吊牌没摘能退吗」→
+「七天无理由能退吗」……），拿归一后的句子再召回一次、再打一次分，每篇取两次里高的那个。
+规则按类别写（寒暄、具体订单的进度 / 异常、政策问答的口语说法），每条带「整句必须有 / 不许有」
+的线索，拿不准的一律不归一（原句照旧落兜底）。``KbRetrieved.detail.query`` 多记一个
+``synonym_norm``（命中的规则名，枚举），不记归一后的句子。话术库本身一条没加（增补棘轮归 T169
+的测试管，见 docs/DECISIONS.md task-t182）。
 """
 
 from __future__ import annotations
@@ -202,6 +213,206 @@ def detect_cue(text: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# 同义归一（p14 T182）：原句检不到话术时，把口语说法换成话术库里登记过的规范说法再检一次
+# ---------------------------------------------------------------------------
+#: 寒暄的说法（整句只由它们、称呼与语气词组成时，这句就是一句问候）。写成规范化后的形态
+#: （NFKC、小写、去掉空白与标点）。叠字（「在吗在吗」「哈喽哈喽」「喂喂」）、波浪号、语气词都靠
+#: :func:`greeting_only` 逐段吃掉，不在这里逐个列。
+GREETING_WORDS: tuple[str, ...] = (
+    "你好", "您好", "你们好", "大家好", "在吗", "在么", "在嘛", "在嘞", "在不在", "在没在", "在不", "在没",
+    "在没有", "在的吗", "在线吗", "还在吗", "还在么", "有人吗", "有人么", "有人嘛", "有人没", "有人不",
+    "有人在吗", "有人在不", "有人在么", "有人在没", "有人在", "有没有人", "哈喽", "哈罗", "哈啰", "嗨", "嘿",
+    "早", "早安", "早上好", "上午好", "中午好", "下午好", "晚上好", "打扰一下",
+    "打扰下", "打扰了", "打扰啦", "打扰您了", "打扰你了", "打扰", "喂", "请问",
+)
+#: 寒暄里常带的称呼（单独出现不算问候，要跟一个 :data:`GREETING_WORDS` 同句）。
+GREETING_ADDRESS: tuple[str, ...] = (
+    "亲", "亲亲", "亲爱的", "老板", "老板娘", "掌柜", "掌柜的", "店家", "店主", "卖家", "商家", "客服",
+    "小二", "美女", "帅哥", "小姐姐", "小哥哥", "小哥", "宝", "宝宝", "家人们", "朋友",
+)
+#: 寒暄里夹的语气词（单字）。
+GREETING_PARTICLES = frozenset("啊呀吗嘛呢吧哦哈啦呗哇喔嗯噢哎诶欸呐哟么咯嘞")
+_GREETING_TOKENS: tuple[tuple[str, bool], ...] = tuple(sorted(
+    {(w, True) for w in GREETING_WORDS} | {(w, False) for w in GREETING_ADDRESS},
+    key=lambda t: (-len(t[0]), t[0])))
+#: 整句寒暄最多这么多个字（规范化后）：再长就不是一句单纯的招呼了。
+GREETING_MAX_CHARS = 16
+#: 寒暄归一成的规范说法（问候篇登记过的同义词）。
+GREETING_CANONICAL = "你好"
+
+
+def _greeting_text(text: str) -> str:
+    """寒暄判定用的规范化：NFKC、小写，只留汉字与 ASCII 字母（标点、空白、波浪号、表情、数字都去掉）。"""
+    s = unicodedata.normalize("NFKC", text or "").lower()
+    return "".join(c for c in s if ("a" <= c <= "z") or "一" <= c <= "鿿")
+
+
+def greeting_only(text: str) -> bool:
+    """整句只是一句寒暄：从头到尾都吃得成问候词、称呼、语气词，且至少有一个问候词。
+
+    「在吗在吗～」「亲在不在呀」「哈喽哈喽」「打扰一下哈」「老板在吗」是；「在吗，包邮吗」
+    「你好，我要退货」「哈哈」「老板」不是（客套 + 真问题照旧按真问题检，见 T169 的客套开场守卫）。
+    """
+    s = _greeting_text(text)
+    if not s or len(s) > GREETING_MAX_CHARS:
+        return False
+    i, greeted = 0, False
+    while i < len(s):
+        for word, is_greeting in _GREETING_TOKENS:
+            if s.startswith(word, i):
+                i += len(word)
+                greeted = greeted or is_greeting
+                break
+        else:
+            if s[i] in GREETING_PARTICLES:
+                i += 1
+                continue
+            return False
+    return greeted
+
+
+#: 分句内的「若干个字」（不跨句号、问号、感叹号）。
+_W = r"[^。.!！?？]"
+#: 分句内的「若干个字」（不跨任何标点）。
+_C = r"[^,，。.!！?？;；]"
+
+#: 同义归一规则：(名字, 口语说法的正则, 规范说法, 整句必须有的线索, 整句不许有的线索)。
+#: 在规范化文本（NFKC、小写、去空白）上匹配；命中的那一段换成规范说法 —— 规范说法都是话术库里
+#: 登记过的同义词。名字是枚举（进 KbRetrieved.detail.query.synonym_norm，不含客户原文）。
+#: 类别对应 p14 契约 §2 T182 的误判类别 2（具体订单的进度 / 异常）与 3（政策问答的口语说法）。
+SYNONYM_RULES: tuple[tuple[str, str, str, str, str], ...] = (
+    # ---- 类别 2：具体订单的进度 / 异常（话术都是 needs_order_lookup 的查单篇）----
+    ("stalled", rf"(?:卡在|停在|滞留在?|压在|躺在|困在|一直在|堵在){_C}{{0,8}}?"
+                r"(?:中转|转运|分拣|集散|网点|仓库?|站点|海关|路上|物流中心|快递点|营业部)"
+                rf"|(?:中转|转运|分拣|集散|网点|站点|海关|物流中心|快递点|营业部){_C}{{0,6}}?"
+                r"(?:放|停|卡|搁|压|躺|待|呆|滞留)了?(?:[0-9一二三四五六七八九十两好几多]+天|一周|一个星期|好久|很久)"
+                rf"|(?:物流|快递|包裹|单号|轨迹|件|信息){_C}{{0,8}}?(?:不动|不走|不更新|没更新|没有更新|没变化"
+                r"|没变|没动静|没动|停了|停住|卡住|卡了|没反应|没进展|一动不动)"
+                rf"|(?:好几天|几天|多天|一周|一个星期|一个礼拜|[0-9一二三四五六七八九十两]+天){_C}{{0,6}}?"
+                r"(?:不动|不走|不更新|没更新|没有更新|没变化|没动静|没动|停着|卡着|一动不动)",
+     "物流没更新", "", r"多久|多长时间|一般|通常"),
+    ("address", r"(?:改|修改|更改|变更|换)(?:一下|下|个)?(?:收货|收件|寄送|配送|送货)?地址"
+                r"|(?:改|修改|更改|变更|换)(?:一下|下|个)?(?:收货|收件)(?:人|电话|信息)"
+                rf"|地址{_C}{{0,3}}(?:填|写|选|弄|输|留)(?:错|成|反|到|的是)"
+                r"|(?:寄|送|发)(?:到|去)?(?:另外|别的|其他|新)(?:一个|的)?(?:地方|地址)",
+     "改地址", "", ""),
+    ("signed_missing", r"(?:签收|已签|签了|送达|妥投|派送成功|投递成功|放(?:在|到)?了?(?:驿站|快递柜|丰巢|菜鸟"
+                       rf"|门口|门卫|前台|快递点|代收点)){_W}{{0,14}}?(?:没(?:有)?(?:收到|拿到|见到|看到|找到"
+                       r"|取到|到手)|没人(?:收到|拿到|签收|收过?)|找不到|没找到|不见了?|没看见|没有(?=$|[,，。!！?？呀啊呢]))"
+                       rf"|(?:没|未)(?:收到|拿到){_W}{{0,10}}?(?:显示|却|但|可)(?:是|说)?(?:已经?)?(?:签收|已签|送达)",
+     "显示签收没收到", "", ""),
+    ("lost", rf"(?:快递|包裹|件|东西|货){_C}{{0,4}}?(?:丢了|弄丢|寄丢|丢失|不见了|找不到了)",
+     "包裹丢了", "", ""),
+    ("damaged", rf"(?:箱子|盒子|纸箱|外箱|外包装|包装盒?|快递盒|快递袋|袋子|包裹){_C}{{0,4}}?"
+                r"(?:破了?|烂了?|扁了?|压扁|压坏|压烂|湿了|裂开|变形|凹|瘪|碎)"
+                r"|(?:拆开|打开|开箱|收到|到手|拿到|取出来|寄过来|寄来|送过来|送来|送到|寄到)"
+                rf"{_W}{{0,10}}?(?:碎了|碎成|摔碎|摔坏|摔裂|压碎|压坏"
+                r"|压扁|压变形|破了|烂了|裂了|破损|漏了|洒了|撒了|碎的|破的|烂的|裂的)",
+     "包裹破损", "", r"换|质量|用了|用就|一用|用过|穿"),
+    ("refund_missing", r"(?:同意|答应|说好|说了|已经|显示|审核通过|通过了?)"
+                       rf"{_W}{{0,6}}?退(?:款|钱|我|给我)?{_W}{{0,12}}?(?:没(?:有)?(?:到|收到|回来|见着|见到"
+                       r"|到账|到帐|动静|看到)|不见|没退)"
+                       rf"|(?:退款|退的钱|退回的钱|钱){_C}{{0,8}}?(?:一直|还|迟迟|始终|都)(?:没|没有|不见)"
+                       r"(?:到|收到|回来|见着|见到|到账|到帐|动静|退)"
+                       rf"|退{_W}{{0,10}}?钱(?:呢|在哪|去哪|哪去|跑哪)",
+     "退款还没到账", "", ""),
+    ("double_charge", r"扣(?:了)?(?:我)?(?:两|2|二|俩|多|好几|三)(?:次|笔|回|遍|下|份|倍)"
+                      r"|(?:多|重复|重)(?:扣|收)(?:了)?(?:我)?(?:钱|款|费|一次|一笔)?"
+                      r"|(?:付|支付|交|收)(?:了)?(?:两|2|二|俩)(?:次|笔|回|遍)",
+     "重复扣款", "", ""),
+    ("paid_unpaid", rf"(?:扣了?|付了|支付了|扣钱了|付过|钱已经?(?:扣|付|出)了?)(?:钱|款)?{_W}{{0,12}}?"
+                    rf"(?:订单|单子|页面|显示|状态){_W}{{0,6}}?(?:没|未|待|还是)(?:付|支付|成功|生成|下单|到账)",
+     "扣款了订单没成功", "", ""),
+    # ---- 类别 3：政策问答的口语说法（话术都是不转人工的政策篇）----
+    ("seven_day", rf"(?:吊牌|标签|标牌|水洗标|商标){_C}{{0,3}}?(?:还在|没拆|没剪|没摘|没撕|没动|完好|都在|剪了"
+                  r"|摘了|拆了|撕了)"
+                  rf"|(?:拆了|拆开了?|撕了|打开了?|拆封了?){_C}{{0,3}}?(?:外膜|膜|塑封|包装|外包装|封条|封口|盒子"
+                  rf"|袋子)|(?:外膜|塑封|包装|外包装|封条|封口|盒子){_C}{{0,3}}?(?:拆了|拆开|撕了|打开|拆封|没拆"
+                  r"|没打开|没撕)"
+                  r"|(?:没|未|还没)(?:穿|用|戴|洗|拆|使用|试)过?",
+     "七天无理由", r"退", r"坏|质量|破|碎|裂|掉色|褪色|问题|瑕疵|发错|少发|漏发|多久|几天|到账"),
+    ("return_steps", rf"(?:先|第一步|首先){_C}{{0,10}}?(?:还是|再|然后|之后)"
+                     r"|(?:第一步|先|首先|一开始)(?:要|该|得)?(?:干嘛|干啥|做什么|做啥|怎么做|咋做|弄什么)"
+                     r"|先后|顺序|步骤|怎么个流程|啥流程|什么流程|要干嘛|要干啥|该干嘛|该干啥|咋弄|咋整|怎么弄"
+                     r"|怎么搞|怎么办理|怎么操作",
+     "退货流程", r"退|寄回|售后", r"坏|碎|破|质量|运费|邮费|快递费|多久|几天|到账"),
+    ("return_fee", r"(?:运费|邮费|快递费|运输费|寄费|邮资|来回的?(?:钱|费用)|寄回(?:去|来)?的?(?:钱|费用))"
+                   rf"{_C}{{0,8}}?(?:谁|我|自己|你们|商家|卖家|店家|买家|报销|承担|负责|出|付|掏|返)"
+                   rf"|(?:要我|我要|要自己|得自己|需要自己|我自己)(?:掏钱|出钱|花钱|付钱|承担){_C}{{0,6}}?(?:寄|退)",
+     "退货运费谁出", r"退|寄回", ""),
+    ("quality_exchange", r"掉色|褪色|染色|串色|起球|开线|脱线|变形|缩水|开胶|脱胶|起皱|发黄|生锈|漏水|漏电|坏了"
+                         r"|坏掉|断了|裂了|裂开|有问题|质量问题|质量不好|质量差|有瑕疵|瑕疵|破洞|有洞|不亮|不响"
+                         r"|没声音|充不进电|开不了机|失灵|异响|有异味|掉漆|脱落",
+     "质量问题换货", r"换", r"地址|进度|到哪|审核|多久|几天|快递|物流"),
+    ("delivery_scope", r"(?:发|送|寄|配送|派送|发货)(?:得|的)?(?:到|去|往)(?![哪了货付])"
+                       rf"{_C}{{1,8}}?(?:吗|么|嘛|不|没)(?=$|[,，。!！?？呀啊呢])"
+                       r"|(?:偏远|乡下|农村|乡镇|村里|山区|国外|海外|境外|港澳台?|香港|澳门|台湾|西藏|新疆|内蒙古?"
+                       rf"|青海|宁夏|甘肃|海南|岛上){_C}{{0,6}}?(?:能|可以|发|送|配送|到|寄)",
+     "能不能送到", "", r"了吗|了没|到哪|什么时候|多久|几天|啥时候|几号|哪天|明天|今天|后天|地址|包邮|运费|邮费"),
+    ("courier", r"(?:什么|哪家|哪个|啥|哪种|哪一家|哪些)(?:快递|物流|快运|配送|货运)"
+                r"|(?:能|可以|可不可以|能不能|支持)(?:指定|选|选择|换|改)(?:个|一下)?(?:快递|物流)"
+                r"|(?:发|走|用)(?:顺丰|京东|ems|邮政|中通|圆通|申通|韵达|德邦|极兔|百世)"
+                rf"|大件(?:商品|家具|家电|物品|东西)?{_C}{{0,4}}?(?:走|用|发|送)",
+     "用哪家快递", "", r"到哪|了吗|了没|单号|查|进度|多久|几天|什么时候|运费|邮费|包邮"),
+    ("ship_time", rf"(?:最快|最早|最迟|最晚|一般|大概|大约)(?:哪天|哪一天|几号|什么时候|啥时候|多久|几天|何时){_C}{{0,4}}?"
+                  rf"(?:发|寄|出库|出货)|(?:今天|今晚|明天|当天)(?:下单|拍|买|付款)?{_C}{{0,6}}?(?:能|可以|会)?"
+                  r"(?:发|寄|出库)(?:货|出|走)?(?:吗|么|嘛|不)",
+     "什么时候发货", "", r"我的|我那|我这|那单|这单|订单|单号|了吗|了没|还没|怎么还"),
+    ("refund_route", rf"退(?:款|的钱|回的钱|回来的钱|钱)?{_C}{{0,6}}?(?:退到|退回|回到|返回|原路|到)"
+                     r"(?:哪|哪里|哪儿|什么地方|原来|原|余额|零钱|银行卡|卡上|卡里|花呗|信用卡|钱包|账户|支付宝|微信)",
+     "退款退到哪", "", r"了吗|了没|到账了|没到|还没|怎么还|一直没"),
+    ("wallet_duration", r"(?:钱包|零钱|余额|花呗|信用卡|银行卡|储蓄卡|微信|支付宝|云闪付|白条)(?:支付|付款|付的|付)?"
+                        rf"{_C}{{0,8}}?(?:多久|几天|多长时间|什么时候|啥时候|几个工作日|多少天)",
+     "退款多久到", r"退", r"了吗|了没|还没|怎么还|一直没"),
+)
+_SYNONYM_RES: tuple[tuple[str, re.Pattern[str], str, re.Pattern[str] | None, re.Pattern[str] | None], ...] = tuple(
+    (name, re.compile(p), canon, re.compile(need) if need else None, re.compile(avoid) if avoid else None)
+    for name, p, canon, need, avoid in SYNONYM_RULES)
+
+#: 属于「具体订单的进度 / 异常」的规则（理解层据此把诉求判成查进度，见 :func:`order_anomaly`）。
+ORDER_ANOMALY_RULES = frozenset({"stalled", "signed_missing", "lost", "damaged", "refund_missing",
+                                 "double_charge", "paid_unpaid"})
+
+
+def _norm_text(text: str) -> str:
+    """同义归一用的规范化：NFKC、小写、去掉空白与格式字符（保留标点：规则按分句看）。"""
+    s = unicodedata.normalize("NFKC", text or "").lower()
+    return "".join(c for c in s if not c.isspace() and unicodedata.category(c) != "Cf")
+
+
+def synonym_hits(text: str) -> tuple[str, ...]:
+    """原文命中的同义归一规则名（按 :data:`SYNONYM_RULES` 的先后）。整句寒暄记 ``greeting``。"""
+    if greeting_only(text):
+        return ("greeting",)
+    s = _norm_text(text)
+    return tuple(name for name, pat, _c, need, avoid in _SYNONYM_RES
+                 if pat.search(s) and (need is None or need.search(s))
+                 and (avoid is None or not avoid.search(s)))
+
+
+def normalized_query(text: str) -> tuple[str, tuple[str, ...]]:
+    """(归一后的句子, 命中的规则名)。没有命中返回 ``("", ())``。
+
+    整句寒暄 → :data:`GREETING_CANONICAL`；否则每条命中的规则把它匹配到的那几段换成规范说法。
+    """
+    names = synonym_hits(text)
+    if not names:
+        return "", ()
+    if names == ("greeting",):
+        return GREETING_CANONICAL, names
+    s = _norm_text(text)
+    for name, pat, canon, _need, _avoid in _SYNONYM_RES:
+        if name in names:
+            s = pat.sub(canon, s)
+    return s, names
+
+
+def order_anomaly(text: str) -> bool:
+    """原文说的是某一单的进度 / 异常（卡在中转站不动、签收没收到、丢件破损、退款没到、重复扣款）。"""
+    return any(name in ORDER_ANOMALY_RULES for name in synonym_hits(text))
+
+
 def _cue_sign(cue: str, body: dict) -> int:
     """线索与这篇话术对不对得上：+1 对上、-1 相反、0 不相干。"""
     if not cue:
@@ -327,6 +538,35 @@ def _usable_body(doc: dict) -> dict | None:
     return body
 
 
+def _score_all(recalled: list[dict], text: str, normalized: str, *, intent_hint: str,
+               cue: str) -> list[tuple[float, float, float, str, dict, dict]]:
+    """逐篇打分并排好：(出门的分, 原分, 知识层分, doc_id, hit, body)。
+
+    ``normalized`` 非空（同义归一启用）时原分取原句与归一句两次里高的那个。缺省模式下出门的分
+    就是原分，排序键退化成 p12 的 (-原分, -知识层分, doc_id)：逐字节同 p12。
+    """
+    scored: list[tuple[float, float, float, str, dict, dict]] = []
+    for hit in recalled:
+        doc = hit.get("doc") or {}
+        if doc.get("biz_type") != T.BIZ_TYPE_CS:
+            continue
+        body = _usable_body(doc)
+        if body is None:
+            continue
+        score = script_score(text, body)
+        if normalized:
+            score = max(score, script_score(normalized, body))
+        if score <= 0:
+            continue
+        final = hinted_score(score, body, intent_hint=intent_hint, cue=cue) \
+            if intent_hint else score
+        scored.append((final, score, float(hit.get("score") or 0.0), hit["doc_id"], hit, body))
+    # 同分先看 p12 原分（原样命中的那篇仍然第一），再看知识层的分，再看 doc_id：
+    # 次序必须确定（「连跑两次输出一致」）。
+    scored.sort(key=lambda s: (-s[0], -s[1], -s[2], s[3]))
+    return scored
+
+
 def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_id: str,
                   limit: int = 3, intent_hint: str = "") -> list[T.ScriptHit]:
     """检索话术，按 score 降序返回至多 ``limit`` 篇（重排分为 0 的不返回）。
@@ -357,25 +597,20 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
                                   weights=dict(_RECALL_WEIGHTS), kinds=(T.CS_KB_KIND,))
     cue = detect_cue(text) if intent_hint else ""
 
-    # (出门的分, p12 原分, 知识层分, doc_id, hit, body)。缺省模式下出门的分就是原分，
-    # 排序键退化成 p12 的 (-原分, -知识层分, doc_id)：逐字节同 p12。
-    scored: list[tuple[float, float, float, str, dict, dict]] = []
-    for hit in recalled:
-        doc = hit.get("doc") or {}
-        if doc.get("biz_type") != T.BIZ_TYPE_CS:
-            continue
-        body = _usable_body(doc)
-        if body is None:
-            continue
-        score = script_score(text, body)
-        if score <= 0:
-            continue
-        final = hinted_score(score, body, intent_hint=intent_hint, cue=cue) \
-            if intent_hint else score
-        scored.append((final, score, float(hit.get("score") or 0.0), hit["doc_id"], hit, body))
-    # 同分先看 p12 原分（原样命中的那篇仍然第一），再看知识层的分，再看 doc_id：
-    # 次序必须确定（「连跑两次输出一致」）。
-    scored.sort(key=lambda s: (-s[0], -s[1], -s[2], s[3]))
+    scored = _score_all(recalled, text, "", intent_hint=intent_hint, cue=cue)
+    # 同义归一（p14 T182）：原句的最高分够不着门槛（本该落兜底）时才启用 —— 已经检得到的句子
+    # 逐字节同 p12 / p13。把口语说法换成规范说法再召回一次、再打一次分，每篇取两次里高的那个。
+    synonym_norm: tuple[str, ...] = ()
+    if not scored or scored[0][0] < MIN_SCRIPT_SCORE:
+        normalized, names = normalized_query(text)
+        if normalized:
+            synonym_norm = names
+            extra = retriever.retrieve(store, {**query, "keyword": normalized},
+                                       limit=retriever.MAX_CANDIDATES,
+                                       weights=dict(_RECALL_WEIGHTS), kinds=(T.CS_KB_KIND,))
+            seen = {h.get("doc_id") for h in recalled}
+            recalled = list(recalled) + [h for h in extra if h.get("doc_id") not in seen]
+            scored = _score_all(recalled, text, normalized, intent_hint=intent_hint, cue=cue)
     top = scored[:max(0, int(limit))]
 
     hits = [
@@ -393,6 +628,9 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
     logged_query = {**query, "keyword": T.text_digest(text)}
     if intent_hint:
         logged_query.update({"intent_hint": intent_hint, "cue": cue})
+    if synonym_norm:
+        # 只记规则名（枚举），不记归一后的句子（那里夹着客户原文的其余部分）。
+        logged_query["synonym_norm"] = list(synonym_norm)
     retriever.emit_kb_retrieved(
         store,
         [{"doc_id": h.doc_id, "score": h.score, "title": hit.get("title", ""),

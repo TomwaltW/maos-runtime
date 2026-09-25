@@ -206,6 +206,33 @@ C4_ANTI_T184 = (
     "我要退货，运费谁出", "我的包裹一直没到，怎么办", "如果可以的话帮我查一下物流",
     "要是今天不发货就给我退款", "如果方便，帮我看下A1001到哪了",
     "if possible, could you check order A1001",
+    # 复核 L2-1 / L2-2：间接问句里的 if / whether 不是假设；条件从句前已经有完整的「看这一单」分句
+    "Can you check if my order A1001 has shipped?", "is order A1001 on its way? if not I want to cancel",
+    "帮我查下A1001到哪了，如果今天不到怎么办", "我的包裹一直没到，要是今天还不到怎么办",
+)
+
+#: 复核 L2-1：英文间接问句（check if / let me know if / wondering whether）带单号 → 查单。
+C2_INDIRECT_T184 = (
+    "Can you check if my order A1001 has shipped?", "Please check if order A1001 is on its way",
+    "Could you let me know if A1001 has shipped?", "I'm wondering whether A1001 has been dispatched",
+    "can you see if A1001 has been sent out", "tell me if order A1001 is in transit",
+    "is order A1001 on its way? if not I want to cancel", "check whether my order A1001 has arrived",
+)
+#: 复核 L3-2：英文商品 / 闲话里的 it 与带数字的词不是订单宾语。
+C2_PRODUCT_ANTI_T184 = (
+    "Is it shipped with a charger?", "Did it come with a warranty?", "Is it coming in blue?",
+    "Can I find 100ml bottles here", "I will check it later, thanks", "Has it arrived in stores yet",
+    "Where is the item size guide", "check the 250ml size",
+)
+#: 复核 L3-1：问商品 / 问规则 / 问别人的订单 —— 检索会落到查单篇，但本轮没有「看这一单」的信号。
+C1_REROUTE_ANTI_T184 = (
+    "帮我查一下这个商品的价格", "订单能合并发货吗", "别人的订单能帮忙查吗", "帮我看看这款耳机有没有货",
+    "看看我的订单有没有优惠券",
+)
+#: 复核 L2-3 / L3-3：追问之后换了个问题 / 明说不查了 —— 不再接回查单分支。
+C3_SWITCH_T184 = (
+    "算了不查了，我想问下七天无理由怎么退", "算了，你们发什么快递", "直接问下，发什么快递", "我想看看新品",
+    "订单能合并发货吗", "never mind, do you ship to Canada",
 )
 
 
@@ -409,6 +436,79 @@ def test_c4_anti_examples_still_look_at_the_order_t184(text):
 
 
 # ---------------------------------------------------------------------------
+# 复核意见（L2-1 / L2-2 / L2-3 / L3-1 / L3-2 / L3-3）
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text", C2_INDIRECT_T184)
+def test_indirect_if_is_not_hypothetical_and_looks_up_t184(text):
+    assert not D.hypothetical_question(text)
+    talk, res = _one_t184(text)
+    assert (res.route, res.lang, res.lookup_outcome) == (T.ROUTE_ANSWER, LANG_EN, LOOKUP_OK), res
+    assert res.reply_text == ORDER_STATUS_WORDING[LANG_EN]["shipped"]
+    _assert_safe_t184(talk)
+
+
+def test_what_if_is_still_hypothetical_t184():
+    assert D.hypothetical_question("I want to know what if my order arrives damaged")
+    assert D.hypothetical_question("can you tell me what happens if my parcel is lost?")
+
+
+def test_indirect_if_without_number_asks_for_order_no_t184():
+    talk, res = _one_t184("can you check if my order has shipped?")
+    assert (res.route, res.ask_slot, res.lang) == (T.ROUTE_CLARIFY, SLOT_ORDER_NO, LANG_EN), res
+
+
+@pytest.mark.parametrize("text", C2_PRODUCT_ANTI_T184)
+def test_english_product_questions_are_not_order_status_t184(text):
+    assert not D.asks_order_status(text)
+    talk, res = _one_t184(text)
+    assert res.route == T.ROUTE_FALLBACK and res.lang == LANG_EN, res
+    # 会话里已有单号、上一轮刚答过状态：商品问题也不拿去答状态
+    talk = _Talk_t184()
+    assert talk.say(f"is order {ORDER_T184} on its way").route == T.ROUTE_ANSWER
+    res = talk.say(text)
+    assert res.route != T.ROUTE_ANSWER and res.ask_slot == "", res
+    assert talk.lookup.calls == ["qk-" + ORDER_T184]
+    _assert_safe_t184(talk)
+
+
+@pytest.mark.parametrize("text", C1_REROUTE_ANTI_T184)
+def test_product_or_policy_questions_keep_the_script_marker_t184(text):
+    assert not D.order_view_signal(text) and not D.asks_order_status(text)
+    talk, res = _one_t184(text)
+    assert res.route != T.ROUTE_CLARIFY and res.ask_slot == "", res
+    talk = _Talk_t184()
+    assert talk.say(f"帮我查下{ORDER_T184}到哪了").route == T.ROUTE_ANSWER
+    res = talk.say(text)
+    assert res.route != T.ROUTE_ANSWER and res.lookup_outcome == "", res
+    assert talk.lookup.calls == ["qk-" + ORDER_T184]
+    _assert_safe_t184(talk)
+
+
+@pytest.mark.parametrize("text", C3_SWITCH_T184)
+def test_switching_topic_after_an_ask_is_not_pulled_back_t184(text):
+    assert not D.still_on_order(text)
+    talk = _Talk_t184()
+    talk.say("帮我查一下物流")
+    res = talk.say(text)
+    assert res.route != T.ROUTE_CLARIFY and res.ask_slot == "", res
+    talk = _Talk_t184()
+    talk.talk(("帮我查物流", "查一下嘛"))
+    res = talk.say(text)
+    assert res.handoff is None or res.handoff.suggestion != D.SUGGESTION_ASK_EXHAUSTED, res
+    _assert_safe_t184(talk)
+
+
+def test_policy_question_after_ask_gets_the_policy_answer_t184():
+    talk = _Talk_t184()
+    last = talk.talk(("帮我查物流", "不记得了", "你们发什么快递"))
+    assert last.route == T.ROUTE_ANSWER, last
+    assert last.draft.citations == (evaluate.cite_doc_id(TENANT_T184, "LOG-002"),)
+    talk = _Talk_t184()
+    last = talk.talk(("帮我查一下物流", "算了不查了，我想问下七天无理由怎么退"))
+    assert (last.route, last.intent) == (T.ROUTE_ANSWER, T.INTENT_RETURN_EXCHANGE), last
+
+
+# ---------------------------------------------------------------------------
 # 不变量
 # ---------------------------------------------------------------------------
 def test_triggers_still_come_first_t184():
@@ -442,8 +542,12 @@ def _digest_t184(res) -> str:
 def p12_conversations_t184() -> tuple[tuple[str, ...], ...]:
     """本文件全部说法（单句与多轮），p12 路径逐字节对照用。"""
     singles = (C1_SAYINGS_T184 + C1_ANTI_T184 + C2_WITH_NO_T184 + C2_NO_NUMBER_T184 + C2_ANTI_T184
-               + C4_SAYINGS_T184 + C4_ANTI_T184 + C3_ANTI_T184 + ("付款一直失败", "地址填错了想改一下"))
-    multi = tuple(first + (last,) for first, last in C3_EXHAUSTED_T184)
+               + C4_SAYINGS_T184 + C4_ANTI_T184 + C3_ANTI_T184 + ("付款一直失败", "地址填错了想改一下")
+               + C2_INDIRECT_T184 + C2_PRODUCT_ANTI_T184 + C1_REROUTE_ANTI_T184)
+    multi = (tuple(first + (last,) for first, last in C3_EXHAUSTED_T184)
+             + tuple(("帮我查物流", "查一下嘛", t) for t in C3_SWITCH_T184)
+             + tuple((f"帮我查下{ORDER_T184}到哪了", t) for t in C1_REROUTE_ANTI_T184)
+             + (("帮我查物流", "不记得了", "你们发什么快递"),))
     return tuple((t,) for t in singles) + multi
 
 
@@ -459,7 +563,7 @@ def p12_fingerprint_t184() -> str:
 
 
 #: 基线 7c19a1d 的 desk.py 跑 :func:`p12_fingerprint_t184` 的结果（改动之前实测，见 DECISIONS task-t184）。
-P12_GOLDEN_T184 = "8166a0c575acc8e5c55975cd0e3c6882d25dbbbc3cf4e2c1b1333deb7853a710"
+P12_GOLDEN_T184 = "9441ec1dcdf11d818b8636bb07e4514c1a6158fec058d9cce180b808cf8fa620"
 
 
 def test_without_ports_every_turn_is_byte_identical_to_baseline_t184():

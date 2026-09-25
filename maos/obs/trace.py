@@ -45,7 +45,9 @@ subprocess / not-run）和 ``provenance.source`` 点的那个函数名。把它�
   ``roundtable:`` 前缀认（:data:`ROUNDTABLE_PLAN_PREFIX`）。**不给它造 plan 行**：
   那会让 DAG 的证据束里凭空多出几棵不是任务的树（理由写在
   ``maos/roundtable/speaker.py`` 的模块 docstring 里，那是个设计决定，不是欠账）。
-* ``stray_events`` / ``unattributed_usage`` —— 上面两族一条都没收走的剩余。
+* ``cs_traces`` —— 客服前台那一族（p14 · T176），``plan_id`` 以 ``cs:`` 开头。
+  **库里一条 cs 行都没有时这个键不出现**：既有证据束的 trace.json 逐字节不变。
+* ``stray_events`` / ``unattributed_usage`` —— 上面几族一条都没收走的剩余。
 
 三族互斥且穷尽，所以「换个地方挂」不等于「消失」：圆桌从游离清单搬进自己的树之后，
 条数在 ``summary`` 里照旧数得到。判据是「**被树收走的**不算游离」，不是「plan_id
@@ -87,6 +89,16 @@ KIND_ROUNDTABLE_ROUND = "roundtable-round"
 #: 整摊捞出来。T134 之前这一摊只能落进 ``stray_events`` / ``unattributed_usage``，
 #: 也就是「如实承认它不在任何一棵树里」；现在它有自己的树了。
 ROUNDTABLE_PLAN_PREFIX = "roundtable:"
+
+#: 客服前台那一族（p14 · T176）。``plan_id`` 以 ``cs:`` 开头即属 cs 家族：
+#: ``cs:<会话 id>``（会话对象、cs.* skill、查单 ToolInvoked、会诊卡）与 ``cs:mcp``
+#: （只读 MCP 连接器）。与 ``maos/domain/cs/types.py::CS_PLAN_PREFIX`` 同值，**照抄而不
+#: import**，理由同 :data:`ROUNDTABLE_PLAN_PREFIX`：本模块不 import 任何业务域（铁律 9）。
+#: 判前缀用 ``substr`` 精确比，不用 ``LIKE``（SQLite 的 LIKE 对 ASCII 不分大小写，
+#: ``CS:`` 会被误收）。
+CS_PLAN_PREFIX = "cs:"
+KIND_CS = "cs"
+KIND_CS_TURN = "cs-turn"
 
 # 产物来源。前三种都能在 event_log 里指到具体一行；指不到的一律 unknown ——
 # 不猜，也不因为「看着像」就给它安一个来源。
@@ -1044,6 +1056,154 @@ def roundtable_traces(db_path: str) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 第四族：客服前台（p14 · T176）
+# ---------------------------------------------------------------------------
+#: 每棵 cs 树都跟着这句话，理由同 :data:`ROUNDTABLE_NOTE`。
+CS_NOTE = (
+    "客服前台不建 plan、不建 task：会话进度是会话对象自己的字段（cs_conversation.stage），"
+    "不是 Task 状态（铁律 9）。所以这一族没有 trace_id，按 event_log.plan_id 的 cs: 前缀"
+    "聚出来（cs:<会话 id> 或 cs:mcp），一轮一个 cs-turn 节点（task_id 即轮次 id），"
+    "顺序即 seq 顺序。审计行只落摘要与枚举，客户原文住在 cs_turn 里。"
+)
+
+#: 一段 cs 一条用量都没记到时跟着的话（缺省 Scripted / 确定性理解层不调模型）。
+CS_ZERO_CALLS_NOTE = (
+    "这一段客服前台没有模型用量行：理解层确定性优先，只有注入真模型且规则判不出意图时"
+    "才调模型；缺省 Scripted / None 下零 model_usage 行（review/p13-cs-contracts.md T173）。"
+)
+
+#: cs 那一族不记失败调用的专表口径，同圆桌：如实说，不给空列表冒充「一次没失败过」。
+CS_NO_FAILURE_LEDGER = "客服前台的失败调用不进本树：cs 家族的 cost 只归集 model_usage 行"
+
+
+def _cs_event_rows(conn: sqlite3.Connection) -> list[dict]:
+    """cs 那一摊事件行，按 seq 升序、``detail`` 就地解析（口径同 :func:`_rt_event_rows`）。"""
+    n = len(CS_PLAN_PREFIX)
+    rows = conn.execute(
+        "SELECT seq, event_id, trace_id, plan_id, task_id, event_type, from_state,"
+        " to_state, reason, detail, created_at FROM event_log"
+        " WHERE substr(plan_id, 1, ?) = ? AND plan_id NOT IN (SELECT plan_id FROM plan)"
+        " ORDER BY seq", (n, CS_PLAN_PREFIX)).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        row = dict(r)
+        try:
+            row["detail"] = json.loads(row["detail"] or "{}")
+        except ValueError:
+            row["detail"] = {"_unparsed": row["detail"]}
+        if not isinstance(row["detail"], dict):
+            row["detail"] = {"_unparsed": row["detail"]}
+        out.append(row)
+    return out
+
+
+def _cs_usage_rows(conn: sqlite3.Connection) -> list[dict]:
+    """cs 那一摊用量行：``trace_id=''`` 且前缀对得上（与 plan 树的用量没有交集）。"""
+    n = len(CS_PLAN_PREFIX)
+    try:
+        rows = conn.execute(
+            "SELECT seq, plan_id, task_id, agent_role, call_site, model, tier,"
+            " tokens_in, tokens_out, latency_ms, estimated, created_at FROM model_usage"
+            " WHERE trace_id='' AND substr(plan_id, 1, ?) = ? ORDER BY seq",
+            (n, CS_PLAN_PREFIX)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(r) for r in rows]
+
+
+def _cs_spans(plan_id: str, events: list[dict]) -> list[dict]:
+    """cs 那一段的 span 树：``cs`` 根 → 每个 task_id（轮次 / MCP 调用）一个 ``cs-turn``
+    → 每条事件一个 ``event`` 叶子。**每一条**事件都落成叶子（理由同 :func:`_rt_spans`）。"""
+    spans: list[dict] = []
+    root_id = _sid(KIND_CS, plan_id)
+    stamps = [e["created_at"] for e in events if e.get("created_at")]
+    turns: dict[str, list[dict]] = {}
+    for e in events:
+        turns.setdefault(str(e.get("task_id") or ""), []).append(e)
+    spans.append(_span(
+        trace_id="", span_id=root_id, parent_span_id=None,
+        name=f"{KIND_CS}:{plan_id[len(CS_PLAN_PREFIX):]}", kind=KIND_CS,
+        start=min(stamps) if stamps else None, end=max(stamps) if stamps else None,
+        attributes={"maos.plan_id": plan_id, "maos.cs.turns": len(turns),
+                    "maos.cs.note": CS_NOTE},
+    ))
+    for task_id, kids in turns.items():
+        turn_id = _sid(KIND_CS_TURN, plan_id, task_id)
+        k_stamps = [e["created_at"] for e in kids if e.get("created_at")]
+        ends = [x for x in (_event_end(e, e.get("created_at")) for e in kids) if x]
+        spans.append(_span(
+            trace_id="", span_id=turn_id, parent_span_id=root_id,
+            name=f"{KIND_CS_TURN}:{task_id or '(无 task_id)'}", kind=KIND_CS_TURN,
+            start=min(k_stamps) if k_stamps else None, end=max(ends) if ends else None,
+            attributes={"maos.task_id": task_id, "maos.cs.event_count": len(kids)},
+        ))
+        for e in kids:
+            start = e.get("created_at")
+            spans.append(_span(
+                trace_id="", span_id=_sid("event", e["seq"]), parent_span_id=turn_id,
+                name=_event_name(e), kind=KIND_EVENT, start=start,
+                end=_event_end(e, start), attributes=_event_attrs(e),
+            ))
+    spans.sort(key=lambda s: (s.get("start") or "", s["kind"], s["span_id"]))
+    return spans
+
+
+def cs_traces(db_path: str) -> list[dict]:
+    """客服前台那一族，每个 ``cs:`` plan_id 一棵树（p14 · T176）。结构照 :func:`roundtable_traces`：
+    ``plan_id`` / ``events`` / ``model_usage`` / ``spans`` / ``cost`` / ``summary``。
+    库里没有 cs 行时返回空清单（导出方据此**不写** ``cs_traces`` 键）。"""
+    conn = _connect_ro(db_path)
+    try:
+        events = _cs_event_rows(conn)
+        usage = _cs_usage_rows(conn)
+    finally:
+        conn.close()
+
+    by_plan: dict[str, list[dict]] = {}
+    for e in events:
+        by_plan.setdefault(e["plan_id"], []).append(e)
+    usage_by_plan: dict[str, list[dict]] = {}
+    for r in usage:
+        usage_by_plan.setdefault(r["plan_id"], []).append(r)
+
+    out: list[dict] = []
+    for plan_id in sorted(set(by_plan) | set(usage_by_plan)):
+        plan_events = by_plan.get(plan_id, [])
+        rows = usage_by_plan.get(plan_id, [])
+        spans = _cs_spans(plan_id, plan_events)
+        cost = cost_view(rows, failures=None, failures_unavailable=CS_NO_FAILURE_LEDGER)
+        if not rows:
+            cost["zero_calls_note"] = CS_ZERO_CALLS_NOTE
+        by_type: dict[str, int] = {}
+        for e in plan_events:
+            by_type[e["event_type"]] = by_type.get(e["event_type"], 0) + 1
+        out.append({
+            "schema": SCHEMA,
+            "kind": KIND_CS,
+            "plan_id": plan_id,
+            # 客服前台不属于任何 Run：空串是如实记录（同圆桌）。
+            "trace_id": "",
+            "note": CS_NOTE,
+            "events": [{"seq": e["seq"], "event_type": e["event_type"],
+                        "task_id": e["task_id"], "created_at": e["created_at"]}
+                       for e in plan_events],
+            "spans": spans,
+            "model_usage": [{k: v for k, v in r.items() if k != "plan_id"} for r in rows],
+            "cost": cost,
+            "summary": {
+                "span_count": len(spans),
+                "event_count": len(plan_events),
+                "turn_count": len({str(e.get("task_id") or "") for e in plan_events}),
+                "by_event_type": dict(sorted(by_type.items())),
+                "model_calls": cost["calls"],
+                "tokens_total": cost["tokens_total"],
+                "tree_errors": check_span_tree(spans),
+            },
+        })
+    return out
+
+
 def stray_events(db_path: str, *, claimed: Any = frozenset()) -> list[dict]:
     """``plan_id`` 指不到任何 plan 行、**又没被任何一族树收走**的事件。
 
@@ -1109,6 +1269,8 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
       trace_id 归。
     * ``roundtable_traces``：``plan_id`` 带 ``roundtable:`` 前缀那一摊（T134）。
       事件按前缀归，用量按「trace_id 为空**且**前缀对得上」归。
+    * ``cs_traces``：``plan_id`` 以 ``cs:`` 开头那一摊（p14 · T176），口径同圆桌；
+      库里没有 cs 行时这个键（与 summary 的 cs_* 计数）不出现。
     * ``stray_events`` / ``unattributed_usage``：上面两族**一条都没收走**的剩余。
 
     所以「圆桌被收走了」不会让任何一条记录凭空消失：它换了个地方，而那个地方
@@ -1129,17 +1291,27 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
         if s["kind"] in (KIND_EVENT, KIND_ROUNDTABLE_ROUND)
         and s["attributes"].get("maos.event.type") is not None)
     rt_usage_seqs = frozenset(r["seq"] for t in rt_traces for r in t["model_usage"])
-    strays = stray_events(db_path, claimed=rt_event_seqs)
-    orphan_usage = unattributed_usage(db_path, claimed=rt_usage_seqs)
+    # 客服前台那一族（p14 · T176），认领口径同圆桌：按 seq、只认真落成了 span 的事件。
+    c_traces = cs_traces(db_path)
+    cs_event_seqs = frozenset(
+        s["attributes"].get("maos.event.seq") for t in c_traces for s in t["spans"]
+        if s["kind"] == KIND_EVENT and s["attributes"].get("maos.event.type") is not None)
+    cs_usage_seqs = frozenset(r["seq"] for t in c_traces for r in t["model_usage"])
+    strays = stray_events(db_path, claimed=rt_event_seqs | cs_event_seqs)
+    orphan_usage = unattributed_usage(db_path, claimed=rt_usage_seqs | cs_usage_seqs)
     attributed = [t["cost"] for t in traces if t["cost"]["available"]]
     rt_costs = [t["cost"] for t in rt_traces if t["cost"]["available"]]
+    cs_costs = [t["cost"] for t in c_traces if t["cost"]["available"]]
     estimated_calls = (sum(c["estimated_calls"] for c in attributed)
                        + sum(c["estimated_calls"] for c in rt_costs)
+                       + sum(c["estimated_calls"] for c in cs_costs)
                        + sum(1 for r in orphan_usage if r.get("estimated")))
     plan_calls = sum(c["calls"] for c in attributed)
     rt_calls = sum(c["calls"] for c in rt_costs)
-    total_calls = plan_calls + rt_calls + len(orphan_usage)
-    return {
+    cs_calls = sum(c["calls"] for c in cs_costs)
+    cs_tokens = sum(c["tokens_total"] for c in cs_costs)
+    total_calls = plan_calls + rt_calls + cs_calls + len(orphan_usage)
+    doc = {
         "schema": SCHEMA,
         "db": os.path.basename(db_path),
         "plan_count": len(traces),
@@ -1156,12 +1328,13 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
             # 拆开是要紧的：T134 之前「圆桌那 5 次」只能在 unattributed 里看见，
             # 于是「真模型跑一单花多少 token」这个问题的答案在 attributed 里查不到。
             "model_calls": total_calls,
-            "attributed_model_calls": plan_calls + rt_calls,
+            "attributed_model_calls": plan_calls + rt_calls + cs_calls,
             "plan_model_calls": plan_calls,
             "roundtable_model_calls": rt_calls,
             "unattributed_model_calls": len(orphan_usage),
             "attributed_tokens_total": (sum(c["tokens_total"] for c in attributed)
-                                        + sum(c["tokens_total"] for c in rt_costs)),
+                                        + sum(c["tokens_total"] for c in rt_costs)
+                                        + cs_tokens),
             "plan_tokens_total": sum(c["tokens_total"] for c in attributed),
             "roundtable_tokens_total": sum(c["tokens_total"] for c in rt_costs),
             "estimated_model_calls": estimated_calls,
@@ -1197,9 +1370,29 @@ def export_trace_bundle(db_path: str, *, store_factory: Any = None) -> dict:
             # 两族树的错误并成一张清单：verify.py 第 4 项与页面的「审计链完整性」
             # 都读这一个数，圆桌树的孤儿/环不该有一个躲得过去的地方。
             "tree_errors": ([e for t in traces for e in t["summary"]["tree_errors"]]
-                            + [e for t in rt_traces for e in t["summary"]["tree_errors"]]),
+                            + [e for t in rt_traces for e in t["summary"]["tree_errors"]]
+                            + [e for t in c_traces for e in t["summary"]["tree_errors"]]),
         },
     }
+    if not c_traces:
+        # 库里没有 cs 行：一个键都不加，既有证据束的 trace.json 逐字节不变（契约 p14 §2 T176）。
+        return doc
+    # 有 cs 行才出现 cs_traces（紧跟 roundtable_traces，与它并列）与 summary 里的 cs_* 计数。
+    ordered: dict = {}
+    for key, value in doc.items():
+        ordered[key] = value
+        if key == "roundtable_traces":
+            ordered["cs_traces"] = c_traces
+    ordered["summary"].update({
+        "cs_tree_count": len(c_traces),
+        "cs_span_count": sum(t["summary"]["span_count"] for t in c_traces),
+        "cs_event_count": sum(t["summary"]["event_count"] for t in c_traces),
+        "cs_turn_count": sum(t["summary"]["turn_count"] for t in c_traces),
+        "cs_model_calls": cs_calls,
+        "cs_tokens_total": cs_tokens,
+        "cs_note": CS_NOTE,
+    })
+    return ordered
 
 
 def to_json(doc: dict) -> str:

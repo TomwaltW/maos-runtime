@@ -3483,3 +3483,17 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | MCP 连接器给外部平台（ADP）什么 | 三个只读工具：查单（先过绑定）、退款预检（不回 command_line）、转人工列表（不回正文与客户标识）；DEFAULT_ROLE_SERVERS 不挂 | 外部平台等同外部渠道：零授权、不外泄；command_line 只给以自己名义发命令的内部同事 |
 | 2026-09-25 | p14 | p13 没达到的 p12 留出集门槛怎么办 | 开 T182，只给主会话从留出集归纳的五个误判**类别**（不给句子），限定泛化手段、禁止按 id 反推；T181 另盲写一份覆盖 p13 流程的 p14 留出集 | 留出集一旦被实现者看过就没用；p13 的 T173 拿到类别后读数零改进，这次把类别写得更具体（p13 路径也同样落兜底：检索召回 + 查单线索两处都缺） |
 | 2026-09-25 | p14 | 波次 | A1 = T176 / T177 / T181 / T182，A2 = T178 / T179 / T180；七轨文件零交集 | 工作流并发 2，分两批降低容器重启时的损失 |
+
+## task-t176（verify 认 cs 家族与 --cs 可选核验，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | 契约 §2 判据 4 写作「措辞表[status][lang]」，ports.ORDER_STATUS_WORDING 实际是 [lang][status] | 照代码取 ORDER_STATUS_WORDING[lang][status]，缺 cs_turn_ext 行按 zh | 冻结的是 ports.py 的表形状，契约那处是笔误；取值语义相同 |
+| 2026-09-25 | p14 | 判据 5 的「draft_json 里每条 kb:<doc_id> 引用」只说了 claim 还是也含 citations | 两处都核：basis 为 kb: 的 claim 与 citations 里的每个 doc_id 都要在本轮（同 plan_id、task_id）KbRetrieved 命中里 | 前台的政策回答只写 citations 不写 kb: claim，只核 claim 会让判据 5 在真库上恒空转 |
+| 2026-09-25 | p14 | 判据 6「被某条 claim 覆盖」认哪些 claim | 只认过了判据 3 的 obs: claim（存在且是本轮落的）；kb: claim 与悬空 / 别轮的 obs: claim 都撑不起状态词 | p12 契约 §1.4 规则 3「kb: 撑不起状态」；认悬空 claim 等于状态词可以挂在编出来的观察上 |
+| 2026-09-25 | p14 | basis 既不是 obs: 也不是 kb: 的 claim 怎么算 | 记在判据 3 名下判负 | 六条判据都没点名这种形态，但它一样回查不到；不判就是一个放行口子 |
+| 2026-09-25 | p14 | cs 家族按什么认 | plan_id 前缀 cs: 用 substr 精确比（大小写敏感），不用 LIKE；且 plan_id 不在 plan 表（同圆桌） | SQLite 的 LIKE 对 ASCII 不分大小写，CS: 开头的行会被误收；大写那种照旧落 stray 点名 |
+| 2026-09-25 | p14 | cs_traces 的形状 | 每棵 {schema, kind, plan_id, trace_id:"", note, events, spans, model_usage, cost, summary}；span 树为 cs 根 → 每个 task_id 一个 cs-turn → 事件叶子；有 cs 行时 summary 追加 cs_* 计数、model_calls / attributed_model_calls / attributed_tokens_total 含 cs 用量；无 cs 行时一个键都不加 | 契约只冻了 plan_id / events / model_usage 三键并要求「结构照 roundtable_traces」；要过第 4 项的无孤儿无环与「恰好一处」核对就得有 spans；总数含 cs 用量才不会因认领而少算 |
+| 2026-09-25 | p14 | --cs 的 --db 是库文件时，其余十项读哪 | 其余十项照 --db 的既有语义（库文件即全场景共用），cs/claim-basis 只读这一个库；--db 缺省或为目录时 cs 读各证据束的库、按真实路径去重 | 不改十项的既有口径（白名单外的行为不动）；代价记 BACKLOG |
+| 2026-09-25 | p14 | 验收 4 在本容器里怎么比 | 缺省 python3 scripts/verify.py 在基线与 HEAD 上都因 evidence 的 maos.db 不在 clone 里退 2（同一句报错）；另用 make_evidence --out 在 scratch 现产一束，基线与 HEAD 各跑 verify --evidence 那一束比逐项读数，并按 trace.json 逐字节比重导出 | 缺省那一跑两边都起不来，比不出十项；scratch 束不进仓库、不碰 evidence/ |
+| 2026-09-25 | p14 | 复核 L3-1：cs/claim-basis 只凭 cs_turn 一张表判适用，DROP TABLE cs_turn 能把判据 1 反向绕成 SKIP | 适用性改为「任一 cs_ 开头的表，或 event_log 里有 CsTurnRecorded」，两样都没有才 SKIP；cs_turn 缺席按零轮核，每条 CsTurnRecorded 判「审计行无主」 | 契约只说「没有 cs_ 表 → SKIP」，判据 1 要求反之亦然；审计行在而业务表整张不在是最该判负的形态，不是不适用 |

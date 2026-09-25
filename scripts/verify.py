@@ -63,6 +63,11 @@
 **依赖方向**：证据装配层读取 ``maos.domain.DOMAIN_REGISTRY`` 与域守卫常量，
 按业务表是否存在选择判据；内核不依赖域注册表（铁律 9）。``--domains`` 额外
 展开新域的三项结果，缺失素材显式 SKIP；默认九项汇总与冻结退款输出保持不变。
+
+**客服前台（p14 · T176）**：``plan_id`` 以 ``cs:`` 开头的行属 cs 家族，由 trace.json 的
+``cs_traces`` 接住（第 4 项回库核「恰好一处」，第 8 项认它们的用量有归属）。``--cs`` 照
+``--domains`` 的先例**追加**计分项 ``cs/claim-basis``（缺省不跑，缺省读数不变）：读 ``--db``
+给的库，否则各证据束的库；没有 cs_ 表 → SKIP。
 """
 
 from __future__ import annotations
@@ -562,12 +567,21 @@ def check_trace_tree(cases: list[Case]) -> Check:
                     chk.bad(f"{case.name} roundtable={trace['plan_id']}: {e}")
             else:
                 chk.ok()
+        # 客服前台那一族（p14 · T176）同守树的规矩。没有 cs 行的库里这个键不存在，一次不执行。
+        for trace in case.trace.get("cs_traces", []):
+            errs = check_span_tree(trace["spans"])
+            if errs:
+                for e in errs:
+                    chk.bad(f"{case.name} cs={trace['plan_id']}: {e}")
+            else:
+                chk.ok()
         replay = json.loads(json.dumps(export_trace_bundle(case.db_path), ensure_ascii=False))
         if replay != case.trace:
             chk.bad(f"{case.name}: trace.json 与库重放结果不一致（证据被改过或库已变）")
         else:
             chk.ok()
         _check_roundtable_trees(chk, case)
+        _check_cs_trees(chk, case)
         _warn_stray_events(chk, case)
         unsourced = case.trace.get("summary", {}).get("unsourced_artifacts", 0)
         if unsourced:
@@ -757,6 +771,83 @@ def _info_roundtable_timeline(chk: Check, case: Case, trees: list) -> None:
                  f"{money}。座次：{seats or '（无）'}；skill：{skills or '（无）'}。"
                  f"这一段不属于任何 Plan（trace_id 为空是如实的），"
                  f"顺序与 scripts/replay_roundtable.py 从同一批行重建的一致")
+
+
+#: 客服前台那一族的 ``plan_id`` 前缀（``maos/obs/trace.py::CS_PLAN_PREFIX``，p14 · T176）。
+#: 另存一份而不 import：核验器的判据不由被审那一侧提供（同 ``_ROUNDTABLE_PREFIX``）。
+_CS_PREFIX = "cs:"
+
+
+def _is_cs_plan(plan_id: object) -> bool:
+    """属 cs 家族 ⇔ ``plan_id`` 以 ``cs:`` 开头（大小写敏感；SQLite 的 LIKE 不是）。"""
+    return isinstance(plan_id, str) and plan_id.startswith(_CS_PREFIX)
+
+
+def _check_cs_trees(chk: Check, case: Case) -> None:
+    """cs 家族的行**恰好一处**：要么在某棵 cs 树里，要么在 stray / unattributed 里（p14 · T176）。
+
+    口径与 :func:`_check_roundtable_trees` 同：回库数，不读 trace.json 自报的数。
+    cs 行不再算 stray 是因为它们被 ``cs_traces`` 接住了，**不是**「前缀对得上就豁免」——
+    漏收的一条照旧必须出现在 stray_events 里，两头都不在判负、两头都在也判负。
+    库里没有 cs 行、证据里也没有 cs 树时本判据一次都不执行（缺省十项读数不变）。
+    """
+    trees = case.trace.get("cs_traces", [])
+    db_events: dict[int, str] = {
+        r["seq"]: r["plan_id"] for r in case.conn.execute(
+            "SELECT seq, plan_id FROM event_log WHERE substr(plan_id, 1, ?) = ?"
+            " AND plan_id NOT IN (SELECT plan_id FROM plan) ORDER BY seq",
+            (len(_CS_PREFIX), _CS_PREFIX))}
+    if not db_events and not trees:
+        return
+
+    in_tree: dict[int, str] = {}
+    dupes: list[int] = []
+    for t in trees:
+        for s in t["spans"]:
+            seq = s["attributes"].get("maos.event.seq")
+            if seq is None or s["attributes"].get("maos.event.type") is None:
+                continue                # cs 根与 cs-turn 节点不对应任何一条事件行
+            if seq in in_tree:
+                dupes.append(seq)
+            in_tree[seq] = t["plan_id"]
+    in_stray = {r.get("seq") for r in case.trace.get("stray_events") or []}
+    for seq, plan_id in db_events.items():
+        where = f"{case.name} seq={seq} plan_id={plan_id!r}"
+        if seq in in_tree and seq in in_stray:
+            chk.bad(f"{where}: 既在 cs 树里、又在 stray_events 里 —— 同一条事件被数了两次")
+        elif seq in in_tree or seq in in_stray:
+            chk.ok()
+        else:
+            chk.bad(f"{where}: cs 家族的事件既不在任何 cs 树里、也不在 stray_events 里"
+                    f" —— 这条事件在证据里哪儿都找不到")
+    for seq in dupes:
+        chk.bad(f"{case.name} seq={seq}: 同一条事件出现在两棵 cs 树里")
+    for seq, plan_id in in_tree.items():
+        if seq not in db_events:
+            chk.bad(f"{case.name} seq={seq}: cs 树 {plan_id} 里的事件在库里不是 cs 家族行")
+    for t in trees:
+        mine = sum(1 for p in db_events.values() if p == t["plan_id"])
+        got = t["summary"]["event_count"]
+        if got == mine:
+            chk.ok()
+        else:
+            chk.bad(f"{case.name} cs={t['plan_id']}: 自报 {got} 条事件，"
+                    f"库里属于这个 plan_id 的有 {mine} 条 —— 数对不上")
+
+    if "model_usage" not in case.tables:
+        return
+    usage_in_tree = {r["seq"] for t in trees for r in t["model_usage"]}
+    named = {r.get("seq") for r in case.trace.get("unattributed_usage") or []}
+    for row in case.conn.execute(
+            "SELECT seq, agent_role FROM model_usage WHERE trace_id=''"
+            " AND substr(plan_id, 1, ?) = ? ORDER BY seq", (len(_CS_PREFIX), _CS_PREFIX)):
+        where = f"{case.name} usage seq={row['seq']} ({row['agent_role']})"
+        if row["seq"] in usage_in_tree and row["seq"] in named:
+            chk.bad(f"{where}: 既算进 cs 树的 cost、又列在 unattributed_usage 里")
+        elif row["seq"] in usage_in_tree or row["seq"] in named:
+            chk.ok()
+        else:
+            chk.bad(f"{where}: cs 的用量行既没归进 cs 树、也没列在 unattributed_usage 里")
 
 
 def _warn_stray_events(chk: Check, case: Case) -> None:
@@ -1260,6 +1351,7 @@ def check_cost_attribution(cases: list[Case]) -> Check:
     orphans = 0
     blind = 0
     roundtable_rows = 0
+    cs_rows = 0
     for case in live:
         plans = {r[0] for r in case.conn.execute("SELECT trace_id FROM plan")}
         tasks = {r[0] for r in case.conn.execute("SELECT task_id FROM task")}
@@ -1269,6 +1361,8 @@ def check_cost_attribution(cases: list[Case]) -> Check:
         # `_check_roundtable_usage` 当场判负，这里不重复判，只认它们也算有归属。
         in_roundtable = {r["seq"] for t in case.trace.get("roundtable_traces", [])
                          for r in t["model_usage"]}
+        # cs 家族接住的那些（p14 · T176，与圆桌同口径；回库核对在第 4 项 _check_cs_trees）。
+        in_cs = {r["seq"] for t in case.trace.get("cs_traces", []) for r in t["model_usage"]}
 
         for r in case.conn.execute(
                 "SELECT seq, trace_id, task_id, agent_role, call_site, model, estimated"
@@ -1284,6 +1378,10 @@ def check_cost_attribution(cases: list[Case]) -> Check:
             elif r["seq"] in in_roundtable:
                 # 有归属，只是归在伪 plan 上而不是 Run id 上（见判据 d）。
                 roundtable_rows += 1
+                chk.ok()
+            elif r["seq"] in in_cs:
+                # 有归属：归在 cs:<会话> / cs:mcp 上，客服前台不属于任何 Run。
+                cs_rows += 1
                 chk.ok()
             else:
                 orphans += 1
@@ -1331,6 +1429,9 @@ def check_cost_attribution(cases: list[Case]) -> Check:
                  f"trace_id 为空是如实的：圆桌不属于任何 Plan），已算进 trace.json 的"
                  f" roundtable_traces[].cost，并在 summary.roundtable_model_calls /"
                  f" roundtable_tokens_total 里单列")
+    if cs_rows:
+        chk.info(f"{cs_rows} 条用量挂在客服前台的 plan_id 上（cs:<会话> / cs:mcp，trace_id 为空"
+                 f"是如实的：会话不是 Plan），已算进 trace.json 的 cs_traces[].model_usage")
     if orphans:
         # info 不是 warn：这些行是**如实记录**的已知缺口，不是新出现的问题。
         # 印出来是要紧的 —— 「有多少成本归不上账」正是评委该看见的那个数。
@@ -1963,6 +2064,242 @@ def _check_one_outcome(chk: Check, case: Case, plan_id: str, row: dict) -> None:
     chk.ok()
 
 
+# ---------------------------------------------------------------------------
+# 可选项（--cs）：cs/claim-basis（p14 · T176）
+# ---------------------------------------------------------------------------
+#: 计分项的名字。只在 ``--cs`` 时追加，缺省不跑：``len(CHECKS) == 10`` 不变。
+CS_CHECK_KEY = "cs/claim-basis"
+
+
+def cs_db_paths(cases: list[Case], db_arg: str | None) -> list[str]:
+    """cs/claim-basis 读哪些库：``--db`` 是一个库文件就只读它；否则各证据束的库（按真实路径去重）。"""
+    if db_arg and os.path.isfile(db_arg):
+        return [db_arg]
+    out: list[str] = []
+    seen: set[str] = set()
+    for case in cases:
+        real = os.path.realpath(case.db_path)
+        if real not in seen:
+            seen.add(real)
+            out.append(case.db_path)
+    return out
+
+
+def _cs_rows(conn: sqlite3.Connection, sql: str, params=()) -> list[sqlite3.Row]:
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return []
+
+
+def _cs_hit_doc_ids(detail: dict) -> set[str]:
+    """一条 KbRetrieved 的命中 doc_id（口径同第 5 项：``docs`` 缺席认 ``hits``，条目可为字符串）。"""
+    out: set[str] = set()
+    for hit in detail.get("docs") or detail.get("hits") or ():
+        doc_id = hit.get("doc_id") if isinstance(hit, dict) else hit
+        if isinstance(doc_id, str) and doc_id:
+            out.add(doc_id)
+    return out
+
+
+def check_cs_claim_basis(db_paths: list[str]) -> Check:
+    """客服前台的回复**回查得到**（p14 契约 §2 T176，六条判据，每条独立计数）。
+
+    1. 每个 ``cs_turn`` 行恰有一条 ``CsTurnRecorded``（plan_id ``cs:<会话>``、task_id = turn_id），
+       反之每条 ``CsTurnRecorded`` 都指得回一行 ``cs_turn``；
+    2. ``text_digest(reply_text) == CsTurnRecorded.detail.reply_digest``（业务表与审计行对得上）；
+    3. draft_json 里每条 ``obs:<id>`` claim 的观察在 ``cs_observation`` 里存在、且就是本轮落的；
+    4. 该 claim 的 literal 逐字等于 ``ORDER_STATUS_WORDING[本轮 lang][观察的 status]``
+       （lang 取 cs_turn_ext，缺行按 zh）；
+    5. draft_json 里每条 ``kb:<doc_id>`` 引用（claims 的 basis 与 citations）都在本轮
+       （同 plan_id、task_id）的 KbRetrieved 命中里；
+    6. route=answer 的轮，reply_text 里 ``STATUS_PATTERNS`` 扫到的每个状态词都落在某条
+       **有效**（过了判据 3）``obs:`` claim 的 literal 在正文里的一处出现之内。
+
+    **只** import ``maos.domain.cs.types`` / ``maos.domain.cs.ports``（纯数据）；不 import
+    claims.py / desk.py —— 拿前台自己的校验来核前台，等于自己跟自己对账。
+    """
+    from maos.domain.cs.ports import LANG_ZH, ORDER_STATUS_WORDING
+    from maos.domain.cs.types import (
+        BASIS_KB, BASIS_OBS, CS_PLAN_PREFIX, EVENT_TURN_RECORDED, ROUTE_ANSWER,
+        STATUS_PATTERNS, text_digest,
+    )
+
+    chk = Check(CS_CHECK_KEY, "客服回复的状态断言回查得到本轮观察、措辞与话术引用")
+    live: list[tuple[str, sqlite3.Connection, set[str]]] = []
+    try:
+        for path in db_paths:
+            conn = connect_ro(path)
+            tables = table_names(conn)
+            # 适用性：任一 cs_ 表，或 event_log 里有 CsTurnRecorded（复核 L3-1）。只看 cs_turn
+            # 会让「DROP TABLE cs_turn」把判据 1 的反向（审计行无主）整片绕成 SKIP。
+            has_rec = "event_log" in tables and conn.execute(
+                "SELECT 1 FROM event_log WHERE event_type=? LIMIT 1",
+                (EVENT_TURN_RECORDED,)).fetchone() is not None
+            if has_rec or any(t.startswith("cs_") for t in tables):
+                live.append((path, conn, tables))
+            else:
+                conn.close()
+        if not live:
+            chk.skip("客服前台未落地：所核的库里没有 cs_ 表，也没有 CsTurnRecorded 审计行")
+            return chk
+        turns_total = 0
+        for path, conn, tables in live:
+            turns_total += _cs_check_one_db(
+                chk, os.path.basename(os.path.dirname(os.path.abspath(path))) or path,
+                conn, tables, wording=ORDER_STATUS_WORDING, default_lang=LANG_ZH,
+                basis_obs=BASIS_OBS, basis_kb=BASIS_KB, plan_prefix=CS_PLAN_PREFIX,
+                turn_event=EVENT_TURN_RECORDED, route_answer=ROUTE_ANSWER,
+                patterns=STATUS_PATTERNS, digest=text_digest)
+    finally:
+        for _, conn, _ in live:
+            conn.close()
+    if chk.total == 0:
+        chk.skip("空转：cs_turn 一行都没有，本项判据一次都没执行")
+        return chk
+    chk.info(f"核了 {len(live)} 个库、{turns_total} 轮客服回复（六条判据逐轮逐条计数）")
+    return chk
+
+
+def _cs_check_one_db(chk: Check, label: str, conn: sqlite3.Connection, tables: set[str], *,
+                     wording, default_lang, basis_obs, basis_kb, plan_prefix, turn_event,
+                     route_answer, patterns, digest) -> int:
+    """一个库上的六条判据。返回核了几轮。"""
+    # cs_turn 整表缺席 ≠ 不适用：按零轮处理，判据 1 的反向会把每条 CsTurnRecorded 判成无主。
+    turns = _cs_rows(conn, "SELECT tenant_id, conversation_id, turn_id, route, reply_text,"
+                           " draft_json FROM cs_turn ORDER BY tenant_id, conversation_id, seq"
+                     ) if "cs_turn" in tables else []
+    recorded: dict[tuple[str, str], list[dict]] = {}
+    for r in _cs_rows(conn, "SELECT seq, plan_id, task_id, detail FROM event_log"
+                            " WHERE event_type=? ORDER BY seq", (turn_event,)):
+        recorded.setdefault((r["plan_id"], r["task_id"]), []).append(
+            {"seq": r["seq"], "detail": _loads(r["detail"], {}) or {}})
+    kb_hits: dict[tuple[str, str], set[str]] = {}
+    for r in _cs_rows(conn, "SELECT plan_id, task_id, detail FROM event_log"
+                            " WHERE event_type='KbRetrieved' ORDER BY seq"):
+        if not _is_cs_plan(r["plan_id"]):
+            continue
+        detail = _loads(r["detail"], {})
+        kb_hits.setdefault((r["plan_id"], r["task_id"]), set()).update(
+            _cs_hit_doc_ids(detail if isinstance(detail, dict) else {}))
+    observations: dict[tuple[str, str], sqlite3.Row] = {}
+    if "cs_observation" in tables:
+        for r in _cs_rows(conn, "SELECT tenant_id, observation_id, conversation_id, turn_id,"
+                                " status FROM cs_observation"):
+            observations[(r["tenant_id"], r["observation_id"])] = r
+    langs: dict[tuple[str, str], str] = {}
+    if "cs_turn_ext" in tables:
+        for r in _cs_rows(conn, "SELECT tenant_id, turn_id, lang FROM cs_turn_ext"):
+            langs[(r["tenant_id"], r["turn_id"])] = r["lang"]
+
+    turn_keys: dict[tuple[str, str], int] = {}
+    for t in turns:
+        key = (plan_prefix + t["conversation_id"], t["turn_id"])
+        turn_keys[key] = turn_keys.get(key, 0) + 1
+
+    for t in turns:
+        tenant, conv, turn_id = t["tenant_id"], t["conversation_id"], t["turn_id"]
+        key = (plan_prefix + conv, turn_id)
+        where = f"{label} turn={turn_id}"
+
+        # 判据 1：恰有一条 CsTurnRecorded（且这对 (plan_id, task_id) 只属于这一行 cs_turn）。
+        rec = recorded.get(key, [])
+        if len(rec) == 1 and turn_keys[key] == 1:
+            chk.ok()
+        else:
+            chk.bad(f"{where}: [1] 应恰有一条 CsTurnRecorded（plan_id={key[0]!r}、task_id=本轮），"
+                    f"实有 {len(rec)} 条、同键 cs_turn {turn_keys[key]} 行 —— 业务表与审计行对不上号")
+        # 判据 2：回复摘要对得上（判据 1 不成立时无从比对，不重复判负）。
+        if len(rec) == 1:
+            want = digest(t["reply_text"] or "")
+            got = rec[0]["detail"].get("reply_digest")
+            if got == want:
+                chk.ok()
+            else:
+                chk.bad(f"{where}: [2] reply_text 的摘要 {want} ≠ CsTurnRecorded.reply_digest {got!r}"
+                        f" —— 库里的回复原文被改过，或审计行不是这一版回复落的")
+
+        draft = _loads(t["draft_json"], None)
+        if not isinstance(draft, dict):
+            chk.bad(f"{where}: draft_json 不是 JSON 对象 —— 这一轮的依据无从回查")
+            continue
+        claims = [c for c in draft.get("claims") or [] if isinstance(c, dict)]
+        citations = [str(c) for c in draft.get("citations") or []]
+        hits = kb_hits.get(key, set())
+        lang = langs.get((tenant, turn_id), default_lang)
+        backed: list[str] = []          # 过了判据 3 的 obs: claim 的 literal（判据 6 只认它们）
+
+        for c in claims:
+            literal = str(c.get("literal") or "")
+            basis = str(c.get("basis_ref") or "")
+            if basis.startswith(basis_obs):
+                obs_id = basis[len(basis_obs):]
+                row = observations.get((tenant, obs_id))
+                # 判据 3：观察存在且是本轮落的。
+                if row is None:
+                    chk.bad(f"{where}: [3] claim 指向的观察 {obs_id!r} 在 cs_observation 里不存在"
+                            f" —— 状态断言悬空")
+                    continue
+                if row["turn_id"] != turn_id or row["conversation_id"] != conv:
+                    chk.bad(f"{where}: [3] claim 指向的观察 {obs_id!r} 是 {row['turn_id']} 落的，"
+                            f"不是本轮 —— 上一轮的观察撑不起这一轮的状态")
+                    continue
+                chk.ok()
+                backed.append(literal)
+                # 判据 4：措辞逐字等于措辞表。
+                want = (wording.get(lang) or {}).get(row["status"])
+                if want is not None and literal == want:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: [4] claim 的措辞与措辞表[{lang}][{row['status']}] 不逐字相等"
+                            f" —— 对外只许说措辞表里那一句")
+            elif basis.startswith(basis_kb):
+                # 判据 5（claim 侧）：kb: 依据本轮确实检出过。
+                doc_id = basis[len(basis_kb):]
+                if doc_id in hits:
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: [5] claim 引用的话术 {doc_id!r} 本轮没有被 KbRetrieved 检出")
+            else:
+                chk.bad(f"{where}: [3] claim 的依据 {basis!r} 既不是 obs: 也不是 kb: —— 无从回查")
+        # 判据 5（citations 侧）。
+        for doc_id in citations:
+            if doc_id in hits:
+                chk.ok()
+            else:
+                chk.bad(f"{where}: [5] citations 里的话术 {doc_id!r} 本轮没有被 KbRetrieved 检出")
+
+        # 判据 6：answer 轮的每个状态词都被一条**有效**（过了判据 3）obs: claim 的 literal 覆盖。
+        # kb: 撑不起状态（p12 契约 §1.4 规则 3），悬空 / 别轮的 obs: 也撑不起。
+        if t["route"] != route_answer:
+            continue
+        text = t["reply_text"] or ""
+        places: list[tuple[int, int]] = []
+        for literal in backed:
+            if not literal:
+                continue
+            start = text.find(literal)
+            while start != -1:
+                places.append((start, start + len(literal)))
+                start = text.find(literal, start + 1)
+        for pat in patterns:
+            for m in pat.finditer(text):
+                if any(a <= m.start() and m.end() <= b for a, b in places):
+                    chk.ok()
+                else:
+                    chk.bad(f"{where}: [6] 回复里的状态词 {m.group(0)!r} 没有被任何 obs: claim 覆盖"
+                            f" —— 说了一个回查不到观察的状态")
+
+    # 判据 1 反向：每条 CsTurnRecorded 都指得回 cs_turn。
+    for key, rows in recorded.items():
+        if key in turn_keys:
+            continue
+        for r in rows:
+            chk.bad(f"{label} seq={r['seq']}: [1] CsTurnRecorded（plan_id={key[0]!r}、"
+                    f"task_id={key[1]!r}）在 cs_turn 里没有对应的一轮 —— 审计行无主")
+    return len(turns)
+
+
 CHECKS = [
     check_hash_integrity,
     check_business_ref,
@@ -2105,12 +2442,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="库文件或库目录；缺省用每个场景目录自带的 maos.db")
     parser.add_argument("--json", action="store_true", help="机器可读输出")
     parser.add_argument("--domains", action="store_true", help="显式展开三个新业务域的权威、结果与历史核验；缺失证据输出 SKIP")
+    parser.add_argument("--cs", action="store_true",
+                        help="追加计分项 cs/claim-basis（客服回复的依据回查）；读 --db 给的库，"
+                             "否则各证据束的库；没有 cs_ 表输出 SKIP")
     args = parser.parse_args(argv)
 
     cases = load_cases(args.evidence, args.db)
     results = [fn(cases) for fn in CHECKS]
     if args.domains:
         results.extend(domain_checks(cases))
+    if args.cs:
+        results.append(check_cs_claim_basis(cs_db_paths(cases, args.db)))
     try:
         code = render(results, cases, args.json)
         # 跳过的束**要点名**：静默跳过等于谎报（同文件头「SKIP 的纪律」）。

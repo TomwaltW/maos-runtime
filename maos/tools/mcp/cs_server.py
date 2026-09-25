@@ -233,8 +233,11 @@ def tool_cs_refund_precheck(ctx: CsMcpContext, args: dict) -> dict[str, Any]:
     res = _lookup(ctx, binding)
     if res.outcome != P.LOOKUP_OK:
         return {"outcome": res.outcome}
+    # 台账认的是台账单号：与前台 desk.py 同口径取 query_key（没有才回落 display_no）。
+    # 这个号只进预检入参，不进出参。
+    ledger_no = str(getattr(binding, "query_key", "") or "") or str(binding.display_no)
     try:
-        pre = ctx.precheck.precheck(tenant_id=binding.tenant_id, order_no=binding.display_no,
+        pre = ctx.precheck.precheck(tenant_id=binding.tenant_id, order_no=ledger_no,
                                     reason_text=reason_text, now=ctx.now())
     except Exception as exc:                            # noqa: BLE001 —— 端口承诺不抛，再兜一层
         print(f"cs_server: 退款预检出错 {type(exc).__name__}", file=sys.stderr)
@@ -298,6 +301,8 @@ def handle(msg: dict[str, Any], ctx: CsMcpContext) -> dict[str, Any] | None:
         args = params.get("arguments") or {}
         if not isinstance(args, dict):
             return error(req_id, E_INVALID_PARAMS, "arguments 必须是对象")
+        if not isinstance(name, str):
+            return error(req_id, E_INVALID_PARAMS, "name 必须是字符串")
         fn = DISPATCH.get(name)
         if fn is None:
             return error(req_id, E_INVALID_PARAMS, f"未知工具: {name}")
@@ -318,22 +323,27 @@ def handle(msg: dict[str, Any], ctx: CsMcpContext) -> dict[str, Any] | None:
 
 
 def serve(ctx: CsMcpContext, stdin=None, stdout=None) -> int:
-    stdin = stdin or sys.stdin
+    # 按字节读：帧长直接量字节数；非法 UTF-8 交给 protocol.decode（errors="replace"）→ E_PARSE，
+    # 不会在量长度时抛 UnicodeEncodeError 把连接器打死。
+    stdin = stdin or getattr(sys.stdin, "buffer", sys.stdin)
     stdout = stdout or sys.stdout.buffer
     for line in stdin:
         if not line.strip():
             continue
-        raw = line.encode("utf-8") if isinstance(line, str) else line
+        raw = line if isinstance(line, bytes) else line.encode("utf-8", "surrogateescape")
         if len(raw) > MAX_FRAME_BYTES:
             reply: dict[str, Any] | None = error(
                 None, E_INVALID_REQUEST, f"单帧超过 {MAX_FRAME_BYTES} 字节上限")
         else:
             try:
-                msg = decode(line)
+                msg = decode(raw)
             except Exception as exc:        # noqa: BLE001
                 reply = error(None, getattr(exc, "code", None) or E_PARSE, str(exc))
             else:
-                reply = handle(msg, ctx)
+                try:
+                    reply = handle(msg, ctx)
+                except Exception as exc:    # noqa: BLE001 —— 一帧出错不许打死连接器；只报类名
+                    reply = error(msg.get("id"), E_INTERNAL, type(exc).__name__)
         if reply is not None:
             stdout.write(encode(reply))
             stdout.flush()

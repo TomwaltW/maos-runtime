@@ -46,7 +46,7 @@ OTHER_USER = "wx-someone-else-t179"
 MY_NO = "MY-ORDER-t179"
 QUERY_KEY = "ORD-2026-0001"        # 台账上 paid，金额 6800
 SHIPPED_KEY = "ORD-2026-0003"      # 临时台账里标成 shipped
-PRECHECK_NO = "ORD-2026-0002"      # 预检要按客户给的单号查台账：绑定时 display_no = 查单键
+PRECHECK_NO = "ORD-2026-0002"      # 台账上能过预检的一单；预检按绑定的 query_key 查台账
 GHOST_KEY = "ORD-GHOST-t179"       # 绑定了但台账里没有 → not_found
 CARD_TEXT = "SENTINEL-客户原文-t179"
 CARD_SUGGEST = "SENTINEL-处理建议-t179"
@@ -165,6 +165,14 @@ def _assert_no_sentinels_t179(stdout: str, *extra: str) -> None:
         assert s not in stdout, f"出参里出现了哨兵 {s!r}"
 
 
+def _assert_detail_clean_t179(rows: list[dict]) -> None:
+    """审计行 detail 里只许有参数摘要与异常类名：客户标识 / 查单键 / 客户单号一个都不许落。"""
+    for r in rows:
+        blob = json.dumps(r["detail"], ensure_ascii=False)
+        for s in (USER, QUERY_KEY, SHIPPED_KEY, GHOST_KEY, MY_NO, "SHIP-t179", "GHOST-t179"):
+            assert s not in blob, f"审计行 detail 里出现了哨兵 {s!r}"
+
+
 # ---------------------------------------------------------------------------
 # 握手与清单
 # ---------------------------------------------------------------------------
@@ -216,6 +224,7 @@ def test_order_status_writes_one_cs_mcp_tool_row_per_lookup_t179(db_t179, ledger
     assert [(r["plan_id"], r["task_id"], r["trace_id"]) for r in rows] == [
         (CS_MCP_PLAN_ID, "mcp-1", ""), (CS_MCP_PLAN_ID, "mcp-2", "")]
     assert all(r["detail"]["tool"] == "order.query" for r in rows)
+    _assert_detail_clean_t179(rows)
     # 第二个进程接着同一个库：task_id 继续递增，不从 1 重来。
     _run_t179(db_t179, ledger_t179, [("cs_order_status", _order_args_t179(MY_NO))])
     assert [r["task_id"] for r in _tool_rows_t179(db_t179)] == ["mcp-1", "mcp-2", "mcp-3"]
@@ -239,6 +248,9 @@ def test_order_status_not_found_has_empty_wording_t179(db_t179, ledger_t179):
     assert _payload_t179(frames, 10) == {"outcome": "not_found", "display_no": "GHOST-t179",
                                          "wording": ""}
     _assert_no_sentinels_t179(stdout, "KeyError")
+    rows = _tool_rows_t179(db_t179)
+    assert len(rows) == 1
+    _assert_detail_clean_t179(rows)
 
 
 def test_unconfigured_lookup_answers_system_misconfigured_t179(db_t179, ledger_t179):
@@ -273,6 +285,20 @@ def test_refund_precheck_ok_never_returns_the_command_line_t179(db_t179, ledger_
     assert body["refused_why"] == ""
     _assert_no_sentinels_t179(stdout, "summary", "只读预检")
     assert len(_tool_rows_t179(db_t179)) == 1
+
+
+def test_refund_precheck_checks_the_ledger_no_not_the_display_no_t179(db_t179, ledger_t179):
+    """客户报的单号 ≠ 台账单号：预检要按绑定解析出的 query_key 查台账（与 desk.py 同口径）。"""
+    store = SqliteStore(str(db_t179))
+    _bind_t179(store, "MY-REFUND-t179", PRECHECK_NO)
+    frames, stdout = _run_t179(db_t179, ledger_t179, [
+        ("cs_refund_precheck", _order_args_t179("MY-REFUND-t179", reason_text="七天无理由退货"))])
+    body = _payload_t179(frames, 10)
+    assert (body["outcome"], body["ok"], body["refused_why"]) == ("ok", True, ""), body
+    assert body["rule_ref"]
+    # 这里台账单号就是查单键：只进预检入参，一个字都不许出连接器。
+    _assert_no_sentinels_t179(stdout, PRECHECK_NO)
+    _assert_detail_clean_t179(_tool_rows_t179(db_t179))
 
 
 def test_refund_precheck_refused_passes_refused_why_through_t179(db_t179, ledger_t179):
@@ -384,6 +410,31 @@ def test_protocol_errors_and_frame_cap_t179(db_t179, ledger_t179):
     for i in (11, 12, 13, 14):
         assert frames[i]["result"]["isError"] is True, frames[i]
     assert _payload_t179(frames, 15)["outcome"] == "ok"
+
+
+def test_bad_bytes_and_unhashable_tool_name_do_not_kill_the_server_t179(db_t179, ledger_t179):
+    """非法 UTF-8 的一帧回 -32700、name 不是字符串回 E_INVALID_PARAMS —— 之后照常服务。"""
+    lines = [b"\xff\xfe{\"x\": 1}",
+             json.dumps({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                         "params": {"name": ["x"]}}).encode(),
+             json.dumps({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                         "params": {"name": {"a": 1}}}).encode(),
+             json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}).encode()]
+    argv = [sys.executable, "-m", "maos.tools.mcp.cs_server", "--db", str(db_t179),
+            "--ledger", str(ledger_t179)]
+    for lang in ("C.UTF-8", ""):
+        env = _env_t179()
+        env["LANG"] = lang
+        proc = subprocess.run(argv, input=b"\n".join(lines) + b"\n", capture_output=True,
+                              env=env, timeout=120, cwd=str(ROOT))
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert b"Traceback" not in proc.stderr
+        frames = [json.loads(ln) for ln in proc.stdout.splitlines() if ln.strip()]
+        by_id = {f.get("id"): f for f in frames}
+        assert by_id[None]["error"]["code"] == -32700
+        assert by_id[5]["error"]["code"] == E_INVALID_PARAMS
+        assert by_id[6]["error"]["code"] == E_INVALID_PARAMS
+        assert [t["name"] for t in by_id[7]["result"]["tools"]] == [t["name"] for t in cs_server.TOOLS]
 
 
 # ---------------------------------------------------------------------------

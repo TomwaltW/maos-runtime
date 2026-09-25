@@ -27,7 +27,7 @@
 | `claim.pay` | `1.0.0` | 软件交付域 | `claim_payment` | escalate | `payer.submit` | `maos/skills/builtin/claim/pay.py:35` |
 | `claim.settle` | `1.0.0` | 软件交付域 | `claim_settlement` | escalate | （空） | `maos/skills/builtin/claim/settle.py:62` |
 | `code.repo-patch` | `1.0.0` | 软件交付域 | `coding` | escalate | `git-mcp`、`sandbox` | `maos/skills/builtin/code_repo_patch.py:154` |
-| `cs.answer` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/answer.py:52` |
+| `cs.answer` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/answer.py:54` |
 | `cs.handoff` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/handoff.py:24` |
 | `cs.understand` | `1.0.0` | 软件交付域 | （空） | escalate | （空） | `maos/skills/builtin/cs/understand.py:28` |
 | `finance.settle` | `1.0.0` | 制造售后退款域 | `refund_finance` | escalate | （空） | `maos/skills/builtin/refund/finance.py:55` |
@@ -285,7 +285,7 @@
 
 ### cs.answer @ 1.0.0
 
-实现：`CsAnswerSkill` @ `maos/skills/builtin/cs/answer.py:52`
+实现：`CsAnswerSkill` @ `maos/skills/builtin/cs/answer.py:54`
 
 | 要素 | 含义 | 值 |
 | :-- | :-- | :-- |

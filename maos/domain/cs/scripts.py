@@ -51,6 +51,21 @@
 的线索，拿不准的一律不归一（原句照旧落兜底）。``KbRetrieved.detail.query`` 多记一个
 ``synonym_norm``（命中的规则名，枚举），不记归一后的句子。话术库本身一条没加（增补棘轮归 T169
 的测试管，见 docs/DECISIONS.md task-t182）。
+
+## 近邻兜底（p15 T186：``match_scripts(..., nearest=True)``，:mod:`maos.domain.cs.similar`）
+
+**只在词法零命中时启用**（原句与同义归一之后的最高分都够不着 :data:`MIN_SCRIPT_SCORE`），且只有
+调用方点名要（``nearest=True``，``cs.answer`` 这么调）才启用；缺省 ``False`` 时逐字节同 p14。
+启用时从本租户的话术行（``retriever.prefilter`` 取候选，租户硬约束照旧）拿每篇的例句建
+字符 n 元组 TF-IDF 索引，问 :func:`similar.nearest` 要最像的一篇：
+
+* 它弃权（分不够、与第二名差距不够、否定 / 第三人称句式、没有汉字、太短）→ 返回值与
+  ``KbRetrieved`` 逐字节同不启用时（照旧落兜底）；
+* 给了 ``intent_hint``（且不是 unknown）而近邻那篇的意图与之不同 → 同样弃权（两路判断打架，宁可不答）；
+* 否则只返回那一篇（``ScriptHit.score`` = 近邻余弦，≥ 门槛），``KbRetrieved.detail.docs`` 就是它
+  （``channels = {"similar": 余弦}``），``detail.query.channel = "similar"`` 并记 ``similar_margin``
+  （与第二名的差距，数值）—— 不记客户原文。那一篇照常走 ``cs.answer`` 的组稿与后置校验：
+  带 ``kb:<doc_id>`` 引用；转人工标记的篇照旧转人工。
 """
 
 from __future__ import annotations
@@ -63,6 +78,7 @@ import unicodedata
 from typing import Any
 
 from maos import kb
+from maos.domain.cs import similar
 from maos.domain.cs import types as T
 from maos.kb import retriever
 
@@ -629,12 +645,50 @@ def _score_all(recalled: list[dict], text: str, normalized: str, *, intent_hint:
     return scored
 
 
+def _nearest_hit(store: Any, query: dict, text: str, *,
+                 intent_hint: str) -> tuple[T.ScriptHit, dict, int] | None:
+    """近邻兜底（p15 T186，见模块头「近邻兜底」）：(命中, 该篇的 KbRetrieved 条目, 候选篇数)；弃权返回 None。"""
+    candidates = [d for d in retriever.prefilter(store, query)
+                  if d.get("kind") == T.CS_KB_KIND and d.get("biz_type") == T.BIZ_TYPE_CS]
+    usable: dict[str, tuple[dict, dict]] = {}
+    for doc in candidates:
+        body = _usable_body(doc)
+        if body is not None:
+            usable[str(doc["doc_id"])] = (doc, body)
+    index = similar.SimilarIndex(
+        [(doc_id, [str(e) for e in body.get("examples") or ()])
+         for doc_id, (_doc, body) in usable.items()],
+        light_chars=_FUNCTION_CHARS, light_weight=_FUNCTION_WEIGHT)
+    found = similar.nearest(index, text)
+    if found is None:
+        return None
+    doc, body = usable[found.key]
+    if intent_hint and intent_hint != T.INTENT_UNKNOWN and body.get("intent") != intent_hint:
+        return None
+    hit = T.ScriptHit(
+        doc_id=found.key,
+        scheme_no=str(body.get("scheme_no") or doc.get("rule_no") or ""),
+        intent=str(body["intent"]),
+        score=found.score,
+        script=str(body["script"]),
+        principle=str(body.get("principle") or ""),
+        handoff=str(body.get("handoff") or ""),
+    )
+    logged = {"doc_id": hit.doc_id, "score": hit.score, "title": doc.get("title", ""),
+              "kind": doc.get("kind"), "channels": {similar.CHANNEL: hit.score},
+              "margin": found.margin}
+    return hit, logged, len(candidates)
+
+
 def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_id: str,
-                  limit: int = 3, intent_hint: str = "") -> list[T.ScriptHit]:
+                  limit: int = 3, intent_hint: str = "", nearest: bool = False) -> list[T.ScriptHit]:
     """检索话术，按 score 降序返回至多 ``limit`` 篇（重排分为 0 的不返回）。
 
     ``intent_hint``（p13）：缺省空串时逐字节同 p12；给了就进提示模式（见模块头「意图提示」），
     不在 ``types.INTENTS`` 里抛 ``ValueError``。
+
+    ``nearest``（p15 T186）：缺省 ``False`` 时逐字节同 p14；``True`` 时词法零命中再走近邻兜底
+    （见模块头「近邻兜底」），近邻不弃权就只返回那一篇、``KbRetrieved`` 标 ``channel: "similar"``。
 
     * 只检 ``kind='cs_script'`` 且 ``biz_type='cs'`` 的文档：查询带 ``biz_type='cs'``
       过阶段一，召回后再逐篇核一次 ``biz_type`` —— 阶段一把文档侧 NULL 当通配，
@@ -673,6 +727,24 @@ def match_scripts(store: Any, *, tenant_id: str, text: str, plan_id: str, task_i
             seen = {h.get("doc_id") for h in recalled}
             recalled = list(recalled) + [h for h in extra if h.get("doc_id") not in seen]
             scored = _score_all(recalled, text, normalized, intent_hint=intent_hint, cue=cue)
+    # 近邻兜底（p15 T186）：词法（含同义归一）仍零命中、且调用方点名要时才启用；弃权则一切照旧。
+    if nearest and (not scored or scored[0][0] < MIN_SCRIPT_SCORE):
+        got = _nearest_hit(store, query, text, intent_hint=intent_hint)
+        if got is not None:
+            hit, logged, candidate_count = got
+            logged_query = {**query, "keyword": T.text_digest(text)}
+            if intent_hint:
+                logged_query.update({"intent_hint": intent_hint, "cue": cue})
+            if synonym_norm:
+                logged_query["synonym_norm"] = list(synonym_norm)
+            logged_query.update({"channel": similar.CHANNEL, "similar_margin": logged.pop("margin")})
+            retriever.emit_kb_retrieved(
+                store, [logged], query=logged_query,
+                plan_id=plan_id, task_id=task_id, trace_id="",
+                duration_ms=(time.perf_counter() - started) * 1000,
+                candidate_count=candidate_count,
+            )
+            return [hit]
     top = scored[:max(0, int(limit))]
 
     hits = [

@@ -614,3 +614,32 @@ def test_desk_uses_the_public_lang_function_t182():
                  "iPhone15", "订单 A1001"):
         assert D.has_lang_signal(text) == lang.has_lang_signal(text), text
     assert lang.drop_codes("order A1001 now") == "order   now"
+
+
+# ---------------------------------------------------------------------------
+# 整合期 p14（主会话）：二轮复核余项里两处「自信答错」的收口
+# ---------------------------------------------------------------------------
+import pytest as _pytest_integ  # noqa: E402
+
+from maos.domain.cs import scripts as _scripts_integ  # noqa: E402
+
+
+def _rules_hit_integ(text):
+    return set(_scripts_integ.synonym_hits(text))
+
+
+@_pytest_integ.mark.parametrize("text", [
+    "没用过的退烧贴能退烧吗", "没拆过的退热贴好用吗", "没用过的会员能退订吗", "吊牌还在的衣服穿着会退色吗能退烧吗",
+])
+def test_seven_day_does_not_fire_on_fever_or_unsubscribe_integ(text):
+    assert "seven_day" not in _rules_hit_integ(text)
+
+
+@_pytest_integ.mark.parametrize("text", ["给我退热贴怎么弄", "退火炉怎么操作"])
+def test_return_steps_does_not_fire_on_fever_or_annealing_integ(text):
+    assert "return_steps" not in _rules_hit_integ(text)
+
+
+@_pytest_integ.mark.parametrize("text", ["遥控器坏了换了电池还是不亮", "灯不亮了换了灯泡也没用"])
+def test_quality_exchange_needs_the_item_itself_not_a_replaced_part_integ(text):
+    assert "quality_exchange" not in _rules_hit_integ(text)

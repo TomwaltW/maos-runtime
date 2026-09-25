@@ -8,7 +8,11 @@
 * ``--out`` 首行 ``# generated at <ISO8601> from <git sha>``，其余是 JSON；
 * ``--db``：所有前台共享一个库，跑完库里有 cs_turn / cs_observation 行；同一个库连跑两次不报错、
   读数与内存库逐项相同、话术库不重复落行；
-* holdout12 两条路径都跑，p13 路径注入的是空夹具端口。
+* holdout12 两条路径都跑，p13 路径注入的是空夹具端口；dev12 只走 run_eval、dev13 只走
+  run_eval_p13，且整份文件都跑到；一条路径都没跑的集不算达标；
+* ``--set all``（也是缺省）四集依次跑；
+* ``--out`` 首行的 sha 就是 make_evidence.git_sha()；
+* 集文件格式不对 → 该集 ERROR、只出异常类名，文件里的原值（期望标签、夹具值、门槛值）不外泄。
 
 本文件**不**打开任何留出集文件（p12_holdout_cases.json / p14_holdout_cases.json）：留出集的
 路径常量在每条用到它的测试里都被替换成 tmp 文件。
@@ -295,6 +299,149 @@ def test_out_file_has_header_then_json_t177(cli_t177, capsys, tmp_path):
     assert HEADER_RE_T177.match(first), first
     assert json.loads(rest) == json.loads(js)
     assert code == 0
+    # 出处就是当前代码：sha 与 make_evidence.git_sha() 同一口径（不许写死或冒充）
+    from scripts.make_evidence import git_sha
+    assert first.rsplit(" from ", 1)[1] == git_sha()
+
+
+# ---------------------------------------------------------------------------
+# 各集的跑法（哪个集走哪条路径）与 --set all
+# ---------------------------------------------------------------------------
+def _spy_paths_t177(monkeypatch) -> list[str]:
+    """包一层 evaluate.run_eval / run_eval_p13（照常委托），记下调用顺序。"""
+    calls: list[str] = []
+    real_p12, real_p13 = evaluate.run_eval, evaluate.run_eval_p13
+
+    def p12(*a, **k):
+        calls.append("run_eval")
+        return real_p12(*a, **k)
+
+    def p13(*a, **k):
+        calls.append("run_eval_p13")
+        return real_p13(*a, **k)
+
+    monkeypatch.setattr(evaluate, "run_eval", p12)
+    monkeypatch.setattr(evaluate, "run_eval_p13", p13)
+    return calls
+
+
+@pytest.mark.parametrize("set_name,dev_path,expected", [
+    ("dev12", evaluate.EVAL_PATH, ["run_eval"]),
+    ("dev13", evaluate.P13_EVAL_PATH, ["run_eval_p13"]),
+])
+def test_dev_set_runs_its_own_path_over_the_whole_file_t177(cli_t177, capsys, monkeypatch,
+                                                            set_name, dev_path, expected):
+    """dev12 只走 p12 路径（run_eval、不注入端口），dev13 只走 run_eval_p13；且整份文件都跑到。"""
+    calls = _spy_paths_t177(monkeypatch)
+    code, out = _run_t177(cli_t177, capsys, "--set", set_name, "--json")
+    doc = json.loads(out)
+    (only,) = doc["sets"]
+    assert calls == expected
+    (run,) = only["runs"]
+    assert run["path"] == ("p12" if set_name == "dev12" else "p13")
+    raw = evaluate.load_document(dev_path)["cases"]
+    assert run["cases"] == len(raw)
+    assert run["turns"] == sum(len(c["turns"]) for c in raw) > 0
+    assert code == doc["exit_code"] == (0 if only["meets"] else 1)
+
+
+def test_holdout12_calls_both_paths_t177(cli_t177, capsys, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_t177, "HOLDOUT12_PATH",
+                        _write_t177(tmp_path / "h12.json", _sentinel_doc_t177()))
+    calls = _spy_paths_t177(monkeypatch)
+    _run_t177(cli_t177, capsys, "--set", "holdout12", "--json")
+    assert calls == ["run_eval", "run_eval_p13"]
+
+
+def test_no_runs_never_meets_t177(cli_t177):
+    """一条路径都没跑的集不许靠 all([]) 空转出 PASS。"""
+    assert cli_t177.runs_meet([]) is False
+    assert cli_t177.runs_meet([{"meets": True}]) is True
+    assert cli_t177.runs_meet([{"meets": True}, {"meets": False}]) is False
+
+
+def test_set_all_runs_the_four_sets_in_order_and_is_the_default_t177(cli_t177, capsys, tmp_path,
+                                                                     monkeypatch):
+    """--set all（也是缺省）四集依次跑；holdout14 不存在 → SKIP；退出码与各集结论一致。"""
+    monkeypatch.setattr(cli_t177, "HOLDOUT12_PATH",
+                        _write_t177(tmp_path / "h12.json", _sentinel_doc_t177()))
+    code_all, out_all = _run_t177(cli_t177, capsys, "--set", "all", "--json")
+    code_def, out_def = _run_t177(cli_t177, capsys, "--json")
+    doc_all, doc_def = json.loads(out_all), json.loads(out_def)
+    assert [s["set"] for s in doc_all["sets"]] == ["dev12", "dev13", "holdout12", "holdout14"]
+    assert [s["status"] for s in doc_all["sets"]][3] == "SKIP"
+    assert all(s["status"] in ("PASS", "FAIL") for s in doc_all["sets"][:3])
+    assert code_all == doc_all["exit_code"] == cli_t177.exit_code_of(doc_all["sets"])
+    assert doc_all["sets"][2]["status"] == "FAIL" and code_all == 1   # 哨兵集故意对不上
+    assert (code_def, doc_def["set"], doc_def["sets"]) == (code_all, "all", doc_all["sets"])
+    for sentinel in SENTINELS_T177:
+        assert sentinel not in out_all
+
+
+# ---------------------------------------------------------------------------
+# 集文件本身格式不对：ERROR、只出类名，文件里的原值一个都不外泄
+# ---------------------------------------------------------------------------
+_BAD_T177 = "ZQXBAD哨兵T177"
+
+
+def _malformed_doc_t177(kind: str) -> dict:
+    doc = _sentinel_doc_t177()
+    case = doc["cases"][0]
+    if kind == "route":
+        case["expect"][0]["route"] = _BAD_T177
+    elif kind == "fixture":
+        case["fixtures"] = {"bindings": [{"display_no": [_BAD_T177], "system_name": "x",
+                                          "query_key": "k"}]}
+    elif kind == "threshold":
+        doc["_thresholds"]["intent_accuracy"] = _BAD_T177
+    return doc
+
+
+@pytest.mark.parametrize("set_name", ["holdout12", "holdout14"])
+@pytest.mark.parametrize("kind", ["route", "fixture", "threshold"])
+def test_malformed_set_is_error_and_leaks_nothing_t177(cli_t177, capsys, tmp_path, monkeypatch,
+                                                      set_name, kind):
+    monkeypatch.setattr(cli_t177, set_name.upper() + "_PATH",
+                        _write_t177(tmp_path / f"{set_name}.json", _malformed_doc_t177(kind)))
+    out_file = tmp_path / "bad.json"
+    code = cli_t177.main(["--set", set_name, "--json", "--out", str(out_file)])
+    captured = capsys.readouterr()
+    code_text = cli_t177.main(["--set", set_name])
+    captured_text = capsys.readouterr()
+    assert code == code_text == 1
+    written = out_file.read_text(encoding="utf-8")            # --out 照写
+    (only,) = json.loads(captured.out)["sets"]
+    assert (only["status"], only["error"], only["runs"]) == ("ERROR", "ValueError", [])
+    assert "[" + set_name + "] ERROR" in captured_text.out and "error=ValueError" in captured_text.out
+    for blob in (captured.out, captured.err, written, captured_text.out, captured_text.err):
+        assert _BAD_T177 not in blob
+        for sentinel in SENTINELS_T177:
+            assert sentinel not in blob, sentinel
+        assert "Traceback" not in blob
+
+
+_BAD_DRIVER_T177 = """
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("cs_eval_bad_t177", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.HOLDOUT12_PATH = pathlib.Path(sys.argv[2]) / "absent12.json"
+mod.HOLDOUT14_PATH = pathlib.Path(sys.argv[2]) / "h14.json"
+sys.exit(mod.main(["--set", "holdout14", "--out", sys.argv[3]]))
+"""
+
+
+def test_malformed_set_leaks_nothing_as_a_process_t177(tmp_path):
+    """进程级：坏文件不带出未捕获的堆栈（堆栈里的 ValueError 消息会带出原值）。"""
+    _write_t177(tmp_path / "h14.json", _malformed_doc_t177("route"))
+    out_file = tmp_path / "bad.json"
+    proc = subprocess.run([sys.executable, "-c", _BAD_DRIVER_T177, str(SCRIPT_T177),
+                           str(tmp_path), str(out_file)],
+                          cwd=ROOT_T177, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 1, proc.stderr[-200:].replace(_BAD_T177, "<redacted>")
+    for blob in (proc.stdout, proc.stderr, out_file.read_text(encoding="utf-8")):
+        assert _BAD_T177 not in blob and "Traceback" not in blob
+    assert "error=ValueError" in proc.stdout
 
 
 # ---------------------------------------------------------------------------

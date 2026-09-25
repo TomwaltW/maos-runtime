@@ -3495,3 +3495,5 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | --out 首行的 sha 用哪个函数取 | scripts/make_evidence 的 git_sha + header_line，不用 pin_sha | pin_sha 会写进程级环境变量，测试里进程内调 main 会把钉住的 sha 带给后面的测试 |
 | 2026-09-25 | p14 | 复核 L3-1：前台出错时 desk 的 log.error(exc_info=True) 经 lastResort 把异常原文（可能含客户原句）写到 stderr | 跑批期间接管 maos 这一支 logger：换成只出「级别 logger 名 异常类名」一行的打码 handler、propagate 关掉，跑完原样还原；不改 desk 的日志 | desk.py 不归本轨；契约 §0 只许聚合数与 id，stderr 也是输出；出错轮数已在 miss_by_problem 里计，不丢信息；可逆 |
 | 2026-09-25 | p14 | 复核 L3-2：报告里的 thresholds 原样带出留出集 _thresholds 的非数值键 | 只留数值型门槛项（int/float，排除 bool） | 白名单口径只许数字；成本最低 |
+| 2026-09-25 | p14 | 复核 L3-1（第二轮）：集文件本身格式不对（期望枚举、夹具类型、门槛值）时 evaluate 的 ValueError 消息会用 repr 带出文件里的原值，未捕获的堆栈打到 stderr、--out 也不写 | 每个集的加载与跑批包进 try/except Exception：该集记 status=ERROR、只出 error=<异常类名>、runs 为空，退出码算 1（与 FAIL 同），其余集照跑、--out 照写；四集一律同口径 | 契约 §0 留出集是盲的，stderr 也是输出；契约没写 ERROR 这一档，按「非全部 meets → 1」归 1，成本最低且可逆 |
+| 2026-09-25 | p14 | 复核 L2-1：run_set 在一条路径都没跑时 meets=all([])=True 会空转出 PASS | 集的结论改成「至少跑了一条路径且每条都达标」（runs_meet），空 runs 判不达标 | 评测空转不许报满分，与 evaluate.shortfalls 对 turns=0 的口径一致 |

@@ -33,7 +33,10 @@ stderr 同口径：跑批期间接管 ``maos`` 这一支 logger（不再向上�
 一律不出（前台异常消息里可能带客户原文；出错轮数已计在 ``miss_by_problem`` 里）。跑完原样还原。
 报告里的 ``thresholds`` 只留数值型门槛项（非数值键如 ``_note`` 不出）。
 
-退出码：所选集（SKIP 的除外）全部 meets → 0；否则 1；用法错 → 2。
+某集加载或跑批出错（文件格式不对、门槛值不是数字……）→ 该集 ERROR，只出异常类名（evaluate 的
+报错消息会带出文件里的期望标签 / 夹具值 / 门槛值），不出堆栈；其余集照跑，``--out`` 照写。
+
+退出码：所选集（SKIP 的除外）全部 meets → 0；否则（含 ERROR）1；用法错 → 2。
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ SET_CHOICES = SETS + ("all",)
 EVAL_TENANTS: Mapping[str, str] = dict(evaluate.DEFAULT_TENANT_MAP)
 
 #: 集的状态。
-STATUS_PASS, STATUS_FAIL, STATUS_SKIP = "PASS", "FAIL", "SKIP"
+STATUS_PASS, STATUS_FAIL, STATUS_SKIP, STATUS_ERROR = "PASS", "FAIL", "SKIP", "ERROR"
 
 #: 跑批客户后缀的分隔符（只在 --db 时加）。
 _TAG_SEP = "~"
@@ -162,8 +165,25 @@ def _run_summary(path_name: str, report: evaluate.EvalReport, thresholds: Mappin
             "misses": misses, "miss_by_problem": dict(sorted(by_problem.items()))}
 
 
+def runs_meet(runs: Sequence[Mapping[str, Any]]) -> bool:
+    """一个集的结论：至少跑了一条路径、且每条都达标。一条都没跑不算达标（不靠 all([]) 空转）。"""
+    return bool(runs) and all(r["meets"] for r in runs)
+
+
 def run_set(name: str, stores: _Stores, *, tag: str = "") -> dict[str, Any]:
-    """跑一个集，返回该集的聚合结果（``status`` ∈ PASS / FAIL / SKIP）。"""
+    """跑一个集，返回该集的聚合结果（``status`` ∈ PASS / FAIL / SKIP / ERROR）。
+
+    加载或跑批出错（文件格式不对、门槛值不是数字……）→ 该集记 ERROR，只报异常**类名**：
+    evaluate 的报错消息会用 repr 带出文件里的原值（期望标签、夹具值、门槛值），盲集不许外泄。
+    """
+    try:
+        return _run_set(name, stores, tag=tag)
+    except Exception as exc:                      # noqa: BLE001 —— 只出类名，消息正文不出
+        return {"set": name, "file": _display_path(set_path(name)), "status": STATUS_ERROR,
+                "meets": False, "error": type(exc).__name__, "runs": []}
+
+
+def _run_set(name: str, stores: _Stores, *, tag: str = "") -> dict[str, Any]:
     path = set_path(name)
     result: dict[str, Any] = {"set": name, "file": _display_path(path)}
     if not path.exists():
@@ -184,7 +204,7 @@ def run_set(name: str, stores: _Stores, *, tag: str = "") -> dict[str, Any]:
         tagged, back = _tag_cases(base, f"{tag}-{name}-p13" if tag else "")
         report = evaluate.run_eval_p13(_p13_factory(stores), tagged)
         runs.append(_run_summary("p13", report, thresholds, back))
-    meets = all(r["meets"] for r in runs)
+    meets = runs_meet(runs)
     result.update(status=STATUS_PASS if meets else STATUS_FAIL, meets=meets,
                   thresholds=_numeric_thresholds(thresholds), runs=runs)
     return result
@@ -239,8 +259,8 @@ def _display_path(path: pathlib.Path) -> str:
 
 
 def exit_code_of(results: Sequence[Mapping[str, Any]]) -> int:
-    """所选集（SKIP 的除外）全部 meets → 0，否则 1。"""
-    return 0 if all(r["status"] != STATUS_FAIL for r in results) else 1
+    """所选集（SKIP 的除外）全部 meets → 0，否则 1（FAIL / ERROR 都算没达标）。"""
+    return 0 if all(r["status"] in (STATUS_PASS, STATUS_SKIP) for r in results) else 1
 
 
 def render_text(results: Sequence[Mapping[str, Any]], code: int) -> str:
@@ -248,6 +268,10 @@ def render_text(results: Sequence[Mapping[str, Any]], code: int) -> str:
     for r in results:
         if r["status"] == STATUS_SKIP:
             lines.append(f"[{r['set']}] SKIP  {r['file']}：{r['note']}")
+            continue
+        if r["status"] == STATUS_ERROR:
+            lines.append(f"[{r['set']}] ERROR  {r['file']}：加载或跑批出错 error={r['error']}"
+                         "（消息正文已打码）")
             continue
         lines.append(f"[{r['set']}] {r['status']}  {r['file']}")
         for run in r["runs"]:

@@ -525,18 +525,56 @@ def _order_ask_clause_t184(prefix: str) -> bool:
     return asks_order_status(prefix) or scripts.detect_cue(prefix) == scripts.CUE_PROGRESS
 
 
+#: 复核 L2-1（第三轮）：光秃秃的「的话」常是话题标记（「A1001的话到哪了」「我的快递的话到哪了」）；
+#: 话题本身是单号或订单名词时不算假设。
+_CLAUSE_PUNCT_RE = re.compile(r"[,，。.!！?？;；~～…、:：]")
+_ZH_ORDER_TOPIC_RE = re.compile(r"\d|物流|快递|包裹|订单|单子|运单|这单|那单|单号")
+#: 复核 L3-A：条件问句之后另起一句在要看「这一单」—— 本轮带着单号形状的串，或「我的 X / my X」。
+_OWN_ORDER_RE = re.compile(
+    r"[a-z]{0,4}-?\d{3,}|我的(?:物流|快递|包裹|订单|单子)"
+    r"|" + _EN_B + r"my (?:order|package|parcel|shipment|delivery|stuff)" + _EN_E)
+_AFTER_LEAD_RE = re.compile(r"^(?:另外|还有|顺便|再|然后|also|and|btw|by the way|plus)[,， ]*")
+
+
+def _topic_de_hua_t184(s: str, start: int) -> bool:
+    """``s[start:]`` 以「的话」开头、且它前面同一分句里的话题是单号 / 订单名词 → 话题标记，不是假设。"""
+    seg = _CLAUSE_PUNCT_RE.split(s[:start])[-1]
+    return bool(_ZH_ORDER_TOPIC_RE.search(seg))
+
+
+def _order_ask_after_t184(suffix: str) -> bool:
+    """条件说法之后、在分句标点之后另起一句在要看这一单（「如果今天不到怎么办，帮我查下A1001到哪了」
+    「what if it doesn't arrive? where is order A1001」）。"""
+    m = _CLAUSE_PUNCT_RE.search(suffix)
+    if not m:
+        return False
+    rest = _AFTER_LEAD_RE.sub("", suffix[m.end():].strip())
+    if not rest:
+        return False
+    return asks_order_status(rest) or (scripts.detect_cue(rest) == scripts.CUE_PROGRESS
+                                       and bool(_OWN_ORDER_RE.search(rest)))
+
+
+def _hypothetical_side_t184(s: str, hyp_re: re.Pattern[str], q_re: re.Pattern[str]) -> bool:
+    if not q_re.search(s):
+        return False
+    for hit in hyp_re.finditer(s):
+        if hit.group() == "的话" and _topic_de_hua_t184(s, hit.start()):
+            continue
+        return not (_order_ask_clause_t184(s[:hit.start()]) or _order_ask_after_t184(s[hit.end():]))
+    return False
+
+
 def hypothetical_question(text: str) -> bool:
     """C4：假设 / 泛问句 —— 问的是规则，不是这一单（「要是退货的话运费谁出」「如果我想换货要怎么弄」
     「what if my parcel gets lost」）。要同时有假设说法与问句形状；客气话里的「如果可以」、间接问句里的
-    「check if / let me know if」不算假设；条件说法前面已经有一个完整的「看这一单」分句也不算。"""
+    「check if / let me know if」、话题标记「A1001的话」不算假设；条件说法前面、或条件问句之后另起一句
+    已经有一个完整的「看这一单」分句也不算。"""
     norm = _t184_norm(text)
     zh = _ZH_POLITE_IF_RE.sub("，", norm.replace(" ", ""))
     en = _EN_INDIRECT_IF_RE.sub(r"\1", _EN_POLITE_IF_RE.sub(",", norm))
-    hit = _ZH_HYPOTHETICAL_RE.search(zh)
-    if hit and _ZH_QUESTION_RE.search(zh) and not _order_ask_clause_t184(zh[:hit.start()]):
-        return True
-    hit = _EN_HYPOTHETICAL_RE.search(en)
-    return bool(hit and _EN_QUESTION_RE.search(en) and not _order_ask_clause_t184(en[:hit.start()]))
+    return (_hypothetical_side_t184(zh, _ZH_HYPOTHETICAL_RE, _ZH_QUESTION_RE)
+            or _hypothetical_side_t184(en, _EN_HYPOTHETICAL_RE, _EN_QUESTION_RE))
 
 
 #: C1：中文「查物流一类」的说法 —— 查 / 看 / 追踪 +（一下 / 个 / 我的）+ 物流 / 快递 / 包裹 / 订单，
@@ -596,16 +634,29 @@ _EN_STATUS_PATTERNS: tuple[str, ...] = (
     + _EN_TAIL,
     r"status (?:of|on|for) " + _EN_OBJ + _EN_TAIL,
     # check / track my order, look up order A1001
-    r"(?:check|track|trace|look up|lookup|look into|follow up on|find) (?:on )?" + _EN_OBJ + _EN_TAIL,
+    # 复核 L2-4（第三轮）：不收 find（「I can't find the order number」说的是给不出单号，不是要查）
+    r"(?:check|track|trace|look up|lookup|look into|follow up on) (?:on )?" + _EN_OBJ + _EN_TAIL,
 )
 _EN_STATUS_RE = re.compile("|".join(f"{_EN_B}(?:{p}){_EN_E}" for p in _EN_STATUS_PATTERNS))
+
+#: 复核 L3-B（第三轮）：明说「不用查 / 不是查 / 别查 / don't check」—— 这一句不是在要看这一单。
+_ZH_NEG_LOOKUP_RE = re.compile(
+    r"(?:不用|不想|不要|不需要|不必|别|没让你?|没叫你?|不是(?:要|让你?|叫你?)?)(?:再|帮我|给我|帮忙|你|去)*"
+    r"(?:查询|查|看看|看|追踪|跟踪)")
+_EN_NEG_LOOKUP_RE = re.compile(
+    _EN_B + r"(?:don't|dont|do not|no need to|didn't ask you to|did not ask you to|not asking you to)"
+    r"(?: [a-z']+){0,3}? (?:check|track|trace|look up|lookup|look into)" + _EN_E)
 
 
 def asks_order_status(text: str) -> bool:
     """C1 / C2：没有诉求词也没有进度线索、但在要看这一单：中文「看下我包裹」「物流查一下」
     （问怎么查不算），英文按词认的订单状态问法（「is order A1001 on its way」「has my parcel shipped」
-    「where's my package」「any update on my order」）。"""
+    「where's my package」「any update on my order」）。明说不查了 / 不用查的不算。"""
     norm = _t184_norm(text)
+    zh = norm.replace(" ", "")
+    if (_ZH_DROP_RE.search(zh) or _EN_DROP_RE.search(norm) or _ZH_NEG_LOOKUP_RE.search(zh)
+            or _EN_NEG_LOOKUP_RE.search(norm)):
+        return False
     if _EN_STATUS_RE.search(norm):
         return True
     zh = norm.replace(" ", "")
@@ -620,17 +671,30 @@ def asks_how_to_look(text: str) -> bool:
 #: C3：上一轮在追问单号，本轮没给单号、但仍在说这一单（给不出单号、让我们直接查 / 直接办）。
 #: 复核 L2-3 / L3-3：只认「给不出单号」与「就是这一单、直接查」的说法；单字「查 / 看」、泛泛的
 #: 「帮我 / 快递 / 物流 / 订单」不算（追问之后换了个政策问题，照常检索）。
+#: 复核 L2-2（第三轮）：「不知道 / 不清楚 / 忘了」一类不再按子串认 —— 要么挨着单号说（上一条里的
+#: 「单号」「订单号」），要么自成一个分句（「不记得了」「订单删了找不到了」），且后面没有另起一个
+#: 与这一单无关的问句（「不清楚，退款多久到账」「忘了问，你们发什么快递」「不知道你们运费谁出」都不算）。
 _ZH_STILL_ON_ORDER_RE = re.compile(
-    r"单号|订单号|这单|那单|这一单|那一单|找不到|不知道|不清楚|不记得|记不得|记不住|忘了|忘记|没有号|查不到|"
-    r"看不到|没存|删了|没收到|没到|到哪|直接(?:帮我|给我)?(?:查|看|告诉我)")
+    r"单号|订单号|订单编号|这单|那单|这一单|那一单|没有号|没收到|没到|到哪"
+    r"|直接(?:帮我|给我)?(?:查|看|告诉我)")
+_ZH_FORGOT_CLAUSE_RE = re.compile(
+    r"(?:^|[,，。.!！?？;；~～…、:：])[^,，。.!！?？;；~～…、:：]{0,6}?"
+    r"(?:不知道|不清楚|不记得|记不得|记不住|忘了|忘记了?|找不到|查不到|看不到|没存|删了)"
+    r"(?:了|啦|呀|啊|耶|哎|诶|哦)*(?=$|[,，。.!！?？;；~～…、:：])")
 #: 整句就是一个光秃秃的「查一下嘛 / 看看吧 / 直接帮我查」（追问之后催一句）。
 _ZH_BARE_LOOKUP_RE = re.compile(
     r"^(?:你|您)?(?:就|直接|快|赶紧|麻烦)?(?:帮我|给我|帮忙)?(?:查|看|找)(?:一下|一查|一看|下|查|看)?"
     r"(?:嘛|吧|呗|啊|呀|哈|呢|好吗|行吗|可以吗)?[,，。.!！?？~～…]*$")
+#: 复核 L2-2（第三轮）：英文同理 —— 「order number / tracking number」照认；「don't know / forgot / can't
+#: find / no idea」要在几词之内挨着 number / no. / # / id，或整句就是这么一句（「I forgot」「no idea」）；
+#: 光秃秃的 number 不认（「is there a number I can call?」）。
+_EN_FORGOT = (r"(?:no idea|don't know|dont know|do not know|not sure|can't find|cannot find|can not find"
+              r"|couldn't find|could not find|forgot|forget|lost|don't have|dont have|do not have"
+              r"|can't remember|cannot remember|don't remember|dont remember|do not remember|dunno)")
 _EN_STILL_ON_ORDER_RE = re.compile(
-    _EN_B + r"(?:order number|order no|order #|number|no idea|don't know|dont know|do not know|not sure"
-    r"|can't find|cannot find|can not find|couldn't find|could not find|forgot|forget(?! (?:it|about it))"
-    r"|lost|don't have|dont have|do not have)" + _EN_E)
+    _EN_B + r"(?:(?:order|tracking) (?:number|no|#|id)|" + _EN_FORGOT
+    + r"(?: [a-z']+){0,4}? (?:number|no\.?|#|id)|^(?:i )?(?:really |just )?" + _EN_FORGOT
+    + r"(?: (?:it|that|the number|sorry))*[.!, ]*$)" + _EN_E)
 _EN_BARE_LOOKUP_RE = re.compile(
     r"^(?:(?:please|pls|just|can you|could you|you) )*(?:check|look|track|look it up|check it|track it)"
     r"(?: (?:it|again|please|for me|anyway|now))*[?.! ]*$")
@@ -647,8 +711,18 @@ def still_on_order(text: str) -> bool:
     zh = norm.replace(" ", "")
     if _ZH_DROP_RE.search(zh) or _EN_DROP_RE.search(norm):
         return False
-    return bool(_ZH_STILL_ON_ORDER_RE.search(zh) or _ZH_BARE_LOOKUP_RE.search(zh)
+    return bool(_ZH_STILL_ON_ORDER_RE.search(zh) or _zh_forgot_clause_t184(zh)
+                or _ZH_BARE_LOOKUP_RE.search(zh)
                 or _EN_STILL_ON_ORDER_RE.search(norm) or _EN_BARE_LOOKUP_RE.search(norm))
+
+
+def _zh_forgot_clause_t184(zh: str) -> bool:
+    """「不记得了」「订单删了找不到了」自成一个分句；后面另起的若是与这一单无关的问句就不算。"""
+    m = _ZH_FORGOT_CLAUSE_RE.search(zh)
+    if not m:
+        return False
+    rest = zh[m.end():]
+    return not _ZH_QUESTION_RE.search(rest) or bool(re.search(_ZH_LOOKUP_NOUN + r"|查|买的", rest))
 
 
 #: C1：话术库里「看这一单的进度 / 异常」那几篇（带 needs_order_lookup 标记的篇里，除了改地址

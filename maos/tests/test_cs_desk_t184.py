@@ -230,9 +230,38 @@ C1_REROUTE_ANTI_T184 = (
     "看看我的订单有没有优惠券",
 )
 #: 复核 L2-3 / L3-3：追问之后换了个问题 / 明说不查了 —— 不再接回查单分支。
+#: 第三轮复核 L2-2：「不知道 / 不清楚 / 忘了」没挨着单号、后面另起的是政策问句，也是换了题。
 C3_SWITCH_T184 = (
     "算了不查了，我想问下七天无理由怎么退", "算了，你们发什么快递", "直接问下，发什么快递", "我想看看新品",
     "订单能合并发货吗", "never mind, do you ship to Canada",
+    "不知道你们运费谁出", "我不清楚七天无理由怎么算", "不清楚，退款多久到账", "忘了问，你们发什么快递",
+    "我不记得七天无理由是不是从签收算", "is there a number I can call?",
+)
+#: 第三轮复核 L2-3 / L2-4：明说不查了、同时又提到给不出单号 —— 不查了优先，不再追问、不转人工。
+C3_DROP_T184 = (
+    "算了，单号找不到就不查了", "算了不查了，单号不记得了", "不用查了，单号找不到",
+    "never mind, I forgot the order number", "never mind, I can't find the order number",
+)
+#: 第三轮复核 L2-2：收窄之后仍算「还在说这一单」的短回答（自成一句的忘了 / 不记得、挨着单号说）。
+C3_STILL_T184 = (
+    "不记得了", "忘了", "找不到了，你们查不到吗", "订单删了找不到了", "I forgot", "no idea",
+    "I don't remember the order no.", "not sure what the tracking number is",
+)
+#: 第三轮复核 L3-B：明说不用查 / 不是查 —— 不是在要看这一单，不追问单号。
+NEG_LOOKUP_T184 = (
+    "不用帮我查快递，退货运费谁出", "我不想查物流，问下退货规则", "不是查物流，我想问退货规则",
+    "don't check my order, what's the return policy",
+    "I don't want to check my order, is there a warranty", "no need to check my parcel, do you ship to Canada",
+)
+#: 第三轮复核 L2-1：「的话」作话题标记、话题是单号 / 订单名词 —— 不是假设，照查单。
+TOPIC_DEHUA_T184 = (
+    "A1001的话到哪了", "A1001的话现在什么状态", "订单A1001的话，发货了吗？", "A1001的话发货了吗",
+    "我的快递的话到哪了",
+)
+#: 第三轮复核 L3-A：条件问句在前、另起一句在要看这一单（带单号）—— 不是假设，照查单。
+COND_FIRST_T184 = (
+    "如果今天不到怎么办，帮我查下A1001到哪了", "what if it doesn't arrive? where is order A1001",
+    "if it's late can I cancel? has A1001 shipped", "要是退货的话运费谁出？另外A1001到哪了",
 )
 
 
@@ -424,7 +453,7 @@ def test_c4_policy_answers_cite_the_rule_scripts_t184():
     assert got["如果我要退款，多久能到账"].draft.citations == (evaluate.cite_doc_id(TENANT_T184, "PAY-001"),)
 
 
-@pytest.mark.parametrize("text", C4_ANTI_T184)
+@pytest.mark.parametrize("text", C4_ANTI_T184 + TOPIC_DEHUA_T184 + COND_FIRST_T184)
 def test_c4_anti_examples_still_look_at_the_order_t184(text):
     assert not D.hypothetical_question(text)
     talk, res = _one_t184(text)
@@ -509,6 +538,115 @@ def test_policy_question_after_ask_gets_the_policy_answer_t184():
 
 
 # ---------------------------------------------------------------------------
+# 第三轮复核（L1-1 / L2-1 / L2-2 / L2-3 / L2-4 / L3-A / L3-B）
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text", TOPIC_DEHUA_T184 + COND_FIRST_T184)
+def test_topic_de_hua_and_conditional_first_are_not_hypothetical_t184(text):
+    assert not D.hypothetical_question(text)
+
+
+def test_topic_de_hua_duration_question_is_not_answered_as_refund_t184():
+    """「请问A1001的话多久能到」问的是物流时长：不算假设、不拿退款到账那篇（PAY-001）去答。"""
+    text = f"请问{ORDER_T184}的话多久能到"
+    assert not D.hypothetical_question(text)
+    talk, res = _one_t184(text)
+    assert evaluate.cite_doc_id(TENANT_T184, "PAY-001") not in res.draft.citations, res
+    assert not (res.route == T.ROUTE_ANSWER and res.intent == T.INTENT_REFUND_PAYMENT), res
+    _assert_safe_t184(talk)
+
+
+def test_conditional_first_then_order_ask_after_an_ask_t184():
+    talk = _Talk_t184()
+    talk.say("帮我查物流")
+    res = talk.say(f"{ORDER_T184}的话发货了吗")
+    assert (res.route, res.lookup_outcome) == (T.ROUTE_ANSWER, LOOKUP_OK), res
+    _assert_safe_t184(talk)
+
+
+def test_hypothetical_de_hua_on_a_rule_topic_still_counts_t184():
+    """「退货的话运费谁出」话题是规则（不是单号 / 订单名词）：照旧算假设泛问，答政策。"""
+    assert D.hypothetical_question("退货的话运费谁出")
+    talk, res = _one_t184("退货的话运费谁出")
+    assert res.route == T.ROUTE_ANSWER and res.ask_slot == "", res
+    assert res.draft.citations == (evaluate.cite_doc_id(TENANT_T184, "RET-004"),)
+
+
+@pytest.mark.parametrize("text", C3_DROP_T184)
+def test_drop_marker_beats_order_number_words_after_an_ask_t184(text):
+    assert not D.still_on_order(text) and not D.asks_order_status(text)
+    talk = _Talk_t184()
+    talk.say("帮我查物流")
+    res = talk.say(text)
+    assert res.route != T.ROUTE_CLARIFY and res.ask_slot == "", res
+    talk = _Talk_t184()
+    talk.talk(("帮我查物流", "查一下嘛"))
+    res = talk.say(text)
+    assert res.handoff_reason != T.HANDOFF_NEEDS_ORDER_LOOKUP and res.ask_slot == "", res
+    assert talk.lookup.calls == []
+    _assert_safe_t184(talk)
+
+
+@pytest.mark.parametrize("text", C3_STILL_T184)
+def test_short_cannot_give_number_replies_still_count_t184(text):
+    assert D.still_on_order(text)
+    talk = _Talk_t184()
+    talk.say("帮我查物流")
+    res = talk.say(text)
+    assert (res.route, res.ask_slot) == (T.ROUTE_CLARIFY, SLOT_ORDER_NO), res
+    _assert_safe_t184(talk)
+
+
+@pytest.mark.parametrize("text", C3_SWITCH_T184)
+def test_policy_switch_after_ask_matches_the_policy_path_t184(text):
+    """追问之后换了个政策问题：结果与会话里从没追问过时一模一样（不被拉回查单分支）。"""
+    talk = _Talk_t184()
+    talk.say("帮我查一下物流")
+    after_ask = talk.say(text)
+    _, fresh = _one_t184(text)
+    assert (after_ask.route, after_ask.intent, after_ask.draft.citations) == (
+        fresh.route, fresh.intent, fresh.draft.citations), (after_ask, fresh)
+
+
+def test_english_cannot_find_number_is_not_an_order_status_ask_t184():
+    assert not D.asks_order_status("I can't find the order number")
+    assert not D.asks_order_status("never mind, I can't find the order number")
+    assert D.still_on_order("I can't find the order number")
+
+
+@pytest.mark.parametrize("text", NEG_LOOKUP_T184)
+def test_negated_lookup_is_not_an_order_ask_t184(text):
+    assert not D.asks_order_status(text)
+    talk, res = _one_t184(text)
+    assert res.route != T.ROUTE_CLARIFY and res.ask_slot == "", res
+    assert talk.lookup.calls == []
+    _assert_safe_t184(talk)
+
+
+def test_new_desk_paths_keep_customer_text_out_of_event_log_t184():
+    """R5：C1 改道（检索 → 查单分支）与 C3 追问用尽这两条新路径，事件日志里不落客户原文、回复原文、
+    external_userid、open_kfid、单号与查询键。"""
+    user = "wm_t184_sentinel_user_7q"
+    flows = (
+        ("付款一直失败",),
+        (f"我的订单号是{ORDER_T184}", "付款一直失败"),
+        ("帮我查物流", "查一下嘛", "找不到单号，你直接告诉我在哪"),
+        ("where is my package", "I forgot"),
+        (f"is order {ORDER_T184} on its way",),
+        ("要是退货的话运费谁出",),
+    )
+    for i, flow in enumerate(flows):
+        talk = _Talk_t184(user=f"{user}{i}")
+        talk.talk(flow)
+        convs = {r.conversation_id for r in talk.results}
+        blob = json.dumps([dict(r) for c in convs for r in talk.store.list_event_log(T.plan_id_for(c))],
+                          ensure_ascii=False, default=str)
+        assert blob != "[]"
+        sentinels = {f"{user}{i}", KFID_T184, ORDER_T184, "qk-" + ORDER_T184}
+        sentinels |= set(flow) | {r.reply_text for r in talk.results}
+        assert [s for s in sentinels if s and s in blob] == [], flow
+
+
+# ---------------------------------------------------------------------------
 # 不变量
 # ---------------------------------------------------------------------------
 def test_triggers_still_come_first_t184():
@@ -543,9 +681,12 @@ def p12_conversations_t184() -> tuple[tuple[str, ...], ...]:
     """本文件全部说法（单句与多轮），p12 路径逐字节对照用。"""
     singles = (C1_SAYINGS_T184 + C1_ANTI_T184 + C2_WITH_NO_T184 + C2_NO_NUMBER_T184 + C2_ANTI_T184
                + C4_SAYINGS_T184 + C4_ANTI_T184 + C3_ANTI_T184 + ("付款一直失败", "地址填错了想改一下")
-               + C2_INDIRECT_T184 + C2_PRODUCT_ANTI_T184 + C1_REROUTE_ANTI_T184)
+               + C2_INDIRECT_T184 + C2_PRODUCT_ANTI_T184 + C1_REROUTE_ANTI_T184
+               + TOPIC_DEHUA_T184 + COND_FIRST_T184 + NEG_LOOKUP_T184
+               + (f"请问{ORDER_T184}的话多久能到", "退货的话运费谁出"))
     multi = (tuple(first + (last,) for first, last in C3_EXHAUSTED_T184)
-             + tuple(("帮我查物流", "查一下嘛", t) for t in C3_SWITCH_T184)
+             + tuple(("帮我查物流", "查一下嘛", t) for t in C3_SWITCH_T184 + C3_DROP_T184)
+             + tuple(("帮我查物流", t) for t in C3_STILL_T184)
              + tuple((f"帮我查下{ORDER_T184}到哪了", t) for t in C1_REROUTE_ANTI_T184)
              + (("帮我查物流", "不记得了", "你们发什么快递"),))
     return tuple((t,) for t in singles) + multi
@@ -563,7 +704,7 @@ def p12_fingerprint_t184() -> str:
 
 
 #: 基线 7c19a1d 的 desk.py 跑 :func:`p12_fingerprint_t184` 的结果（改动之前实测，见 DECISIONS task-t184）。
-P12_GOLDEN_T184 = "9441ec1dcdf11d818b8636bb07e4514c1a6158fec058d9cce180b808cf8fa620"
+P12_GOLDEN_T184 = "72a7e7364985299f301528579a40984e5fe33db82d2dddcd5ff3da0c6d84b09e"
 
 
 def test_without_ports_every_turn_is_byte_identical_to_baseline_t184():

@@ -3497,3 +3497,17 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | --cs 的 --db 是库文件时，其余十项读哪 | 其余十项照 --db 的既有语义（库文件即全场景共用），cs/claim-basis 只读这一个库；--db 缺省或为目录时 cs 读各证据束的库、按真实路径去重 | 不改十项的既有口径（白名单外的行为不动）；代价记 BACKLOG |
 | 2026-09-25 | p14 | 验收 4 在本容器里怎么比 | 缺省 python3 scripts/verify.py 在基线与 HEAD 上都因 evidence 的 maos.db 不在 clone 里退 2（同一句报错）；另用 make_evidence --out 在 scratch 现产一束，基线与 HEAD 各跑 verify --evidence 那一束比逐项读数，并按 trace.json 逐字节比重导出 | 缺省那一跑两边都起不来，比不出十项；scratch 束不进仓库、不碰 evidence/ |
 | 2026-09-25 | p14 | 复核 L3-1：cs/claim-basis 只凭 cs_turn 一张表判适用，DROP TABLE cs_turn 能把判据 1 反向绕成 SKIP | 适用性改为「任一 cs_ 开头的表，或 event_log 里有 CsTurnRecorded」，两样都没有才 SKIP；cs_turn 缺席按零轮核，每条 CsTurnRecorded 判「审计行无主」 | 契约只说「没有 cs_ 表 → SKIP」，判据 1 要求反之亦然；审计行在而业务表整张不在是最该判负的形态，不是不适用 |
+
+## task-t177（评测批量化 cs_eval，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | --db 共享库连跑两次，同一 case 的跑批客户撞上上一次留下的 handed_off 会话，后面的轮全成 silent | 只在给了 --db 时把 case id 改写成「原 id~本次运行标记-集名-路径」（跑批客户与 msg_id 都由 id 派生，于是每次都是新会话），输出按原 id 报；不给 --db 时 case id 原样 | evaluate.py 不归本轨、不改；成本最低且可逆；读数与内存库逐项相同由 maos/tests/test_cs_eval_cli_t177.py 钉住 |
+| 2026-09-25 | p14 | holdout14 文件不存在时该集 SKIP，退出码怎么算 | SKIP 不算失败：只有 FAIL 的集让退出码为 1；全部 SKIP 也退 0，文本 RESULT 行与 JSON 写明跳过 | 契约「SKIP 并说明，不报错」 |
+| 2026-09-25 | p14 | 「没对上的轮只列 id」具体出什么 | 只出「case id#轮次」、按问题种类（route / intent / cite 等枚举）的计数、没达标门槛的指标名与数字；EvalMiss 的 text / expected / actual（含前台异常原文）一律不出，dev 集同口径 | 契约 §0 只许聚合数与 id；问题种类计数是聚合数，便于整合期看是哪类错 |
+| 2026-09-25 | p14 | holdout12 的 p13 路径「注入空夹具端口」怎么造 | 没写 fixtures 的 case 换成空的 EvalFixtures()（三个夹具端口都注入、谁的单都查不到）；写了的原样 | fixture_ports 对 fixtures=None 给三个 None，等于没注入、又回到 p12 路径 |
+| 2026-09-25 | p14 | --out 首行的 sha 用哪个函数取 | scripts/make_evidence 的 git_sha + header_line，不用 pin_sha | pin_sha 会写进程级环境变量，测试里进程内调 main 会把钉住的 sha 带给后面的测试 |
+| 2026-09-25 | p14 | 复核 L3-1：前台出错时 desk 的 log.error(exc_info=True) 经 lastResort 把异常原文（可能含客户原句）写到 stderr | 跑批期间接管 maos 这一支 logger：换成只出「级别 logger 名 异常类名」一行的打码 handler、propagate 关掉，跑完原样还原；不改 desk 的日志 | desk.py 不归本轨；契约 §0 只许聚合数与 id，stderr 也是输出；出错轮数已在 miss_by_problem 里计，不丢信息；可逆 |
+| 2026-09-25 | p14 | 复核 L3-2：报告里的 thresholds 原样带出留出集 _thresholds 的非数值键 | 只留数值型门槛项（int/float，排除 bool） | 白名单口径只许数字；成本最低 |
+| 2026-09-25 | p14 | 复核 L3-1（第二轮）：集文件本身格式不对（期望枚举、夹具类型、门槛值）时 evaluate 的 ValueError 消息会用 repr 带出文件里的原值，未捕获的堆栈打到 stderr、--out 也不写 | 每个集的加载与跑批包进 try/except Exception：该集记 status=ERROR、只出 error=<异常类名>、runs 为空，退出码算 1（与 FAIL 同），其余集照跑、--out 照写；四集一律同口径 | 契约 §0 留出集是盲的，stderr 也是输出；契约没写 ERROR 这一档，按「非全部 meets → 1」归 1，成本最低且可逆 |
+| 2026-09-25 | p14 | 复核 L2-1：run_set 在一条路径都没跑时 meets=all([])=True 会空转出 PASS | 集的结论改成「至少跑了一条路径且每条都达标」（runs_meet），空 runs 判不达标 | 评测空转不许报满分，与 evaluate.shortfalls 对 turns=0 的口径一致 |

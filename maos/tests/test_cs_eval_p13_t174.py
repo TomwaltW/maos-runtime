@@ -148,3 +148,59 @@ def test_real_ports_subset_reaches_the_same_conclusions_t174():
     assert real.failures == () and fixture.failures == (), _describe_t174(real)
     assert real.metrics() == fixture.metrics()
     assert real.meets(_thresholds_t174())
+
+
+# ---------------------------------------------------------------------------
+# 复核 L3-1：真查单端口路径上的 event_log 哨兵（R5）
+# ---------------------------------------------------------------------------
+SENTINEL_USER_T174 = "wm_t174_l3_sentinel"
+SENTINEL_NO_T174 = "Z7731"
+SENTINEL_KEY_T174 = "QK-Z7731-SECRETQK"
+OTHER_KEY_T174 = "QK-B2002-OTHERCUSTOMER"
+
+
+def _real_sentinel_run_t174(*, registered: bool) -> str:
+    """真 BindingVerifier + CommerceOrderLookup(MockOrderSystem) 查一单，返回该会话 event_log 的 JSON。"""
+    from maos.domain.cs.types import plan_id_for
+    from maos.ingress.contracts import InboundMessage
+
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    records.upsert_binding(store, Binding(
+        tenant_id="tnt-demo", channel=CHANNEL_WECHAT_KF, external_userid=SENTINEL_USER_T174,
+        display_no=SENTINEL_NO_T174, system_name="demo-orders", query_key=SENTINEL_KEY_T174,
+        source=BINDING_TEST))
+    mock = MockOrderSystem()
+    mock.ext_order(order_id=OTHER_KEY_T174, version=1, status="shipped", amount="10.00",
+                   updated_at=CLOCK_T174)
+    if registered:
+        mock.ext_order(order_id=SENTINEL_KEY_T174, version=1, status="shipped",
+                       amount="10.00", updated_at=CLOCK_T174)
+    desk = FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None),
+                     clock=lambda: CLOCK_T174, verifier=BindingVerifier(),
+                     lookup=CommerceOrderLookup({"demo-orders": mock}))
+    res = desk.handle(InboundMessage(
+        channel=CHANNEL_WECHAT_KF, chat_id=SENTINEL_USER_T174, sender=SENTINEL_USER_T174,
+        text=f"{SENTINEL_NO_T174} 到哪了", msg_id="l3-1", raw={"open_kfid": "wk_eval"}))
+    expected = LOOKUP_OK if registered else LOOKUP_NOT_FOUND
+    assert res.lookup_outcome == expected
+    import json
+    return json.dumps(store.list_event_log(plan_id_for(res.conversation_id)), ensure_ascii=False)
+
+
+def test_real_lookup_ok_path_keeps_order_numbers_out_of_event_log_t174():
+    blob = _real_sentinel_run_t174(registered=True)
+    assert "ToolInvoked" in blob                     # 真端口确实落了审计行
+    for sentinel in (SENTINEL_NO_T174, SENTINEL_KEY_T174, OTHER_KEY_T174, SENTINEL_USER_T174):
+        assert sentinel not in blob, sentinel
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "复核 L3-1：查单失败时 maos/tools/port.py 的 invoke_tool 把异常原文（MockOrderSystem 的 "
+    "KeyError 列着本单与别的客户的 query_key）写进 ToolInvoked.detail.error；归 T172 / 整合期修"
+    "（cs_ports 与 tools/port.py 不在 T174 白名单，见 docs/BACKLOG.md task-t174）。修好即 XPASS 变红，摘标记"))
+def test_real_lookup_not_found_path_keeps_order_numbers_out_of_event_log_t174():
+    blob = _real_sentinel_run_t174(registered=False)
+    assert "ToolInvoked" in blob
+    for sentinel in (SENTINEL_NO_T174, SENTINEL_KEY_T174, OTHER_KEY_T174, SENTINEL_USER_T174):
+        assert sentinel not in blob, sentinel

@@ -73,6 +73,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -81,6 +82,7 @@ from typing import Any, Callable, Mapping
 from maos.agents.base import AgentIdentity
 from maos.domain.cs import claims, conversation, objects, records, scripts
 from maos.domain.cs import understand as cs_understand
+from maos.domain.cs import lang as cs_lang
 from maos.domain.cs.lang import detect_lang
 from maos.domain.cs.ports import (
     LANG_EN,
@@ -348,8 +350,10 @@ CARD_SECTION_OBSERVATION = "查单观察："
 CARD_SECTION_SUMMARY = "预检摘要："
 CARD_SECTION_COMMAND = "采纳命令："
 CARD_SECTION_REFUSED = "预检未通过："
+#: 退款桥预检用的内部单号（= 绑定的 query_key）；只在它与客户报的单号不同时另起一行写出。
+CARD_SECTION_LEDGER_NO = "内部单号："
 CARD_SECTIONS = (CARD_SECTION_OBSERVATION, CARD_SECTION_SUMMARY, CARD_SECTION_COMMAND,
-                 CARD_SECTION_REFUSED)
+                 CARD_SECTION_REFUSED, CARD_SECTION_LEDGER_NO)
 
 #: 预检端口没注入时，退款桥里记的拒绝原因。
 REFUSED_PRECHECK_UNCONFIGURED = "precheck_unconfigured"
@@ -438,6 +442,18 @@ def order_need(text: str, *, fresh: Mapping[str, str], merged: Mapping[str, str]
 _ORDER_QUERY_RE = re.compile(
     r"查|看看|看下|看一下|到哪|物流|快递|状态"
     r"|(?<![A-Za-z])(?:where|track|tracking|check|status)(?![A-Za-z])", re.IGNORECASE)
+
+
+def has_lang_signal(text: str) -> bool:
+    """本轮原文有没有语种信号：有 CJK，或拿掉编码串（单号、型号）后还剩字母。
+
+    只回一个单号（「A1001」「SO-2026-000123」）、纯数字、纯符号：没有信号，``detect_lang`` 只是
+    回了缺省 zh —— 注入端口的路径上改沿用会话上一轮的语种（复核 L2-2）。
+    """
+    norm = unicodedata.normalize("NFKC", text or "")
+    if any(cs_lang.is_cjk(ch) for ch in norm):
+        return True
+    return any(unicodedata.category(ch).startswith("L") for ch in cs_lang._drop_codes(norm))
 
 
 def only_order_no(fresh: Mapping[str, str]) -> bool:
@@ -588,6 +604,21 @@ class FrontDesk:
         except Exception as exc:                          # noqa: BLE001 —— 永不抛
             return self._recover(msg, turn, exc)
 
+    def _previous_lang(self, turn: _Turn) -> str:
+        """会话上一轮（按 seq）记在 cs_turn_ext 里的语种；没有就空串。"""
+        if not turn.tenant_id:
+            return ""
+        objects.ensure_schema(self.store)
+        rows = objects.query(
+            self.store,
+            "SELECT e.lang AS lang FROM cs_turn_ext e JOIN cs_turn t"
+            " ON t.tenant_id = e.tenant_id AND t.turn_id = e.turn_id"
+            " WHERE e.tenant_id=? AND e.conversation_id=? AND e.turn_id<>?"
+            " ORDER BY t.seq DESC LIMIT 1",
+            (turn.tenant_id, turn.conv.conversation_id, turn.turn_id))
+        lang = str(rows[0]["lang"]) if rows else ""
+        return lang if lang in (LANG_ZH, LANG_EN) else ""
+
     def _stamp(self) -> str:
         if self._clock is not None:
             got = self._clock()
@@ -609,6 +640,10 @@ class FrontDesk:
 
         # 0. 语种。没注入端口时给客户的固定话术照 p12（中文），见模块头第 5 步。
         turn.lang = detect_lang(text)
+        if self.ports_injected and not has_lang_signal(text):
+            # 只回了一个单号（「A1001」）之类：没有语种信号，沿用会话上一轮的语种
+            # （DECISIONS task-t174 复核 L2-2）。p12 路径不动。
+            turn.lang = self._previous_lang(turn) or turn.lang
         turn.say = turn.lang if self.ports_injected else LANG_ZH
 
         # 1. 已转人工：只记录。
@@ -759,8 +794,13 @@ class FrontDesk:
                         f"（{obs_id}）",)
             # d. 退款 / 退货：只读预检 → 退款桥。给客户的只有过渡话术，一个状态字都不说。
             if need in BRIDGE_REQUESTS:
-                pre = self._precheck_once(turn, order_no, text, slots)
-                records.record_bridge(self.store, conv, turn_id=turn.turn_id, order_no=order_no,
+                # 预检与 /refund 认的是台账 / 订单系统里的单号 = 绑定解析出的 query_key，
+                # 不是客户报的 display_no（两者可以不同，见 DECISIONS task-t174 复核 L2-1）。
+                ledger_no = str(getattr(binding, "query_key", "") or "") or order_no
+                if ledger_no != order_no:
+                    observed += (f"{CARD_SECTION_LEDGER_NO}{ledger_no}（客户报的是 {order_no}）",)
+                pre = self._precheck_once(turn, ledger_no, text, slots)
+                records.record_bridge(self.store, conv, turn_id=turn.turn_id, order_no=ledger_no,
                                       result=pre, now=now)
                 if pre.ok:
                     return handoff(HANDOFF_REFUND_REQUEST, sections=observed + (

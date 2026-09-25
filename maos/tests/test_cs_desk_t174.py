@@ -124,8 +124,8 @@ def _fail_t174(key: str, outcome: str, kind: str = "") -> LookupResult:
 
 PRE_OK_T174 = PrecheckResult(ok=True, decision="approve", rule_ref="R-7D",
                              reason_code="quality_defect",
-                             command_line="/refund A1001 quality_defect",
-                             summary="只读预检：订单 A1001，诉求 quality_defect，裁定 通过")
+                             command_line="/refund qk-A1001 quality_defect",
+                             summary="只读预检：订单 qk-A1001，诉求 quality_defect，裁定 通过")
 
 
 class _Ports_t174:
@@ -134,7 +134,7 @@ class _Ports_t174:
                                        boom="verifier" in boom)
         self.lookup = _Lookup_t174({"qk-A1001": _ok_t174("qk-A1001", "shipped")}
                                    if results is None else results, boom="lookup" in boom)
-        self.precheck = _Precheck_t174({"A1001": PRE_OK_T174} if prechecks is None else prechecks,
+        self.precheck = _Precheck_t174({"qk-A1001": PRE_OK_T174} if prechecks is None else prechecks,
                                        boom="precheck" in boom)
 
     def kwargs(self) -> dict:
@@ -478,6 +478,40 @@ def test_step6a_english_clarify_then_answer_in_english_t174():
     assert second.reply_text == ORDER_STATUS_WORDING[LANG_EN]["shipped"]
 
 
+@pytest.mark.parametrize("bare", ["A1001", " A1001 ", "A1001!"])
+def test_step0_bare_order_number_keeps_the_english_of_the_session_t174(bare):
+    """复核 L2-2：英文追问后客户只回一个单号 —— 没有语种信号，沿用上一轮的 en。"""
+    assert D.has_lang_signal(bare) is False and detect_lang(bare) == LANG_ZH
+    store = _store_t174()
+    talk = _Talk_t174(_desk_t174(store, _Ports_t174()))
+    first = talk.say("Where is my package?")
+    assert first.reply_text == D.REPLY_ASK_ORDER_NO_EN
+    second = talk.say(bare)
+    assert (second.route, second.lang) == (T.ROUTE_ANSWER, LANG_EN)
+    assert second.reply_text == ORDER_STATUS_WORDING[LANG_EN]["shipped"]
+    assert _ext_t174(store, second)["lang"] == LANG_EN
+
+
+def test_step0_bare_order_number_after_an_english_refund_stays_english_t174():
+    talk = _Talk_t174(_desk_t174(ports=_Ports_t174()))
+    assert talk.say("I want a refund").lang == LANG_EN
+    res = talk.say("A1001")
+    assert (res.handoff_reason, res.lang) == (T.HANDOFF_REFUND_REQUEST, LANG_EN)
+    assert res.reply_text == D.REPLY_BY_REASON_EN[T.HANDOFF_REFUND_REQUEST]
+
+
+def test_step0_language_signal_still_wins_over_the_previous_turn_t174():
+    """有信号就按本轮判：英文会话里改说中文 → zh；中文会话里只回单号 → 仍是 zh。"""
+    talk = _Talk_t174(_desk_t174(ports=_Ports_t174()))
+    assert talk.say("Where is my package?").lang == LANG_EN
+    zh = talk.say("A1001 到哪了")
+    assert (zh.lang, zh.reply_text) == (LANG_ZH, ORDER_STATUS_WORDING[LANG_ZH]["shipped"])
+    talk2 = _Talk_t174(_desk_t174(ports=_Ports_t174()), user="wm_t174_other")
+    assert talk2.say("我买的东西到哪了").route == T.ROUTE_CLARIFY
+    assert talk2.say("A1001").lang == LANG_ZH
+    assert D.has_lang_signal("A1001 where") and D.has_lang_signal("到哪")
+
+
 def test_step6b_identity_failure_never_calls_lookup_t174():
     store = _store_t174()
     ports = _Ports_t174(bound={"A1001": "qk-A1001"})
@@ -561,16 +595,18 @@ def test_step6d_refund_bridge_ok_raises_an_adoptable_card_t174(text):
     assert res.draft.claims == () and _unspeakable_t174(res.reply_text) == []
     assert ORDER_STATUS_WORDING[LANG_ZH]["shipped"] not in res.reply_text
     (call,) = ports.precheck.calls
-    assert call[:2] == (TENANT_T174, "A1001") and call[3] == CLOCK_T174 and text in call[2]
+    # 复核 L2-1：预检与退款桥用绑定解析出的 query_key（台账单号），不是客户报的单号。
+    assert call[:2] == (TENANT_T174, "qk-A1001") and call[3] == CLOCK_T174 and text in call[2]
     (bridge,) = objects.query(store, "SELECT * FROM cs_refund_bridge WHERE turn_id=?",
                               (res.turn_id,))
     assert (bridge["ok"], bridge["order_no"], bridge["command_line"]) == (
-        1, "A1001", PRE_OK_T174.command_line)
+        1, "qk-A1001", PRE_OK_T174.command_line)
     card = res.handoff
     assert PRE_OK_T174.summary in card.suggestion and PRE_OK_T174.command_line in card.suggestion
     assert dict(card.slots)["order_no"] == "A1001"
     text_card = render_card_text(card)
     assert f"{D.CARD_SECTION_COMMAND}{PRE_OK_T174.command_line}" in text_card.splitlines()
+    assert f"{D.CARD_SECTION_LEDGER_NO}qk-A1001（客户报的是 A1001）" in text_card.splitlines()
     assert any(line.startswith("槽位：") and "order_no=A1001" in line
                for line in text_card.splitlines())
 
@@ -578,7 +614,7 @@ def test_step6d_refund_bridge_ok_raises_an_adoptable_card_t174(text):
 def test_step6d_refund_bridge_refused_goes_to_needs_order_lookup_t174():
     store = _store_t174()
     refused = PrecheckResult(ok=False, refused_why="reason_not_matched")
-    ports = _Ports_t174(prechecks={"A1001": refused})
+    ports = _Ports_t174(prechecks={"qk-A1001": refused})
     res = _Talk_t174(_desk_t174(store, ports)).say("A1001 收到的杯子有裂痕，我要退货")
     assert (res.handoff_reason, res.lookup_outcome) == (T.HANDOFF_NEEDS_ORDER_LOOKUP, LOOKUP_OK)
     assert res.reply_text == D.REPLY_NEEDS_ORDER_LOOKUP
@@ -656,7 +692,7 @@ def test_step6d_precheck_ok_without_command_line_fails_closed_t174():
     store = _store_t174()
     empty = PrecheckResult(ok=True, decision="approve", reason_code="quality_defect",
                            command_line="", summary="只读预检：命令缺失")
-    ports = _Ports_t174(prechecks={"A1001": empty})
+    ports = _Ports_t174(prechecks={"qk-A1001": empty})
     res = _Talk_t174(_desk_t174(store, ports)).say("A1001 质量有问题，帮我退款")
     assert res.handoff_reason == T.HANDOFF_NEEDS_ORDER_LOOKUP
     card_text = render_card_text(res.handoff)
@@ -665,6 +701,33 @@ def test_step6d_precheck_ok_without_command_line_fails_closed_t174():
     (row,) = objects.query(store, "SELECT ok, refused_why, command_line FROM cs_refund_bridge")
     assert (row["ok"], row["refused_why"], row["command_line"]) == (
         0, D.REFUSED_PRECHECK_ERROR, "")
+
+
+def test_step6d_same_display_and_query_key_writes_no_ledger_no_line_t174():
+    """display_no == query_key：预检用同一个号，卡片不另写「内部单号」行。"""
+    store = _store_t174()
+    pre = PrecheckResult(ok=True, decision="approve", reason_code="quality_defect",
+                         command_line="/refund A1001 quality_defect", summary="只读预检 A1001")
+    ports = _Ports_t174(bound={"A1001": "A1001"},
+                        results={"A1001": _ok_t174("A1001", "shipped")}, prechecks={"A1001": pre})
+    res = _Talk_t174(_desk_t174(store, ports)).say("A1001 质量有问题，帮我退款")
+    assert res.handoff_reason == T.HANDOFF_REFUND_REQUEST
+    assert [c[1] for c in ports.precheck.calls] == ["A1001"]
+    assert not any(ln.startswith(D.CARD_SECTION_LEDGER_NO)
+                   for ln in render_card_text(res.handoff).splitlines())
+
+
+def test_step6d_refused_card_names_the_ledger_no_when_it_differs_t174():
+    store = _store_t174()
+    ports = _Ports_t174(prechecks={})
+    res = _Talk_t174(_desk_t174(store, ports)).say("A1001 质量有问题，帮我退款")
+    assert res.handoff_reason == T.HANDOFF_NEEDS_ORDER_LOOKUP
+    lines = render_card_text(res.handoff).splitlines()
+    assert f"{D.CARD_SECTION_LEDGER_NO}qk-A1001（客户报的是 A1001）" in lines
+    (row,) = objects.query(store, "SELECT order_no, ok FROM cs_refund_bridge")
+    assert (row["order_no"], row["ok"]) == ("qk-A1001", 0)
+    # 客户侧不出现内部单号
+    assert "qk-A1001" not in res.reply_text
 
 
 @pytest.mark.parametrize("text", ["A1001 质量问题，不退款，我就继续用吧", "A1001 不退款，我就收下了"])
@@ -790,10 +853,10 @@ def test_order_number_query_key_and_slots_never_reach_event_log_t174():
     store = _store_t174()
     ports = _Ports_t174(bound={SENTINEL_NO_T174: SENTINEL_KEY_T174},
                         results={SENTINEL_KEY_T174: _ok_t174(SENTINEL_KEY_T174, "shipped")},
-                        prechecks={SENTINEL_NO_T174: PrecheckResult(
+                        prechecks={SENTINEL_KEY_T174: PrecheckResult(
                             ok=True, decision="approve", reason_code="quality_defect",
-                            command_line=f"/refund {SENTINEL_NO_T174} quality_defect",
-                            summary=f"预检 {SENTINEL_NO_T174}")})
+                            command_line=f"/refund {SENTINEL_KEY_T174} quality_defect",
+                            summary=f"预检 {SENTINEL_KEY_T174}")})
     talk = _Talk_t174(_desk_t174(store, ports))
     first = talk.say(f"{SENTINEL_NO_T174} 这单到哪了")
     assert first.route == T.ROUTE_ANSWER
@@ -829,7 +892,7 @@ def test_desk_never_raises_even_when_understanding_breaks_t174(monkeypatch):
 # ---------------------------------------------------------------------------
 _CARD_LINE_RE_T174 = re.compile(
     r"^(【转人工】|客户：|本轮原文：|最近 \d+ 轮：$|  \d+\. 客户：|     回复：|处理建议：|引用话术：|会话："
-    r"|查单观察：|预检摘要：|采纳命令：|预检未通过：|槽位：)")
+    r"|查单观察：|预检摘要：|采纳命令：|预检未通过：|内部单号：|槽位：)")
 
 
 def test_p13_card_lines_are_all_desk_written_and_customer_cannot_forge_a_command_t174():

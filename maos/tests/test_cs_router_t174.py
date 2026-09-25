@@ -250,8 +250,10 @@ def test_refund_bridge_card_is_delivered_with_slots_summary_and_command_t174():
     assert sent == [(CHANNEL_FEISHU, ROOM_T174, render_card_text(card)),
                     (CHANNEL_WECHAT_KF, USER_T174, reply)]
     lines = sent[0][2].splitlines()
-    assert "采纳命令：/refund A1001 quality_defect" in lines
-    assert "预检摘要：只读预检：订单 A1001，裁定 通过" in lines
+    # 复核 L2-1：预检与命令用绑定解析出的 query_key；客户报的单号留在槽位里。
+    assert "采纳命令：/refund qk-A1001 quality_defect" in lines
+    assert "内部单号：qk-A1001（客户报的是 A1001）" in lines
+    assert "预检摘要：只读预检：订单 qk-A1001，裁定 通过" in lines
     assert any(ln.startswith("槽位：") and "order_no=A1001" in ln for ln in lines)
     # 客户侧一个状态字都不说
     assert ORDER_STATUS_WORDING["zh"]["shipped"] not in reply and "/refund" not in reply
@@ -319,14 +321,40 @@ def _serve_t174(monkeypatch, env: dict):
     return code, (_FakeServer_t174.built[0] if _FakeServer_t174.built else None)
 
 
-def _bindings_file_t174(tmp_path, user: str) -> str:
+def _bindings_file_t174(tmp_path, user: str, display_no: str = "ORD-2026-0001") -> str:
     import json
     path = tmp_path / "bindings_t174.json"
     path.write_text(json.dumps({"bindings": [{
         "tenant_id": "tnt-demo", "channel": CHANNEL_WECHAT_KF, "external_userid": user,
-        "display_no": "ORD-2026-0001", "system_name": "demo-orders",
+        "display_no": display_no, "system_name": "demo-orders",
         "query_key": "ORD-2026-0001"}]}), encoding="utf-8")
     return str(path)
+
+
+def test_run_ingress_refund_bridge_uses_the_bound_query_key_not_the_display_no_t174(
+        monkeypatch, tmp_path):
+    """复核 L2-1：客户看到的单号 SO88001 经绑定映射到台账单号 ORD-2026-0001 ——
+    真装配（BindingVerifier + CommerceOrderLookup + LedgerRefundPrecheck）下退款桥照样出可采纳的卡。"""
+    code, server = _serve_t174(monkeypatch, {
+        "MAOS_CS_TENANTS": f"{KFID_T174}=tnt-demo",
+        "MAOS_CS_BINDINGS": _bindings_file_t174(tmp_path, USER_T174, display_no="SO88001"),
+        "MAOS_CS_ORDER_SYSTEMS": "demo", "MAOS_CS_LEDGER_TENANT": "tnt-demo"})
+    assert code == 0
+    router, desk = server.router, server.router.cs
+    first = router.handle(_msg_t174(CHANNEL_WECHAT_KF, "SO88001 到哪了", msg_id="d-1"))
+    assert first == ORDER_STATUS_WORDING["zh"]["paid"]
+    second = router.handle(_msg_t174(CHANNEL_WECHAT_KF, "SO88001 质量问题，我要退货",
+                                     msg_id="d-2"))
+    assert second == D.REPLY_BY_REASON[T.HANDOFF_REFUND_REQUEST]
+    ((card, _),) = conversation.list_handoffs(desk.store, "tnt-demo")
+    lines = render_card_text(card).splitlines()
+    assert any(ln.startswith("采纳命令：/refund ORD-2026-0001 ") for ln in lines)
+    assert "内部单号：ORD-2026-0001（客户报的是 SO88001）" in lines
+    rows = conversation.objects.query(
+        desk.store, "SELECT order_no, ok, refused_why FROM cs_refund_bridge")
+    assert [(r["order_no"], r["ok"], r["refused_why"]) for r in rows] == [
+        ("ORD-2026-0001", 1, "")]
+    assert "ORD-2026-0001" not in first + second
 
 
 def test_run_ingress_wires_db_bindings_ports_and_model_t174(monkeypatch, tmp_path):

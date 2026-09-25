@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 
 import pytest
 
@@ -54,7 +55,8 @@ GREETING_NEGATIVES_T182 = [
     ("在吗，包邮吗", _ANS, _LOG), ("你好，我要退货", _HO, _RET), ("哈哈哈", _FB, T.INTENT_UNKNOWN),
     ("老板", _FB, T.INTENT_UNKNOWN), ("你好，这件衣服有没有大码", _FB, T.INTENT_UNKNOWN),
     ("打扰一下，这款有现货吗", _FB, T.INTENT_UNKNOWN), ("亲在吗，能便宜点不", _FB, T.INTENT_UNKNOWN),
-    ("老板在吗 我想买两件", _FB, T.INTENT_UNKNOWN),
+    ("老板在吗 我想买两件", _FB, T.INTENT_UNKNOWN), ("嘿嘿嘿", _FB, T.INTENT_UNKNOWN),
+    ("嘻嘻", _FB, T.INTENT_UNKNOWN),
 ]
 
 #: 类别 2：具体订单的进度 / 异常（不带发货 / 物流 / 退款这类诉求词为主）。
@@ -83,7 +85,15 @@ ADDRESS_CHANGES_T182 = ["下完单发现地址填成老家的了", "地址写错
 #: 类别 2 的反例：说到物流 / 签收 / 扣款的字眼，但不是在说自己那一单出了事。
 ANOMALY_NEGATIVES_T182 = ["签收需要本人吗", "中转站在哪", "驿站几点关门", "快递员态度很好",
                           "重复购买有优惠吗", "物流信息一般多久更新", "包装盒好看吗", "这个杯子碎了能赔吗",
-                          "物流公司是哪家的"]
+                          "物流公司是哪家的",
+                          # 复核 L2-4 / L3-2：「件 / 信息 / 多收 / 一直在 / 几天不动 / 扁凹瘪」的误伤
+                          "我想多收藏几个商品", "文件丢了", "我多收了一件", "满两件是不是多收一次运费",
+                          "盒子扁扁的是设计吗", "收纳箱子凹进去的那种有吗", "这个包装盒是瘪的还是鼓的",
+                          "我一直在路上晚点再收快递", "我一直在仓库上班能兼职吗", "我的会员信息没更新帮我改一下资料",
+                          "这件衣服穿了几天不走样吗", "手表放几天不动会停吗", "这个配件卡住了怎么拆", "软件卡住了怎么办",
+                          "已经签收了没看到说明书", "你们店铺的上新信息好几天没更新了",
+                          # 本轨自补的同类近邻
+                          "零件丢了能单独买吗", "拉链卡住了拉不动", "鞋盒子压了会变形吗", "证件丢了能补办吗"]
 
 #: 类别 3：政策问答的口语说法。(句子, 意图, 该答的政策篇)。
 POLICY_T182 = [
@@ -110,7 +120,16 @@ POLICY_T182 = [
 #: 类别 3 的反例：碰到吊牌 / 膜 / 掉色 / 大件 / 钱包这些字眼，但不是在问售后政策 —— 落兜底。
 POLICY_NEGATIVES_T182 = ["吊牌上的价格是多少", "标签上写的什么面料", "这个膜是送的吗", "这个颜色会不会掉色",
                          "洗了会不会缩水", "大件的有优惠吗", "钱包有现货吗", "没穿过这种款式好看吗",
-                         "花呗能分几期"]
+                         "花呗能分几期",
+                         # 复核 L2-2 / L3-1：配送范围 / 快递公司 / 发货时间 / 退货流程 / 质量换货的误伤
+                         "送去的是正品吗", "送到手的东西有保修吗", "寄去的礼物能写贺卡吗", "一般什么时候发工资",
+                         "香港能买到这款吗", "我在国外可以用这个充电器吗", "国外品牌能用国内电压吗",
+                         "农村老人用的手机可以推荐一款吗", "山区能用吗", "进口的国外奶粉能喝吗", "用京东支付可以吗",
+                         "可以用京东白条吗", "用邮政储蓄卡付款可以吗", "走京东买的更便宜吗", "退订短信怎么弄",
+                         "会员怎么退订咋整", "我家洗衣机坏了你们有什么推荐换一台", "旧手机开不了机了想换个新手机推荐一款",
+                         # 本轨自补的同类近邻
+                         "寄去的包裹要自己贴单吗", "一般什么时候发红包", "最快什么时候发布新款", "走顺丰会员有折扣吗",
+                         "新疆产的红枣甜吗"]
 
 #: 类别 4：辱骂客服质量 → anger。
 ANGER_T182 = ["破客服有什么用", "你们这破客服", "被你们气疯了", "真是气疯我了", "什么鬼客服啊", "废物客服",
@@ -118,7 +137,10 @@ ANGER_T182 = ["破客服有什么用", "你们这破客服", "被你们气疯了
               "这是什么烂系统", "气得我要死"]
 #: 类别 4 的反例：商品名、日常说法里夹着这些字。
 ANGER_NEGATIVES_T182 = ["废物利用的收纳盒有吗", "破洞牛仔裤有吗", "这件衣服是破洞款吗", "狗粮什么时候发货",
-                        "气垫梳有吗", "摆设用的花瓶有吗", "包装破了", "鬼节有活动吗"]
+                        "气垫梳有吗", "摆设用的花瓶有吗", "包装破了", "鬼节有活动吗",
+                        # 复核 L3-4：商品咨询里夹着「狗服务 / 有病 / 摆设 / 死人」
+                        "有没有遛狗服务", "你们有病号服吗", "你有病历本卖吗", "你们摆设的那个花瓶还有吗",
+                        "你们是死人头牌的代理吗", "有宠狗服务吗", "你们有病人用的护理垫吗"]
 
 #: 顺手：条件威胁（真后果动作）→ complaint。
 THREATS_T182 = ["不退我就给差评", "不处理的话我就去黑猫", "不退款我就发微博", "今天不解决我就找媒体",
@@ -127,7 +149,14 @@ THREATS_T182 = ["不退我就给差评", "不处理的话我就去黑猫", "不�
 #: 条件威胁的反例：表态、拿主意、纯发泄、拒收（拒收不是向外升级，照旧走退款诉求）。
 THREAT_NEGATIVES_T182 = ["我不会给差评的", "不退款我就自己留着用吧", "不退就不退吧，我认了",
                          "不退款的话我会很失望", "不退的话我就去朋友家拿", "不退款，我就拒收",
-                         "为什么这么多差评", "好评返现吗"]
+                         "为什么这么多差评", "好评返现吗",
+                         # 复核 L2-1：否定的后果（承诺不升级）
+                         "如果满意我就不会给差评", "要是质量好就不打差评", "要是能退我就不去黑猫了",
+                         "如果今天发货就不用找平台了", "要是按时到我就不会找媒体", "不退也没事我就不发微博了",
+                         # 复核 L3-3：「不 / 没 / 如果」不是条件、夸奖、问句
+                         "不好意思，我就是想问问差评能删吗", "东西不错就是物流慢，不会给差评",
+                         "用了不到一周就发微博夸你们了", "没想到这么快就发朋友圈了", "不到十分钟就在网上评论了",
+                         "如果不满意就可以给差评吗", "不一会儿就发朋友圈晒了好评"]
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +370,11 @@ def test_threat_with_an_online_act_keeps_the_request_t182():
 # ---------------------------------------------------------------------------
 # 5. 不变量
 # ---------------------------------------------------------------------------
+#: 反例表里**基线 45f724d 就已经**答错的（p13 路径的意图提示把「坏了 … 换」答成 RET-003；
+#: 同义归一不启用、与本轨无关）：(句子, 是否 p13) → 基线答的篇。只许这一张封闭表，别的一律要对。
+PREEXISTING_WRONG_ANSWERS_T182 = {("旧手机开不了机了想换个新手机推荐一款", True): "RET-003"}
+
+
 def test_no_fabrication_and_no_confident_wrong_answer_t182():
     """编造 0；零「自信答错」：自写句里凡是 route=answer 的，意图都对（两条路径）。"""
     expected = {t: _GEN for t in GREETINGS_T182}
@@ -349,10 +383,17 @@ def test_no_fabrication_and_no_confident_wrong_answer_t182():
     expected.update({t: i for t, _r, i in GREETING_NEGATIVES_T182})
     # 反例表里答了的两句：问快递公司、问发货时间，都答对了
     expected.update({"物流公司是哪家的": _LOG, "狗粮什么时候发货": _LOG})
+    # 条件威胁的反例里问发货的那句：基线 45f724d 就答 LOG-001（意图 logistics），不转投诉
+    expected.update({"如果今天发货就不用找平台了": _LOG})
     for p13 in (False, True):
         for text in _all_sentences_t182():
             res = _one_t182(text, p13=p13)
             assert not evaluate._fabricates_status(res.reply_text), (text, p13)
+            if (text, p13) in PREEXISTING_WRONG_ANSWERS_T182:
+                # 基线就这么答（不是本轨引入的），逐字钉住它没有变成别的样子；记在 BACKLOG task-t182
+                assert (res.route, res.intent, res.draft.citations) == (
+                    _ANS, _RET, (_cite_t182(PREEXISTING_WRONG_ANSWERS_T182[(text, p13)]),)), (text, p13)
+                continue
             if res.route == _ANS:
                 assert text in expected and res.intent == expected[text], (text, p13, res.intent)
 
@@ -367,6 +408,63 @@ def test_trigger_floor_is_never_narrowed_t182():
         for word in words:
             got = triggers.detect(word)
             assert got is not None and triggers.PRIORITY.index(got[0]) <= triggers.PRIORITY.index(reason)
+
+
+#: R1 地板的冻结快照（逐字抄自基线 45f724d 的 triggers.py，那一层逐字同 bf53df6）。上一条拿
+#: ``matched_reasons`` 比 ``p12_reasons``，两边都从同一张树内表算：把表收窄，两边一起变小、照样绿
+#: （复核 L2-3）。这里拿树外的字面量钉住表本身，再逐条实跑。
+FLOOR_CONTRACT_WORDS_T182 = {
+    T.HANDOFF_REQUESTED: ("转人工", "人工客服", "找人工", "真人"),
+    T.HANDOFF_COMPLAINT: ("投诉", "12315", "消协", "曝光", "起诉", "律师"),
+    T.HANDOFF_ANGER: ("垃圾", "骗子", "气死", "滚"),
+    T.HANDOFF_COMPENSATION: ("赔偿", "补偿", "赔钱", "赔我"),
+    T.HANDOFF_PRIVACY: ("手机号", "身份证", "住址", "个人信息", "隐私"),
+}
+FLOOR_EXTRA_PATTERNS_T182 = {
+    T.HANDOFF_REQUESTED: (
+        "人工", "活人", "客服小姐姐", "客服小哥", "客服妹妹",
+        r"(?:不要|不想|不跟|不和|别让|别用)(?:跟|和|同)?(?:你们?的?)?机器人",
+        r"(?:叫|找|换)(?:你们的?|个|一个)?(?:经理|主管|负责人|领导|老板)",
+    ),
+    T.HANDOFF_COMPLAINT: ("消费者协会", "消保委", "工商局", "市场监管", "法院", "告你们", "举报", "维权",
+                          "黑猫投诉"),
+    T.HANDOFF_ANGER: ("骗人", "骗钱", "坑人", "坑爹", "黑店", "气炸", "恶心", "混蛋", "王八蛋", "无耻",
+                      "他妈", "妈的", "傻逼", "去死", "什么破", "破店"),
+    T.HANDOFF_COMPENSATION: (r"赔(?!本)", "损失费", "精神损失"),
+    T.HANDOFF_PRIVACY: ("个人资料", "身份信息", "身份证号", "手机号码", "电话号码", "银行卡号", "泄露", "泄漏"),
+}
+FLOOR_GUN_RE_T182 = r"(?<![翻打])滚(?![筒动轮珠烫雪梯刀])"
+FLOOR_HOTLINE_RE_T182 = r"(?<!\d)12315(?!\d)"
+#: 快照里三条正则各配的实跑句。
+FLOOR_REGEX_SAMPLES_T182 = {
+    r"(?:不要|不想|不跟|不和|别让|别用)(?:跟|和|同)?(?:你们?的?)?机器人": ("我不想跟你们的机器人说",
+                                                                        T.HANDOFF_REQUESTED),
+    r"(?:叫|找|换)(?:你们的?|个|一个)?(?:经理|主管|负责人|领导|老板)": ("叫你们的主管来", T.HANDOFF_REQUESTED),
+    r"赔(?!本)": ("这得赔点钱吧", T.HANDOFF_COMPENSATION),
+}
+
+
+def _at_least_as_urgent_t182(text: str, reason: str) -> bool:
+    got = triggers.detect(text)
+    return got is not None and triggers.PRIORITY.index(got[0]) <= triggers.PRIORITY.index(reason)
+
+
+def test_trigger_floor_matches_the_frozen_snapshot_t182():
+    """R1 地板对着树外快照：表一个字不许动；每条字面词、每条正则的实跑句仍判出同级或更高优先级。"""
+    assert dict(triggers.CONTRACT_WORDS) == FLOOR_CONTRACT_WORDS_T182
+    assert dict(triggers._EXTRA_PATTERNS) == FLOOR_EXTRA_PATTERNS_T182
+    assert (triggers._GUN_RE, triggers._HOTLINE_RE) == (FLOOR_GUN_RE_T182, FLOOR_HOTLINE_RE_T182)
+    assert (triggers.EXCLAMATIONS, triggers.EXCLAMATION_RUN) == ("!❗❕", 3)
+    special = {"滚": FLOOR_GUN_RE_T182, "12315": FLOOR_HOTLINE_RE_T182}
+    for reason in triggers.PRIORITY:
+        parts = [special.get(w) or re.escape(w) for w in FLOOR_CONTRACT_WORDS_T182[reason]]
+        parts += list(FLOOR_EXTRA_PATTERNS_T182[reason])
+        assert triggers._P12_PATTERNS[reason].pattern == "|".join(f"(?:{p})" for p in parts), reason
+        for entry in FLOOR_CONTRACT_WORDS_T182[reason] + FLOOR_EXTRA_PATTERNS_T182[reason]:
+            text, want = FLOOR_REGEX_SAMPLES_T182.get(entry, (entry, reason))
+            assert _at_least_as_urgent_t182(text, want), (reason, entry, triggers.detect(text))
+            assert _at_least_as_urgent_t182(f"你们{text}啊", want), (reason, entry)
+    assert _at_least_as_urgent_t182("!!!", T.HANDOFF_ANGER)
 
 
 def test_dev_sets_are_unchanged_t182():

@@ -3493,3 +3493,5 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | 「没对上的轮只列 id」具体出什么 | 只出「case id#轮次」、按问题种类（route / intent / cite 等枚举）的计数、没达标门槛的指标名与数字；EvalMiss 的 text / expected / actual（含前台异常原文）一律不出，dev 集同口径 | 契约 §0 只许聚合数与 id；问题种类计数是聚合数，便于整合期看是哪类错 |
 | 2026-09-25 | p14 | holdout12 的 p13 路径「注入空夹具端口」怎么造 | 没写 fixtures 的 case 换成空的 EvalFixtures()（三个夹具端口都注入、谁的单都查不到）；写了的原样 | fixture_ports 对 fixtures=None 给三个 None，等于没注入、又回到 p12 路径 |
 | 2026-09-25 | p14 | --out 首行的 sha 用哪个函数取 | scripts/make_evidence 的 git_sha + header_line，不用 pin_sha | pin_sha 会写进程级环境变量，测试里进程内调 main 会把钉住的 sha 带给后面的测试 |
+| 2026-09-25 | p14 | 复核 L3-1：前台出错时 desk 的 log.error(exc_info=True) 经 lastResort 把异常原文（可能含客户原句）写到 stderr | 跑批期间接管 maos 这一支 logger：换成只出「级别 logger 名 异常类名」一行的打码 handler、propagate 关掉，跑完原样还原；不改 desk 的日志 | desk.py 不归本轨；契约 §0 只许聚合数与 id，stderr 也是输出；出错轮数已在 miss_by_problem 里计，不丢信息；可逆 |
+| 2026-09-25 | p14 | 复核 L3-2：报告里的 thresholds 原样带出留出集 _thresholds 的非数值键 | 只留数值型门槛项（int/float，排除 bool） | 白名单口径只许数字；成本最低 |

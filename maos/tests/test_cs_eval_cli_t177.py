@@ -60,7 +60,8 @@ def _sentinel_doc_t177() -> dict:
     return {
         "_note": "T177 测试用临时文件", "_provenance": {"synthetic": True, "written_by": "task-t177"},
         "_thresholds": {"intent_accuracy": 0.85, "route_accuracy": 0.85, "handoff_recall": 0.9,
-                        "status_fabrication_max": 0, "wording_accuracy": 1.0, "wrong_status_max": 0},
+                        "status_fabrication_max": 0, "wording_accuracy": 1.0, "wrong_status_max": 0,
+                        "_note": f"{s1} 门槛说明"},
         "cases": [
             {"id": "T177H-001", "synthetic": True, "tags": ["sentinel"],
              "turns": [f"{s1} 你们用哪家快递"],
@@ -162,6 +163,98 @@ def test_holdout_outputs_ids_never_sentences_t177(cli_t177, capsys, tmp_path, mo
         assert set(run) == {"path", "cases", "turns", "metrics", "meets", "shortfalls",
                             "misses", "miss_by_problem"}
         assert all(isinstance(v, (int, float)) for v in run["metrics"].values())
+
+
+@pytest.mark.parametrize("set_name", ["holdout12", "holdout14"])
+def test_frontdesk_errors_do_not_leak_sentences_to_stderr_t177(cli_t177, capsys, tmp_path,
+                                                                monkeypatch, set_name):
+    """前台内部出错（异常消息里带客户原文）：stderr 同样不出句子，只出打码后的一行。"""
+    from maos.domain.cs import desk
+
+    def _boom_t177(text, *args, **kwargs):
+        raise ValueError(f"boom on {text}")
+
+    # 触发词检测是两条路径（注不注入端口）都会走的一环
+    monkeypatch.setattr(desk, "detect", _boom_t177)
+    doc_path = _write_t177(tmp_path / f"{set_name}.json", _sentinel_doc_t177())
+    monkeypatch.setattr(cli_t177, set_name.upper() + "_PATH", doc_path)
+    code = cli_t177.main(["--set", set_name, "--json"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "[cs_eval] ERROR maos.cs exc=ValueError" in captured.err, captured.err
+    for blob in (captured.out, captured.err):
+        for sentinel in SENTINELS_T177:
+            assert sentinel not in blob, sentinel
+        assert "boom on" not in blob and "Traceback" not in blob
+    # 跑完还原 maos 这一支 logger
+    import logging
+    assert logging.getLogger("maos").propagate is True
+
+
+_BOOM_DRIVER_T177 = """
+import importlib.util, pathlib, sys
+from maos.domain.cs import desk
+def _boom(text, *a, **k):
+    raise ValueError("boom on " + text)
+desk.detect = _boom
+spec = importlib.util.spec_from_file_location("cs_eval_boom_t177", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.HOLDOUT14_PATH = pathlib.Path(sys.argv[2])
+sys.exit(mod.main(["--set", "holdout14", "--out", sys.argv[3]]))
+"""
+
+
+def test_frontdesk_errors_do_not_leak_as_a_process_t177(tmp_path):
+    """进程级：没有 pytest 的日志接管时（lastResort 会把堆栈写到 stderr），stderr 也不出句子。"""
+    doc_path = _write_t177(tmp_path / "h14.json", _sentinel_doc_t177())
+    out_file = tmp_path / "boom.json"
+    proc = subprocess.run([sys.executable, "-c", _BOOM_DRIVER_T177, str(SCRIPT_T177),
+                           str(doc_path), str(out_file)],
+                          cwd=ROOT_T177, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 1
+    for blob in (proc.stdout, proc.stderr, out_file.read_text(encoding="utf-8")):
+        for sentinel in SENTINELS_T177:
+            assert sentinel not in blob, sentinel
+        assert "boom on" not in blob and "Traceback" not in blob
+    assert "exc=ValueError" in proc.stderr
+
+
+def _threshold_doc_t177(ratio: float) -> dict:
+    """两个 case：一个照抄开发集里答得对的 CS13-001，一个故意对不上；门槛由参数定。"""
+    good = next(c for c in evaluate.load_document(evaluate.P13_EVAL_PATH)["cases"]
+                if c["id"] == "CS13-001")
+    good = dict(good, id="T177T-001")
+    bad = {"id": "T177T-002", "synthetic": True, "open_kfid": "wk_eval", "turns": ["hello there"],
+           "expect": [{"route": "answer", "intent": "logistics", "lang": "zh"}]}
+    return {"_thresholds": {"intent_accuracy": ratio, "route_accuracy": ratio,
+                            "handoff_recall": 0.0, "wording_accuracy": 0.0,
+                            "status_fabrication_max": 0, "wrong_status_max": 0},
+            "cases": [good, bad]}
+
+
+@pytest.mark.parametrize("ratio,expected_code", [(0.4, 0), (1.0, 1)])
+def test_thresholds_come_from_the_set_file_t177(cli_t177, capsys, tmp_path, monkeypatch,
+                                                ratio, expected_code):
+    """门槛取各文件的 _thresholds：同一份两轮答对一轮的集，宽门槛 PASS、1.0 门槛 FAIL。"""
+    doc = _threshold_doc_t177(ratio)
+    monkeypatch.setattr(cli_t177, "HOLDOUT14_PATH", _write_t177(tmp_path / "h14.json", doc))
+    code, out = _run_t177(cli_t177, capsys, "--set", "holdout14", "--json")
+    (only,) = json.loads(out)["sets"]
+    (run,) = only["runs"]
+    assert run["misses"] == ["T177T-002#1"]                  # 两轮恰好错一轮
+    assert only["thresholds"] == doc["_thresholds"]
+    assert code == expected_code
+    assert only["status"] == ("PASS" if expected_code == 0 else "FAIL")
+
+
+def test_report_thresholds_keep_numeric_keys_only_t177(cli_t177, capsys, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_t177, "HOLDOUT14_PATH",
+                        _write_t177(tmp_path / "h14.json", _sentinel_doc_t177()))
+    _, out = _run_t177(cli_t177, capsys, "--set", "holdout14", "--json")
+    (only,) = json.loads(out)["sets"]
+    assert "_note" not in only["thresholds"]
+    assert all(isinstance(v, (int, float)) for v in only["thresholds"].values())
 
 
 def test_dev_sets_use_the_same_ids_only_rule_t177(cli_t177, capsys):

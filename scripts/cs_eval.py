@@ -28,14 +28,21 @@
 ``--out FILE``：写 JSON 报告，首行 ``# generated at <ISO8601> from <git sha>``
 （``scripts/make_evidence.header_line`` / ``git_sha``，同一口径）。
 
+stderr 同口径：跑批期间接管 ``maos`` 这一支 logger（不再向上传播、也不落到 lastResort），
+每条 WARNING 及以上只出「级别 logger 名 异常类名」一行 —— 日志消息正文、参数、异常原文与堆栈
+一律不出（前台异常消息里可能带客户原文；出错轮数已计在 ``miss_by_problem`` 里）。跑完原样还原。
+报告里的 ``thresholds`` 只留数值型门槛项（非数值键如 ``_note`` 不出）。
+
 退出码：所选集（SKIP 的除外）全部 meets → 0；否则 1；用法错 → 2。
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
+import logging
 import os
 import pathlib
 import sys
@@ -179,8 +186,49 @@ def run_set(name: str, stores: _Stores, *, tag: str = "") -> dict[str, Any]:
         runs.append(_run_summary("p13", report, thresholds, back))
     meets = all(r["meets"] for r in runs)
     result.update(status=STATUS_PASS if meets else STATUS_FAIL, meets=meets,
-                  thresholds=dict(thresholds), runs=runs)
+                  thresholds=_numeric_thresholds(thresholds), runs=runs)
     return result
+
+
+def _numeric_thresholds(thresholds: Mapping[str, Any]) -> dict[str, Any]:
+    """报告里只留数值型门槛项：非数值键（说明文字等）不出。"""
+    return {str(k): v for k, v in thresholds.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+# ---------------------------------------------------------------------------
+# stderr 打码：前台日志只出级别、logger 名与异常类名
+# ---------------------------------------------------------------------------
+_REDACT_LOGGER = "maos"
+
+
+class _RedactingHandler(logging.Handler):
+    """只出「[cs_eval] 级别 logger 名 异常类名」一行；消息正文、参数、异常原文、堆栈都不出。"""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            exc_name = ""
+            if record.exc_info and record.exc_info[0] is not None:
+                exc_name = f" exc={record.exc_info[0].__name__}"
+            sys.stderr.write(f"[cs_eval] {record.levelname} {record.name}{exc_name}"
+                             "（日志正文与异常原文已打码）\n")
+        except Exception:                          # noqa: BLE001 —— 打码失败也不回落原文
+            pass
+
+
+@contextlib.contextmanager
+def _redacted_logs():
+    """跑批期间接管 maos 这一支 logger，跑完原样还原。"""
+    logger = logging.getLogger(_REDACT_LOGGER)
+    saved = (list(logger.handlers), logger.propagate, logger.level)
+    handler = _RedactingHandler(level=logging.WARNING)
+    logger.handlers = [handler]
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.handlers, logger.propagate = saved[0], saved[1]
+        logger.setLevel(saved[2])
 
 
 def _display_path(path: pathlib.Path) -> str:
@@ -243,9 +291,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:                 # argparse 的用法错是 2；--help 是 0
         return int(exc.code or 0)
     names = SETS if args.set_name == "all" else (args.set_name,)
-    stores = _Stores(args.db)
-    tag = uuid.uuid4().hex[:10] if args.db else ""
-    results = [run_set(name, stores, tag=tag) for name in names]
+    with _redacted_logs():
+        stores = _Stores(args.db)
+        tag = uuid.uuid4().hex[:10] if args.db else ""
+        results = [run_set(name, stores, tag=tag) for name in names]
     code = exit_code_of(results)
     doc = {"set": args.set_name, "db": bool(args.db), "exit_code": code, "sets": results}
     if args.out:

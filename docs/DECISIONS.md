@@ -3564,3 +3564,15 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | p14 留出集 CS14H-060 第 1 轮的问候含 p12 触发词地板里的说法（盲写者看不到触发词表），前台照契约转人工、其后三轮 silent —— 期望与 R1 地板冲突 | 留出集文件**不改**；账里记明这 4 轮是契约冲突，扣掉它们 route 为 84/96 ≈ 0.875 | 预登记之后改题等于改门槛；同类冲突 p13 在开发集上是改句，留出集不改 |
 | 2026-09-25 | p14 | T176 开着的：契约 §5 的整合命令 `verify.py --cs --db X` 里其余十项也读 X，整条命令退出码非 0 | 不加「只跑 cs」的开关；整合期只看 cs/claim-basis 那一行：`cs_eval.py --set dev13 --db X` 退 0，随后 verify 报 `[PASS] cs/claim-basis 142/142` | 加开关是新 CLI 面，收益只在整合期这一条命令 |
 | 2026-09-25 | p14 | T177 开着的：dev12 因 KNOWN_GAPS 那一轮（CS12-044#1，门槛 1.0）退 1，`--set all` 因此恒退 1；ERROR 归 1 | 维持 T177 的口径（不是全部 meets 就退 1），不改契约 | 退出码如实反映「有集没达标」；已知缺口由 test_cs_eval_p12_t169 的 KNOWN_GAPS 钉住 |
+
+## task-t180（运营统计 cs_stats，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | 契约没说兜底率 / 转人工率的分母、意图 top-N 算不算 silent 轮 | 分母取应答轮（route ≠ silent），输出里明写分母并另报 answered_turns；意图 top-N 也不含 silent 轮 | silent 轮是已转人工会话的只记录轮，意图恒为 unknown、也没有「兜底 / 转人工」可言，算进去会把两个率与 unknown 的占比一起稀释 |
+| 2026-09-25 | p14 | 契约没说 --since 按哪一列截 | 轮按 cs_turn.created_at、会话按 cs_conversation.updated_at、拦截与会诊卡按 event_log.created_at；查单结果与追问跟着所属轮的窗口走；不带时区按 UTC，库里解析不了的时间戳不计入 | 各表各用自己的时刻，不跨表猜；ext 表没有时间列，只能跟轮走 |
+| 2026-09-25 | p14 | 后置校验拦下按 violation kind 怎么数 | 读 CsReplyRejected 的 detail.violation_kinds，同一次拦截里同种违例只计一次，另报拦截总次数 | 运营要看的是「这种原因拦下了几次回复」，一次拦截报两条同种违例不是两次拦截 |
+| 2026-09-25 | p14 | 转人工原因与查单结果取哪张表 | 转人工原因取 cs_turn.handoff_reason（非空的轮），查单结果与追问取 cs_turn_ext；不读 cs_handoff / cs_observation | 与轮数、route 分布同一张表同一个 --since 口径，数字能互相对账；cs_observation 只落成功查单，数不出失败的结果 |
+| 2026-09-25 | p14 | 库读不到（路径不存在 / 不是 sqlite 文件）怎么退 | 退 2，stderr 只报异常类名；mode=ro 不会凭空建库 | 契约只规定没有 cs_ 表退 0；路径打错是用法问题，照 replay_roundtable 的先例归到非零 |
+| 2026-09-25 | p14 | 从库里读出来会原样进输出的值（意图、违例种类、recommendation、doc_id）要不要过白名单 | 一律过白名单：枚举不在冻结集合里的归 other，doc_id 不合 kb- 形状的归 other；recommendation 的六个值抄 p14 契约 §2 的字面量，不 import maos/roundtable/cs_conference.py | intent 列没有 CHECK、event_log detail 是自由 JSON，库被写坏时原样输出就会漏原文；T178 与本轨并行，模块还不存在 |
+| 2026-09-25 | p14 | 测试怎么造库 | 进程内用 FrontDesk + evaluate.fixture_ports 把 p13 开发集整批跑进临时库（与 cs_eval.py --set dev13 --db 同口径），再用真前台跑一段哨兵会话与一个第二租户，最后用 SQL 把哨兵塞满原文 / 标识列；拦截用 conversation.record_reply_rejected 落、会诊卡按契约的 detail 形状直接落 event_log | 不依赖 T177 的 CLI 实现细节；dev13 本身不产生拦截与会诊卡（T178 并行），只能自己落 |

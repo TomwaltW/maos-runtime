@@ -145,8 +145,12 @@ def test_rule3_one_obs_claim_backs_every_occurrence_of_its_literal_t170():
 
     这是契约 §1.4 规则 3 原文的读法（「落在某条有效 obs: claim 的 literal 在 text 中的出现
     区间里」，Claim 没有偏移）。p12 观察恒为空，没有实际影响；p13 有了观察以后，一条短
-    literal 能替同句里别的同名状态作保 —— 风险记在 BACKLOG task-t170，口径由主会话定，
-    改口径时这条跟着改。上面那条「只撑自己那一处」靠的是两条 literal 不同。
+    literal 能替同句里别的同名状态作保 —— 风险记在 BACKLOG task-t170。上面那条「只撑自己那一处」
+    靠的是两条 literal 不同。
+
+    p13 的收紧（p12 契约 §6.4「p13 加措辞规则时一并收紧」，T175 复核 L3R2-1）落在第二道出门校验
+    ``check_observation_wording``（一条观察只撑一处，钉在 test_cs_wording_t175），check_reply 的这条
+    p12 口径不动 —— p13 契约要求 p12 的测试一个期望都不改。
     """
     text = "订单甲已发货；订单乙也已发货"
     one = check_reply(_draft_t170(text, ("已发货", "obs:o1")), observations=frozenset({"o1"}))

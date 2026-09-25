@@ -837,6 +837,8 @@ def test_wording_accuracy_can_fail_t175(cases_t175, tweak_fields, problems):
 
 
 def test_wording_needs_exactly_one_sentence_and_nothing_else_t175(cases_t175):
+    """同一句说两遍、只挂一条观察：wording 判负；复核 L3R2-1 起「一条观察只撑一处」，第二处说的
+    不是任何一条本轮观察 —— wrong_status 也判负（上一版这里期望 wrong_status == 0）。"""
     case, turn = _say_turn_t175(cases_t175)
     victim = f"{case.id}-{turn}"
     sentence = P.ORDER_STATUS_WORDING[P.LANG_ZH][case.expect[turn - 1].say]
@@ -851,8 +853,78 @@ def test_wording_needs_exactly_one_sentence_and_nothing_else_t175(cases_t175):
                                        draft=dataclasses.replace(res.draft, text=text))
     answers = _answers_t175(cases_t175)
     report = run_eval_p13(lambda ports: Twice(answers, DEFAULT_TENANT_MAP, ports), cases_t175)
-    assert report.wording_accuracy < 1.0 and report.wrong_status == 0
-    assert [m.problems for m in report.failures] == [("wording",)]
+    assert report.wording_accuracy < 1.0 and report.wrong_status == 1
+    assert report.status_fabrication == 0                  # check_reply 的 p12 口径：一条 claim 撑每一处
+    assert [m.problems for m in report.failures] == [("wrong_status", "wording")]
+
+
+def test_one_observation_backing_a_second_order_is_wrong_t175(cases_t175):
+    """复核 L3R2-1 原样：退款桥轮真的查了这一单，却把措辞表那句说了两遍（第二遍替没查过的
+    Z9999 说）—— 路由、编造、措辞都不掉，只有 wrong_status 判负，门槛不过。"""
+    case, turn = _refund_bridge_turn_t175(cases_t175)
+    victim = f"{case.id}-{turn}"
+    order_no = ORDER_NO_RE_T175.findall(" ".join(case.turns[:turn]))[-1]
+    truth = case.fixtures.order(case.fixtures.binding(order_no).query_key).status
+    s = P.ORDER_STATUS_WORDING[P.LANG_ZH][truth]
+
+    def run(suffix):
+        return run_eval_p13(_factory_t175(cases_t175, tweak=lambda m, e, f: {
+            "lookup_now": True, "say": truth, "obs_status": truth,
+            "suffix": suffix} if m.msg_id == victim else None)[0], cases_t175)
+    # 对照：只说一遍、与夹具一致 —— 三项都不判（BACKLOG task-t175 已记的口径缺口，p14 按期望判）
+    assert run("").failures == ()
+    report = run("；另一单 Z9999：" + s)
+    assert report.wrong_status == 1 and report.status_fabrication == 0
+    assert report.route_accuracy == report.handoff_recall == 1.0
+    assert not report.meets(load_thresholds(P13_EVAL_PATH))
+    (miss,) = report.failures
+    assert (miss.case_id, miss.turn, miss.problems) == (case.id, turn, ("wrong_status",))
+
+
+class LeakyDeskT175(FakeDeskT175):
+    """复核 L2-2 原样：CS13-019 第 1 轮不经 verifier.resolve，自己造一条 T1919 的绑定去查、落观察、
+    说出状态（T1919 在夹具 orders 里是 ok / shipped，但没绑在跑批客户名下）。"""
+
+    victim = "CS13-019-1"
+
+    def handle(self, msg):
+        if msg.msg_id != self.victim:
+            return super().handle(msg)
+        self.seen.append(msg)
+        tenant = self.tenant_map.get(msg.raw.get("open_kfid", ""), "")
+        conv = T.conversation_id_for(tenant, msg.channel, msg.raw["open_kfid"], msg.chat_id)
+        turn = T.turn_id_for(conv, len(self.seen))
+        binding = P.Binding(tenant, msg.channel, msg.chat_id, "T1919", "demo-orders", "T1919",
+                            P.BINDING_TEST)
+        result = self.ports["lookup"].lookup(None, binding, plan_id=T.plan_id_for(conv),
+                                             task_id=turn)
+        sentence = P.ORDER_STATUS_WORDING[P.LANG_ZH][result.status]
+        obs_id = _write_obs_t175(self._db, tenant=tenant, conv=conv, turn=turn, n=1,
+                                 system_name=result.system_name, query_key=result.query_key,
+                                 status=result.status)
+        return T.DeskResult(
+            reply_text=sentence, tenant_id=tenant, conversation_id=conv, turn_id=turn,
+            route=T.ROUTE_ANSWER, intent=T.INTENT_LOGISTICS,
+            draft=T.ReplyDraft(text=sentence, claims=(T.Claim(sentence, f"obs:{obs_id}"),)),
+            lang=P.LANG_ZH, lookup_outcome=P.LOOKUP_OK)
+
+
+def test_status_of_an_unbound_order_is_wrong_t175(cases_t175):
+    """复核 L2-2：跳过身份核验、把别人那一单的状态说给客户 —— 观察撑得住、措辞对得上，
+    wrong_status 的真值只认绑在跑批客户名下的单，判负；只丢一轮出口的 0.9 / 0.95 门槛挡不住它。"""
+    case = next(c for c in cases_t175 if c.id == "CS13-019")
+    assert case.fixtures.binding("T1919") is None                  # 夹具的前提：T1919 没绑
+    assert case.fixtures.order("T1919").outcome == P.LOOKUP_OK     # 但查得到、状态是 ok
+    answers = _answers_t175(cases_t175)
+    report = run_eval_p13(lambda ports: LeakyDeskT175(answers, DEFAULT_TENANT_MAP, ports),
+                          cases_t175)
+    th = load_thresholds(P13_EVAL_PATH)
+    assert report.wrong_status == 1 and report.status_fabrication == 0
+    assert report.route_accuracy >= th["route_accuracy"]
+    assert report.handoff_recall >= th["handoff_recall"]            # 只靠出口门槛拦不住
+    assert not report.meets(th) and report.shortfalls(th) == ["wrong_status=1 > 0"]
+    (miss,) = report.failures
+    assert (miss.case_id, miss.turn, set(miss.problems)) == ("CS13-019", 1, {"route", "wrong_status"})
 
 
 @pytest.mark.parametrize("backed", [False, True])
@@ -935,6 +1007,27 @@ def test_status_tacked_onto_the_wording_sentence_is_wrong_t175(cases_t175, lang,
     assert not report.meets(load_thresholds(P13_EVAL_PATH))
     (miss,) = report.failures
     assert {"wrong_status", "wording"} <= set(miss.problems), miss
+
+
+@pytest.mark.parametrize("lang,suffix", [
+    (P.LANG_ZH, "（您的包裹已妥投）"),                                    # 复核 L3R2-4 探针原样
+    (P.LANG_ZH, "，钱已经退给您了"),
+    (P.LANG_EN, " The courier picked it up and it has left our warehouse."),
+    (P.LANG_EN, " You'll receive it tomorrow."),
+])
+def test_status_phrases_tacked_onto_every_policy_turn_fail_the_run_t175(cases_t175, lang, suffix):
+    """复核 L3R2-4：每个不说状态、有回复的轮都接一句没有观察撑的状态说法 —— 出门校验与评测同口径认，
+    编造与 wrong_status 各计每一轮，门槛不过（上一版 meets=True）。"""
+    def tweak(m, e, f):
+        if e.lang == lang and e.route != T.ROUTE_SILENT and not e.say:
+            return {"suffix": suffix}
+        return None
+    victims = sum(1 for *_, e in _all_turns_t175(cases_t175)
+                  if e.lang == lang and e.route != T.ROUTE_SILENT and not e.say)
+    assert victims >= 3
+    report = run_eval_p13(_factory_t175(cases_t175, tweak=tweak)[0], cases_t175)
+    assert report.status_fabrication == report.wrong_status == victims
+    assert not report.meets(load_thresholds(P13_EVAL_PATH))
 
 
 def test_tenant_map_is_honoured_t175(cases_t175):
@@ -1044,6 +1137,77 @@ def test_desk_errors_are_recorded_not_raised_t175(cases_t175):
     assert report.turns == sum(len(c.turns) for c in cases_t175)
 
 
+@pytest.mark.parametrize("bad_claim", [
+    (P.ORDER_STATUS_WORDING[P.LANG_ZH]["shipped"], None),    # 复核 L2-4 的三种形状
+    (123, "obs:x"),
+    (P.ORDER_STATUS_WORDING[P.LANG_ZH]["shipped"], 5),
+])
+def test_malformed_claims_are_recorded_as_errors_t175(cases_t175, bad_claim):
+    """claim 的 literal / basis_ref 不是 str：记该轮 error，不中断整批（以前在 try 外面抛、整批崩掉）。"""
+    case, turn = _say_turn_t175(cases_t175)
+    victim = f"{case.id}-{turn}"
+
+    class BadClaims(FakeDeskT175):
+        def handle(self, msg):
+            res = super().handle(msg)
+            if msg.msg_id != victim:
+                return res
+            return dataclasses.replace(res, draft=dataclasses.replace(
+                res.draft, claims=(T.Claim(*bad_claim),)))
+    answers = _answers_t175(cases_t175)
+    report = run_eval_p13(lambda ports: BadClaims(answers, DEFAULT_TENANT_MAP, ports), cases_t175)
+    assert report.turns == sum(len(c.turns) for c in cases_t175)
+    (miss,) = report.failures
+    assert (miss.case_id, miss.turn, miss.problems) == (case.id, turn, ("error",))
+    assert "TypeError" in miss.actual["error"]
+
+
+@pytest.mark.parametrize("literal,basis", [
+    ("退款已到账啦", "kb:kb-cs-tnt-demo-PAY-003"),       # 以前的第 3 条（check_reply 报 foreign_literal）
+    (P.ORDER_STATUS_WORDING[P.LANG_ZH]["cancelled"], "obs:csc-x-t0001-o99"),   # 第 2 条（悬空的 obs）
+])
+@pytest.mark.parametrize("in_text", [False, True])
+def test_claims_the_customer_never_sees_are_not_wrong_status_t175(cases_t175, in_text, literal,
+                                                                   basis):
+    """复核 L2-3：wrong_status 只看客户收到的正文。状态说法挂在一条 literal 不在正文里的 claim 上 ——
+    客户什么状态都没听到，不算；同一句真的出现在正文里，就是说了没有观察撑 / 措辞表以外的状态。"""
+    victim = next(f"{c.id}-1" for c in cases_t175 if c.fixtures is None
+                  and c.expect[0].route == T.ROUTE_ANSWER)
+
+    class Stray(FakeDeskT175):
+        def handle(self, msg):
+            res = super().handle(msg)
+            if msg.msg_id != victim:
+                return res
+            text = res.reply_text + (literal if in_text else "")
+            return dataclasses.replace(res, reply_text=text, draft=dataclasses.replace(
+                res.draft, text=text, claims=(T.Claim(literal, basis),)))
+    answers = _answers_t175(cases_t175)
+    report = run_eval_p13(lambda ports: Stray(answers, DEFAULT_TENANT_MAP, ports), cases_t175)
+    if not in_text:
+        assert report.wrong_status == 0 and report.status_fabrication == 0
+        assert report.failures == ()
+    else:
+        assert report.wrong_status == 1 and report.status_fabrication == 1
+        assert [set(m.problems) for m in report.failures] == [{"status_fabrication", "wrong_status"}]
+
+
+def test_said_statuses_strips_the_normalised_table_sentences_t175(monkeypatch):
+    """复核 L2-5：整句按正文同一种规范化（NFKC）去挖 —— 中文 paid / shipped 两句里的全角，（）
+    会被折成半角，拿原句去找永远找不到。装一条命中句中片段（暂未发货 / 分批发出）的评测模式，
+    说对的那句仍然只算它自己的状态。"""
+    import maos.domain.cs.evaluate as E
+
+    monkeypatch.setattr(E, "_OFF_TABLE_PATTERNS", E._OFF_TABLE_PATTERNS + (
+        re.compile(r"暂未发货|分批发出|multi-item"),))
+    for lang, table in P.ORDER_STATUS_WORDING.items():
+        for status, sentence in table.items():
+            assert said_statuses(sentence) == {status}, (lang, status)
+            assert said_statuses(f"您好，{sentence}") == {status}, (lang, status)
+    # 对照：同样的片段不在整句里，就是 off_table
+    assert said_statuses("您的包裹暂未发货") == {STATUS_OFF_TABLE}
+
+
 # ===========================================================================
 # 小件：said_statuses、turn_observations、p12 跑批不变
 # ===========================================================================
@@ -1063,6 +1227,15 @@ def test_desk_errors_are_recorded_not_raised_t175(cases_t175):
     ("您的订单已经发了", {STATUS_OFF_TABLE}), ("包裹在路上了", {STATUS_OFF_TABLE}),
     ("快递正在派送中", {STATUS_OFF_TABLE}), ("明天就能到", {STATUS_OFF_TABLE}),
     ("退款成功", {STATUS_OFF_TABLE}), ("订单已被取消", {STATUS_OFF_TABLE}),
+    # 复核 L3R2-4：出门校验新认的（评测经 reply_status_places 同口径认，记 off_table）
+    ("您的包裹已妥投", {STATUS_OFF_TABLE}), ("快递已派件", {STATUS_OFF_TABLE}),
+    ("您的订单已完成", {STATUS_OFF_TABLE}), ("您的货已经到了", {STATUS_OFF_TABLE}),
+    ("钱已经退给您了", {STATUS_OFF_TABLE}), ("快递小哥已经在派送了", {STATUS_OFF_TABLE}),
+    ("Your order has left our warehouse.", {STATUS_OFF_TABLE}),
+    ("The courier picked it up this morning.", {STATUS_OFF_TABLE}),
+    ("You'll receive it tomorrow.", {STATUS_OFF_TABLE}), ("It's with the courier now.", {STATUS_OFF_TABLE}),
+    ("Your parcel was signed for at the door.", {STATUS_OFF_TABLE}),
+    ("We received your payment.", {STATUS_OFF_TABLE}), ("Your order went out yesterday.", {STATUS_OFF_TABLE}),
     ("您的包裹尚未发货", set()), ("请在订单页完成付款", set()), ("", set()),
     ("物流由配送中心统一安排", set()), ("您的包裹发出去了吗？请提供单号", set()),
     (P.ORDER_STATUS_WORDING["zh"]["paid"] + "，" + P.ORDER_STATUS_WORDING["en"]["shipped"],

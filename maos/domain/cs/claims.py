@@ -40,9 +40,12 @@
 
 ## p13 增量（review/p13-cs-contracts.md §1.4 T175）
 
-* 补扫「已付款 / 已支付」：付款 / 支付进了「已 + 动词」表（p13 措辞表里有「您的订单已付款」，
+* 补扫「已付款 / 已支付」：付款 / 支付进了 p13 的「已 + 动词」表（p13 措辞表里有「您的订单已付款」，
   不扫的话这句在空观察下原样放行）；付款族的其余完成态（已完成支付、已成功付款、支付成功、
   已经付了、句末「已付」）一并认，「付款成功后……」「完成付款」这类政策说法不认（复核 L3-5）。
+  复核 L3R2-4 再补中文完成态：已妥投 / 已派件 / 已派送 / 已完成 / 已经到了（后接时间说法的除外）/
+  已经退给您，以及「已经在派送 / 配送 / 运输 / 路上」。这些 p13 的中文补扫单独放在
+  :data:`P13_ZH_STATUS_PATTERNS`，不混进 p12 的 :data:`SUPPLEMENTARY_STATUS_PATTERNS`。
 * 补扫英文状态说法（:data:`EN_STATUS_PATTERNS`）：shipped / dispatched / delivered / refunded /
   cancel(l)ed、arrive 的各词形（will arrive / arriving / arrived / arrives）、has / have / 's been …、
   will [be] ship / deliver / refund / cancel / credit / issue、in transit / out for delivery /
@@ -50,15 +53,25 @@
   cancels、带时间副词的 refunds）、进行时（is shipping / are refunding / is processing ……，shipping fee
   这类名词搭配除外）、被动（will be sent / issued / credited / processed、being processed、
   Your order was sent、Payment confirmed）、went through，以及时限（within / in N(-M) [business]
-  days|hours|weeks、N-M business days、by tomorrow / Friday）。
+  days|hours|weeks、N-M business days、by tomorrow / Friday）。复核 L3R2-4 按中文「已 + 动词」表逐个
+  补英文对应：went out（发出）、signed for（签收）、picked it up / was collected（揽收）、left our
+  warehouse（出库）、was rejected / declined（驳回）、compensated / will compensate（补偿 / 赔偿）、
+  received your payment / you have paid（付款）、it's with the courier（派送）、you'll receive it
+  tomorrow（到了）；测试逐个中文动词钉一句英文例句。
   大小写不论；在**保留词间空格**的另一份规范化上认（NFKC、去零宽 / 软连字符 / 组合附加符 /
   间隔号、空白压成一个），词边界只看 ASCII 字母，中英混排也认。**否定不豁免**：
   「has not shipped yet」同样是在替外部世界说这一单的状态（中文「尚未发货」放行是 p12 口径，不动）。
   于是英文状态句在空观察下被 :func:`check_reply` 拦下，措辞表里的中英各句挂着有效 obs 时放行。
 * :func:`check_observation_wording`：obs: claim 的 literal 必须**逐字**等于
-  ``ports.ORDER_STATUS_WORDING[lang][该观察的 status]`` —— 「挂着观察」之外再要求「说的就是那个观察」。
+  ``ports.ORDER_STATUS_WORDING[lang][该观察的 status]`` —— 「挂着观察」之外再要求「说的就是那个观察」；
+  并且一条观察只撑一处（复核 L3R2-1，p12 契约 §6.4 裁定「p13 一并收紧」）：同一句在正文里出现几处，
+  就得有几条挂着**不同**本轮观察的 claim。check_reply 规则 3 的 p12 口径（一条 obs claim 撑住它的
+  literal 的每一处）不动 —— p12 的测试一个期望都不改，收紧落在这第二道出门校验上。
 
-没有英文状态字眼的正文，check_reply 的结果与 p12 逐字节一致（英文扫描一条都没命中时直接用 p12 的结果）。
+check_reply 与 p12 的差别只有 p13 的两组补扫（:data:`P13_ZH_STATUS_PATTERNS` 的中文完成态与
+:data:`EN_STATUS_PATTERNS` 的英文说法）：两组都没命中的正文，结果与 p12 逐字节一致；中文正文**不再**
+逐字节同 p12 —— 「已付款 / 已支付 / 支付成功 / 已经付了 / 句末已付 / 已妥投 / 已派送 / 已完成 / 已经到了 /
+已经退给您 / 已经在派送」在空观察下 p12 放行、p13 拦下（复核 L1-1；测试把两组置空后逐条对照 p12 例句）。
 
 ## 这里不做的事
 
@@ -113,8 +126,11 @@ _RANGE = rf"{_NUM}(?:(?:[-~～—–−]|至|到){_NUM})?"
 _UNIT = r"个?(?:工作日|自然日|天|日|小时|周|星期)"
 #: 退款 / 到账一类的完成态动词（规则 3 与规则 5 共用）。
 _REFUND_DONE_VERBS = r"到[账帐]|退款|退回|退还|打款|汇款"
-#: 物流 / 订单一类的完成态动词。付款 / 支付是 p13 补的（T175：措辞表里有「已付款」）。
-_ORDER_DONE_VERBS = r"发货|发出|寄出|送达|到货|签收|揽收|出库|取消|驳回|补偿|赔偿|付款|支付"
+#: 物流 / 订单一类的完成态动词（p12）。
+_ORDER_DONE_VERBS = r"发货|发出|寄出|送达|到货|签收|揽收|出库|取消|驳回|补偿|赔偿"
+#: p13 补的完成态动词（T175，放进 :data:`P13_ZH_STATUS_PATTERNS`）：付款 / 支付（措辞表里有「已付款」）；
+#: 妥投 / 派件 / 派送 / 完成 / 退给您（复核 L3R2-4）。「到了」另成一条（后接时间说法的不算）。
+_ORDER_DONE_VERBS_P13 = r"付款|支付|妥投|派件|派送|完成|退给您"
 #: 「已 / 已经 [为您] [原路] 动词」。
 _DONE_PREFIX = r"已经?(?:(?:为|给|帮|替)您)?(?:原路)?"
 
@@ -134,7 +150,18 @@ SUPPLEMENTARY_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     # 不带「预计」的时限承诺：时长紧接到账 / 退回 / 发货类动词
     re.compile(rf"{_RANGE}{_UNIT}(?:之内|以内|内|左右)?(?:就|即可|即|会|能|可以|可|便)?"
                r"(?:到[账帐]|原路(?:退回|返回|退还)|退还到|退到|发货|送达|送到|到货)"),
-    # p13 付款族的其余完成态（T175 复核 L3-5）：已完成支付 / 已成功付款、支付成功 / 付款成功、
+)
+
+#: p13（T175）补的中文状态字眼，与 p12 的 :data:`SUPPLEMENTARY_STATUS_PATTERNS` 分开放：置空这张表
+#: （连同 :data:`EN_STATUS_PATTERNS`）时 check_reply 与 p12 逐字节一致（测试钉住）。
+P13_ZH_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # 已付款 / 已支付（措辞表 paid 那句）；已妥投 / 已派件 / 已派送 / 已完成 / 已经退给您（复核 L3R2-4）
+    re.compile(rf"{_DONE_PREFIX}(?:{_ORDER_DONE_VERBS_P13})"),
+    # 已经到了（后接「时间 / 下班 / 期限」一类的不算：「已经到了下班时间」不是在说这一单）
+    re.compile(rf"{_DONE_PREFIX}到了(?![^,，。.!！?？;；]{{0,6}}?(?:时间|时候|下班|上班|期限|截止|日期))"),
+    # 已经在派送 / 配送 / 运输 / 路上（复核 L3R2-4「已经在派送了」）
+    re.compile(r"已经?在(?:派送|配送|派件|运输|途中|路上)"),
+    # 付款族的其余完成态（复核 L3-5）：已完成支付 / 已成功付款、支付成功 / 付款成功、
     # 已经付了 / 已付清 / 句末的「已付」。「付款成功后……」「完成付款」是政策说法，不命中。
     re.compile(rf"{_DONE_PREFIX}(?:完成|成功)(?:付款|支付)"),
     re.compile(r"(?:付款|支付)成功(?!后|之后|以后|的话|时|才|再|即可|方可)"),
@@ -175,7 +202,8 @@ EN_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     # will / 'll [be] ship / deliver / dispatch / refund / cancel / credit / issue：结果与时限承诺
     # （will arrive 由第一条的 arrive 认）
     re.compile(rf"(?:{_EN_L}will|{_APOS}ll)\s*(?:be\s*)?"
-               rf"(?:ship|deliver|dispatch|refund|cancel|credit|issue)(?:ped|led|ed|d)?{_EN_R}",
+               rf"(?:ship|deliver|dispatch|refund|cancel|credit|issue|compensate|reimburse)"
+               rf"(?:ped|led|ed|d)?{_EN_R}",
                re.IGNORECASE),
     # 在途
     re.compile(_EN_L + r"(?:in\s*transit|out\s*for\s*delivery|on\s*(?:its|the)\s*way)" + _EN_R,
@@ -223,6 +251,43 @@ EN_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(_EN_L + rf"{_EN_RANGE}\s+(?:business|working)\s+days?" + _EN_R, re.IGNORECASE),
     re.compile(_EN_L + r"by\s+(?:tomorrow|tonight|today|(?:mon|tues|wednes|thurs|fri|satur|sun)day"
                r"|the\s+end\s+of\s+(?:the\s+)?(?:day|week|month))" + _EN_R, re.IGNORECASE),
+    # ---- T175 复核 L3R2-4：中文「已 + 动词」表逐个的英文对应（测试按动词逐个钉例句）----
+    # 发出：went / gone out（went out of stock 不算）
+    re.compile(_EN_L + r"(?:went|gone)\s+out(?!\s+of" + _EN_R + ")" + _EN_R, re.IGNORECASE),
+    # 签收：was / has / already signed for、signed for it
+    re.compile(rf"(?:{_EN_L}(?:was|were|been|got|has|have|had|already)|{_APOS}(?:s|ve))\s+signed\s+for"
+               + _EN_R, re.IGNORECASE),
+    re.compile(_EN_L + r"signed\s+for\s+(?:it|them|your|the|this|yesterday|today)" + _EN_R,
+               re.IGNORECASE),
+    # 揽收：picked it up、picked up / collected your parcel、was picked up、the courier picked / collected
+    re.compile(_EN_L + r"picked\s+(?:it|them)\s+up" + _EN_R, re.IGNORECASE),
+    re.compile(_EN_L + r"(?:picked\s+up|collected)\s+(?:your|the)\s+(?:orders?|packages?|parcels?"
+               r"|items?|goods|shipments?|returns?|box(?:es)?)" + _EN_R, re.IGNORECASE),
+    re.compile(rf"(?:{_EN_L}(?:was|were|been|got|has|have|had|already)|{_APOS}(?:s|ve))\s+"
+               r"(?:picked\s+up|collected)" + _EN_R, re.IGNORECASE),
+    re.compile(_EN_L + r"(?:courier|carrier|driver|rider|postman)\s+(?:(?:has|have|had|already)\s+)*"
+               r"(?:picked|collected)" + _EN_R, re.IGNORECASE),
+    # 出库：left / departed our warehouse ……
+    re.compile(_EN_L + r"(?:left|leaving|departed|departing)\s+(?:our|the|its)\s+(?:warehouse|facility"
+               r"|depot|hub|store|fulfill?ment\s+cent(?:er|re)|distribution\s+cent(?:er|re))" + _EN_R,
+               re.IGNORECASE),
+    # 驳回：was / were / got rejected / declined / denied
+    re.compile(_EN_L + r"(?:was|were|got)\s+(?:rejected|declined|denied)" + _EN_R, re.IGNORECASE),
+    # 补偿 / 赔偿：compensated / reimbursed（will compensate / reimburse 由 will 那条认）
+    re.compile(_EN_L + r"(?:compensated|reimbursed)" + _EN_R, re.IGNORECASE),
+    # 付款：received your payment、you have / you've (already) paid
+    re.compile(_EN_L + r"received\s+(?:your|the)\s+(?:payment|money|funds|transfer|refund|orders?"
+               r"|packages?|parcels?|items?|goods|returns?)" + _EN_R, re.IGNORECASE),
+    re.compile(rf"(?:{_EN_L}(?:have|has|had)|{_APOS}ve)\s+(?:already\s+)?paid" + _EN_R, re.IGNORECASE),
+    # 派送：it's / it is (now) with the courier
+    re.compile(rf"(?:{_EN_L}(?:is|are|was|were)|{_APOS}(?:s|re))\s+(?:(?:now|already|currently|still)\s+)?"
+               r"with\s+(?:the|our|your|a)\s+(?:courier|carrier|driver|postman|delivery\s+(?:partner"
+               r"|driver|team|company)|shipping\s+(?:partner|company)|post(?:al)?\s+(?:service|office))"
+               + _EN_R, re.IGNORECASE),
+    # 到了：you'll / you will / should receive / get it + 时间（in N days 由时限那条认）
+    re.compile(rf"(?:{_EN_L}(?:will|should|shall)|{_APOS}ll)\s+(?:receive|get|have)\s+(?:it|them"
+               r"|your\s+(?:orders?|packages?|parcels?|items?|goods|refund|money))\s+(?:today|tomorrow"
+               r"|tonight|soon|shortly|by|within|on|next|this)" + _EN_R, re.IGNORECASE),
 )
 
 
@@ -300,12 +365,14 @@ def status_spans(text: str) -> list[tuple[int, int, str]]:
 
 def _status_places(text: str) -> list[tuple[int, int, str]]:
     """check_reply 要扫的全部「状态字眼」：STATUS_PATTERNS ∪ 补充模式 ∪ 五个对外字面值
-    ∪ 英文状态说法（p13）。两套规范化各找各的，按原文偏移再合并一次。"""
-    places = _find_places(text or "", STATUS_PATTERNS + SUPPLEMENTARY_STATUS_PATTERNS,
-                          PUBLIC_STATUSES)
+    ∪ p13 的中文补扫 ∪ 英文状态说法（p13）。两套规范化各找各的，按原文偏移再合并一次。"""
+    places = _find_places(text or "", STATUS_PATTERNS + SUPPLEMENTARY_STATUS_PATTERNS
+                          + P13_ZH_STATUS_PATTERNS, PUBLIC_STATUSES)
     english = en_status_spans(text)
     if not english:
-        return places                     # 没有英文状态说法：与 p12 逐字节一致
+        # 没有英文状态说法：与「p12 的扫描 + p13 中文补扫」一致；P13_ZH_STATUS_PATTERNS 也没命中时
+        # 才与 p12 逐字节一致（复核 L1-1：中文付款族等 p13 补扫会让中文正文的结果与 p12 不同）
+        return places
     return _merge_spans(text, [(s, e) for s, e, _ in places + english])
 
 
@@ -443,14 +510,20 @@ def check_observation_wording(draft: ReplyDraft, observations: Mapping[str, Mapp
 
     * 观察 id 不在 ``observations`` 里（含空 id）→ ``dangling_basis``；
     * literal 与 ``ORDER_STATUS_WORDING[lang][该观察的 status]`` 不逐字相等、或该 status /
-      该语种在措辞表里没有对外说法（amended、平台不映射、未知语种）→ ``foreign_literal``。
+      该语种在措辞表里没有对外说法（amended、平台不映射、未知语种）→ ``foreign_literal``；
+    * **一条观察只撑一处**（复核 L3R2-1，p12 契约 §6.4「p13 一并收紧」）：上面两条都过的 claim 按
+      literal 分组，literal 在正文里出现几处，就得有几个**不同**的本轮观察 id 撑着它；出现次数多于
+      不同观察数 → ``foreign_literal``（多出来的那几处说的不是任何一条本轮观察）。「A1001：已发货；
+      A1002：已发货」只查了 A1001、一条 claim 撑两处，第二处就是替没查过的单说状态。
 
     ``kb:`` claim 与没有 claim 的正文不归这条管（前者 check_reply 管，后者 check_reply 的规则 3 管）。
-    纯函数、确定性；违例按 claim 序。
+    纯函数、确定性；逐条的违例按 claim 序，「一条观察只撑一处」的违例排在最后、按 literal 首次出现序。
     """
     table = ORDER_STATUS_WORDING.get(lang) or {}
     rows = observations if isinstance(observations, Mapping) else {}
+    text = draft.text or ""
     violations: list[Violation] = []
+    backers: dict[str, set[str]] = {}          # 过了逐条检查的 literal -> 撑它的不同观察 id
     for idx, claim in enumerate(tuple(draft.claims or ())):
         basis = claim.basis_ref or ""
         if not basis.startswith(BASIS_OBS):
@@ -471,6 +544,15 @@ def check_observation_wording(draft: ReplyDraft, observations: Mapping[str, Mapp
             violations.append(Violation(
                 VIOLATION_FOREIGN_LITERAL,
                 f"claim[{idx}] literal={claim.literal!r} 不是措辞表 {lang!r} 里 {status} 那一句"))
+        else:
+            backers.setdefault(wording, set()).add(ref)
+    for literal, refs in sorted(backers.items(), key=lambda kv: text.find(kv[0])):
+        shown = len(_occurrences(text, literal))
+        if shown > len(refs):
+            violations.append(Violation(
+                VIOLATION_FOREIGN_LITERAL,
+                f"literal={literal!r} 在正文里出现 {shown} 处，只有 {len(refs)} 条不同的本轮观察撑"
+                f"（一条观察只撑一处）"))
     return CheckResult(ok=not violations, violations=tuple(violations))
 
 

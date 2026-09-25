@@ -1,12 +1,16 @@
 """T175 · 措辞校验（p13 契约 §1.4 T175）：check_observation_wording 与 check_reply 的 p13 补扫。
 
 * ``check_observation_wording`` —— obs: claim 的 literal 必须逐字是措辞表里「该观察的状态」那一句；
-  观察不在本轮 → dangling_basis，措辞对不上 / 状态没有对外说法 → foreign_literal；kb: claim 与
-  没有 claim 的正文不归它管。
-* ``check_reply`` 补扫「已付款 / 已支付」与英文状态说法（大小写、词形、零宽、全角都认；否定不豁免），
-  措辞表的中英各句在**有**有效观察撑时放行、没有时拦下。
-* p12 语义不变：没有英文状态说法、也不说「已付款 / 已支付」的正文，结果与关掉 p13 补扫时逐字节相同
-  （p12 的测试文件一个期望都没改，这里再按「关掉补扫」对照一遍）。
+  观察不在本轮 → dangling_basis，措辞对不上 / 状态没有对外说法 → foreign_literal；一条观察只撑一处
+  （同一句出现的次数多于撑它的不同观察 → foreign_literal，复核 L3R2-1）；kb: claim 与没有 claim 的
+  正文不归它管。
+* ``check_reply`` 补扫「已付款 / 已支付」等 p13 中文完成态（复核 L3R2-4 补了已妥投 / 已派件 / 已完成 /
+  已经到了 / 已经退给您 / 已经在派送）与英文状态说法（大小写、词形、零宽、全角都认；否定不豁免；
+  中文「已 + 动词」表的每个动词都有一句英文对应被拦），措辞表的中英各句在**有**有效观察撑时放行、
+  没有时拦下。
+* p12 语义不变的**确切**范围（复核 L1-1）：把 p13 的两组补扫（中文 P13_ZH_STATUS_PATTERNS、英文
+  EN_STATUS_PATTERNS）置空时，结果与 p12 逐字节相同；中文正文**不**全都与 p12 相同 —— 付款族与
+  L3R2-4 那批在空观察下 p12 放行、p13 拦下（这里逐条钉住）。p12 的测试文件一个期望都没改。
 """
 
 from __future__ import annotations
@@ -257,6 +261,22 @@ EN_FABRICATIONS_T175 = (
     "It will reach you tomorrow.",
     "We sent it yesterday.",
     "We've sent your order.",
+    # 复核 L3R2-4：中文「已 + 动词」表的英文对应（复核探针原样）
+    "Your order went out yesterday.",
+    "Your parcel was signed for at the door.",
+    "Someone signed for it this morning.",
+    "The courier picked it up this morning.",
+    "We picked up your parcel today.",
+    "It was collected by the courier.",
+    "The courier has collected it.",
+    "Your order has left our warehouse.",
+    "Your refund request was rejected.",
+    "We compensated you for the delay.",
+    "We will compensate you for the damage.",
+    "We received your payment.",
+    "You've already paid.",
+    "It's with the courier now.",
+    "You'll receive it tomorrow.",
 )
 
 
@@ -282,9 +302,51 @@ def test_english_status_blocked_without_obs_t175(text):
     "Thanks, a colleague will follow up with you.",
     "I have sent your request to a colleague.",
     "A colleague will get back to you shortly.",
+    # 复核 L3R2-4 新模式的对照：政策 / 过渡说法不误拦
+    "Popular items sometimes went out of stock.",
+    "Large items must be signed for on delivery.",
+    "You can pick it up at the store.",
+    "A colleague will have a look shortly.",
+    "Please keep your receipt.",
 ])
 def test_english_policy_text_passes_t175(text):
     assert check_reply(T.ReplyDraft(text=text)).ok, text
+
+
+#: 中文「已 + 动词」表（p12 + p13 两组）的每个动词 → 一句空观察下必须被拦的英文对应（复核 L3R2-4）。
+EN_PARITY_T175 = {
+    "发货": "Your order has shipped.",
+    "发出": "Your order went out yesterday.",
+    "寄出": "We sent it yesterday.",
+    "送达": "It was delivered to your door.",
+    "到货": "Your parcel arrived at the depot.",
+    "签收": "Your parcel was signed for at the door.",
+    "揽收": "The courier picked it up this morning.",
+    "出库": "Your order has left our warehouse.",
+    "取消": "Your order was cancelled.",
+    "驳回": "Your refund request was rejected.",
+    "补偿": "We compensated you for the delay.",
+    "赔偿": "We will compensate you for the damage.",
+    "付款": "We received your payment.",
+    "支付": "Your payment went through.",
+    "妥投": "Your parcel was delivered to the mailbox.",
+    "派件": "It is out for delivery.",
+    "派送": "It's with the courier now.",
+    "完成": "Your order was completed.",
+    "退给您": "We refunded you yesterday.",
+    "到了": "You'll receive it tomorrow.",
+}
+
+
+def test_every_chinese_done_verb_has_a_blocked_english_counterpart_t175():
+    """中英对称（复核 L3R2-4）：「已 + 动词」表里每个动词都有一句英文例句在空观察下被拦；
+    表里加了新动词而这里没配英文，当场红。"""
+    verbs = set(C._ORDER_DONE_VERBS.split("|")) | set(C._ORDER_DONE_VERBS_P13.split("|")) | {"到了"}
+    assert set(EN_PARITY_T175) == verbs, sorted(verbs ^ set(EN_PARITY_T175))
+    for verb, text in EN_PARITY_T175.items():
+        result = check_reply(T.ReplyDraft(text=text))
+        assert _kinds_t175(result) == [T.VIOLATION_UNBACKED_STATUS], (verb, text, result)
+        assert C.en_status_spans(text), (verb, text)          # 是英文补扫拦下的，不是别的规则
 
 
 def test_every_english_pattern_has_a_blocked_example_t175():
@@ -325,15 +387,91 @@ P12_TEXTS_T175 = (
 )
 
 
+def _p12_only_t175(monkeypatch) -> None:
+    """把 p13 的两组补扫置空：剩下的就是 p12 的 check_reply。"""
+    monkeypatch.setattr(C, "EN_STATUS_PATTERNS", ())
+    monkeypatch.setattr(C, "P13_ZH_STATUS_PATTERNS", ())
+
+
 @pytest.mark.parametrize("text", P12_TEXTS_T175)
 def test_p12_results_are_unchanged_by_p13_scans_t175(monkeypatch, text):
-    """关掉 p13 的英文补扫后结果逐字节相同（这些正文不说「已付款 / 已支付」）。"""
+    """p12 口径的正文：p13 两组补扫一处都不命中，置空前后结果逐字节相同。"""
     drafts = (T.ReplyDraft(text=text), _claimed_t175(text, text))
     now = [check_reply(d, observations=frozenset({"o1"})) for d in drafts]
-    monkeypatch.setattr(C, "EN_STATUS_PATTERNS", ())
+    assert C.en_status_spans(text) == []
+    assert not any(p.search(C._norm_only(text)) for p in C.P13_ZH_STATUS_PATTERNS), text
+    _p12_only_t175(monkeypatch)
     before = [check_reply(d, observations=frozenset({"o1"})) for d in drafts]
     assert now == before
-    assert C.en_status_spans(text) == []
+
+
+#: p13 起中文正文与 p12 **不同**的地方（复核 L1-1 把它写明、L3R2-4 又补了一批）：空观察下 p12 放行、p13 拦下。
+P13_ZH_TEXTS_T175 = (
+    "您的订单已付款", "已为您支付", "您的订单已完成支付", "支付成功", "您已经付了",
+    "您的包裹已妥投", "快递已派件", "您的包裹已派送", "您的订单已完成", "您的货已经到了",
+    "钱已经退给您了", "快递小哥已经在派送了", "包裹已经在路上", "已在途中",
+)
+
+
+@pytest.mark.parametrize("text", P13_ZH_TEXTS_T175)
+def test_p13_chinese_scans_differ_from_p12_exactly_here_t175(monkeypatch, text):
+    """中文正文不再逐字节同 p12：这些句子 p13 拦（unbacked_status）、置空 p13 补扫就放行（= p12）。"""
+    result = check_reply(T.ReplyDraft(text=text))
+    assert _kinds_t175(result) == [T.VIOLATION_UNBACKED_STATUS], (text, result)
+    assert C.en_status_spans(text) == []                   # 是中文补扫拦下的
+    _p12_only_t175(monkeypatch)
+    assert check_reply(T.ReplyDraft(text=text)).ok, text
+
+
+@pytest.mark.parametrize("text", [
+    "现在已经到了下班时间，同事明天联系您", "已经到了截止日期的订单请联系人工",
+    "退款会原路退给您", "完成后我们会通知您", "请在订单页完成付款",
+    "派送范围以快递公司为准", "我们会尽快为您安排派送",
+])
+def test_p13_chinese_scans_leave_policy_text_alone_t175(text):
+    assert check_reply(T.ReplyDraft(text=text)).ok, text
+
+
+# ---------------------------------------------------------------- 一条观察只撑一处（复核 L3R2-1）
+def test_one_observation_backs_only_one_occurrence_t175():
+    """复核原样：只查了 A1001（o1 = shipped），正文替 A1002 也说了同一句 —— check_reply 放行
+    （p12 口径：一条 obs claim 撑住 literal 的每一处），第二道出门校验拦下。"""
+    s = P.ORDER_STATUS_WORDING[P.LANG_ZH]["shipped"]
+    text = f"A1001：{s}；A1002：{s}"
+    rows = {"o1": _obs_row_t175("shipped")}
+    draft = _claimed_t175(text, s)
+    assert check_reply(draft, observations=frozenset({"o1"})).ok          # p12 口径不动
+    result = check_observation_wording(draft, rows, lang=P.LANG_ZH)
+    assert _kinds_t175(result) == [T.VIOLATION_FOREIGN_LITERAL], result
+    assert "2 处" in result.violations[0].detail and "1 条" in result.violations[0].detail
+    # 两条 claim 挂同一条观察也不行：要的是**不同**的观察
+    twice = T.ReplyDraft(text=text, claims=(T.Claim(s, "obs:o1"), T.Claim(s, "obs:o1")))
+    assert _kinds_t175(check_observation_wording(twice, rows, lang=P.LANG_ZH)) == [
+        T.VIOLATION_FOREIGN_LITERAL]
+    # 两单都查了（两条不同的本轮观察）才放行
+    rows2 = {**rows, "o2": _obs_row_t175("shipped", observation_id="o2", query_key="A1002")}
+    both = T.ReplyDraft(text=text, claims=(T.Claim(s, "obs:o1"), T.Claim(s, "obs:o2")))
+    assert check_observation_wording(both, rows2, lang=P.LANG_ZH).ok
+    assert check_reply(both, observations=frozenset(rows2)).ok
+
+
+@pytest.mark.parametrize("lang", P.LANGS)
+def test_one_observation_rule_counts_per_sentence_t175(lang):
+    """按句分组计：两句不同状态各挂各的观察放行；同一句三处、两条观察 → 仍差一条。"""
+    w = P.ORDER_STATUS_WORDING[lang]
+    rows = {"o1": _obs_row_t175("paid"),
+            "o2": _obs_row_t175("cancelled", observation_id="o2", query_key="A1002"),
+            "o3": _obs_row_t175("cancelled", observation_id="o3", query_key="A1003")}
+    mixed = T.ReplyDraft(text=w["paid"] + " " + w["cancelled"],
+                         claims=(T.Claim(w["paid"], "obs:o1"), T.Claim(w["cancelled"], "obs:o2")))
+    assert check_observation_wording(mixed, rows, lang=lang).ok
+    three = T.ReplyDraft(text=" ".join([w["cancelled"]] * 3),
+                         claims=(T.Claim(w["cancelled"], "obs:o2"), T.Claim(w["cancelled"], "obs:o3")))
+    result = check_observation_wording(three, rows, lang=lang)
+    assert _kinds_t175(result) == [T.VIOLATION_FOREIGN_LITERAL] and "3 处" in result.violations[0].detail
+    # literal 不在正文里：一处都没说，不归这条管（check_reply 规则 1 管）
+    absent = T.ReplyDraft(text="好的", claims=(T.Claim(w["paid"], "obs:o1"),))
+    assert check_observation_wording(absent, rows, lang=lang).ok
 
 
 def test_status_spans_still_follow_frozen_patterns_only_t175():

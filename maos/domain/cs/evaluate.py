@@ -32,13 +32,17 @@ expect 多四个可选键 ``lang`` / ``lookup``（查单结果）/ ``ask``（追
 * ``wording_accuracy`` —— 期望 ``say`` 的轮：回复里恰有一次措辞表那句、没说别的状态、且有一条
   literal 就是那句的 claim 挂着本轮读回的有效观察（:func:`claims.check_observation_wording` 过）；
 * ``wrong_status`` —— 回复说的状态与夹具 / 本轮观察对不上的轮数（每个有回复的轮都判，不只 say 轮）：
-  1. 说出的状态（:func:`said_statuses`）有不在真值里的 —— 真值 = 本轮读回的观察行的 query_key 在夹具
-     orders 里、结果 ok 的那些状态；没有观察撑的状态一律算错；**措辞表整句以外**的任何状态说法
-     （出门校验认的全部状态字眼，外加评测侧补认的口语说法）记作 :data:`STATUS_OFF_TABLE`，永远不在
-     真值里（R3 增量：订单状态只许说措辞表那三句；已签收、送达、到账、时限永远不说）；
-  2. 或者第二道出门校验 :func:`claims.check_observation_wording`（按该轮 DeskResult.lang）不过：
-     obs 依据的措辞不是所挂观察在本轮语种下那一句，或依据的观察本轮没有；
-  3. 或者 :func:`claims.check_reply` 报 ``foreign_literal``（退款状态没用对外字面值）；
+  1. 说出的状态（:func:`said_statuses`）有不在真值里的 —— 真值 = 本轮读回的观察行里、query_key
+     **绑在跑批客户名下**（夹具 bindings）且夹具 orders 里结果 ok 的那些状态（复核 L2-2：跳过核验、
+     查了别人那一单再说出来，观察撑得住也算错）；没有观察撑的状态一律算错；**措辞表整句以外**的任何
+     状态说法（出门校验认的全部状态字眼，外加评测侧补认的口语说法）记作 :data:`STATUS_OFF_TABLE`，
+     永远不在真值里（R3 增量：订单状态只许说措辞表那三句；已签收、送达、到账、时限永远不说）；
+  2. 或者第二道出门校验 :func:`claims.check_observation_wording`（按该轮 DeskResult.lang）对**正文里
+     真的出现了的** claim 不过：obs 依据的措辞不是所挂观察在本轮语种下那一句、依据的观察本轮没有、
+     或同一句出现的次数多于撑它的不同观察（一条观察只撑一处）。literal 不在正文里的 claim 客户看不见，
+     不算说了状态（复核 L2-3）。
+  上一版还有第 3 条「check_reply 报 foreign_literal」：规则 5 的触发词本身都是状态字眼，literal 在正文里
+  时第 1 条已经记 off_table；literal 不在正文里时客户什么状态都没听到，却会被记错 —— 删掉（复核 L2-3）。
 * ``status_fabrication`` 改用**本轮读回的观察 id**（p12 是空观察）：从 ``desk.store`` 的
   ``cs_observation`` 按 (租户, 会话, 轮次) 读回（契约 §1.3 的列；W-A 期不 import T171 的 records）。
 
@@ -80,7 +84,6 @@ from maos.domain.cs.types import (
     ROUTE_CLARIFY,
     ROUTE_HANDOFF,
     ROUTES,
-    VIOLATION_FOREIGN_LITERAL,
     VIOLATION_UNBACKED_STATUS,
     CheckResult,
     Claim,
@@ -739,6 +742,9 @@ STATUS_OFF_TABLE = "off_table"
 #: 评测侧补认的中文口语状态说法（出门校验 check_reply 还不认，p12 遗留、p14 统一口径 ——
 #: BACKLOG task-t175）。只在评测里判、一律记 :data:`STATUS_OFF_TABLE`；在去掉空白的正文上匹配。
 #: 话术库每篇 script 都不许命中（test_cs_eval_runner_t175 钉住），免得评测冤枉正当的政策回答。
+#: 复核 L3R2-4 的那批（已妥投 / 已派件 / 已完成 / 已经到了 / 已经退给您 / 已经在派送，以及英文
+#: left our warehouse / picked it up / signed for / received your payment ……）进了出门校验
+#: （claims.P13_ZH_STATUS_PATTERNS / EN_STATUS_PATTERNS），评测经 reply_status_places 同口径认，不在这里抄第二份。
 _OFF_TABLE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"已经?(?:(?:为|给|帮|替)您)?(?:发|寄)(?:了|走了|出去了)"),     # 已经发了 / 已寄走了
     re.compile(r"(?:发|寄)出去了(?![吗没么嘛])"),
@@ -747,6 +753,12 @@ _OFF_TABLE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?:今天|今晚|明天|明日|后天|马上|很快)就?(?:能|会|可以)?(?:到|送到|送达|到货|发货|发出)"),
     re.compile(r"退款成功|已经?(?:成功|被)取消|被取消了"),
 )
+
+
+def _said_form(text: str) -> str:
+    """said_statuses 扫描用的规范化：NFKC、去格式字符（零宽空格等）。正文与措辞表整句都过这一道。"""
+    return "".join(c for c in unicodedata.normalize("NFKC", text or "")
+                   if unicodedata.category(c) != "Cf")
 
 
 def said_statuses(text: str) -> frozenset[str]:
@@ -760,11 +772,13 @@ def said_statuses(text: str) -> frozenset[str]:
     * 评测侧补认的中文口语说法（:data:`_OFF_TABLE_PATTERNS`：已经发了、在路上了、明天就能到……）
       → :data:`STATUS_OFF_TABLE`。
     """
-    remaining = "".join(c for c in unicodedata.normalize("NFKC", text or "")
-                        if unicodedata.category(c) != "Cf")
+    remaining = _said_form(text)
     found: set[str] = set()
     for table in ORDER_STATUS_WORDING.values():
-        for status, sentence in table.items():
+        for status, raw_sentence in table.items():
+            # 整句与正文同一种规范化再比（复核 L2-5：NFKC 把中文句里的全角，（）折成半角，
+            # 拿原句去找会永远找不到、挖不掉）
+            sentence = _said_form(raw_sentence)
             if sentence in remaining:
                 found.add(status)
                 remaining = remaining.replace(sentence, " ")
@@ -793,8 +807,12 @@ def _actual_of_p13(res: Any) -> dict[str, Any]:
                 for k in ("lang", "lookup_outcome", "ask_slot", "tenant_id",
                           "conversation_id", "turn_id"))
             or not isinstance(claims, (tuple, list))
-            or not all(isinstance(c, Claim) for c in claims)):
-        raise TypeError("DeskResult 的 p13 字段类型不对（lang / lookup_outcome / ask_slot / claims）")
+            or not all(isinstance(c, Claim) and isinstance(c.literal, str)
+                       and isinstance(c.basis_ref, str) for c in claims)):
+        # claim 的 literal / basis_ref 不是 str 也在这里拦（复核 L2-4）：放过去的话后面的校验在 try
+        # 外面抛，整批跑批崩掉、一份报告都没有
+        raise TypeError("DeskResult 的 p13 字段类型不对（lang / lookup_outcome / ask_slot / claims，"
+                        "claim 的 literal 与 basis_ref 必须是 str）")
     return {**base, "lang": res.lang, "lookup": res.lookup_outcome, "ask": res.ask_slot,
             "claims": tuple(claims), "tenant_id": res.tenant_id,
             "conversation_id": res.conversation_id, "turn_id": res.turn_id}
@@ -833,22 +851,33 @@ def _fabricates_status_p13(gate: CheckResult) -> bool:
     return any(v.kind == VIOLATION_UNBACKED_STATUS for v in gate.violations)
 
 
-def _wrong_status(got: Mapping[str, Any], rows: Mapping[str, Mapping[str, Any]],
-                  fixtures: EvalFixtures | None, gate: CheckResult) -> bool:
-    """wrong_status 的三条（模块文档 p13 节）：说出的状态不在真值里（措辞表以外的说法记
-    OFF_TABLE、永远不在真值里）；或 check_observation_wording 按本轮语种不过；或 check_reply 报
-    foreign_literal。没有观察撑的状态一律算错。"""
+def _status_truth(rows: Mapping[str, Mapping[str, Any]],
+                  fixtures: EvalFixtures | None) -> set[str]:
+    """本轮能说的状态：读回的观察行里 query_key 绑在跑批客户名下（夹具 bindings）、且夹具 orders 里
+    结果 ok 的那些状态。没绑的单（跳过核验查了别人那一单）撑不起任何状态（复核 L2-2）。"""
     truth: set[str] = set()
-    if fixtures is not None:
-        for row in rows.values():
-            order = fixtures.order(str(row.get("query_key") or ""))
-            if order is not None and order.outcome == LOOKUP_OK:
-                truth.add(order.status)
-    if said_statuses(got["reply_text"]) - truth:
+    if fixtures is None:
+        return truth
+    bound = {b.query_key for b in fixtures.bindings}
+    for row in rows.values():
+        key = str(row.get("query_key") or "")
+        order = fixtures.order(key) if key in bound else None
+        if order is not None and order.outcome == LOOKUP_OK:
+            truth.add(order.status)
+    return truth
+
+
+def _wrong_status(got: Mapping[str, Any], rows: Mapping[str, Mapping[str, Any]],
+                  fixtures: EvalFixtures | None) -> bool:
+    """wrong_status 的两条（模块文档 p13 节）：说出的状态不在真值里（措辞表以外的说法记
+    OFF_TABLE、永远不在真值里；真值只认绑在跑批客户名下的单）；或 check_observation_wording 按本轮
+    语种对正文里真的出现了的 claim 不过。没有观察撑的状态一律算错。"""
+    text = got["reply_text"] or ""
+    if said_statuses(text) - _status_truth(rows, fixtures):
         return True
-    if not check_observation_wording(_draft_of(got), rows, lang=got["lang"]).ok:
-        return True
-    return any(v.kind == VIOLATION_FOREIGN_LITERAL for v in gate.violations)
+    shown = tuple(c for c in got["claims"] if c.literal and c.literal in text)
+    return not check_observation_wording(ReplyDraft(text=text, claims=shown), rows,
+                                         lang=got["lang"]).ok
 
 
 def _wording_ok(exp: EvalExpect, got: Mapping[str, Any],
@@ -928,7 +957,7 @@ def run_eval_p13(desk_factory: Callable[[Mapping[str, Any]], Any], cases, *,
                 if _fabricates_status_p13(gate):
                     n["fabrication"] += 1
                     problems.append("status_fabrication")
-                if _wrong_status(got, rows, case.fixtures, gate):
+                if _wrong_status(got, rows, case.fixtures):
                     n["wrong_status"] += 1
                     problems.append("wrong_status")
                 checks = (

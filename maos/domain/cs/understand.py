@@ -248,12 +248,17 @@ _TAIL_DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])\d{3,6}(?![0-9A-Za-z])")
 #: 不当单号（紧挨单号字眼的除外）。
 _YMD_RE = re.compile(r"^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$")
 #: p15 T185（C8）：纯数字后面紧跟单位 → 金额 / 数量 / 日期 / 门牌楼层，不是单号。
+#: 复核 L2-1：单位字常常也是普通词的第一个字（包裹、平台、天猫、米家、点了、条码、月底、周末、台灯、
+#: 「XXX号订单」），这些词排除在外 —— 单位只认单位本身。
 _DIGIT_UNIT_AFTER_RE = re.compile(
-    r"\s*(?:元|块|毛|角|rmb|yuan|dollars?|usd|件|个|台|只|双|套|箱|包|瓶|盒|条|张|份|斤|克|千克|公斤|kg"
-    r"|毫升|ml|米|公里|km|平|室|房|楼|层|栋|幢|座|单元|号(?!码)|年|月|日|天|点|分钟|小时|周"
+    r"\s*(?:元|块|毛|角|rmb|yuan|dollars?|usd|件|个|台(?![灯式面历风湾州])|只|双|套|箱|包(?![裹邮装])"
+    r"|瓶|盒|条(?!码|形码)|张|份|斤|克|千克|公斤|kg"
+    r"|毫升|ml|米(?![家色白])|公里|km|平(?![台板时安])|室|房(?![东子])|楼(?![下上道梯])|层(?!层)"
+    r"|栋|幢|座|单元|号(?!码|订?单)|年(?![货])|月(?![底初中末])|日(?![期志])|天(?![猫])"
+    r"|点(?![了击开进错])|分钟|小时|周(?![末边一二三四五六日天])"
     r"|pcs|pieces|units|items)(?![a-z])")
-#: 字母开头的串后面紧跟门牌 / 楼层单位（「B1203室」）→ 房号，不是单号。
-_ALNUM_UNIT_AFTER_RE = re.compile(r"\s*(?:室|房|楼|层|栋|幢|单元)")
+#: 字母开头的串后面紧跟门牌 / 楼层单位（「B1203室」）→ 房号，不是单号（同上，楼下 / 房东一类普通词除外）。
+_ALNUM_UNIT_AFTER_RE = re.compile(r"\s*(?:室|房(?![东子])|楼(?![下上道梯])|层(?!层)|栋|幢|单元)")
 #: 纯数字前面紧挨货币记号 / 金额字眼（「¥12345678」「金额 199」）→ 金额。
 _MONEY_BEFORE_RE = re.compile(r"(?:[¥$]|rmb|人民币|金额|价格|价钱|花了|付了|退了|扣了)\s*$")
 #: 候选串前面的上下文字眼（复核 L2-6 / L3-4）：**离候选串最近的那一个**说了算 ——
@@ -304,6 +309,11 @@ _CLAUSE_START_RE = re.compile(r"(?:^|[，,。.!！?？;；~～:：])\s*$")
 _DEFECT_AFTER_RE = re.compile(
     r"\s*(?:的)?(?:屏幕|外壳|壳子?|包装|盒子)?(?:坏|碎|裂|破|烂|断|不亮|不响|没声|没反应|开不了机|开不机|充不进|充不上"
     r"|用不了|不能用|有问题|出问题|有瑕疵|划痕|发错|错发|少发|漏发|质量)")
+#: 品类名词后面紧跟物流状态（复核 L3-1：只给「隔着空白」那一路用）。
+_LOGISTICS_AFTER_RE = re.compile(
+    r"\s*(?:的)?(?:怎么|咋)?(?:还|一直|到现在)?(?:没|未|不)?(?:有)?(?:发货|发出|到哪|到了没|物流|快递|签收|派送|揽收)")
+#: 分句里说商品的引语：有它就是在说买的东西是什么型号，不是报单号。
+_BUYER_PREAMBLE_RE = re.compile(r"买的|买了|我的|请问|想问|问下|问一下|咨询|这款|那款|同款")
 
 
 def _is_phone_shaped(token: str) -> bool:
@@ -380,10 +390,21 @@ def _is_model_number(text: str, token: str, start: int, end: int) -> bool:
     # p15 T185（C6）：品类名词跟单号之间隔着空白（「XX1234 耳机坏了」）是在报单号、再说这单买的东西；
     # 型号是跟品类名词写成一个词的（「RTX4090显卡」）。写成一个词、但串在分句开头、品类名词后面
     # 紧跟着坏了 / 碎了一类问题（「XX1234耳机坏了」）也是在报单号 —— 说型号的人会先说「我买的」。
+    # 复核 L3-1：「隔着空白」本身不够（「我买的 GTX1660 显卡能七天无理由退吗」是在问政策、说型号）。
+    # 隔着空白时，还要品类名词后面紧跟问题（坏了 / 碎了）或物流状态（还没发货 / 到哪了），且这一分句里
+    # 前面没有「我买的 / 请问 / 想问」一类说商品的引语。
+    after = end + len(follower.group(0))
     if follower.group(0)[:1].isspace():
-        return False
-    return not (_CLAUSE_START_RE.search(text[:start])
-                and _DEFECT_AFTER_RE.match(text, end + len(follower.group(0))))
+        return not ((_DEFECT_AFTER_RE.match(text, after) or _LOGISTICS_AFTER_RE.match(text, after))
+                    and not _BUYER_PREAMBLE_RE.search(_clause_before(text, start)))
+    return not (_CLAUSE_START_RE.search(text[:start]) and _DEFECT_AFTER_RE.match(text, after))
+
+
+def _clause_before(text: str, start: int) -> str:
+    """候选串所在分句里、它前面的那一段。"""
+    head = text[:start]
+    cut = max(head.rfind(p) for p in "，,。.!！?？;；~～")
+    return head[cut + 1:]
 
 
 def _order_candidates(text: str) -> list[tuple[int, int, str]]:
@@ -421,7 +442,10 @@ def _order_candidates(text: str) -> list[tuple[int, int, str]]:
             found.append((m.start(), m.end(), tok))
     for m in _DIGITS_RE.finditer(text):
         tok = m.group(0)
-        if _is_phone_shaped(tok) or not free(m.start()) or _not_an_order_number(text, m.start(), m.end()):
+        # 复核 L2-1：紧挨单号字眼的长串不做「后面跟单位」判定（「订单号 88120937 包裹没到」），尾号 / 金额照判。
+        if (_is_phone_shaped(tok) or not free(m.start())
+                or _not_an_order_number(text, m.start(), m.end(),
+                                        units=not _adjacent_order_word(text, m.start(), m.end()))):
             continue
         context = _context_before(text, m.start())
         if context == "other":
@@ -438,7 +462,12 @@ def _order_candidates(text: str) -> list[tuple[int, int, str]]:
             continue
         if _context_before(text, m.start()) == "other" or _is_model_number(text, tok, m.start(), m.end()):
             continue
-        if _ALNUM_UNIT_AFTER_RE.match(text, m.end()):
+        adjacent = _adjacent_order_word(text, m.start(), m.end())
+        # 复核 L2-4：前面紧挨「#」的串（色号 #FF5733、话题标签）只在紧挨单号字眼时认。
+        if m.start() > 0 and text[m.start() - 1] == "#" and not adjacent:
+            continue
+        # 复核 L2-3：紧挨单号字眼的不做房号判定（「订单号A1001楼下签收的」）。
+        if not adjacent and _ALNUM_UNIT_AFTER_RE.match(text, m.end()):
             continue
         found.append((m.start(), m.end(), tok))
     for m in _HASH_RE.finditer(text):
@@ -463,12 +492,12 @@ def _tail_word_before(text: str, start: int) -> bool:
     return bool(_TAIL_WORD_RE.search(text[max(0, start - 2 * _CONTEXT_WINDOW):start].lower()))
 
 
-def _not_an_order_number(text: str, start: int, end: int) -> bool:
+def _not_an_order_number(text: str, start: int, end: int, *, units: bool = True) -> bool:
     """纯数字串的 C8 反例（p15 T185）：尾号、金额（前面是货币记号 / 金额字眼）、后面紧跟单位
-    （金额 / 数量 / 日期 / 门牌楼层）。"""
+    （金额 / 数量 / 日期 / 门牌楼层；``units=False`` 时不看这一项）。"""
     before = text[max(0, start - _CONTEXT_WINDOW):start].lower()
     return bool(_tail_word_before(text, start) or _MONEY_BEFORE_RE.search(before)
-                or _DIGIT_UNIT_AFTER_RE.match(text[end:].lower()))
+                or (units and _DIGIT_UNIT_AFTER_RE.match(text[end:].lower())))
 
 
 def extract_order_no(text: str) -> str:

@@ -465,7 +465,8 @@ def test_roundtable_package_does_not_import_hiclaw() -> None:
     它能在没有任何服务在跑的情况下被测。
     """
     sources = sorted(ROUNDTABLE_DIR.glob("*.py"))
-    assert len(sources) == 5, f"意料之外的文件：{[p.name for p in sources]}"
+    # p14 · T178 加了 cs_conference.py（客服圆桌会诊卡，同样不碰房间层），整合期把 5 改 6。
+    assert len(sources) == 6, f"意料之外的文件：{[p.name for p in sources]}"
     for path in sources:
         text = path.read_text(encoding="utf-8")
         for banned in ("hiclaw", "ap_room", "matrix_bus", "import nio"):

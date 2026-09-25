@@ -3564,3 +3564,24 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | p14 留出集 CS14H-060 第 1 轮的问候含 p12 触发词地板里的说法（盲写者看不到触发词表），前台照契约转人工、其后三轮 silent —— 期望与 R1 地板冲突 | 留出集文件**不改**；账里记明这 4 轮是契约冲突，扣掉它们 route 为 84/96 ≈ 0.875 | 预登记之后改题等于改门槛；同类冲突 p13 在开发集上是改句，留出集不改 |
 | 2026-09-25 | p14 | T176 开着的：契约 §5 的整合命令 `verify.py --cs --db X` 里其余十项也读 X，整条命令退出码非 0 | 不加「只跑 cs」的开关；整合期只看 cs/claim-basis 那一行：`cs_eval.py --set dev13 --db X` 退 0，随后 verify 报 `[PASS] cs/claim-basis 142/142` | 加开关是新 CLI 面，收益只在整合期这一条命令 |
 | 2026-09-25 | p14 | T177 开着的：dev12 因 KNOWN_GAPS 那一轮（CS12-044#1，门槛 1.0）退 1，`--set all` 因此恒退 1；ERROR 归 1 | 维持 T177 的口径（不是全部 meets 就退 1），不改契约 | 退出码如实反映「有集没达标」；已知缺口由 test_cs_eval_p12_t169 的 KNOWN_GAPS 钉住 |
+
+## task-t178（复杂投诉圆桌会诊卡，2026-09-25）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-25 | p14 | 契约要求 convene 永不抛，「降级卡」与「返回 None 只记日志」二选一 | 选降级卡：四座各自 try，读库失败的那一座给 flags=(seat_error,)、摘要只写异常类名，其余座照出；决策表见 seat_error 即 manual_lookup（赔偿 / 曝光优先）；落 event_log 失败只记日志、卡照样返回；会话或轮次 id 为空时不落 event_log | 签名返回 ConferenceCard，降级卡不改签名；人工在房间里仍能看到「哪一座没读全」，比静默少一张卡可追 |
+| 2026-09-25 | p14 | 契约只说「recommendation 由纯函数决策表从 flags 得出」，没给表 | maos/roundtable/cs_conference.py 的 recommend_from_flags，自上而下第一条命中：赔偿 / 曝光 → supervisor_review；seat_error → manual_lookup；当前报的单号没过身份核验 → verify_identity；退款桥 ok 且有命令 → send_refund_command（复核 L3-2：核验压过退款命令，选「调换两条顺序」不选「按单号匹配退款桥」—— 退款桥可能是旧单的，未核验前不据此发命令，且改一行即可逆）；查单失败 / 状态不映射 / 预检未通过 → manual_lookup；情绪激烈 / 情绪槽 angry / 本轮前紧挨着兜底 → callback_soothe；其余 standard_followup。flags 枚举见同文件 SEAT_FLAGS | 金额与外部升级只有主管能定，放最前；事实不全时不建议任何动作；测试逐格钉每条规则与相邻优先级 |
+| 2026-09-25 | p14 | risk 座的「赔偿 / 曝光类说法」从哪来 | 赔偿：原因 = compensation、或任一轮 intent = compensation、或客户原文含本模块 COMPENSATION_WORDS；曝光：客户原文含本模块 EXPOSURE_WORDS（NFKC + 小写，标点 / 符号 / 空白先一律换成空格再按子串认；英文词两侧带空格即整词匹配，「sue!」「court.」也认得 —— 复核 L2-4 改）。只出 flag 与 turn:<id> 引用，原文不出模块；不 import triggers | triggers.detect 只回最高优先级一个原因，投诉里夹着的「12315 / 曝光」会被压掉；本文件在守卫范围外，词表只影响内部 flag，不影响客户路由 |
+| 2026-09-25 | p14 | order 座何时算「没过身份核验」（复核 L2-3 改为按单号认） | 会话有 order_no 槽位，且本轮及之前找不到这样一轮：cs_turn_ext.lookup_outcome 非空、并且它是最后写 order_no 槽位的那一轮（cs_slot.turn_id）或它的客户原文里整号出现了当前单号（NFKC + 小写比；复核 L2-1 起按整号认：两侧不许紧挨字母或数字，查过 123456 不算 12345 核验过，紧挨汉字照认）→ order_unverified；与「未查单」可并存也可单独出现（先 A 查过、后改报 B 没过核验 → B 未核验） | 查单只在绑定通过后才发生，lookup_outcome 非空即那一单核验过；按会话认会让 A 的核验替 B 背书；只用库里的事实推，不再调核验端口（零工具） |
+| 2026-09-25 | p14 | 查单失败必转人工，会诊轮在正常路径里见不到 lookup_failed | manual_lookup 的端到端用例借「人工把会话交还机器人」（change_stage handed_off → active，STAGE_FLOW 合法）后客户再投诉来造；决策表单测另钉 | 不为造数据改前台；交还是真实运营动作 |
+| 2026-09-25 | p14 | convene 的 now 参数放哪 | 不进 detail（契约列里没有时间键）；event_log.created_at 由 store 自己盖；router 传 card.created_at，空就用 UTC 现时 | detail 键集照契约逐字 |
+| 2026-09-25 | p14 | 读库时要不要 objects.ensure_schema | 不调：那会写 DDL，契约是「不写 cs_ 表」；表不在 → 该座降级 | 会诊总在前台落完一轮之后才开，表一定在 |
+| 2026-09-25 | p14 | router 的会诊投递函数先判什么 | _cs_conference 先按 types.CONFERENCE_REASONS 判原因，不在集合就 return，连 maos.roundtable 都不 import；再 should_convene；会诊卡投递结果只进日志（无投递状态列，p14 不新增表） | 原因不在集合时 router 行为逐字节不变；cs=None 时 _cs_turn 本来就不进 |
+| 2026-09-25 | p14 | 会诊卡文本里带不带槽位值与采纳命令 | intake 摘要带槽位值（含订单号），policy 摘要原样带 command_line；只进对内渲染文本，不进 event_log detail（测试用哨兵钉） | 契约「有 command_line 就原样带上」；转人工卡片本就带槽位，同一个内部房间 |
+| 2026-09-25 | p14 | policy 座「最近的一行退款桥」怎么排（复核 L2-5） | 按所属轮次在会话里的先后排，同轮再按 created_at；取最后一行 | 前台同一时钟下多行 created_at 会并列，按 created_at 排序不确定 |
+| 2026-09-25 | p14 | cs_turn.draft_json 的 citations 不是列表（复核 L2-2 补测时发现字符串会被逐字符拆成引用） | 不是 list / tuple 一律当没引用；列表里只收非空字符串；JSON 坏了也当没引用，不降级成 seat_error | 坏草稿只影响「引用过话术」这一条事实，不该让整座失明 |
+| 2026-09-25 | p14 | 复核 L3-1：会诊文本里 policy 座原样带 command_line，其中含 query_key | 照契约 §2 T178「有 command_line 就原样带上」不改；只进对内渲染文本，event_log detail 与日志不带（哨兵钉住）；契约与复核口径的取舍记 BACKLOG 交主会话定 | 同一内部房间的转人工卡片本就带内部单号与采纳命令；改掉即偏离冻结契约 |
+| 2026-09-25 | p14 | 复核 L1-1：全量除 8 条预期红外还有 2 条白名单外钉子红（roundtable 文件数 5、t174 退款桥房间消息数） | 修复轮仍不提交、不改白名单外文件；工作树留在 task-t178 待主会话授权改这两处钉子 | 铁律 5「验收全绿才许 commit」+ 白名单外文件必须停手问；两处都是契约要求的必然结果，不是实现错 |
+| 2026-09-25 | p14 | 复核 L2-3：risk 座数 CsReplyRejected 不按轮次过滤，与其余三座「只算本轮及之前」口径不一 | risk 座也只数 task_id 属于本轮及之前的行；不删 docstring 的承诺，改为补一条「会诊非最新一轮」的测试钉四座口径 | router 永远在最新一轮开会，行为不变；统一口径后回放 / 并发写时四座读到的是同一段历史 |
+| 2026-09-25 | p14 | L1-1：契约 §4 没给 T178 改钉子的权，两处钉子因契约要求必然变红（roundtable 包文件数 5、refund_request 一轮内部房间只收一条） | 主会话在本分支亲手改两处钉子：文件数 5 → 6；那条 router 测试改钉「转人工卡片 → 会诊卡（【圆桌会诊】开头）→ 客户回话」三条 | 契约白名单的疏漏在主会话，不在实现者；钉子只改数与顺序，不放宽判据 |
+| 2026-09-25 | p14 | L3-1：policy 座把退款桥的 command_line 原样带进会诊卡正文，其中的单号是 query_key | 允许：会诊卡与转人工卡片一样只投内部房间，p13 的转人工卡片已经带「采纳命令 / 内部单号」两行；event_log 的 CsConferenceHeld.detail 不带 command_line 与 summary（契约 §2） | 内部同事要以自己的名义发这行命令；外部面（MCP、客户回话、审计行）一律不带 |

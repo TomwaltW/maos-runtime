@@ -3576,3 +3576,4 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-25 | p14 | 库读不到（路径不存在 / 不是 sqlite 文件）怎么退 | 退 2，stderr 只报异常类名；mode=ro 不会凭空建库 | 契约只规定没有 cs_ 表退 0；路径打错是用法问题，照 replay_roundtable 的先例归到非零 |
 | 2026-09-25 | p14 | 从库里读出来会原样进输出的值（意图、违例种类、recommendation、doc_id）要不要过白名单 | 一律过白名单：枚举不在冻结集合里的归 other，doc_id 不合 kb- 形状的归 other；recommendation 的六个值抄 p14 契约 §2 的字面量，不 import maos/roundtable/cs_conference.py | intent 列没有 CHECK、event_log detail 是自由 JSON，库被写坏时原样输出就会漏原文；T178 与本轨并行，模块还不存在 |
 | 2026-09-25 | p14 | 测试怎么造库 | 进程内用 FrontDesk + evaluate.fixture_ports 把 p13 开发集整批跑进临时库（与 cs_eval.py --set dev13 --db 同口径），再用真前台跑一段哨兵会话与一个第二租户，最后用 SQL 把哨兵塞满原文 / 标识列；拦截用 conversation.record_reply_rejected 落、会诊卡按契约的 detail 形状直接落 event_log | 不依赖 T177 的 CLI 实现细节；dev13 本身不产生拦截与会诊卡（T178 并行），只能自己落 |
+| 2026-09-25 | p14 | 复核 L2-2：draft_json.citations 里有 dict 等不可哈希元素时 set() 抛 TypeError、退 1 | 先把每个元素映射成 doc_id（认不出的归 other）再按轮去重；同一轮里多个认不出的引用只给 other 记一次 | 退出码约定只有 0 / 2，库被写坏也要照常出统计；按轮去重与原口径一致（一轮引用同一文档只算一次） |

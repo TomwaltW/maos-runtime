@@ -224,8 +224,9 @@ def collect(conn: sqlite3.Connection, *, tenant: str | None = None, since: str |
             except ValueError:
                 draft = {}
             cites = draft.get("citations") if isinstance(draft, dict) else None
-            for c in set(cites if isinstance(cites, list) else ()):
-                scripts[_doc_id(c)] += 1
+            # 先映射成 doc_id（字符串）再去重：元素可能是 dict 等不可哈希的值（库被写坏）
+            for doc in {_doc_id(c) for c in (cites if isinstance(cites, list) else ())}:
+                scripts[doc] += 1
     out["intents_top"] = _top(intents, top)
     out["scripts_top"] = _top(scripts, top)
     answered = out["answered_turns"]

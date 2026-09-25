@@ -424,6 +424,63 @@ def test_since_filter_t180(cli_t180, capsys, db_t180):
     assert code == 2 and "--since" in err
 
 
+def test_since_filter_applies_to_event_log_rows_t180(cli_t180, capsys, db_t180):
+    """--since 也截 event_log 行：窗口外的拦截 / 会诊卡不计（复核 L2-1）。"""
+    conv, turn = _sql_t180(db_t180, "SELECT conversation_id, turn_id FROM cs_turn"
+                                    " ORDER BY turn_id LIMIT 1")[0]
+    old, new = "2020-01-01T00:00:00+00:00", "2030-06-01T00:00:00+00:00"
+    ins = ("INSERT INTO event_log (event_id, trace_id, plan_id, task_id, event_type, detail,"
+           " created_at) VALUES ('', '', ?, ?, ?, ?, ?)")
+    _exec_t180(
+        db_t180,
+        (ins, (plan_id_for(conv), turn, "CsReplyRejected",
+               json.dumps({"violation_kinds": ["unbacked_status"]}), old)),
+        (ins, (plan_id_for(conv), turn, "CsReplyRejected",
+               json.dumps({"violation_kinds": ["uncited_rule"]}), new)),
+        (ins, (plan_id_for(conv), turn, "CsConferenceHeld",
+               json.dumps({"recommendation": "callback_soothe"}), old)),
+        (ins, (plan_id_for(conv), turn, "CsConferenceHeld",
+               json.dumps({"recommendation": "manual_lookup"}), new)),
+    )
+    since = "2021-01-01T00:00:00Z"
+    everything = _json_t180(cli_t180, capsys, db_t180)
+    st = _json_t180(cli_t180, capsys, db_t180, "--since", since)
+    for ev, key in (("CsReplyRejected", "rejections"), ("CsConferenceHeld", "conferences")):
+        in_window = _sql_t180(db_t180, "SELECT COUNT(*) FROM event_log WHERE event_type = ?"
+                                       " AND created_at >= '2021-01-01'", (ev,))[0][0]
+        total = _sql_t180(db_t180, "SELECT COUNT(*) FROM event_log WHERE event_type = ?",
+                          (ev,))[0][0]
+        assert st[key]["total"] == in_window
+        assert everything[key]["total"] == total
+        assert everything[key]["total"] - st[key]["total"] == 1
+    assert st["rejections"]["by_kind"].get("unbacked_status", 0) == \
+        everything["rejections"]["by_kind"]["unbacked_status"] - 1
+    assert st["rejections"]["by_kind"]["uncited_rule"] >= 1
+    assert st["conferences"]["by_recommendation"].get("callback_soothe", 0) == \
+        everything["conferences"]["by_recommendation"]["callback_soothe"] - 1
+    assert st["conferences"]["by_recommendation"]["manual_lookup"] >= 1
+    # 未来窗口：一条事件都不计
+    future = _json_t180(cli_t180, capsys, db_t180, "--since", "2999-01-01T00:00:00Z")
+    assert future["rejections"]["total"] == 0 and future["conferences"]["total"] == 0
+
+
+def test_unhashable_citations_do_not_crash_t180(cli_t180, capsys, db_t180):
+    """draft_json.citations 里有 dict 等不可哈希元素：照常出统计、退 0、归 other（复核 L2-2）。"""
+    turn = _sql_t180(db_t180, "SELECT turn_id FROM cs_turn WHERE route='answer'"
+                              " ORDER BY turn_id LIMIT 1")[0][0]
+    _exec_t180(db_t180, ("UPDATE cs_turn SET draft_json = ? WHERE turn_id = ?",
+                         (json.dumps({"citations": [{"doc_id": SENT_ENUM_T180}, [1],
+                                                    {"x": SENT_TEXT_T180}]},
+                                     ensure_ascii=False), turn)))
+    code, out, err = _run_t180(cli_t180, capsys, "--db", str(db_t180), "--json", "--top", "50")
+    assert code == 0, err
+    st = json.loads(out)
+    assert ["other", 1] in st["scripts_top"]
+    code, text, _ = _run_t180(cli_t180, capsys, "--db", str(db_t180))
+    assert code == 0
+    _assert_no_sentinel_t180(out, text)
+
+
 def test_top_n_t180(cli_t180, capsys, base_db_t180):
     st = _json_t180(cli_t180, capsys, base_db_t180, "--top", "2")
     assert len(st["intents_top"]) == 2 and len(st["scripts_top"]) == 2

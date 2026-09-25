@@ -23,6 +23,7 @@ import pytest
 from maos.core.store import SqliteStore
 from maos.domain.cs import ports as P
 from maos.domain.cs.ports import Binding, LookupResult, PrecheckResult
+from maos.flows import custom_case
 from maos.ingress import cs_ports
 from maos.ingress import router as router_mod
 from maos.ingress.contracts import InboundMessage
@@ -452,6 +453,21 @@ def test_unmapped_status_text_does_not_leak_t172(shop_creds_t172, caplog):
     _assert_no_leak_t172(res, caplog, "refunded", "没有命中任何规则", FAKE_TOKEN)
 
 
+@pytest.mark.parametrize("key,outcome", [("B2002", "ok"), ("D4004", "amended")])
+def test_success_log_masks_query_key_t172(caplog, key, outcome):
+    """查单成功（最常见的那条路）的日志同样只打打码后的查单键，不打全。"""
+    lk = cs_ports.CommerceOrderLookup({"demo-orders": _mock_t172()})
+    store = _store_t172()
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()                    # 造账本时 MockOrderSystem.amend 自己打的「外部改单」不算
+    res = lk.lookup(store, _binding_t172(key), plan_id=PLAN, task_id=TURN)
+    assert res.outcome == outcome
+    mine = [r for r in caplog.records if r.name == cs_ports.log.name]
+    assert mine, "成功路径也该落一行查单日志"
+    assert key not in caplog.text
+    assert cs_ports.mask_query_key(key) in caplog.text
+
+
 def test_mask_query_key_t172():
     assert cs_ports.mask_query_key("ORD-2026-0001") == "…0001"
     assert cs_ports.mask_query_key("A1001") == "…1001"
@@ -531,9 +547,45 @@ def test_precheck_preflight_error_when_preflight_raises_t172(ledger_t172, monkey
     assert res == PrecheckResult(ok=False, refused_why="preflight_error")
 
 
-def test_precheck_preflight_error_when_ledger_unreadable_t172(tmp_path):
-    res = _precheck_t172(tmp_path / "no-such-ledger.json")
-    assert res == PrecheckResult(ok=False, refused_why="preflight_error")
+def test_precheck_preflight_error_when_ledger_unreadable_t172(tmp_path, ledger_t172):
+    path = tmp_path / "no-such-ledger-yet.json"
+    pc = cs_ports.LedgerRefundPrecheck(path, ledger_tenant=TENANT)
+    args = {"tenant_id": TENANT, "order_no": "ORD-2026-0002", "reason_text": "七天无理由退货",
+            "now": NOW}
+    assert pc.precheck(**args) == PrecheckResult(ok=False, refused_why="preflight_error")
+    # 失败不缓存：台账这时才到位，**同一个实例**的下一次预检照样读得出来。
+    path.write_bytes(ledger_t172.read_bytes())
+    res = pc.precheck(**args)
+    assert (res.ok, res.decision, res.rule_ref) == (True, "approve", "AS-001@v1")
+
+
+@pytest.mark.parametrize("table", custom_case.REQUIRED_TABLES)
+def test_precheck_refuses_a_ledger_the_refund_side_cannot_load_t172(tmp_path, table):
+    """与 ``IngressRouter.ledger()`` 同一个读法：少一张外部快照表，/refund 那边读不出来，
+    预检也不许给出一个 ok（例如缺 policy_rule 时的「基线驳回、依据为空」）。"""
+    data = json.loads(DEMO_LEDGER.read_text(encoding="utf-8"))
+    del data[table]
+    path = tmp_path / f"ledger_no_{table}_t172.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(custom_case.CaseFileError):
+        custom_case.load(path, require_case=False)
+    assert _precheck_t172(path) == PrecheckResult(ok=False, refused_why="preflight_error")
+
+
+@pytest.mark.parametrize("version", [2, 1])
+def test_precheck_refuses_an_order_number_shared_with_another_tenant_t172(tmp_path, version):
+    """build_case 按单号在全表取最高版本、不看租户：别的租户有同号的行（版本更高时裁定会
+    按那一行和它的政策算）→ 失败即关，按不在台账里拒。"""
+    data = json.loads(DEMO_LEDGER.read_text(encoding="utf-8"))
+    mine = next(o for o in data["order_snapshot"] if o["order_id"] == "ORD-2026-0002")
+    base = tmp_path / "ledger_single_tenant_t172.json"
+    base.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert _precheck_t172(base).ok is True                  # 对照：只有本租户那一行时是 ok
+
+    data["order_snapshot"].append(dict(mine, tenant_id="tnt-other", version=version))
+    path = tmp_path / f"ledger_shared_no_v{version}_t172.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert _precheck_t172(path) == PrecheckResult(ok=False, refused_why="order_not_in_ledger")
 
 
 def test_precheck_never_raises_on_junk_input_t172(ledger_t172):
@@ -685,6 +737,28 @@ def test_env_json_shopify_end_to_end_with_fake_transport_t172(monkeypatch):
     res = lk.lookup(store, binding, plan_id=PLAN, task_id=TURN)
     assert (res.outcome, res.status) == ("ok", "shipped")
     assert len(_tool_rows_t172(store)) == 2
+
+
+@pytest.mark.parametrize("platform", PLATFORMS_T172)
+def test_env_json_same_platform_twice_is_refused_t172(platform):
+    """店铺身份与凭据读进程级环境变量：同平台第二家会查到第一家的店 → 装配期就拒。"""
+    raw = json.dumps({"store-a": {"platform": platform, "account": "sk-FAKE-T172-SECRET-A"},
+                      "store-b": {"platform": platform, "account": "sk-FAKE-T172-SECRET-B"}})
+    with pytest.raises(ValueError) as info:
+        cs_ports.build_order_lookup_from_env({"MAOS_CS_ORDER_SYSTEMS": raw})
+    msg = str(info.value)
+    assert "store-a" in msg and "store-b" in msg
+    assert "sk-FAKE-T172" not in msg
+    assert info.value.__cause__ is None
+
+
+def test_env_json_different_platforms_build_side_by_side_t172():
+    raw = json.dumps({"store-a": {"platform": "shopify", "account": "a.myshopify.com"},
+                      "store-b": {"platform": "woocommerce", "account": "b.example"}})
+    lk = cs_ports.build_order_lookup_from_env({"MAOS_CS_ORDER_SYSTEMS": raw})
+    assert lk.system_names == ("store-a", "store-b")
+    assert (lk.system("store-a").platform, lk.system("store-b").platform) == (
+        "shopify", "woocommerce")
 
 
 @pytest.mark.parametrize("raw,key", [

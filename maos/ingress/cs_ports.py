@@ -247,8 +247,10 @@ def match_reason_codes(text: str) -> frozenset[str]:
 class LedgerRefundPrecheck:
     """`maos.domain.cs.ports.RefundPrecheck` 的实现：按台账做一次只读退款预检。
 
-    台账（``scenarios/custom/ledger.json`` 的形状）第一次用到时读一次并缓存 —— 口径同
-    ``IngressRouter.ledger()``：换台账要重启进程。读不出来按 ``preflight_error`` 拒，不缓存失败。
+    台账（``scenarios/custom/ledger.json`` 的形状）第一次用到时读一次并缓存 —— 与
+    ``IngressRouter.ledger()`` 同一个读法：``custom_case.load(require_case=False)``，五张外部
+    快照表逐张查，缺一张就读不出来；换台账要重启进程。读不出来按 ``preflight_error`` 拒，
+    不缓存失败（文件一时读不到，下一次预检照样再读）。
     """
 
     def __init__(self, ledger_path: str | Path, *, ledger_tenant: str) -> None:
@@ -258,9 +260,11 @@ class LedgerRefundPrecheck:
 
     def _load(self) -> dict:
         if self._ledger is None:
-            data = json.loads(self.ledger_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or not isinstance(data.get("order_snapshot"), list):
-                raise ValueError("台账缺 order_snapshot 表")
+            # 与 /refund 同一个只读入口：少一张表 /refund 那边读不出来，这边也不许给出 ok。
+            from maos.flows.custom_case import load
+            data = load(self.ledger_path, require_case=False)
+            if not isinstance(data.get("order_snapshot"), list):
+                raise ValueError("台账的 order_snapshot 不是表")
             self._ledger = data
         return self._ledger
 
@@ -287,10 +291,11 @@ class LedgerRefundPrecheck:
             ledger = self._load()
         except Exception as exc:                         # noqa: BLE001
             return _refused(REFUSED_PREFLIGHT_ERROR, type(exc).__name__)
+        # 失败即关：这一单在 order_snapshot 里的**每一行**都得是台账租户的。build_case 在全表
+        # 按单号取最高版本、不看租户 —— 别的租户有同号的行，裁定就可能按那一行和它的政策算。
         rows = [o for o in ledger["order_snapshot"] if isinstance(o, dict)
-                and str(o.get("order_id")) == order
-                and str(o.get("tenant_id")) == self.ledger_tenant]
-        if not rows:
+                and str(o.get("order_id")) == order]
+        if not rows or any(str(o.get("tenant_id")) != self.ledger_tenant for o in rows):
             return _refused(REFUSED_ORDER_NOT_IN_LEDGER)
 
         codes = match_reason_codes(reason_text)
@@ -425,7 +430,8 @@ def build_order_lookup_from_env(env: Mapping[str, str] = os.environ, *,
     * ``demo`` → ``{"demo-orders": 台账造的 MockOrderSystem}``；``ledger_path`` 必给。
     * JSON ``{系统名: {"platform": …, "account": …}}`` → 每个系统一个电商适配器，
       传输层 ``UrllibTransport(timeout=5 秒, 最多 2 次尝试)``。凭据由适配器在发请求时
-      从进程环境变量读，这里一个都不读。
+      从进程环境变量读，这里一个都不读。同一平台只许配一家（店铺身份也读进程级环境变量，
+      多配一家会串店），多店铺按店铺分凭据留给 p14。
 
     坏配置抛 ValueError，消息只带键名、不回显取值。
     """
@@ -448,6 +454,10 @@ def build_order_lookup_from_env(env: Mapping[str, str] = os.environ, *,
 
     platforms = commerce_platforms()
     systems: dict[str, Any] = {}
+    #: 平台 → 第一个用它的系统名。同平台第二家一律拒（失败即关）：现有适配器的店铺身份
+    #: （店铺域名 / 站点 URL / 店铺 id）与凭据都读**进程级**环境变量，``account`` 多半只进
+    #: repr —— 第二家实际查的是第一家的店，而且返回的单号与查询键一致，事后核不出来。
+    first_of: dict[str, str] = {}
     for name, item in spec.items():
         key = f"{ENV_ORDER_SYSTEMS}[{name!r}]"
         if not str(name).strip():
@@ -461,6 +471,11 @@ def build_order_lookup_from_env(env: Mapping[str, str] = os.environ, *,
         platform = item.get("platform")
         if not isinstance(platform, str) or platform not in platforms:
             raise ValueError(f"{key}.platform 不是已发现的平台（可选：{', '.join(platforms)}）")
+        if platform in first_of:
+            raise ValueError(
+                f"{key} 与 {ENV_ORDER_SYSTEMS}[{first_of[platform]!r}] 的 platform 相同：同平台"
+                "只许配一家 —— 店铺身份与凭据读进程级环境变量，第二家会查到第一家的店")
+        first_of[platform] = str(name)
         account = item.get("account", "")
         if not isinstance(account, str):
             raise ValueError(f"{key}.account 必须是字符串")

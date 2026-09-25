@@ -348,22 +348,49 @@ def _is_personal_number(token: str) -> bool:
                 or (_BANK_CARD_RE.match(token) and _luhn_ok(token)))
 
 
+#: 复核 L2-1（修复轮 2）：「别的号」字眼后面紧跟一个光秃秃的「No. / no: / NO#」（「卡号 No.88120937」
+#: 「card no. 88120937」「会员卡 No.A1001」）—— 这个 No. 是那个别的号的标签，不是单号字眼。
+#: 字眼与 No. 之间只许「号 / 码 / 卡」各一两个字和空白。
+_OTHER_LABEL_END_RE = re.compile(r"(?:" + _OTHER_NUMBER_RE.pattern + r")[号码卡]{0,2}\s*$")
+
+
+def _bare_no_owned_by_other(text: str, window_start: int, m: re.Match[str]) -> bool:
+    """``m`` 是在 ``text[window_start:...]`` 上找到的单号字眼；它是光秃秃的 ``no.`` 且前面紧挨着别的号字眼。"""
+    if not m.group(0).startswith("no"):
+        return False
+    pos = window_start + m.start()
+    head = text[max(0, pos - 2 * _CONTEXT_WINDOW):pos].lower()
+    return bool(_OTHER_LABEL_END_RE.search(head))
+
+
 def _context_before(text: str, start: int) -> str:
-    """候选串前面最近的上下文字眼是哪一类：``order`` / ``other`` / ``""``（窗口里都没有）。"""
-    window = text[max(0, start - _CONTEXT_WINDOW):start].lower()
+    """候选串前面最近的上下文字眼是哪一类：``order`` / ``other`` / ``""``（窗口里都没有）。
+
+    「卡号 No.」里的 No. 归「别的号」（见 :data:`_OTHER_LABEL_END_RE`）。
+    """
+    w0 = max(0, start - _CONTEXT_WINDOW)
+    window = text[w0:start].lower()
     best, kind = -1, ""
     for pattern, label in ((_ORDER_WORD_RE, "order"), (_OTHER_NUMBER_RE, "other")):
         for m in pattern.finditer(window):
-            if m.end() > best or (m.end() == best and label == "order"):
-                best, kind = m.end(), label
+            if label == "order" and _bare_no_owned_by_other(text, w0, m):
+                label_here = "other"
+            else:
+                label_here = label
+            if m.end() > best or (m.end() == best and label_here == "order"):
+                best, kind = m.end(), label_here
     return kind
 
 
 def _adjacent_order_word(text: str, start: int, end: int) -> bool:
-    """候选串紧挨着单号字眼：前面是「订单号：」「那单 」「order 」，或后面是「这单」「的订单」。"""
-    before = text[max(0, start - _CONTEXT_WINDOW):start].lower()
+    """候选串紧挨着单号字眼：前面是「订单号：」「那单 」「order 」，或后面是「这单」「的订单」。
+
+    「卡号 No.」里的 No. 不算单号字眼（:func:`_bare_no_owned_by_other`）。
+    """
+    w0 = max(0, start - _CONTEXT_WINDOW)
+    before = text[w0:start].lower()
     for m in _ORDER_WORD_RE.finditer(before):
-        if _ADJACENT_GAP_RE.fullmatch(before[m.end():]):
+        if _ADJACENT_GAP_RE.fullmatch(before[m.end():]) and not _bare_no_owned_by_other(text, w0, m):
             return True
     return bool(_FOLLOWING_ORDER_RE.match(text[end:].lower()))
 
@@ -482,8 +509,9 @@ def _order_candidates(text: str) -> list[tuple[int, int, str]]:
 
 def _strong_order_word_before(text: str, start: int) -> bool:
     """候选串前面紧挨着强单号字眼（订单号 / 单号 / 订单 / order no. / No.），中间只许 :data:`_ADJACENT_GAP_RE`。"""
-    before = text[max(0, start - _CONTEXT_WINDOW):start].lower()
-    return any(_ADJACENT_GAP_RE.fullmatch(before[m.end():])
+    w0 = max(0, start - _CONTEXT_WINDOW)
+    before = text[w0:start].lower()
+    return any(_ADJACENT_GAP_RE.fullmatch(before[m.end():]) and not _bare_no_owned_by_other(text, w0, m)
                for m in _STRONG_ORDER_WORD_RE.finditer(before))
 
 

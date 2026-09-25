@@ -93,7 +93,10 @@ ANOMALY_NEGATIVES_T182 = ["签收需要本人吗", "中转站在哪", "驿站几
                           "这件衣服穿了几天不走样吗", "手表放几天不动会停吗", "这个配件卡住了怎么拆", "软件卡住了怎么办",
                           "已经签收了没看到说明书", "你们店铺的上新信息好几天没更新了",
                           # 本轨自补的同类近邻
-                          "零件丢了能单独买吗", "拉链卡住了拉不动", "鞋盒子压了会变形吗", "证件丢了能补办吗"]
+                          "零件丢了能单独买吗", "拉链卡住了拉不动", "鞋盒子压了会变形吗", "证件丢了能补办吗",
+                          # 二轮复核 L3-4：问规则 / 假设（是不是要扣两次、万一卡在海关）不是自己那一单出了事
+                          "预售定金和尾款要付两次吗", "分期是不是要扣两次款", "会员是每个月扣一次还是扣两次",
+                          "万一包裹卡在海关不动怎么办", "如果快递丢了怎么赔", "要是包裹破了的话怎么办"]
 
 #: 类别 3：政策问答的口语说法。(句子, 意图, 该答的政策篇)。
 POLICY_T182 = [
@@ -129,7 +132,21 @@ POLICY_NEGATIVES_T182 = ["吊牌上的价格是多少", "标签上写的什么�
                          "会员怎么退订咋整", "我家洗衣机坏了你们有什么推荐换一台", "旧手机开不了机了想换个新手机推荐一款",
                          # 本轨自补的同类近邻
                          "寄去的包裹要自己贴单吗", "一般什么时候发红包", "最快什么时候发布新款", "走顺丰会员有折扣吗",
-                         "新疆产的红枣甜吗"]
+                         "新疆产的红枣甜吗",
+                         # 二轮复核 L2-1 / L3-1：换的不是商品本身（换零件 / 换设置 / 换季 / 换话题）
+                         "开不了机怎么换电池", "手表坏了怎么换表带", "灯不亮了怎么换灯泡", "换季了衣服起球怎么办",
+                         "我换个问题，衣服起球怎么办", "手机充不进电，要换根线吗", "灯不亮了要换灯泡吗",
+                         "耳机没声音了是不是要换个模式", "电脑开不了机要换系统吗", "屏幕不亮是不是要换个设置",
+                         # 二轮复核 L2-2 / L3-1：「退」不是退货（退烧 / 退热 / 退火 / 退订 / 退出）
+                         "没用过退烧贴好用吗", "没试过这个退烧贴效果怎么样", "这个退热贴怎么弄",
+                         "退订花呗后多久生效", "退出后怎么回到原来的界面",
+                         # 二轮复核 L3-1：地名是产地不是送达地；「发」的宾语不是货
+                         "西藏发货的牦牛肉干正宗吗", "新疆发的哈密瓜甜吗", "海南寄过来的芒果新鲜吗",
+                         "新疆寄来的红枣好吃吗", "国外发的奶粉安全吗", "香港发货的化妆品是真的吗",
+                         "寄到国外的明信片好看吗", "最快什么时候发新品", "大概什么时候发通知"]
+#: 类别 3 的反例里基线 45f724d 就已经答了的（检索直接召回 RET-002，同义归一不参与）：不进上面那张
+#: 「p12 路径落兜底」的表，在零自信答错那条里按 :data:`PREEXISTING_WRONG_ANSWERS_T182` 逐字钉住。
+BASELINE_ANSWERED_NEGATIVES_T182 = ["退火炉怎么操作"]
 
 #: 类别 4：辱骂客服质量 → anger。
 ANGER_T182 = ["破客服有什么用", "你们这破客服", "被你们气疯了", "真是气疯我了", "什么鬼客服啊", "废物客服",
@@ -140,12 +157,16 @@ ANGER_NEGATIVES_T182 = ["废物利用的收纳盒有吗", "破洞牛仔裤有吗
                         "气垫梳有吗", "摆设用的花瓶有吗", "包装破了", "鬼节有活动吗",
                         # 复核 L3-4：商品咨询里夹着「狗服务 / 有病 / 摆设 / 死人」
                         "有没有遛狗服务", "你们有病号服吗", "你有病历本卖吗", "你们摆设的那个花瓶还有吗",
-                        "你们是死人头牌的代理吗", "有宠狗服务吗", "你们有病人用的护理垫吗"]
+                        "你们是死人头牌的代理吗", "有宠狗服务吗", "你们有病人用的护理垫吗",
+                        # 二轮复核 L2-4 / L3-3：「狗」是宠物、「白痴 / 弱智 / 神经病」不是冲着客服说的
+                        "有没有狗狗服务", "有宠物狗服务吗", "你们有训狗服务吗", "狗狗app怎么下载",
+                        "宠物狗软件推荐一下", "训狗服务怎么收费", "有没有上门洗狗服务", "神经病学的书有吗",
+                        "弱智吧的段子你看过吗", "这个说明书写得白痴都能看懂", "你们客服真是神经病医院推荐的吗"]
 
 #: 顺手：条件威胁（真后果动作）→ complaint。
 THREATS_T182 = ["不退我就给差评", "不处理的话我就去黑猫", "不退款我就发微博", "今天不解决我就找媒体",
                 "要是还不发货我就去网上说", "再拖着不处理我就报警", "不处理我就挂网上", "再不发货我就给差评",
-                "今天不给我退款我就报警"]
+                "今天不给我退款我就报警", "要是再拖我就上网说", "否则我就找媒体"]
 #: 条件威胁的反例：表态、拿主意、纯发泄、拒收（拒收不是向外升级，照旧走退款诉求）。
 THREAT_NEGATIVES_T182 = ["我不会给差评的", "不退款我就自己留着用吧", "不退就不退吧，我认了",
                          "不退款的话我会很失望", "不退的话我就去朋友家拿", "不退款，我就拒收",
@@ -156,7 +177,17 @@ THREAT_NEGATIVES_T182 = ["我不会给差评的", "不退款我就自己留着�
                          # 复核 L3-3：「不 / 没 / 如果」不是条件、夸奖、问句
                          "不好意思，我就是想问问差评能删吗", "东西不错就是物流慢，不会给差评",
                          "用了不到一周就发微博夸你们了", "没想到这么快就发朋友圈了", "不到十分钟就在网上评论了",
-                         "如果不满意就可以给差评吗", "不一会儿就发朋友圈晒了好评"]
+                         "如果不满意就可以给差评吗", "不一会儿就发朋友圈晒了好评",
+                         # 二轮复核 L3-2：条件是好事或求助，不是对方不办事
+                         "如果质量好我就发小红书推荐一下", "要是东西好用，我就发抖音安利给朋友",
+                         "如果收到了我就上网说说使用感受", "如果满意我就在网上评个五星", "万一我忘了我就找平台客服问",
+                         "如果需要发票我就找平台开", "要是今天能发，我就发朋友圈帮你们宣传", "假如好用我就发帖子推荐",
+                         "如果有优惠我就发朋友圈分享", "要是能便宜点我就找平台领券",
+                         "要不然我找平台问问", "要不然我发朋友圈问问朋友哪个好"]
+#: 条件与动作都成立、**只**被动作之后的「夸 / 好评 / 推荐 / 吗 …」排除的句子（二轮复核 L2-3：删掉那段
+#: 后顾断言，这几句要变红）。
+THREAT_TAIL_NEGATIVES_T182 = ["不退的话就给差评吗", "不回复也没事，我就发朋友圈夸你们",
+                              "不发货也行，我就发小红书推荐别家", "不退的话我就去黑猫么"]
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +226,8 @@ def _all_sentences_t182() -> list[str]:
     return (GREETINGS_T182 + [t for t, *_ in GREETING_NEGATIVES_T182]
             + [t for t, *_ in ORDER_ANOMALIES_T182] + ADDRESS_CHANGES_T182 + ANOMALY_NEGATIVES_T182
             + [t for t, *_ in POLICY_T182] + POLICY_NEGATIVES_T182 + ANGER_T182 + ANGER_NEGATIVES_T182
-            + THREATS_T182 + THREAT_NEGATIVES_T182)
+            + THREATS_T182 + THREAT_NEGATIVES_T182 + THREAT_TAIL_NEGATIVES_T182
+            + BASELINE_ANSWERED_NEGATIVES_T182)
 
 
 def _without_synonym_norm_t182(monkeypatch) -> None:
@@ -314,6 +346,21 @@ def test_policy_colloquialisms_get_their_policy_script_t182(text, intent, scheme
     assert res.draft.citations == (_cite_t182(scheme),), (text, res.draft.citations)
 
 
+#: 钱没到（没 / 未）是查这一单，不是问退到哪：不许被「退款退到哪」救成原路退回的政策篇（三轮自查）。
+REFUND_NOT_ARRIVED_T182 = ["卖家同意退款了可钱一直没回到支付宝", "退的钱过了一周都没退回银行卡",
+                           "退款显示成功了却未回到京东白条", "退款审核过了钱未退到信用卡",
+                           "退款过了三天还没退回储蓄卡",
+                           "店家说退钱了，可退款没退回花呗", "退的钱怎么还没到银行卡"]
+
+
+@pytest.mark.parametrize("p13", [False, True], ids=["p12", "p13"])
+@pytest.mark.parametrize("text", REFUND_NOT_ARRIVED_T182)
+def test_refund_not_arrived_is_not_a_route_question_t182(text, p13):
+    assert "refund_route" not in scripts.synonym_hits(text), text
+    res = _one_t182(text, p13=p13)
+    assert res.route != _ANS, (text, p13, res.route, res.draft.citations)
+
+
 @pytest.mark.parametrize("text", POLICY_NEGATIVES_T182)
 def test_policy_negatives_are_not_answered_t182(text):
     res = _one_t182(text, p13=False)
@@ -360,6 +407,16 @@ def test_venting_and_decisions_are_not_threats_t182(text):
     assert triggers.detect(text) is None, text
 
 
+@pytest.mark.parametrize("text", THREAT_TAIL_NEGATIVES_T182)
+def test_praise_or_question_after_the_act_is_not_a_threat_t182(text):
+    """条件（不退 / 不回复）与动作（差评 / 发朋友圈）都在，只是动作后面是夸奖或问句：不算威胁。"""
+    assert triggers.detect(text) is None, text
+    # 判负的前提：去掉动作之后那段后顾断言，同一条正则就认得出它（排除它的只是那段断言）
+    pat = triggers.ADDED_PATTERNS[T.HANDOFF_COMPLAINT][0]
+    head = pat[:pat.rindex("(?![")]
+    assert re.search(head, triggers.normalize(text)), text
+
+
 def test_threat_with_an_online_act_keeps_the_request_t182():
     """「不退款，我就上网曝光」：诉求照旧是退款（不是撤回），转人工原因是投诉。"""
     text = "不退款，我就上网曝光"
@@ -370,9 +427,16 @@ def test_threat_with_an_online_act_keeps_the_request_t182():
 # ---------------------------------------------------------------------------
 # 5. 不变量
 # ---------------------------------------------------------------------------
-#: 反例表里**基线 45f724d 就已经**答错的（p13 路径的意图提示把「坏了 … 换」答成 RET-003；
-#: 同义归一不启用、与本轨无关）：(句子, 是否 p13) → 基线答的篇。只许这一张封闭表，别的一律要对。
-PREEXISTING_WRONG_ANSWERS_T182 = {("旧手机开不了机了想换个新手机推荐一款", True): "RET-003"}
+#: 反例表里**基线 45f724d 就已经**答错的（p13 路径的意图提示、或检索本身直接召回；同义归一不启用、
+#: 与本轨无关，二轮复核时逐句拿基线实跑核过）：(句子, 是否 p13) → (基线答的意图, 篇)。
+#: 只许这一张封闭表，别的一律要对。
+PREEXISTING_WRONG_ANSWERS_T182 = {
+    ("旧手机开不了机了想换个新手机推荐一款", True): (_RET, "RET-003"),
+    ("我换个问题，衣服起球怎么办", True): (_RET, "RET-003"),
+    ("退订花呗后多久生效", True): (_PAY, "PAY-001"),
+    ("退火炉怎么操作", False): (_RET, "RET-002"),
+    ("退火炉怎么操作", True): (_RET, "RET-002"),
+}
 
 
 def test_no_fabrication_and_no_confident_wrong_answer_t182():
@@ -385,14 +449,17 @@ def test_no_fabrication_and_no_confident_wrong_answer_t182():
     expected.update({"物流公司是哪家的": _LOG, "狗粮什么时候发货": _LOG})
     # 条件威胁的反例里问发货的那句：基线 45f724d 就答 LOG-001（意图 logistics），不转投诉
     expected.update({"如果今天发货就不用找平台了": _LOG})
+    # 二轮复核 L3-2 的反例里基线就答对的两句：问发票（PAY-005）、问今天能不能发（LOG-001），都不转投诉
+    expected.update({"如果需要发票我就找平台开": _PAY, "要是今天能发，我就发朋友圈帮你们宣传": _LOG})
     for p13 in (False, True):
         for text in _all_sentences_t182():
             res = _one_t182(text, p13=p13)
             assert not evaluate._fabricates_status(res.reply_text), (text, p13)
             if (text, p13) in PREEXISTING_WRONG_ANSWERS_T182:
                 # 基线就这么答（不是本轨引入的），逐字钉住它没有变成别的样子；记在 BACKLOG task-t182
+                intent, scheme = PREEXISTING_WRONG_ANSWERS_T182[(text, p13)]
                 assert (res.route, res.intent, res.draft.citations) == (
-                    _ANS, _RET, (_cite_t182(PREEXISTING_WRONG_ANSWERS_T182[(text, p13)]),)), (text, p13)
+                    _ANS, intent, (_cite_t182(scheme),)), (text, p13)
                 continue
             if res.route == _ANS:
                 assert text in expected and res.intent == expected[text], (text, p13, res.intent)

@@ -21,8 +21,10 @@ from maos.domain.cs import types as T
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 CS_SCHEMA_T167 = _ROOT / "maos" / "domain" / "cs" / "schema.sql"
 
-#: 契约 §1.3 的四张表。写死，不从 schema.sql 里数。
-CS_TABLES_T167 = frozenset({"cs_schema_version", "cs_conversation", "cs_turn", "cs_handoff"})
+#: p12 契约 §1.3 的四张表 + p13 契约 §1.3 的五张（T171 接手时追加）。写死，不从 schema.sql 里数。
+CS_TABLES_T167 = frozenset({"cs_schema_version", "cs_conversation", "cs_turn", "cs_handoff",
+                            "cs_observation", "cs_order_binding", "cs_slot", "cs_turn_ext",
+                            "cs_refund_bridge"})
 
 #: 契约 §1.3 逐列抄：(列名, 类型, NOT NULL, 缺省, 主键序号)。
 #: 缺省按 SQLite PRAGMA table_info 的原样（字符串字面量带引号）。
@@ -184,14 +186,16 @@ def test_business_tables_lead_with_tenant_and_prefix_cs_t167():
 
 
 # ------------------------------------------------------------------ PG 翻译
-def test_pg_translation_yields_exactly_the_four_tables_t167():
+def test_pg_translation_yields_exactly_the_nine_tables_t167():
     ddl = to_pg_ddl(CS_SCHEMA_T167.read_text(encoding="utf-8"))
     created = set(re.findall(r"CREATE TABLE(?: IF NOT EXISTS)? (\w+)", ddl))
-    assert created == {"cs_schema_version", "cs_conversation", "cs_turn", "cs_handoff"}
+    assert created == {"cs_schema_version", "cs_conversation", "cs_turn", "cs_handoff",
+                       "cs_observation", "cs_order_binding", "cs_slot", "cs_turn_ext",
+                       "cs_refund_bridge"}
     assert re.search(r"CREATE INDEX IF NOT EXISTS idx_cs_turn_conv_seq ON cs_turn"
                      r" \(tenant_id, conversation_id, seq\)", ddl)
-    # 五个 CHECK 翻完一个不少（翻译器对认不出的约束会抛，这里再钉一次「没被吞」）。
-    assert len(re.findall(r"\bCHECK \(", ddl)) == 5
+    # p12 五个 + p13 九个 CHECK 翻完一个不少（翻译器对认不出的约束会抛，这里再钉一次「没被吞」）。
+    assert len(re.findall(r"\bCHECK \(", ddl)) == 14
     assert "datetime(" not in ddl.lower()
 
 
@@ -199,7 +203,7 @@ def test_schema_uses_only_the_translatable_subset_t167():
     text = strip_sql_comments(CS_SCHEMA_T167.read_text(encoding="utf-8"))
     assert "datetime(" not in text.lower() and "current_timestamp" not in text.lower()
     statements = split_statements(text)
-    assert len(statements) == 5  # 4 CREATE TABLE + 1 CREATE INDEX
+    assert len(statements) == 12  # 9 CREATE TABLE + 3 CREATE INDEX（p13 加 5 表 2 索引）
     for st in statements:
         assert re.match(r"CREATE (TABLE|INDEX) IF NOT EXISTS (cs_|idx_cs_)", st), st
         # 列定义行 = 缩进 + 小写列名 + 类型（PRIMARY KEY 行、CHECK 续行都不是这个形状）。

@@ -511,7 +511,9 @@ def test_handoff_rejects_bad_values_t167():
 DETAIL_KEYS_T167 = {
     T.EVENT_TURN_RECORDED: {"seq", "route", "intent", "handoff_reason", "stage",
                             "inbound_digest", "reply_digest", "citations", "claim_count",
-                            "check_ok", "violation_kinds", "fallback_streak"},
+                            "check_ok", "violation_kinds", "fallback_streak",
+                            # p13 契约 §1.3（T171）：两个枚举、两个库里读的计数。
+                            "lang", "lookup_outcome", "observation_count", "slot_count"},
     T.EVENT_STAGE_CHANGED: {"from_stage", "to_stage", "reason", "fallback_streak",
                             "turn_count"},
     T.EVENT_HANDOFF_RAISED: {"reason", "intent", "channel", "delivery", "citations",
@@ -620,7 +622,9 @@ def _expected_audit_t167(*, inbound: str, reply: str, turns: tuple) -> list[tupl
             "seq": seq, "route": route, "intent": intent, "handoff_reason": reason,
             "stage": stage, "inbound_digest": d(inb), "reply_digest": d(rep),
             "citations": cites, "claim_count": claims, "check_ok": ok,
-            "violation_kinds": vk, "fallback_streak": streak})
+            "violation_kinds": vk, "fallback_streak": streak,
+            # p13（T171）：p12 式调用走缺省 —— 中文、没查单、本轮零观察、会话零槽位。
+            "lang": "zh", "lookup_outcome": "", "observation_count": 0, "slot_count": 0})
 
     return [
         turn(t1, 1, "answer", "general", "", "active", inbound, reply, [log], 1, True, [], 0),

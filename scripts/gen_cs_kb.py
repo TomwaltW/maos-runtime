@@ -34,6 +34,14 @@ p12 没有任何观察来源，后置校验（契约 §1.4 `check_reply`）拿�
 至少一对 (错写, 本字)（拼音输入法的同音错字，如「发获 / 发货」「退宽 / 退款」），
 例句里没有登记的错写、或 `typos` 为空，生成器当场停。`typos` 不进产物。
 例句不许跨篇重复（生成期查），否则两篇同分，排序只能靠 doc_id 碰运气。
+
+## p16 声明增补（review/p16-cs-contracts.md §2 T188）
+
+`scenarios/cs/kb/additions_p16.json` 里声明的每条 `{scheme_no, variant, gap, kind, reason}` 按 kind
+追加到该篇的 synonyms / examples 末尾（声明顺序）；文件的 `typos` 按篇登记增补例句里有意写的错别字，
+并进该篇的 `typos` 走同一道 `_check_typos`。生成期另查：编号必须在目录里、kind 只许 synonym / example、
+理由非空、同一条不许重复声明、不许与该篇已有说法重复（重复就不是「增补」）。
+类别 / 每篇上限 / 防抄由 maos/tests/test_cs_eval_p12_t169.py 的 p16 判据逐条核，不在这里重抄。
 """
 
 from __future__ import annotations
@@ -54,6 +62,9 @@ from maos.domain.cs import types as T                  # noqa: E402
 from maos.domain.cs.scripts import tail_forms          # noqa: E402
 
 OUT_PATH = os.path.join(REPO_ROOT, "scenarios", "cs", "kb", "cs_scripts.json")
+#: p16 声明增补（见模块头「p16 声明增补」）。
+ADDITIONS_PATH = os.path.join(REPO_ROOT, "scenarios", "cs", "kb", "additions_p16.json")
+_ADDITION_KINDS = {"synonym": "synonyms", "example": "examples"}
 
 #: 话术库的租户。契约 §1.5 冻结：演示租户 tnt-demo，别的租户要话术就另灌一份。
 TENANT_ID = "tnt-demo"
@@ -429,12 +440,61 @@ def _norm(text: str) -> str:
     return "".join(kb.tokenize(text))
 
 
-def _check_catalog() -> None:
+def _load_additions(path: str = ADDITIONS_PATH) -> tuple[list[dict], dict[str, list]]:
+    """读 p16 声明增补：(增补条目, 按篇的错别字登记)。文件不在就是没有增补。"""
+    if not os.path.exists(path):
+        return [], {}
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    return list(doc.get("additions") or ()), dict(doc.get("typos") or {})
+
+
+def merged_scripts(path: str = ADDITIONS_PATH) -> tuple[dict, ...]:
+    """目录 + p16 声明增补（见模块头「p16 声明增补」）。不改 SCRIPTS 本身；声明有问题当场停。"""
+    entries, typos = _load_additions(path)
+    specs = {spec["scheme_no"]: {**spec, "synonyms": list(spec["synonyms"]),
+                                 "examples": list(spec["examples"]),
+                                 "typos": tuple(spec.get("typos") or ())}
+             for spec in SCRIPTS}
+    problems: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for e in entries:
+        no, variant, kind = e.get("scheme_no"), str(e.get("variant") or ""), e.get("kind")
+        key = (no, variant)
+        if no not in specs:
+            problems.append(f"增补 {key!r}: 编号不在目录里")
+            continue
+        if kind not in _ADDITION_KINDS:
+            problems.append(f"增补 {key!r}: kind 只许 synonym / example")
+            continue
+        if not variant.strip() or not str(e.get("reason") or "").strip():
+            problems.append(f"增补 {key!r}: 说法或理由为空")
+            continue
+        if key in seen:
+            problems.append(f"增补 {key!r}: 重复声明")
+            continue
+        seen.add(key)
+        spec = specs[no]
+        if variant in [spec["scene"], *spec["synonyms"], *spec["examples"]]:
+            problems.append(f"增补 {key!r}: 该篇已有这条说法")
+            continue
+        spec[_ADDITION_KINDS[kind]].append(variant)
+    for no, pairs in typos.items():
+        if no not in specs:
+            problems.append(f"增补错别字登记 {no!r}: 编号不在目录里")
+            continue
+        specs[no]["typos"] = specs[no]["typos"] + tuple((str(w), str(r)) for w, r in pairs)
+    if problems:
+        raise SystemExit("p16 声明增补自检不过：\n  - " + "\n  - ".join(problems))
+    return tuple(specs[spec["scheme_no"]] for spec in SCRIPTS)
+
+
+def _check_catalog(specs: tuple[dict, ...] = SCRIPTS) -> None:
     """目录级自检：编号唯一、例句数够、handoff / intent 取值合法、变体不跨篇重复。"""
     problems: list[str] = []
     seen_no: set[str] = set()
     owner: dict[str, str] = {}
-    for spec in SCRIPTS:
+    for spec in specs:
         no = spec["scheme_no"]
         if no in seen_no:
             problems.append(f"{no}: 编号重复")
@@ -495,8 +555,9 @@ def _doc(spec: dict, offset: int) -> dict:
 
 def build() -> str:
     """生成产物，返回文件内容。**不落盘** —— 落盘与校验共用这一份。"""
-    _check_catalog()
-    docs = [_doc(spec, idx) for idx, spec in enumerate(SCRIPTS)]
+    specs = merged_scripts()
+    _check_catalog(specs)
+    docs = [_doc(spec, idx) for idx, spec in enumerate(specs)]
     docs.sort(key=lambda r: r["doc_id"])
     payload = {"_note": _NOTE, "_provenance": _PROVENANCE, "kb_doc": docs}
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"

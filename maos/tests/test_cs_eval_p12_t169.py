@@ -67,6 +67,7 @@ integrate-p12-evalfix 按三类补了 17 条（:data:`ADDITION_REASONS_T169` 逐
 from __future__ import annotations
 
 import hashlib
+import sys
 import json
 
 import pytest
@@ -328,7 +329,11 @@ def test_corpus_is_the_baseline_plus_declared_additions_t169():
     悄悄补一条短说法（三个字，躲得过 ≥ 4 字的片段棘轮）在这里就红。"""
     pairs = _variant_pairs_t169()
     assert ADDED_VARIANTS_T169 <= pairs, sorted(ADDED_VARIANTS_T169 - pairs)
-    base = pairs - ADDED_VARIANTS_T169
+    # p16（用户授权放开，review/p16-cs-contracts.md §1）：scenarios/cs/kb/additions_p16.json 里声明的增补
+    # 同样算「显式声明」；它们的类别 / 理由 / 上限 / 防抄由文件末尾的 p16 判据逐条核。
+    p16 = _p16_pairs_t169()
+    assert p16 <= pairs, sorted(p16 - pairs)
+    base = pairs - ADDED_VARIANTS_T169 - p16
     assert (len(base), _fingerprint_t169(base)) == (
         BASELINE_VARIANT_COUNT_T169, BASELINE_VARIANT_SHA256_T169), (
         "话术库的说法与 a4935cd 基线不一致：本轨补的写进 ADDITION_REASONS_T169（类别 + 理由）"
@@ -449,3 +454,102 @@ def test_each_case_gets_a_fresh_desk_and_store_t169():
     """desk_factory 每次给新的库：上一段会话转了人工，不影响下一段。"""
     a, b = _desk_factory_t169(), _desk_factory_t169()
     assert a is not b and a.store is not b.store
+
+
+# ---------------------------------------------------------------------------
+# p16：增补棘轮对「通用缺口类别」放开（用户授权，review/p16-cs-contracts.md §1）
+# ---------------------------------------------------------------------------
+#: 增补的声明文件（T188 写，scripts/gen_cs_kb.py 并进话术库）。
+P16_ADDITIONS_PATH_T169 = corpus.CORPUS_PATH.with_name("additions_p16.json")
+
+#: p16 放开的通用缺口类别 → 只许补给的那几篇。类别按「客户在问什么」分，不按哪份评测集漏了哪句分。
+GAP_CLASSES_P16 = {
+    "寒暄与致谢": frozenset({"GEN-001", "GEN-002"}),
+    "客服时间": frozenset({"GEN-003"}),
+    "发货时效与快递": frozenset({"LOG-001", "LOG-002"}),
+    "运费与包邮": frozenset({"LOG-003", "RET-004"}),
+    "订单异常要查单": frozenset({"LOG-004", "LOG-005", "LOG-006", "PAY-003", "PAY-004"}),
+    "退款规则与支付": frozenset({"PAY-001", "PAY-002"}),
+    "开票": frozenset({"PAY-005"}),
+    "退换货政策": frozenset({"RET-001", "RET-002", "RET-003"}),
+    "办具体退货退款": frozenset({"RET-005"}),
+}
+#: 每篇最多增补几条（同义词与例句合计）。
+P16_MAX_PER_DOC = 8
+P16_KINDS = ("synonym", "example")
+
+
+def _p16_entries_t169() -> list[dict]:
+    if not P16_ADDITIONS_PATH_T169.exists():
+        return []
+    return list(json.loads(P16_ADDITIONS_PATH_T169.read_text(encoding="utf-8"))["additions"])
+
+
+def _p16_pairs_t169() -> set[tuple[str, str]]:
+    return {(e["scheme_no"], e["variant"]) for e in _p16_entries_t169()}
+
+
+def _all_eval_sets_t169() -> dict[str, list[tuple[str, str]]]:
+    """全部评测集（两份开发集 + 所有留出集）的 (case id#轮, 规整后的句子)。只给判据用，**不许**进失败消息。"""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for path in sorted(evaluate.EVAL_PATH.parent.glob("p1*_cases.json")):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        out[path.name] = [(f"{c['id']}#{i}", _norm_t169(t))
+                          for c in doc["cases"] for i, t in enumerate(c["turns"], start=1)]
+    return out
+
+
+def _p16_copy_hits_t169() -> list[str]:
+    """撞上评测句的增补：只报 (编号, 增补说法) 与集合名 + case id，不回显任何评测句。"""
+    hits = []
+    for scheme_no, variant in sorted(_p16_pairs_t169()):
+        for name, turns in _all_eval_sets_t169().items():
+            ids = [cid for cid, t in turns
+                   if _eval_fragments_t169(variant, turns=[t]) or _near_copies_t169(variant, turns=[t])
+                   or _word_swap_copies_t169(variant, turns=[t])]
+            if ids:
+                hits.append(f"({scheme_no}, {variant}) ~ {name}: {', '.join(ids[:5])}")
+    return hits
+
+
+def test_p16_additions_are_declared_classed_and_capped_t169():
+    entries = _p16_entries_t169()
+    bad = []
+    per_doc: dict[str, int] = {}
+    for e in entries:
+        key = (e.get("scheme_no"), e.get("variant"))
+        gap, kind, reason = e.get("gap"), e.get("kind"), str(e.get("reason") or "")
+        if gap not in GAP_CLASSES_P16:
+            bad.append((key, "类别不在 GAP_CLASSES_P16"))
+        elif e.get("scheme_no") not in GAP_CLASSES_P16[gap]:
+            bad.append((key, f"{gap} 只许补给 {sorted(GAP_CLASSES_P16[gap])}"))
+        if kind not in P16_KINDS:
+            bad.append((key, "kind 只许 synonym / example"))
+        if len(reason.strip()) < 4:
+            bad.append((key, "没写理由"))
+        per_doc[e.get("scheme_no")] = per_doc.get(e.get("scheme_no"), 0) + 1
+    over = {k: v for k, v in per_doc.items() if v > P16_MAX_PER_DOC}
+    assert not bad, bad
+    assert not over, over
+    assert len({(e["scheme_no"], e["variant"]) for e in entries}) == len(entries), "重复声明"
+    # 与 T169 的增补不重叠（各记各的账）。
+    assert not (_p16_pairs_t169() & ADDED_VARIANTS_T169)
+
+
+def test_p16_additions_do_not_copy_any_eval_set_t169():
+    """防抄三道判据（≥5 字片段 / 一字之差 / 换词）对**全部**评测集（含留出集）逐条核。"""
+    hits = _p16_copy_hits_t169()
+    assert not hits, "增补说法撞上评测句（整条撤掉，不要改几个字再试）：\n" + "\n".join(hits)
+
+
+def test_p16_copy_check_can_fail_t169(tmp_path, monkeypatch):
+    """反向：拿开发集里的一句原样声明成增补，防抄判据必须判出来（报的是集合名 + id）。"""
+    doc = evaluate.load_document()
+    sentence = next(t for c in doc["cases"] for t in c["turns"] if len(_norm_t169(t)) >= 8)
+    fake = tmp_path / "additions_p16.json"
+    fake.write_text(json.dumps({"additions": [
+        {"scheme_no": "GEN-001", "variant": sentence, "gap": "寒暄与致谢", "kind": "example",
+         "reason": "反向用例"}]}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "P16_ADDITIONS_PATH_T169", fake)
+    hits = _p16_copy_hits_t169()
+    assert any("p12_cases.json" in h for h in hits)

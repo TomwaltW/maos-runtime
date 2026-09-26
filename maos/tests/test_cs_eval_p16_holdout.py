@@ -414,3 +414,45 @@ def test_near_dup_detector_judges_negative_t187():
     fake = [("X", 0, "今天能发货吗")]
     assert _near_dups_t187(fake, [("ref:1", "今天能发货吗？")]) == [("X", 1, "ref:1")]
     assert _near_dups_t187(fake, [("ref:1", "明天可以发出吗")]) == []
+
+
+# ---------------------------------------------------------------------------
+# 真前台（整合期 p16 主会话接上，2026-09-26 首跑 = 唯一一次验收读数）
+# ---------------------------------------------------------------------------
+#: 首跑实测（integrate/p16 合入三轨、撤掉两条撞本集的增补之后；夹具端口、零模型）：
+#: intent 138/154 = 0.8961 ✓、route 137/154 = 0.8896 ✓、handoff 45/48 = 0.9375 ✓、编造 0 ✓、错状态 0 ✓、
+#: 措辞 1.0 ✓ —— 预登记门槛**全部达到**。篇级自信答错（T189）3 轮（见 DECISIONS integrate-p16）；错别字轮 23 轮错 5。
+#: 读过之后本集不再是盲的，这里只钉安全不变量、首跑地板与自信答错上限（只许降不许升）。
+MEASURED_P16_HOLDOUT = {"turns": 154, "intent_hits": 138, "route_hits": 137,
+                        "handoff_expected": 48, "handoff_caught": 45, "confident_wrong_max": 3}
+
+
+def _real_desk_factory_p16h(ports):
+    from maos.core.store import SqliteStore
+    from maos.domain.cs.corpus import seed_cs_kb
+    from maos.domain.cs.desk import CsConfig, FrontDesk
+
+    store = SqliteStore(":memory:")
+    seed_cs_kb(store)
+    return FrontDesk(store, CsConfig(tenants={"wk_eval": "tnt-demo"}, handoff_target=None),
+                     **ports)
+
+
+def _aggregate_only_p16h(r) -> str:
+    ids = sorted({f"{m.case_id}#{m.turn}" for m in r.failures})
+    return (f"intent {r.intent_hits}/{r.turns} route {r.route_hits}/{r.turns} "
+            f"handoff {r.handoff_caught}/{r.handoff_expected} fabrication {r.status_fabrication} "
+            f"wrong_status {r.wrong_status} confident_wrong {r.confident_wrong}; "
+            f"没对上的轮（只列 id）：{', '.join(ids)}")
+
+
+def test_real_desk_p16_holdout_meets_preregistration_and_floor_p16h():
+    r = evaluate.run_eval_p13(_real_desk_factory_p16h, _cases_t187())
+    assert r.turns == MEASURED_P16_HOLDOUT["turns"]
+    assert r.meets(P16_PREREGISTERED_THRESHOLDS), _aggregate_only_p16h(r)
+    assert r.status_fabrication == 0 and r.wrong_status == 0, _aggregate_only_p16h(r)
+    assert r.confident_wrong <= MEASURED_P16_HOLDOUT["confident_wrong_max"], _aggregate_only_p16h(r)
+    assert r.handoff_expected == MEASURED_P16_HOLDOUT["handoff_expected"], _aggregate_only_p16h(r)
+    assert r.intent_hits >= MEASURED_P16_HOLDOUT["intent_hits"], _aggregate_only_p16h(r)
+    assert r.route_hits >= MEASURED_P16_HOLDOUT["route_hits"], _aggregate_only_p16h(r)
+    assert r.handoff_caught >= MEASURED_P16_HOLDOUT["handoff_caught"], _aggregate_only_p16h(r)

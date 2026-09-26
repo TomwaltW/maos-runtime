@@ -165,8 +165,9 @@ def test_holdout_outputs_ids_never_sentences_t177(cli_t177, capsys, tmp_path, mo
     assert [r["path"] for r in runs] == (["p12", "p13"] if set_name == "holdout12" else ["p13"])
     for run in runs:
         assert set(run) == {"path", "cases", "turns", "metrics", "meets", "shortfalls",
-                            "misses", "miss_by_problem"}
+                            "misses", "miss_by_problem", "confident_wrong_ids"}  # p16 T189
         assert all(isinstance(v, (int, float)) for v in run["metrics"].values())
+        assert all(re.fullmatch(r"T177H-00[12]#\d", m) for m in run["confident_wrong_ids"])
 
 
 @pytest.mark.parametrize("set_name", ["holdout12", "holdout14"])

@@ -3726,3 +3726,12 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-26 | p16 | 放开到什么程度 | 不删原三类判据与基线指纹：没声明的增补照旧判红；新增补只许补给类别表里的那几篇、每篇 ≤ 8；防抄从「只比 p12 开发集」扩到全部评测集（含留出集），撞上整条撤掉 | 放开的是「能补哪些类」，不是「能不能悄悄补」；留出集不许被增补抄到 |
 | 2026-09-26 | p16 | **更正 integrate-p15 一行**：p15 留出集四轮「退货 + 查到单」期望 refund_request、前台给 needs_order_lookup，p15 收尾时记成「p13 契约的退款桥只接退款诉求，期望写反」—— 这是错的 | 查实：p13 契约 §2 第 6 步 d 退款 / 退货都走预检；前台调预检传的是绑定的 query_key（DECISIONS task-t174 L2-1、p14 那条更正），而 p15 留出集的 fixtures.precheck 按 display_no 写键，两者不同 → 夹具预检查不到 → ok=False → needs_order_lookup。根因是夹具口径没写进契约（p13 契约 §3 的例子两号相同）；p16 契约把口径写明，p15 留出集文件不改 | 前台行为与契约一致；记账要照实改正 |
 | 2026-09-26 | p16 | 门槛 | 同 p15：intent 0.85 / route 0.85 / handoff 0.90 / 编造 0 / 措辞 1.0 / 错状态 0；契约钉子 test_cs_contract_p16.py | 预登记 |
+
+## task-t189（篇级零自信答错，2026-09-26）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-26 | p16 | 计数与 id 怎么存 | EvalReport 新增带缺省的字段 confident_wrong_turns（`<case id>#<轮次>` 元组），confident_wrong 是它的长度（property），confident_wrong_ids() 返回它；EvalReportP13 继承 | 计数与 id 不会各记一份而对不上；带缺省，p12 / p13 旧的手造报告不用改 |
+| 2026-09-26 | p16 | 「route=answer」指期望还是实得 | 按**实得** route=answer 判（期望转人工、实得却自信作答且意图错，也计）；前台出错的轮不计（没有实得出口，已记 error） | 契约说的是前台「自信答」出去的轮；兜底 / 转人工 / 追问 / 静默不计 |
+| 2026-09-26 | p16 | 要不要进 EvalMiss.problems / miss_by_problem | 不进：它的轮必然已带 intent 或 cite 问题，另列 confident_wrong_ids；failures 与 cs_eval 的 misses / miss_by_problem 逐字不变 | 不动既有输出口径；只报不拦（THRESHOLD_KEYS / P13_THRESHOLD_KEYS / meets 不变） |
+| 2026-09-26 | p16 | p12 开发集的 0 钉在哪 | test_cs_eval_p12_t169.py 是主会话的（契约 §4），p12 开发集真前台的 confident_wrong == 0 钉在本轨新文件 maos/tests/test_cs_eval_confident_wrong_t189.py；p13 开发集的 0 加在 test_cs_eval_p13_t174.py 零失误那条里 | 白名单；实测两份开发集都是 0 —— KNOWN_GAPS 那一轮 CS12-044#1 实得出口是转人工，不计入，无须另钉 |

@@ -64,6 +64,7 @@ def test_p13_dev_set_has_no_misses_t174():
     assert report.failures == (), _describe_t174(report)
     assert report.wrong_status == 0 and report.status_fabrication == 0
     assert report.metrics()["wording_accuracy"] == 1.0
+    assert report.confident_wrong == 0 and report.confident_wrong_ids() == ()  # p16 T189：篇级
 
 
 def test_p13_dev_set_meets_file_thresholds_t174():

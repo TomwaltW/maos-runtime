@@ -3726,3 +3726,15 @@ Planner 建议（知识层驱动必要任务 / 审批人 / 异常分支）与对
 | 2026-09-26 | p16 | 放开到什么程度 | 不删原三类判据与基线指纹：没声明的增补照旧判红；新增补只许补给类别表里的那几篇、每篇 ≤ 8；防抄从「只比 p12 开发集」扩到全部评测集（含留出集），撞上整条撤掉 | 放开的是「能补哪些类」，不是「能不能悄悄补」；留出集不许被增补抄到 |
 | 2026-09-26 | p16 | **更正 integrate-p15 一行**：p15 留出集四轮「退货 + 查到单」期望 refund_request、前台给 needs_order_lookup，p15 收尾时记成「p13 契约的退款桥只接退款诉求，期望写反」—— 这是错的 | 查实：p13 契约 §2 第 6 步 d 退款 / 退货都走预检；前台调预检传的是绑定的 query_key（DECISIONS task-t174 L2-1、p14 那条更正），而 p15 留出集的 fixtures.precheck 按 display_no 写键，两者不同 → 夹具预检查不到 → ok=False → needs_order_lookup。根因是夹具口径没写进契约（p13 契约 §3 的例子两号相同）；p16 契约把口径写明，p15 留出集文件不改 | 前台行为与契约一致；记账要照实改正 |
 | 2026-09-26 | p16 | 门槛 | 同 p15：intent 0.85 / route 0.85 / handoff 0.90 / 编造 0 / 措辞 1.0 / 错状态 0；契约钉子 test_cs_contract_p16.py | 预登记 |
+
+## task-t187（p16 盲写留出集，2026-09-26）
+
+| 日期 | Phase | 情境 | 选择 | 理由 |
+|---|---|---|---|---|
+| 2026-09-26 | p16 | 契约要求九类各 ≥ 5 轮、错别字按 tag 计数钉住，但 case 的 tags 是整段会话级，数不出「轮」 | 留出集每个 case 另带两个与 turns 等长的数组：gaps（该轮所属 GAP_CLASSES_P16 类别）与 typos（homophone / shape / pinyin / missing_extra）；tags 照写 typo 与 typo-种类，测试钉两者一致；evaluate.load_cases 忽略这两个键 | 成本最低、可逆；不动 evaluate.py（T189 的文件）也能按轮计数 |
+| 2026-09-26 | p16 | 办具体订单的退货 / 退款诉求（退款桥各出口）期望意图取哪个：契约没钉 refund_payment 还是 return_exchange | 一律 return_exchange（契约 p12 §1.5 RET-005「为某个订单申请退货 / 退款」的 intent）；退款进度类（PAY-003）在 p12 路径取 refund_payment | 照话术目录冻结的意图；p13 路径「带单号问退款进度」是否进预检契约没说清，本集不出这种题 |
+| 2026-09-26 | p16 | 「四份旧留出集」指哪四份 | p12 / p14 / p15 的 holdout_cases.json 加 scenarios/cs/kb/cs_scripts_holdout.json（T168 检索泛化集）；后者形状未读，棘轮递归取其全部字符串（跳过下划线开头的键）比对 | 契约只说「四份」，按目录现有文件对上；取全部字符串只会更严 |
+| 2026-09-26 | p16 | 夹具口径补丁怎么钉 | 退款桥 case 的 fixtures.precheck 一律按 query_key 写键（含 query_key ≠ display_no 的两例）；另留一例故意按 display_no 写键（tag precheck_key_patch），期望 needs_order_lookup；测试只放过这一种例外 | 契约 §2 T187 原文：按 display_no 写的预检夹具查不到 → ok=False → needs_order_lookup |
+| 2026-09-26 | p16 | 含附录 A 地板说法的日常问法（问人工客服上班时间、英文要 a real person） | 期望照地板转人工 requested / handoff_request，不按话术篇（GEN-003）答 | 附录 A：含地板说法的轮一律转人工，召回一个字不许收窄 |
+| 2026-09-26 | p16 | 英文政策问题与英文闲聊 | 期望 fallback / unknown（连续两轮 → repeated_fallback）；英文只在查单、追问、要真人上期望非兜底 | p13 契约 §0：不买英文话术库，英文政策问题走英文兜底 |
+| 2026-09-26 | p16 | 盲写时看到的非契约信息 | 开工时为对齐账本格式读了 BACKLOG 尾部，里面有 integrate-p15 归纳的 p15 误判**类别**（无句子）；写句时刻意避开与那些类别描述里的说法贴近的措辞；近重复棘轮首跑撞上 4 轮（只见 id），整句改写、未看对方句子 | 如实记录盲度；撞上即整句重写，不是改几个字凑过 |

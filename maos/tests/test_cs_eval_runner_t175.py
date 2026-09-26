@@ -1291,4 +1291,5 @@ def test_p12_run_eval_still_returns_the_p12_report_t175():
     report = run_eval(Echo, cases)
     assert type(report) is EvalReport
     assert set(report.metrics()) == {"intent_accuracy", "route_accuracy", "handoff_recall",
-                                     "status_fabrication", "cite_accuracy"}
+                                     "status_fabrication", "cite_accuracy",
+                                     "confident_wrong"}  # p16 T189：多一项，只报不拦

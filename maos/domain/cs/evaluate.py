@@ -49,6 +49,14 @@ expect 多四个可选键 ``lang`` / ``lookup``（查单结果）/ ``ask``（追
 另记 ``lang_accuracy`` / ``lookup_accuracy`` / ``ask_accuracy`` / ``cite_accuracy``（给了才比）：
 p13 门槛文件里没写它们时**只报不拦**（DECISIONS task-t175）。p12 的 :func:`load_cases` /
 :func:`run_eval` 行为不变。
+
+## p16（review/p16-cs-contracts.md §2 T189）· 篇级「零自信答错」
+
+两个跑批都另记 ``confident_wrong``：**实得** route=answer 的轮里，意图错、或期望给了 ``cite`` 而
+实得引用不含该篇，计 1（一轮最多计 1）。兜底 / 转人工 / 追问 / 静默的轮不计；没给 cite 期望的轮
+只看意图；前台出错（error）的轮不计（没有实得出口）。:meth:`EvalReport.confident_wrong_ids` 给出
+``<case id>#<轮次>``。它进 ``metrics()`` 与 ``describe()``，但**不进门槛**（THRESHOLD_KEYS /
+P13_THRESHOLD_KEYS 与 ``meets`` 的判定不变），由各评测集的测试按 0 钉住。
 """
 
 from __future__ import annotations
@@ -238,6 +246,16 @@ class EvalReport:
     cite_hits: int
     status_fabrication: int
     failures: tuple[EvalMiss, ...] = field(default_factory=tuple)
+    #: p16 T189：篇级「自信答错」的轮（``<case id>#<轮次>``，按跑批顺序）；计数见 :attr:`confident_wrong`。
+    confident_wrong_turns: tuple[str, ...] = ()
+
+    @property
+    def confident_wrong(self) -> int:
+        """实得 route=answer 的轮里意图错、或给了 cite 期望而引用不含该篇的轮数（只报不拦）。"""
+        return len(self.confident_wrong_turns)
+
+    def confident_wrong_ids(self) -> tuple[str, ...]:
+        return tuple(self.confident_wrong_turns)
 
     @property
     def intent_accuracy(self) -> float:
@@ -260,7 +278,8 @@ class EvalReport:
                 "route_accuracy": self.route_accuracy,
                 "handoff_recall": self.handoff_recall,
                 "status_fabrication": self.status_fabrication,
-                "cite_accuracy": self.cite_accuracy}
+                "cite_accuracy": self.cite_accuracy,
+                "confident_wrong": self.confident_wrong}
 
     def shortfalls(self, thresholds: Mapping[str, Any]) -> list[str]:
         """没达标的指标，一条一句；空列表 = 全部达标。
@@ -292,6 +311,8 @@ class EvalReport:
         lines = [" ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
                           for k, v in self.metrics().items())
                  + f" cases={self.cases} turns={self.turns}"]
+        if self.confident_wrong_turns:
+            lines.append("  confident_wrong: " + " ".join(self.confident_wrong_turns))
         for miss in self.failures:
             lines.append(f"  {miss.case_id}#{miss.turn} {','.join(miss.problems)}"
                          f" expected={miss.expected} actual={miss.actual}")
@@ -569,6 +590,15 @@ def _actual_of(res: Any) -> dict[str, Any]:
             "citations": list(citations), "reply_text": res.reply_text}
 
 
+def _confident_wrong(exp: EvalExpect, got: Mapping[str, Any], tenant: str) -> bool:
+    """p16 T189：实得 route=answer，且意图错、或期望给了 cite 而实得引用不含该篇。"""
+    if got["route"] != ROUTE_ANSWER:
+        return False
+    if got["intent"] != exp.intent:
+        return True
+    return bool(exp.cite) and cite_doc_id(tenant, exp.cite) not in got["citations"]
+
+
 def run_eval(desk_factory: Callable[[], Any], cases, *,
              tenant_map: Mapping[str, str] | None = None) -> EvalReport:
     """每个 case 一个新前台、一段新会话，逐轮比对，返回报告。
@@ -584,6 +614,7 @@ def run_eval(desk_factory: Callable[[], Any], cases, *,
     cite_expected = cite_hits = 0
     fabrication = 0
     failures: list[EvalMiss] = []
+    confident_wrong: list[str] = []
 
     for case in cases:
         desk = desk_factory()
@@ -619,6 +650,8 @@ def run_eval(desk_factory: Callable[[], Any], cases, *,
                 if _fabricates_status(got["reply_text"]):
                     fabrication += 1
                     problems.append("status_fabrication")
+                if _confident_wrong(exp, got, tenant):
+                    confident_wrong.append(f"{case.id}#{i}")
             if exp.cite:
                 cite_expected += 1
                 if got is not None and cite_doc_id(tenant, exp.cite) in got["citations"]:
@@ -634,7 +667,7 @@ def run_eval(desk_factory: Callable[[], Any], cases, *,
                       route_hits=route_hits, handoff_expected=handoff_expected,
                       handoff_caught=handoff_caught, cite_expected=cite_expected,
                       cite_hits=cite_hits, status_fabrication=fabrication,
-                      failures=tuple(failures))
+                      failures=tuple(failures), confident_wrong_turns=tuple(confident_wrong))
 
 
 # ===========================================================================
@@ -913,6 +946,7 @@ def run_eval_p13(desk_factory: Callable[[Mapping[str, Any]], Any], cases, *,
         "fabrication", "wording_expected", "wording", "wrong_status", "lang_expected", "lang",
         "lookup_expected", "lookup", "ask_expected", "ask")}
     failures: list[EvalMiss] = []
+    confident_wrong: list[str] = []
 
     for case in cases:
         tenant = tmap.get(case.effective_open_kfid, "")
@@ -960,6 +994,8 @@ def run_eval_p13(desk_factory: Callable[[Mapping[str, Any]], Any], cases, *,
                 if _wrong_status(got, rows, case.fixtures):
                     n["wrong_status"] += 1
                     problems.append("wrong_status")
+                if _confident_wrong(exp, got, tenant):
+                    confident_wrong.append(f"{case.id}#{i}")
                 checks = (
                     ("cite", exp.cite, lambda: cite_doc_id(tenant, exp.cite) in got["citations"]),
                     ("lang", exp.lang, lambda: got["lang"] == exp.lang),
@@ -984,6 +1020,7 @@ def run_eval_p13(desk_factory: Callable[[Mapping[str, Any]], Any], cases, *,
         handoff_expected=n["handoff_expected"], handoff_caught=n["handoff_caught"],
         cite_expected=n["cite_expected"], cite_hits=n["cite"],
         status_fabrication=n["fabrication"], failures=tuple(failures),
+        confident_wrong_turns=tuple(confident_wrong),
         wording_expected=n["wording_expected"], wording_hits=n["wording"],
         wrong_status=n["wrong_status"], lang_expected=n["lang_expected"], lang_hits=n["lang"],
         lookup_expected=n["lookup_expected"], lookup_hits=n["lookup"],

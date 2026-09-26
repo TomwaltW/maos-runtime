@@ -17,6 +17,8 @@
 **只出聚合数与 id**（契约 §0「留出集是盲的」，dev 集同口径）：各指标、``meets``、没达标的
 门槛说明（只含指标名与数字）、没对上的轮只列 ``<case id>#<轮次>``、按问题种类的计数。
 客户原文、回复原文、期望 / 实得明细、前台异常原文一律不出 —— stdout、``--json``、``--out`` 同口径。
+p16 T189：每条路径另报篇级「零自信答错」—— 计数在 ``metrics.confident_wrong``，轮次在
+``confident_wrong_ids``（同样只列 ``<case id>#<轮次>``）；它只报不拦，不影响 ``meets`` 与退出码。
 本脚本的作者没有打开过任何留出集文件：它们只按下面的路径常量加载。
 
 ``--db PATH``：本次运行的所有前台共享一个 ``SqliteStore(PATH)``（话术库在开跑前 seed 一次，
@@ -160,9 +162,17 @@ def _run_summary(path_name: str, report: evaluate.EvalReport, thresholds: Mappin
     metrics = {k: (round(v, 4) if isinstance(v, float) else int(v))
                for k, v in report.metrics().items()}
     shortfalls = report.shortfalls(thresholds)
+    confident_wrong = [_back_id(turn_id, back) for turn_id in report.confident_wrong_ids()]
     return {"path": path_name, "cases": int(report.cases), "turns": int(report.turns),
             "metrics": metrics, "meets": not shortfalls, "shortfalls": list(shortfalls),
-            "misses": misses, "miss_by_problem": dict(sorted(by_problem.items()))}
+            "misses": misses, "miss_by_problem": dict(sorted(by_problem.items())),
+            "confident_wrong_ids": confident_wrong}
+
+
+def _back_id(turn_id: str, back: Mapping[str, str]) -> str:
+    """``<改写后 case id>#<轮次>`` → ``<原 case id>#<轮次>``（只留 id 与轮次）。"""
+    case_id, _, turn = str(turn_id).rpartition("#")
+    return f"{back.get(case_id, case_id)}#{int(turn)}"
 
 
 def runs_meet(runs: Sequence[Mapping[str, Any]]) -> bool:
@@ -284,6 +294,9 @@ def render_text(results: Sequence[Mapping[str, Any]], code: int) -> str:
                 counts = " ".join(f"{k}={v}" for k, v in run["miss_by_problem"].items())
                 lines.append(f"    misses ({len(run['misses'])}; {counts}): "
                              + " ".join(run["misses"]))
+            if run["confident_wrong_ids"]:
+                lines.append(f"    confident_wrong ({len(run['confident_wrong_ids'])}): "
+                             + " ".join(run["confident_wrong_ids"]))
     counted = [r for r in results if r["status"] != STATUS_SKIP]
     lines.append(f"RESULT: {sum(r['status'] == STATUS_PASS for r in counted)}/{len(counted)} sets meet"
                  f" ({sum(r['status'] == STATUS_SKIP for r in results)} skipped) exit={code}")

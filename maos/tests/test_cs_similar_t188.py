@@ -9,15 +9,19 @@
   其余代码与阈值一字不动；「增补后」= 仓库里的话术库。两边都跑整条 p12 路径前台（不注入端口：
   触发词 → 词法 → 同义归一 → 近邻），一句一个新库。
 * 「答对」= route + intent + 转人工原因 + 引用的那一篇都对（篇级，p16 的「零自信答错」口径）。
-* 近邻阈值 / 差距重扫（开发集 + 自写句，扫描表见 docs/DECISIONS.md task-t188）：0.25–0.34 × 差距 ≥ 0.10
-  一段读数完全相同，差距 0.05 时自写句里多出一句经近邻引错篇（:data:`MARGIN_PROBE_T188`）。取值不变
+* 近邻阈值 / 差距重扫（开发集 + 自写句 + 复核轮的 173 句共享词汇探针，扫描表见 docs/DECISIONS.md
+  task-t188）：正例读数在 0.25–0.34 一段相同，但门槛低于 0.34 时反例上近邻开始启用（0.30 → 2 句、0.28 → 6、
+  0.25 → 8），差距 0.05 配门槛 0.25 时自写句里多出一句经近邻引错篇（:data:`MARGIN_PROBE_T188`）。取值不变
   （0.34 / 0.10），本文件钉「重扫之后仍是这两个数」与那句探针的反向。
+* 复核轮：增补与自写句之间也跑 T169 的三道防抄判据（自写句不许是增补的近似抄本）；生成器的声明自检
+  （``scripts/gen_cs_kb.py`` 的 ``merged_scripts``）逐条有反例。
 
 实测数字写在各常量旁；地板只许抬。
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 
@@ -30,6 +34,7 @@ from maos.domain.cs.corpus import seed_cs_kb
 from maos.domain.cs.desk import CsConfig, FrontDesk
 from maos.domain.cs.types import CHANNEL_WECHAT_KF
 from maos.ingress.contracts import InboundMessage
+from maos.tests import test_cs_eval_p12_t169 as t169
 from maos.tests.test_cs_eval_p12_t169 import GAP_CLASSES_P16
 
 TENANT_T188 = "tnt-demo"
@@ -64,7 +69,7 @@ CLASS_SENTENCES_T188: dict[str, tuple[tuple[str, str], ...]] = {
         ("可以换成我指定的快递吗", "LOG-002"),
     ),
     "运费与包邮": (
-        ("邮费怎么算的", "LOG-003"), ("这个包邮不包邮", "LOG-003"), ("运费要另外付吗", "LOG-003"),
+        ("寄过来还得另外给钱不", "LOG-003"), ("这个包邮不包邮", "LOG-003"), ("运费要另外付吗", "LOG-003"),
         ("买多少钱可以免邮", "LOG-003"), ("下单要付快递费吗", "LOG-003"), ("运费可以减免吗", "LOG-003"),
         ("退货的邮费谁来付", "RET-004"), ("退回来的快递费谁负责", "RET-004"),
         ("退货运费需要我承担吗", "RET-004"), ("有运费险的话退货免费吗", "RET-004"),
@@ -74,7 +79,7 @@ CLASS_SENTENCES_T188: dict[str, tuple[tuple[str, str], ...]] = {
         ("我的包裹咋还没到", "LOG-004"), ("物流一直停着没更新", "LOG-004"),
         ("帮我查一下快递到哪儿了", "LOG-004"), ("地址填错了想改一下", "LOG-005"),
         ("能不能把收货人改一下", "LOG-005"), ("我想改一下送货时间", "LOG-005"),
-        ("快递显示签收了但我没拿到", "LOG-006"), ("包裹里的东西摔坏了", "LOG-006"),
+        ("明明没收到货却说已经送达", "LOG-006"), ("包裹里的东西摔坏了", "LOG-006"),
         ("快递丢了咋办", "LOG-006"), ("退款到现在还没到账", "PAY-003"), ("我申请的退款钱呢", "PAY-003"),
         ("退的钱迟迟没收到", "PAY-003"), ("被扣了双份钱", "PAY-004"), ("支付一直失败怎么回事", "PAY-004"),
     ),
@@ -82,7 +87,7 @@ CLASS_SENTENCES_T188: dict[str, tuple[tuple[str, str], ...]] = {
         ("退款退到哪里呀", "PAY-001"), ("退款是原路退回吗", "PAY-001"), ("退款多久能到账", "PAY-001"),
         ("申请退款后钱几天能回来", "PAY-001"), ("退款会退到微信零钱吗", "PAY-001"),
         ("退款到账要多长时间", "PAY-001"),
-        ("能用微信付款吗", "PAY-002"), ("支持信用卡吗", "PAY-002"), ("可以货到付款不", "PAY-002"),
+        ("能用微信付款吗", "PAY-002"), ("刷卡付钱行不行", "PAY-002"), ("可以货到付款不", "PAY-002"),
         ("有哪些付款方式", "PAY-002"), ("能不能用花呗", "PAY-002"),
     ),
     "开票": (
@@ -129,13 +134,17 @@ NEGATIVES_T188: tuple[str, ...] = (
 
 #: 每类「答对」的实测数（增补前 → 增补后）。增补后的数是地板，只许抬；增补前是去掉声明增补的
 #: 固定话术库上的读数（基线说法由 T169 的指纹钉住，所以它是确定的），逐字钉住。
-RECALL_BEFORE_T188 = {"寒暄与致谢": 10, "客服时间": 9, "发货时效与快递": 7, "运费与包邮": 7,
-                      "订单异常要查单": 11, "退款规则与支付": 11, "开票": 9, "退换货政策": 12,
+RECALL_BEFORE_T188 = {"寒暄与致谢": 10, "客服时间": 9, "发货时效与快递": 7, "运费与包邮": 6,
+                      "订单异常要查单": 11, "退款规则与支付": 10, "开票": 9, "退换货政策": 12,
                       "办具体退货退款": 8}
-RECALL_AFTER_FLOOR_T188 = {"寒暄与致谢": 10, "客服时间": 11, "发货时效与快递": 7, "运费与包邮": 8,
-                           "订单异常要查单": 12, "退款规则与支付": 11, "开票": 9, "退换货政策": 12,
+RECALL_AFTER_FLOOR_T188 = {"寒暄与致谢": 10, "客服时间": 9, "发货时效与快递": 7, "运费与包邮": 7,
+                           "订单异常要查单": 11, "退款规则与支付": 10, "开票": 9, "退换货政策": 12,
                            "办具体退货退款": 8}
-#: 合计：增补前 84 / 103、增补后 88 / 103；落兜底的 12 → 8。
+#: 合计：增补前 82 / 103、增补后 83 / 103；落兜底的 14 → 13。
+#: 复核轮（L2-2 / L3-1）：首版读数 84 → 88 里有一句是增补的近似抄本（中午客服休息吗 ~ 放假期间客服休息吗），
+#: 另有三句自写句与增补撞 T169 的防抄判据，换成了另写的句子；撤掉 37 条「单个生僻词就够过词法门槛」的增补后，
+#: 独立量得的增益只剩 +1（这个包邮不包邮）。增益小是实情：词法二元组重排对例句没有「须含本篇核心词」的约束，
+#: 例句一多就把只沾一个词的无关句拉进来（BACKLOG task-t188），本轨只能撤增补、不能改词法。
 
 #: 词法检索（不是近邻）在自写句上**增补前就有**的答错 / 转错篇（七句，增补前后逐句相同，近邻一次都没启用）：
 #: 「多长时间」把发货问法拉到退款时长篇、「指定 / 别的快递」被查单篇的「快递」拉走、「快递费」被退货运费篇
@@ -154,6 +163,53 @@ KNOWN_LEXICAL_NEGATIVE_ANSWERS_T188 = frozenset({
 #: 差距探针：本句在缺省门槛（0.34 / 0.10）下落兜底；差距放到 0.05（门槛 0.25）时经近邻被引到
 #: LOG-006（该是 LOG-004）—— 路由与意图都对、篇错了，正是 p16 要收的篇级自信答错。
 MARGIN_PROBE_T188 = ("我的包裹咋还没到", "LOG-004", "LOG-006")
+
+#: 与增补 / 话术共享词汇、但大多不是来问店铺政策的说法（复核 L3-1：单个生僻词就能让词法过 0.25）。
+#: 按增补的用词反着写：把增补里的词拿出来放进闲聊 / 别的领域 / 去掉核心词的残句。复核轮用它们逐批定位并整条
+#: 撤掉了 37 条增补（DECISIONS task-t188）；173 句全体在增补前后逐句对照，变了的只许是下面两张封闭表。
+VOCAB_PROBES_T188: tuple[str, ...] = (
+    "online game好玩吗", "express yourself", "放假期间去哪玩好", "大半夜的睡不着", "学校宿舍几点熄灯", "不合身的衣服怎么改", "开线了怎么缝",
+    "invoice是什么意思", "退款周期是什么意思", "有色差吗", "清蒸蟹蟹好吃吗", "蟹蟹怎么做", "嗨嗨嗨今天好开心", "哈罗单车怎么骑", "好滴我去睡觉了",
+    "拜拜了您嘞这首歌", "预售的票还有吗", "海外生活怎么样", "驿站在哪里", "吊牌价是多少", "凑单攻略有吗", "先用后付是什么", "搬家公司怎么找", "外包装好看吗",
+    "学校放假了", "信用卡分期划算吗", "支付宝怎么注册", "电子票怎么检票", "报销流程是什么", "页面打不开", "好不好使", "配送员工资多少", "签收人是谁",
+    "单号是什么意思", "下线了吗游戏", "收件人写谁", "手机卡住了", "钱包丢了", "不喜欢这个颜色", "发哪个好呢", "嗨嗨你好帅", "ok的我知道了", "好滴好滴",
+    "问题解决了吗数学", "主播什么时候下线", "速度与激情好看吗", "预售款手机值得买吗", "不会要下雨吧", "海外代购靠谱吗", "我的件衣服好看吗", "等了好久了公交还不来",
+    "我搬家了好累", "人不在家怎么浇花", "改天再约吧", "快递员工资高吗", "外包装盒能回收吗", "驿站老板人好吗", "支付不了房租咋整", "同一首歌听了好几次",
+    "重复播放怎么关", "原路返回会不会迷路", "时效性是什么意思", "信用卡怎么还款", "支付宝余额宝收益多少", "电子票据是什么", "纸质书还是电子书好",
+    "报销用的车票怎么打印", "拆开看了一眼好看", "不喜欢了怎么办", "教我一下怎么画画呗", "页面在哪个地方设置", "单号填错了怎么办", "流程图怎么画",
+    "我要这一单的游戏皮肤", "麻烦帮我走个流程", "先用后付靠谱吗", "物流专业好就业吗", "地址栏怎么清空", "扣了分怎么办驾照", "钱扣了还显示没付款怎么回事",
+    "哈罗哈罗这个词什么意思", "ok没问题了我去上课", "好滴那先这样吧我去吃饭", "谢啦兄弟帮我占座", "一般啥时候下线打游戏", "多快能跑完五公里", "网速怎么样啊",
+    "不会要等很久吧排队", "能指定座位吗电影院", "海外留学要多少钱", "范围是什么意思", "免个单呗老板", "凑单满减怎么算", "来回的车费谁出", "自己掏钱请客吗",
+    "商家入驻怎么弄", "卡着不动了电脑", "帮我看看这道题", "我的狗咋还在叫", "一直不动啥情况鼠标", "要改一下作文", "收件箱满了", "写成别人的名字了",
+    "来得及不赶火车", "外面都烂了这个苹果", "放驿站的东西会丢吗", "没拿到奖学金", "还没到我家呢朋友", "说好的聚餐怎么还没", "显示完成了任务",
+    "订单没了是啥意思外卖", "老是提示内存不足", "没付款的外卖", "原路走回去吗", "规定是什么", "只能用手机吗", "纸质版的书有吗", "填啥好呢名字", "吊牌怎么剪",
+    "难道不能退吗这个人", "怎么弄啊这个游戏", "单号是什么意思呀", "走什么流程结婚", "不要了你拿走吧", "哈喽宝贝今天吃啥", "你们老板在吗", "ok那我明天再说",
+    "好的拜拜晚安", "谢啦今天的电影票", "客服这个工作累吗", "发出去的朋友圈能删吗", "海外能不能用微信", "配送范围是什么意思数学", "运费险是什么东西",
+    "包邮区是哪些省", "额外的作业要做吗", "免个费呗朋友", "退回去的礼物怎么说", "谁承担责任交通事故", "物流行业前景怎么样", "快递到哪儿了这首歌",
+    "我的件毛衣起球了", "物流单是什么", "收货地址怎么写英文", "收件地址用英语怎么说", "改地址要去派出所吗", "外包装设计怎么做", "驿站怎么加盟", "签收是什么意思",
+    "退款显示完成了是真的吗", "退的钱怎么记账", "到卡上的工资", "扣了钱的罚单", "提示失败怎么解决手机", "显示没付款的发票", "重复的句子怎么删",
+    "原路返回是什么意思", "退款时效是什么意思", "信用卡分期利息多少", "先用后付是不是贷款", "纸质发票和电子发票区别", "开发票要交税吗", "没拆封的书能送人吗",
+    "吊牌是什么", "不喜欢了就分手吧", "退货怎么弄啊这个成语", "教我一下怎么退烧呗", "退货在哪个页面点不出来", "退货地址在哪看不懂", "寄回的信单号填哪儿",
+    "制量是什么词", "我要退这一单外卖", "我不要了你给我吧",
+)
+#: 增补后**新答了**（增补前兜底 / 转人工）的探针句 → 引用的那篇。封闭表，逐句判过「答这一篇不算答错」：
+#: 招呼句答招呼、收尾句答收尾、问先用后付 / 退款时效 / 退货页面与地址的本来就是在问这几篇。
+ACCEPTED_NEW_ANSWERS_T188: dict[str, str] = {
+    "嗨嗨你好帅": "GEN-001", "好滴那先这样吧我去吃饭": "GEN-002",
+    "先用后付是什么": "PAY-002", "先用后付靠谱吗": "PAY-002", "先用后付是不是贷款": "PAY-002",
+    "退款时效是什么意思": "PAY-001",
+    "退货在哪个页面点不出来": "RET-002", "退货地址在哪看不懂": "RET-002",
+}
+#: 增补后**新转人工**（增补前兜底）的探针句 → 转人工所据的那篇。p16 契约 §2 T189：转人工不计自信答错
+#: （客户被交给真人，不拿到不对题的政策话术），但仍是误命中，记 BACKLOG task-t188；封闭表。
+NEW_HANDOFFS_T188: dict[str, str] = {
+    "卡着不动了电脑": "LOG-004", "一直不动啥情况鼠标": "LOG-004",
+    "要改一下作文": "LOG-005", "写成别人的名字了": "LOG-005", "收件地址用英语怎么说": "LOG-005",
+    "外面都烂了这个苹果": "LOG-006", "放驿站的东西会丢吗": "LOG-006",
+    "还没到我家呢朋友": "PAY-003", "显示完成了任务": "PAY-003", "退款显示完成了是真的吗": "PAY-003",
+    "老是提示内存不足": "PAY-004", "没付款的外卖": "PAY-004", "显示没付款的发票": "PAY-004",
+    "我要退这一单外卖": "RET-005",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +324,28 @@ def test_sentences_are_self_written_and_classed_t188():
         assert text not in dev, text
         assert not (scripts.tail_forms(text) & registered), text
         assert not re.search(r"[0-9０-９]", text), text
+    assert not _copy_pairs_t188(texts, [e["variant"] for e in _additions_t188()])
+
+
+def _copy_pairs_t188(texts, variants) -> list[tuple[str, str]]:
+    """T169 的三道防抄判据（≥5 字片段 / 一字之差 / 换词），两个方向都查：增补 vs 自写句。"""
+    norm_texts = [t169._norm_t169(t) for t in texts]
+    norm_vars = [t169._norm_t169(v) for v in variants]
+
+    def hits(item, pool):
+        return (t169._eval_fragments_t169(item, turns=pool) or t169._near_copies_t169(item, turns=pool)
+                or t169._word_swap_copies_t169(item, turns=pool))
+
+    pairs = [(v, "增补→自写") for v in variants if hits(v, norm_texts)]
+    pairs += [(t, "自写→增补") for t in texts if hits(t, norm_vars)]
+    return pairs
+
+
+def test_copy_check_between_additions_and_self_written_can_fail_t188():
+    """反向：复核 L2-2 点名的三对近似抄本，这道查法必须判出来。"""
+    assert _copy_pairs_t188(["中午客服休息吗"], ["放假期间客服休息吗"])
+    assert _copy_pairs_t188(["快递显示签收了但我没拿到"], ["显示签受了但我没拿到"])
+    assert _copy_pairs_t188(["支持信用卡吗"], ["支持信用卡分期不"])
 
 
 def test_additions_are_in_the_corpus_and_typos_are_registered_t188():
@@ -298,7 +376,7 @@ def test_per_class_recall_after_additions_t188(after_t188, cls):
 
 
 def test_before_and_after_additions_t188(monkeypatch, after_t188):
-    """增补前后对照：每类答对数前者逐字等于 RECALL_BEFORE_T188；后者不低于前者、合计至少多 4 句；
+    """增补前后对照：每类答对数前者逐字等于 RECALL_BEFORE_T188；后者不低于前者、合计至少多 1 句；
     答错 / 转错篇的句子前后是同一张封闭表（增补没有引入任何一句新的答错）。"""
     _strip_additions_t188(monkeypatch)
     before = _measure_t188()
@@ -309,8 +387,8 @@ def test_before_and_after_additions_t188(monkeypatch, after_t188):
     total_after = sum(after_t188["per_class"].values())
     print(f"合计答对 {total_before} → {total_after} / {len(_all_positive_t188())}；"
           f"兜底 {len(before['fallback'])} → {len(after_t188['fallback'])}")
-    assert (total_before, len(before["fallback"])) == (84, 12)
-    assert total_after >= total_before + 4
+    assert (total_before, len(before["fallback"])) == (82, 14)
+    assert total_after >= total_before + 1
     assert before["wrong"] == KNOWN_LEXICAL_WRONG_T188
     assert before["neg_answered"] == KNOWN_LEXICAL_NEGATIVE_ANSWERS_T188
 
@@ -354,3 +432,98 @@ def test_margin_probe_t188(monkeypatch):
                         lambda index, t, **kw: real(index, t, min_similarity=0.25, min_margin=0.05))
     route, _intent, _reason, cite, fired = _one_t188(text)
     assert fired and cite == wrong_doc != want
+
+
+# ---------------------------------------------------------------------------
+# 5. 共享词汇的无关句：增补前后逐句对照（复核 L3-1）
+# ---------------------------------------------------------------------------
+def _route_cite_t188(texts) -> dict[str, tuple[str, str, bool]]:
+    return {t: (lambda r: (r[0], r[3], r[4]))(_one_t188(t)) for t in texts}
+
+
+def test_vocab_sharing_probes_before_and_after_t188(monkeypatch):
+    """173 句共享词汇的探针：近邻一次都不启用；增补前后 (route, 引用篇) 变了的句子恰好是
+    ACCEPTED_NEW_ANSWERS_T188 ∪ NEW_HANDOFFS_T188，且变成表里写的那样（答 / 转那一篇）；
+    没有一句从「答」变成另一篇的「答」或从兜底变成表外的「答」。"""
+    assert len(VOCAB_PROBES_T188) == len(set(VOCAB_PROBES_T188)) == 173
+    assert not (set(ACCEPTED_NEW_ANSWERS_T188) & set(NEW_HANDOFFS_T188))
+    assert set(ACCEPTED_NEW_ANSWERS_T188) | set(NEW_HANDOFFS_T188) <= set(VOCAB_PROBES_T188)
+    after = _route_cite_t188(VOCAB_PROBES_T188)
+    _strip_additions_t188(monkeypatch)
+    before = _route_cite_t188(VOCAB_PROBES_T188)
+    assert not [t for t, v in after.items() if v[2]], "探针句上近邻启用了"
+    changed = {t for t in VOCAB_PROBES_T188 if after[t][:2] != before[t][:2]}
+    answered_after = sum(v[0] == T.ROUTE_ANSWER for v in after.values())
+    answered_before = sum(v[0] == T.ROUTE_ANSWER for v in before.values())
+    print(f"探针 173 句：答了 {answered_before} → {answered_after}；前后变了 {len(changed)} 句")
+    assert changed == set(ACCEPTED_NEW_ANSWERS_T188) | set(NEW_HANDOFFS_T188), sorted(
+        changed ^ (set(ACCEPTED_NEW_ANSWERS_T188) | set(NEW_HANDOFFS_T188)))
+    for text, doc in ACCEPTED_NEW_ANSWERS_T188.items():
+        assert after[text][:2] == (T.ROUTE_ANSWER, doc), (text, after[text])
+    for text, doc in NEW_HANDOFFS_T188.items():
+        assert after[text][:2] == (T.ROUTE_HANDOFF, doc), (text, after[text])
+    assert (answered_before, answered_after) == (26, 34)
+
+
+# ---------------------------------------------------------------------------
+# 6. 生成器的声明自检（复核 L2-1）
+# ---------------------------------------------------------------------------
+def _gen_t188():
+    path = corpus.CORPUS_PATH.parents[3] / "scripts" / "gen_cs_kb.py"
+    spec = importlib.util.spec_from_file_location("gen_cs_kb_t188", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _write_additions_t188(tmp_path, additions, typos=None):
+    path = tmp_path / "additions_p16.json"
+    path.write_text(json.dumps({"additions": additions, "typos": typos or {}}, ensure_ascii=False),
+                    encoding="utf-8")
+    return str(path)
+
+
+_GOOD_T188 = {"scheme_no": "GEN-001", "variant": "反向用例说法呀", "gap": "寒暄与致谢",
+              "kind": "example", "reason": "反向用例"}
+
+
+def test_generator_merges_declared_typos_into_the_doc_check_t188():
+    """仓库里的声明文件：每篇登记的错别字对都并进了该篇 typos（_check_typos 真的看得到它们）。"""
+    gen = _gen_t188()
+    merged = {s["scheme_no"]: s for s in gen.merged_scripts()}
+    typos = json.loads(ADDITIONS_PATH_T188.read_text(encoding="utf-8"))["typos"]
+    assert typos
+    for no, pairs in typos.items():
+        for wrong, right in pairs:
+            assert (wrong, right) in merged[no]["typos"], (no, wrong)
+    gen._check_catalog(gen.merged_scripts())      # 仓库里那份整体过自检
+
+
+@pytest.mark.parametrize("additions,typos,needle", [
+    ([{**_GOOD_T188, "scheme_no": "XXX-999"}], None, "编号不在目录里"),
+    ([{**_GOOD_T188, "scheme_no": ["GEN-001"]}], None, "编号不在目录里"),
+    ([{**_GOOD_T188, "kind": "phrase"}], None, "kind 只许"),
+    ([{**_GOOD_T188, "kind": ["example"]}], None, "kind 只许"),
+    ([{**_GOOD_T188, "reason": " "}], None, "理由为空"),
+    ([_GOOD_T188, dict(_GOOD_T188)], None, "重复声明"),
+    ([{**_GOOD_T188, "variant": "你好"}], None, "该篇已有这条说法"),
+    ([_GOOD_T188], {"XXX-999": [["a", "b"]]}, "编号不在目录里"),
+    ([_GOOD_T188], {"GEN-001": [["a"]]}, "每对须是"),
+    ([_GOOD_T188], {"GEN-001": "ab"}, "每对须是"),
+], ids=["bad-scheme", "unhashable-scheme", "bad-kind", "unhashable-kind", "empty-reason",
+        "duplicate", "already-there", "typo-bad-scheme", "typo-short-pair", "typo-not-list"])
+def test_generator_declaration_checks_stop_t188(tmp_path, additions, typos, needle):
+    gen = _gen_t188()
+    with pytest.raises(SystemExit) as exc:
+        gen.merged_scripts(_write_additions_t188(tmp_path, additions, typos))
+    assert needle in str(exc.value), str(exc.value)
+
+
+def test_generator_typo_pair_must_name_the_docs_own_wording_t188(tmp_path):
+    """并进来的错别字对照走 _check_typos：本字不是本篇说法 → 目录自检停（复核 L2-1 的变异样例）。"""
+    gen = _gen_t188()
+    ok = gen.merged_scripts(_write_additions_t188(tmp_path, [{**_GOOD_T188, "variant": "蟹蟹在不"}],
+                                                  {"GEN-001": [["蟹蟹", "谢谢"]]}))
+    with pytest.raises(SystemExit) as exc:
+        gen._check_catalog(ok)
+    assert "不是本篇的说法" in str(exc.value), str(exc.value)

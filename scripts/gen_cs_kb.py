@@ -461,10 +461,10 @@ def merged_scripts(path: str = ADDITIONS_PATH) -> tuple[dict, ...]:
     for e in entries:
         no, variant, kind = e.get("scheme_no"), str(e.get("variant") or ""), e.get("kind")
         key = (no, variant)
-        if no not in specs:
+        if not isinstance(no, str) or no not in specs:
             problems.append(f"增补 {key!r}: 编号不在目录里")
             continue
-        if kind not in _ADDITION_KINDS:
+        if not isinstance(kind, str) or kind not in _ADDITION_KINDS:
             problems.append(f"增补 {key!r}: kind 只许 synonym / example")
             continue
         if not variant.strip() or not str(e.get("reason") or "").strip():
@@ -483,7 +483,13 @@ def merged_scripts(path: str = ADDITIONS_PATH) -> tuple[dict, ...]:
         if no not in specs:
             problems.append(f"增补错别字登记 {no!r}: 编号不在目录里")
             continue
-        specs[no]["typos"] = specs[no]["typos"] + tuple((str(w), str(r)) for w, r in pairs)
+        malformed = [p for p in (pairs if isinstance(pairs, list) else [pairs])
+                     if not (isinstance(p, list) and len(p) == 2
+                             and all(isinstance(x, str) for x in p))]
+        if not isinstance(pairs, list) or malformed:
+            problems.append(f"增补错别字登记 {no!r}: 每对须是 [错写, 本字] 两个字符串，坏的 {malformed!r}")
+            continue
+        specs[no]["typos"] = specs[no]["typos"] + tuple((w, r) for w, r in pairs)
     if problems:
         raise SystemExit("p16 声明增补自检不过：\n  - " + "\n  - ".join(problems))
     return tuple(specs[spec["scheme_no"]] for spec in SCRIPTS)

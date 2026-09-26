@@ -41,14 +41,15 @@ MIN_PER_GAP_CLASS_T187 = 5
 TRIGGER_FLOOR_T187 = {
     "privacy": ("手机号", "电话号码", "身份证", "身份信息", "住址", "个人信息", "个人资料", "隐私",
                 "银行卡号", "泄露", "泄漏"),
-    "compensation": ("赔", "补偿", "损失费"),
+    "compensation": ("赔", "补偿", "损失费", "精神损失"),
     "anger": ("垃圾", "骗子", "骗人", "骗钱", "坑人", "坑爹", "黑店", "气死", "气炸", "恶心", "混蛋",
               "王八蛋", "无耻", "他妈", "妈的", "傻逼", "去死", "什么破", "破店", "滚", "!!", "！！"),
     "complaint": ("投诉", "12315", "消协", "消费者协会", "消保委", "工商局", "市场监管", "曝光", "起诉",
                   "律师", "法院", "告你们", "举报", "维权"),
     "requested": ("人工", "真人", "活人", "客服小姐姐", "客服小哥", "客服妹妹", "不想跟机器人",
-                  "不要跟机器人", "经理", "主管", "负责人", "领导", "老板", "talk to a human",
-                  "a real person", "an agent"),
+                  "不要跟机器人", "经理", "主管", "负责人", "领导", "老板",
+                  # 英文按附录 A「一类」放宽成子串：speak to a human / real person / human agent 等都中。
+                  "a human", "real person", "live person", "an agent", "human agent", "live agent"),
 }
 TRIGGER_EXCLUDE_T187 = ("人工草坪", "赔本", "滚筒", "滚动")
 PRIORITY_T187 = ("privacy", "compensation", "anger", "complaint", "requested")
@@ -244,6 +245,22 @@ def test_trigger_floor_and_priority_are_respected_t187():
             elif e.reason in TRIGGER_FLOOR_T187:
                 bad.append((case.id, i + 1, "no-trigger"))
     assert not bad, f"触发词期望与附录 A 不一致：{bad}"
+
+
+def test_trigger_floor_copy_recognises_appendix_a_variants_t187():
+    """地板副本自检：附录 A 列到的说法与英文「一类」变体必须能认出来，排除词不误中。"""
+    must = {
+        "这个精神损失你们怎么算": "compensation",
+        "精神损失费谁出": "compensation",
+        "I want to speak to a human": "requested",
+        "can I get a real person please": "requested",
+        "put me through to an agent": "requested",
+        "is there a live agent": "requested",
+    }
+    miss = [t for t, r in must.items() if (_floor_reasons_t187(t) or [None])[0] != r]
+    assert not miss, f"地板副本漏认：{miss}"
+    assert _floor_reasons_t187("人工草坪多少钱一平") == []
+    assert _floor_reasons_t187("滚筒洗衣机能退吗") == []
 
 
 def test_after_handoff_only_silent_and_streak_rule_t187():
